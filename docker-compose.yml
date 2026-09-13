@@ -1,0 +1,39 @@
+services:
+  originacion:
+    build: .
+    command: ["originacion"]
+    environment:
+      REDIS_ADDR: redis:6379
+      OPEN_FINANCE_URL: http://toxiproxy:8666
+      EXTERNAL_TIMEOUT: ${EXTERNAL_TIMEOUT:-700ms}
+      RISK_PROFILE_CACHE_TTL: ${RISK_PROFILE_CACHE_TTL:-24h}
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-3}
+      CB_RECOVERY_WINDOW: ${CB_RECOVERY_WINDOW:-5s}
+      CB_HALF_OPEN_SUCCESS_THRESHOLD: ${CB_HALF_OPEN_SUCCESS_THRESHOLD:-3}
+    ports: ["8080:8080"]
+    depends_on: [redis, toxiproxy]
+  redis:
+    image: redis:7.4-alpine
+  openfinance:
+    build: .
+    command: ["openfinance"]
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    command: ["-host=0.0.0.0"]
+    ports: ["8474:8474"]
+  toxiproxy-config:
+    image: curlimages/curl:8.12.1
+    volumes: ["./scripts:/scripts:ro"]
+    entrypoint: ["/bin/sh", "/scripts/configure-toxiproxy.sh"]
+    depends_on: [toxiproxy, openfinance]
+  k6:
+    image: grafana/k6:0.57.0
+    profiles: ["load"]
+    volumes: ["./k6:/scripts:ro"]
+    environment:
+      TARGET: http://originacion:8080
+      EXPECT_PROVISIONAL: ${EXPECT_PROVISIONAL:-false}
+      VUS: ${VUS:-10}
+      DURATION: ${DURATION:-10s}
+    entrypoint: ["k6", "run", "--quiet", "/scripts/offers.js"]
+    depends_on: [originacion]

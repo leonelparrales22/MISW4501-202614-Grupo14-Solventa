@@ -1,0 +1,9 @@
+# Override for the AWS EC2 POC. Both administration and application ports remain
+# available only on the instance itself; k6 reaches services over the Docker network.
+services:
+  originacion:
+    ports:
+      - "127.0.0.1:8080:8080"
+  toxiproxy:
+    ports:
+      - "127.0.0.1:8474:8474"
