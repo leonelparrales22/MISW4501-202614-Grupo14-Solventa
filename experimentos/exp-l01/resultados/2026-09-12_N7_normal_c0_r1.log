@@ -1,0 +1,791 @@
+Attaching to fuentes-1, k6-1, orquestador-1, redis-1
+redis-1    | 1:C 12 Sep 2026 16:53:32.151 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+redis-1    | 1:C 12 Sep 2026 16:53:32.151 * Redis version=7.4.11, bits=64, commit=00000000, modified=0, pid=1, just started
+redis-1    | 1:C 12 Sep 2026 16:53:32.151 * Configuration loaded
+redis-1    | 1:M 12 Sep 2026 16:53:32.152 * monotonic clock: POSIX clock_gettime
+redis-1    | 1:M 12 Sep 2026 16:53:32.153 * Running mode=standalone, port=6379.
+redis-1    | 1:M 12 Sep 2026 16:53:32.153 * Server initialized
+redis-1    | 1:M 12 Sep 2026 16:53:32.154 * Ready to accept connections tcp
+k6-1           | 
+k6-1           |          /\      Grafana   /‾‾/  
+k6-1           |     /\  /  \     |\  __   /  /   
+k6-1           |    /  \/    \    | |/ /  /   ‾‾\ 
+k6-1           |   /          \   |   (  |  (‾)  |
+k6-1           |  / __________ \  |_|\_\  \_____/ 
+k6-1           | 
+k6-1           |      execution: local
+k6-1           |         script: /scripts/matriz.js
+k6-1           |         output: -
+k6-1           | 
+k6-1           |      scenarios: (100.00%) 1 scenario, 400 max VUs, 4m30s max duration (incl. graceful stop):
+k6-1           |               * rampa: Up to 83.00 iterations/s for 4m0s over 2 stages (maxVUs: 100-400, gracefulStop: 30s)
+k6-1           | 
+k6-1           | 
+k6-1           | running (0m01.0s), 001/100 VUs, 7 complete and 0 interrupted iterations
+k6-1           | rampa   [   0% ] 001/100 VUs  0m01.0s/4m0s  09.23 iters/s
+k6-1           | 
+k6-1           | running (0m02.0s), 001/100 VUs, 17 complete and 0 interrupted iterations
+k6-1           | rampa   [   1% ] 001/100 VUs  0m02.0s/4m0s  10.50 iters/s
+k6-1           | 
+k6-1           | running (0m03.0s), 001/100 VUs, 28 complete and 0 interrupted iterations
+k6-1           | rampa   [   1% ] 001/100 VUs  0m03.0s/4m0s  11.74 iters/s
+k6-1           | 
+k6-1           | running (0m04.0s), 001/100 VUs, 40 complete and 0 interrupted iterations
+k6-1           | rampa   [   2% ] 001/100 VUs  0m04.0s/4m0s  12.95 iters/s
+k6-1           | 
+k6-1           | running (0m05.0s), 002/100 VUs, 53 complete and 0 interrupted iterations
+k6-1           | rampa   [   2% ] 002/100 VUs  0m05.0s/4m0s  14.24 iters/s
+k6-1           | 
+k6-1           | running (0m06.0s), 002/100 VUs, 68 complete and 0 interrupted iterations
+k6-1           | rampa   [   2% ] 002/100 VUs  0m06.0s/4m0s  15.50 iters/s
+k6-1           | 
+k6-1           | running (0m07.0s), 002/100 VUs, 84 complete and 0 interrupted iterations
+k6-1           | rampa   [   3% ] 002/100 VUs  0m07.0s/4m0s  16.74 iters/s
+k6-1           | 
+k6-1           | running (0m08.3s), 002/100 VUs, 101 complete and 0 interrupted iterations
+k6-1           | rampa   [   3% ] 002/100 VUs  0m08.0s/4m0s  17.97 iters/s
+k6-1           | 
+k6-1           | running (0m09.3s), 003/100 VUs, 119 complete and 0 interrupted iterations
+k6-1           | rampa   [   4% ] 003/100 VUs  0m09.0s/4m0s  19.24 iters/s
+k6-1           | 
+k6-1           | running (0m10.3s), 003/100 VUs, 139 complete and 0 interrupted iterations
+k6-1           | rampa   [   4% ] 003/100 VUs  0m10.0s/4m0s  20.50 iters/s
+k6-1           | 
+k6-1           | running (0m11.3s), 003/100 VUs, 160 complete and 0 interrupted iterations
+k6-1           | rampa   [   5% ] 003/100 VUs  0m11.0s/4m0s  21.74 iters/s
+k6-1           | 
+k6-1           | running (0m12.3s), 003/100 VUs, 182 complete and 0 interrupted iterations
+k6-1           | rampa   [   5% ] 003/100 VUs  0m12.0s/4m0s  22.97 iters/s
+k6-1           | 
+k6-1           | running (0m13.3s), 003/100 VUs, 206 complete and 0 interrupted iterations
+k6-1           | rampa   [   5% ] 003/100 VUs  0m13.0s/4m0s  24.24 iters/s
+k6-1           | 
+k6-1           | running (0m14.3s), 004/100 VUs, 230 complete and 0 interrupted iterations
+k6-1           | rampa   [   6% ] 004/100 VUs  0m14.0s/4m0s  25.50 iters/s
+k6-1           | 
+k6-1           | running (0m15.3s), 003/100 VUs, 257 complete and 0 interrupted iterations
+k6-1           | rampa   [   6% ] 003/100 VUs  0m15.0s/4m0s  26.74 iters/s
+k6-1           | 
+k6-1           | running (0m16.3s), 003/100 VUs, 284 complete and 0 interrupted iterations
+k6-1           | rampa   [   7% ] 003/100 VUs  0m16.0s/4m0s  27.98 iters/s
+k6-1           | 
+k6-1           | running (0m17.3s), 004/100 VUs, 312 complete and 0 interrupted iterations
+k6-1           | rampa   [   7% ] 004/100 VUs  0m17.0s/4m0s  29.24 iters/s
+k6-1           | 
+k6-1           | running (0m18.3s), 003/100 VUs, 342 complete and 0 interrupted iterations
+k6-1           | rampa   [   7% ] 003/100 VUs  0m18.0s/4m0s  30.46 iters/s
+k6-1           | 
+k6-1           | running (0m19.3s), 004/100 VUs, 373 complete and 0 interrupted iterations
+k6-1           | rampa   [   8% ] 004/100 VUs  0m19.0s/4m0s  31.75 iters/s
+k6-1           | 
+k6-1           | running (0m20.3s), 004/100 VUs, 405 complete and 0 interrupted iterations
+k6-1           | rampa   [   8% ] 004/100 VUs  0m20.0s/4m0s  32.98 iters/s
+k6-1           | 
+k6-1           | running (0m21.3s), 004/100 VUs, 439 complete and 0 interrupted iterations
+k6-1           | rampa   [   9% ] 004/100 VUs  0m21.0s/4m0s  34.25 iters/s
+k6-1           | 
+k6-1           | running (0m22.3s), 004/100 VUs, 473 complete and 0 interrupted iterations
+k6-1           | rampa   [   9% ] 004/100 VUs  0m22.0s/4m0s  35.46 iters/s
+k6-1           | 
+k6-1           | running (0m23.3s), 004/100 VUs, 509 complete and 0 interrupted iterations
+k6-1           | rampa   [  10% ] 004/100 VUs  0m23.0s/4m0s  36.71 iters/s
+k6-1           | 
+k6-1           | running (0m24.3s), 005/100 VUs, 546 complete and 0 interrupted iterations
+k6-1           | rampa   [  10% ] 005/100 VUs  0m24.0s/4m0s  37.98 iters/s
+k6-1           | 
+k6-1           | running (0m25.3s), 004/100 VUs, 585 complete and 0 interrupted iterations
+k6-1           | rampa   [  10% ] 004/100 VUs  0m25.0s/4m0s  39.21 iters/s
+k6-1           | 
+k6-1           | running (0m26.3s), 005/100 VUs, 624 complete and 0 interrupted iterations
+k6-1           | rampa   [  11% ] 005/100 VUs  0m26.0s/4m0s  40.47 iters/s
+k6-1           | 
+k6-1           | running (0m27.3s), 005/100 VUs, 665 complete and 0 interrupted iterations
+k6-1           | rampa   [  11% ] 005/100 VUs  0m27.0s/4m0s  41.72 iters/s
+k6-1           | 
+k6-1           | running (0m28.3s), 006/100 VUs, 707 complete and 0 interrupted iterations
+k6-1           | rampa   [  12% ] 006/100 VUs  0m28.0s/4m0s  42.99 iters/s
+k6-1           | 
+k6-1           | running (0m29.3s), 005/100 VUs, 751 complete and 0 interrupted iterations
+k6-1           | rampa   [  12% ] 005/100 VUs  0m29.0s/4m0s  44.22 iters/s
+k6-1           | 
+k6-1           | running (0m30.3s), 005/100 VUs, 796 complete and 0 interrupted iterations
+k6-1           | rampa   [  12% ] 005/100 VUs  0m30.0s/4m0s  45.47 iters/s
+k6-1           | 
+k6-1           | running (0m31.3s), 004/100 VUs, 843 complete and 0 interrupted iterations
+k6-1           | rampa   [  13% ] 004/100 VUs  0m31.0s/4m0s  46.72 iters/s
+k6-1           | 
+k6-1           | running (0m32.3s), 006/100 VUs, 889 complete and 0 interrupted iterations
+k6-1           | rampa   [  13% ] 006/100 VUs  0m32.0s/4m0s  47.99 iters/s
+k6-1           | 
+k6-1           | running (0m33.3s), 005/100 VUs, 938 complete and 0 interrupted iterations
+k6-1           | rampa   [  14% ] 005/100 VUs  0m33.0s/4m0s  49.22 iters/s
+k6-1           | 
+k6-1           | running (0m34.3s), 006/100 VUs, 987 complete and 0 interrupted iterations
+k6-1           | rampa   [  14% ] 006/100 VUs  0m34.0s/4m0s  50.48 iters/s
+k6-1           | 
+k6-1           | running (0m35.3s), 005/100 VUs, 1039 complete and 0 interrupted iterations
+k6-1           | rampa   [  15% ] 005/100 VUs  0m35.0s/4m0s  51.72 iters/s
+k6-1           | 
+k6-1           | running (0m36.3s), 006/100 VUs, 1091 complete and 0 interrupted iterations
+k6-1           | rampa   [  15% ] 006/100 VUs  0m36.0s/4m0s  52.99 iters/s
+k6-1           | 
+k6-1           | running (0m37.3s), 006/100 VUs, 1144 complete and 0 interrupted iterations
+k6-1           | rampa   [  15% ] 006/100 VUs  0m37.0s/4m0s  54.22 iters/s
+k6-1           | 
+k6-1           | running (0m38.5s), 007/100 VUs, 1198 complete and 0 interrupted iterations
+k6-1           | rampa   [  16% ] 007/100 VUs  0m38.0s/4m0s  55.48 iters/s
+k6-1           | 
+k6-1           | running (0m39.5s), 007/100 VUs, 1254 complete and 0 interrupted iterations
+k6-1           | rampa   [  16% ] 007/100 VUs  0m39.0s/4m0s  56.73 iters/s
+k6-1           | 
+k6-1           | running (0m40.5s), 008/100 VUs, 1311 complete and 0 interrupted iterations
+k6-1           | rampa   [  17% ] 008/100 VUs  0m40.0s/4m0s  57.99 iters/s
+k6-1           | 
+k6-1           | running (0m41.5s), 007/100 VUs, 1370 complete and 0 interrupted iterations
+k6-1           | rampa   [  17% ] 007/100 VUs  0m41.0s/4m0s  59.23 iters/s
+k6-1           | 
+k6-1           | running (0m42.5s), 006/100 VUs, 1431 complete and 0 interrupted iterations
+k6-1           | rampa   [  17% ] 006/100 VUs  0m42.0s/4m0s  60.48 iters/s
+k6-1           | 
+k6-1           | running (0m43.5s), 007/100 VUs, 1491 complete and 0 interrupted iterations
+k6-1           | rampa   [  18% ] 007/100 VUs  0m43.0s/4m0s  61.73 iters/s
+k6-1           | 
+k6-1           | running (0m44.5s), 005/100 VUs, 1555 complete and 0 interrupted iterations
+k6-1           | rampa   [  18% ] 005/100 VUs  0m44.0s/4m0s  62.97 iters/s
+k6-1           | 
+k6-1           | running (0m45.5s), 008/100 VUs, 1616 complete and 0 interrupted iterations
+k6-1           | rampa   [  19% ] 008/100 VUs  0m45.0s/4m0s  64.23 iters/s
+k6-1           | 
+k6-1           | running (0m46.5s), 008/100 VUs, 1681 complete and 0 interrupted iterations
+k6-1           | rampa   [  19% ] 008/100 VUs  0m46.0s/4m0s  65.48 iters/s
+k6-1           | 
+k6-1           | running (0m47.5s), 007/100 VUs, 1748 complete and 0 interrupted iterations
+k6-1           | rampa   [  20% ] 007/100 VUs  0m47.0s/4m0s  66.73 iters/s
+k6-1           | 
+k6-1           | running (0m48.5s), 007/100 VUs, 1815 complete and 0 interrupted iterations
+k6-1           | rampa   [  20% ] 007/100 VUs  0m48.0s/4m0s  67.97 iters/s
+k6-1           | 
+k6-1           | running (0m49.5s), 009/100 VUs, 1882 complete and 0 interrupted iterations
+k6-1           | rampa   [  20% ] 009/100 VUs  0m49.0s/4m0s  69.23 iters/s
+k6-1           | 
+k6-1           | running (0m50.5s), 009/100 VUs, 1952 complete and 0 interrupted iterations
+k6-1           | rampa   [  21% ] 009/100 VUs  0m50.0s/4m0s  70.48 iters/s
+k6-1           | 
+k6-1           | running (0m51.5s), 009/100 VUs, 2023 complete and 0 interrupted iterations
+k6-1           | rampa   [  21% ] 009/100 VUs  0m51.0s/4m0s  71.73 iters/s
+k6-1           | 
+k6-1           | running (0m52.5s), 007/100 VUs, 2097 complete and 0 interrupted iterations
+k6-1           | rampa   [  22% ] 007/100 VUs  0m52.0s/4m0s  72.97 iters/s
+k6-1           | 
+k6-1           | running (0m53.5s), 009/100 VUs, 2169 complete and 0 interrupted iterations
+k6-1           | rampa   [  22% ] 009/100 VUs  0m53.0s/4m0s  74.23 iters/s
+k6-1           | 
+k6-1           | running (0m54.5s), 009/100 VUs, 2244 complete and 0 interrupted iterations
+k6-1           | rampa   [  22% ] 009/100 VUs  0m54.0s/4m0s  75.48 iters/s
+k6-1           | 
+k6-1           | running (0m55.5s), 010/100 VUs, 2319 complete and 0 interrupted iterations
+k6-1           | rampa   [  23% ] 010/100 VUs  0m55.0s/4m0s  76.73 iters/s
+k6-1           | 
+k6-1           | running (0m56.5s), 008/100 VUs, 2398 complete and 0 interrupted iterations
+k6-1           | rampa   [  23% ] 008/100 VUs  0m56.0s/4m0s  77.98 iters/s
+k6-1           | 
+k6-1           | running (0m57.5s), 010/100 VUs, 2475 complete and 0 interrupted iterations
+k6-1           | rampa   [  24% ] 010/100 VUs  0m57.0s/4m0s  79.23 iters/s
+k6-1           | 
+k6-1           | running (0m58.5s), 010/100 VUs, 2555 complete and 0 interrupted iterations
+k6-1           | rampa   [  24% ] 010/100 VUs  0m58.0s/4m0s  80.48 iters/s
+k6-1           | 
+k6-1           | running (0m59.5s), 010/100 VUs, 2636 complete and 0 interrupted iterations
+k6-1           | rampa   [  25% ] 010/100 VUs  0m59.0s/4m0s  81.73 iters/s
+k6-1           | 
+k6-1           | running (1m00.5s), 010/100 VUs, 2718 complete and 0 interrupted iterations
+k6-1           | rampa   [  25% ] 010/100 VUs  1m00.0s/4m0s  82.98 iters/s
+k6-1           | 
+k6-1           | running (1m01.5s), 009/100 VUs, 2802 complete and 0 interrupted iterations
+k6-1           | rampa   [  25% ] 009/100 VUs  1m01.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m02.5s), 009/100 VUs, 2885 complete and 0 interrupted iterations
+k6-1           | rampa   [  26% ] 009/100 VUs  1m02.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m03.5s), 010/100 VUs, 2967 complete and 0 interrupted iterations
+k6-1           | rampa   [  26% ] 010/100 VUs  1m03.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m04.5s), 010/100 VUs, 3050 complete and 0 interrupted iterations
+k6-1           | rampa   [  27% ] 010/100 VUs  1m04.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m05.5s), 010/100 VUs, 3133 complete and 0 interrupted iterations
+k6-1           | rampa   [  27% ] 010/100 VUs  1m05.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m06.5s), 009/100 VUs, 3217 complete and 0 interrupted iterations
+k6-1           | rampa   [  27% ] 009/100 VUs  1m06.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m07.5s), 010/100 VUs, 3299 complete and 0 interrupted iterations
+k6-1           | rampa   [  28% ] 010/100 VUs  1m07.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m08.7s), 008/100 VUs, 3384 complete and 0 interrupted iterations
+k6-1           | rampa   [  28% ] 008/100 VUs  1m08.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m09.7s), 008/100 VUs, 3467 complete and 0 interrupted iterations
+k6-1           | rampa   [  29% ] 008/100 VUs  1m09.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m10.7s), 010/100 VUs, 3548 complete and 0 interrupted iterations
+k6-1           | rampa   [  29% ] 010/100 VUs  1m10.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m11.7s), 010/100 VUs, 3631 complete and 0 interrupted iterations
+k6-1           | rampa   [  30% ] 010/100 VUs  1m11.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m12.7s), 009/100 VUs, 3715 complete and 0 interrupted iterations
+k6-1           | rampa   [  30% ] 009/100 VUs  1m12.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m13.7s), 010/100 VUs, 3797 complete and 0 interrupted iterations
+k6-1           | rampa   [  30% ] 010/100 VUs  1m13.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m14.7s), 010/100 VUs, 3880 complete and 0 interrupted iterations
+k6-1           | rampa   [  31% ] 010/100 VUs  1m14.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m15.7s), 010/100 VUs, 3963 complete and 0 interrupted iterations
+k6-1           | rampa   [  31% ] 010/100 VUs  1m15.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m16.7s), 009/100 VUs, 4047 complete and 0 interrupted iterations
+k6-1           | rampa   [  32% ] 009/100 VUs  1m16.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m17.7s), 010/100 VUs, 4129 complete and 0 interrupted iterations
+k6-1           | rampa   [  32% ] 010/100 VUs  1m17.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m18.7s), 010/100 VUs, 4212 complete and 0 interrupted iterations
+k6-1           | rampa   [  32% ] 010/100 VUs  1m18.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m19.7s), 010/100 VUs, 4295 complete and 0 interrupted iterations
+k6-1           | rampa   [  33% ] 010/100 VUs  1m19.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m20.7s), 010/100 VUs, 4378 complete and 0 interrupted iterations
+k6-1           | rampa   [  33% ] 010/100 VUs  1m20.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m21.7s), 010/100 VUs, 4461 complete and 0 interrupted iterations
+k6-1           | rampa   [  34% ] 010/100 VUs  1m21.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m22.7s), 009/100 VUs, 4545 complete and 0 interrupted iterations
+k6-1           | rampa   [  34% ] 009/100 VUs  1m22.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m23.7s), 010/100 VUs, 4627 complete and 0 interrupted iterations
+k6-1           | rampa   [  35% ] 010/100 VUs  1m23.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m24.7s), 010/100 VUs, 4710 complete and 0 interrupted iterations
+k6-1           | rampa   [  35% ] 010/100 VUs  1m24.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m25.7s), 008/100 VUs, 4795 complete and 0 interrupted iterations
+k6-1           | rampa   [  35% ] 008/100 VUs  1m25.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m26.7s), 009/100 VUs, 4877 complete and 0 interrupted iterations
+k6-1           | rampa   [  36% ] 009/100 VUs  1m26.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m27.7s), 010/100 VUs, 4959 complete and 0 interrupted iterations
+k6-1           | rampa   [  36% ] 010/100 VUs  1m27.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m28.7s), 008/100 VUs, 5044 complete and 0 interrupted iterations
+k6-1           | rampa   [  37% ] 008/100 VUs  1m28.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m29.7s), 010/100 VUs, 5125 complete and 0 interrupted iterations
+k6-1           | rampa   [  37% ] 010/100 VUs  1m29.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m30.7s), 010/100 VUs, 5208 complete and 0 interrupted iterations
+k6-1           | rampa   [  37% ] 010/100 VUs  1m30.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m31.7s), 009/100 VUs, 5292 complete and 0 interrupted iterations
+k6-1           | rampa   [  38% ] 009/100 VUs  1m31.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m32.7s), 010/100 VUs, 5374 complete and 0 interrupted iterations
+k6-1           | rampa   [  38% ] 010/100 VUs  1m32.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m33.7s), 009/100 VUs, 5458 complete and 0 interrupted iterations
+k6-1           | rampa   [  39% ] 009/100 VUs  1m33.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m34.7s), 010/100 VUs, 5540 complete and 0 interrupted iterations
+k6-1           | rampa   [  39% ] 010/100 VUs  1m34.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m35.7s), 010/100 VUs, 5623 complete and 0 interrupted iterations
+k6-1           | rampa   [  40% ] 010/100 VUs  1m35.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m36.7s), 010/100 VUs, 5706 complete and 0 interrupted iterations
+k6-1           | rampa   [  40% ] 010/100 VUs  1m36.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m37.7s), 010/100 VUs, 5789 complete and 0 interrupted iterations
+k6-1           | rampa   [  40% ] 010/100 VUs  1m37.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m38.8s), 009/100 VUs, 5873 complete and 0 interrupted iterations
+k6-1           | rampa   [  41% ] 009/100 VUs  1m38.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m39.8s), 009/100 VUs, 5956 complete and 0 interrupted iterations
+k6-1           | rampa   [  41% ] 009/100 VUs  1m39.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m40.8s), 009/100 VUs, 6039 complete and 0 interrupted iterations
+k6-1           | rampa   [  42% ] 009/100 VUs  1m40.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m41.8s), 010/100 VUs, 6121 complete and 0 interrupted iterations
+k6-1           | rampa   [  42% ] 010/100 VUs  1m41.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m42.8s), 009/100 VUs, 6205 complete and 0 interrupted iterations
+k6-1           | rampa   [  42% ] 009/100 VUs  1m42.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m43.8s), 010/100 VUs, 6287 complete and 0 interrupted iterations
+k6-1           | rampa   [  43% ] 010/100 VUs  1m43.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m44.8s), 010/100 VUs, 6370 complete and 0 interrupted iterations
+k6-1           | rampa   [  43% ] 010/100 VUs  1m44.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m45.8s), 009/100 VUs, 6454 complete and 0 interrupted iterations
+k6-1           | rampa   [  44% ] 009/100 VUs  1m45.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m46.8s), 010/100 VUs, 6536 complete and 0 interrupted iterations
+k6-1           | rampa   [  44% ] 010/100 VUs  1m46.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m47.8s), 010/100 VUs, 6619 complete and 0 interrupted iterations
+k6-1           | rampa   [  45% ] 010/100 VUs  1m47.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m48.8s), 009/100 VUs, 6703 complete and 0 interrupted iterations
+k6-1           | rampa   [  45% ] 009/100 VUs  1m48.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m49.8s), 010/100 VUs, 6785 complete and 0 interrupted iterations
+k6-1           | rampa   [  45% ] 010/100 VUs  1m49.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m50.8s), 010/100 VUs, 6868 complete and 0 interrupted iterations
+k6-1           | rampa   [  46% ] 010/100 VUs  1m50.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m51.8s), 010/100 VUs, 6951 complete and 0 interrupted iterations
+k6-1           | rampa   [  46% ] 010/100 VUs  1m51.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m52.8s), 010/100 VUs, 7034 complete and 0 interrupted iterations
+k6-1           | rampa   [  47% ] 010/100 VUs  1m52.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m53.8s), 009/100 VUs, 7118 complete and 0 interrupted iterations
+k6-1           | rampa   [  47% ] 009/100 VUs  1m53.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m54.8s), 010/100 VUs, 7200 complete and 0 interrupted iterations
+k6-1           | rampa   [  47% ] 010/100 VUs  1m54.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m55.8s), 010/100 VUs, 7283 complete and 0 interrupted iterations
+k6-1           | rampa   [  48% ] 010/100 VUs  1m55.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m56.8s), 009/100 VUs, 7367 complete and 0 interrupted iterations
+k6-1           | rampa   [  48% ] 009/100 VUs  1m56.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m57.8s), 010/100 VUs, 7449 complete and 0 interrupted iterations
+k6-1           | rampa   [  49% ] 010/100 VUs  1m57.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m58.8s), 010/100 VUs, 7532 complete and 0 interrupted iterations
+k6-1           | rampa   [  49% ] 010/100 VUs  1m58.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (1m59.8s), 010/100 VUs, 7615 complete and 0 interrupted iterations
+k6-1           | rampa   [  50% ] 010/100 VUs  1m59.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m00.8s), 010/100 VUs, 7698 complete and 0 interrupted iterations
+k6-1           | rampa   [  50% ] 010/100 VUs  2m00.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m01.8s), 009/100 VUs, 7782 complete and 0 interrupted iterations
+k6-1           | rampa   [  50% ] 009/100 VUs  2m01.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m02.8s), 009/100 VUs, 7865 complete and 0 interrupted iterations
+k6-1           | rampa   [  51% ] 009/100 VUs  2m02.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m03.8s), 010/100 VUs, 7947 complete and 0 interrupted iterations
+k6-1           | rampa   [  51% ] 010/100 VUs  2m03.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m04.8s), 010/100 VUs, 8030 complete and 0 interrupted iterations
+k6-1           | rampa   [  52% ] 010/100 VUs  2m04.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m05.8s), 010/100 VUs, 8113 complete and 0 interrupted iterations
+k6-1           | rampa   [  52% ] 010/100 VUs  2m05.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m06.8s), 009/100 VUs, 8197 complete and 0 interrupted iterations
+k6-1           | rampa   [  52% ] 009/100 VUs  2m06.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m07.8s), 010/100 VUs, 8279 complete and 0 interrupted iterations
+k6-1           | rampa   [  53% ] 010/100 VUs  2m07.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m09.2s), 010/100 VUs, 8362 complete and 0 interrupted iterations
+k6-1           | rampa   [  53% ] 010/100 VUs  2m08.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m10.2s), 010/100 VUs, 8445 complete and 0 interrupted iterations
+k6-1           | rampa   [  54% ] 010/100 VUs  2m09.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m11.2s), 010/100 VUs, 8528 complete and 0 interrupted iterations
+k6-1           | rampa   [  54% ] 010/100 VUs  2m10.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m12.2s), 008/100 VUs, 8613 complete and 0 interrupted iterations
+k6-1           | rampa   [  55% ] 008/100 VUs  2m11.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m13.2s), 009/100 VUs, 8695 complete and 0 interrupted iterations
+k6-1           | rampa   [  55% ] 009/100 VUs  2m12.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m14.2s), 009/100 VUs, 8778 complete and 0 interrupted iterations
+k6-1           | rampa   [  55% ] 009/100 VUs  2m13.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m15.2s), 009/100 VUs, 8861 complete and 0 interrupted iterations
+k6-1           | rampa   [  56% ] 009/100 VUs  2m14.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m16.2s), 010/100 VUs, 8943 complete and 0 interrupted iterations
+k6-1           | rampa   [  56% ] 010/100 VUs  2m15.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m17.2s), 009/100 VUs, 9027 complete and 0 interrupted iterations
+k6-1           | rampa   [  57% ] 009/100 VUs  2m16.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m18.2s), 010/100 VUs, 9109 complete and 0 interrupted iterations
+k6-1           | rampa   [  57% ] 010/100 VUs  2m17.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m19.2s), 009/100 VUs, 9193 complete and 0 interrupted iterations
+k6-1           | rampa   [  57% ] 009/100 VUs  2m18.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m20.2s), 010/100 VUs, 9275 complete and 0 interrupted iterations
+k6-1           | rampa   [  58% ] 010/100 VUs  2m19.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m21.2s), 009/100 VUs, 9359 complete and 0 interrupted iterations
+k6-1           | rampa   [  58% ] 009/100 VUs  2m20.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m22.2s), 010/100 VUs, 9441 complete and 0 interrupted iterations
+k6-1           | rampa   [  59% ] 010/100 VUs  2m21.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m23.2s), 008/100 VUs, 9526 complete and 0 interrupted iterations
+k6-1           | rampa   [  59% ] 008/100 VUs  2m22.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m24.2s), 010/100 VUs, 9607 complete and 0 interrupted iterations
+k6-1           | rampa   [  60% ] 010/100 VUs  2m23.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m25.2s), 010/100 VUs, 9690 complete and 0 interrupted iterations
+k6-1           | rampa   [  60% ] 010/100 VUs  2m24.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m26.2s), 010/100 VUs, 9773 complete and 0 interrupted iterations
+k6-1           | rampa   [  60% ] 010/100 VUs  2m25.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m27.2s), 009/100 VUs, 9857 complete and 0 interrupted iterations
+k6-1           | rampa   [  61% ] 009/100 VUs  2m26.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m28.2s), 010/100 VUs, 9939 complete and 0 interrupted iterations
+k6-1           | rampa   [  61% ] 010/100 VUs  2m27.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m29.2s), 010/100 VUs, 10022 complete and 0 interrupted iterations
+k6-1           | rampa   [  62% ] 010/100 VUs  2m28.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m30.2s), 010/100 VUs, 10105 complete and 0 interrupted iterations
+k6-1           | rampa   [  62% ] 010/100 VUs  2m29.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m31.2s), 010/100 VUs, 10188 complete and 0 interrupted iterations
+k6-1           | rampa   [  62% ] 010/100 VUs  2m30.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m32.2s), 009/100 VUs, 10272 complete and 0 interrupted iterations
+k6-1           | rampa   [  63% ] 009/100 VUs  2m31.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m33.2s), 010/100 VUs, 10354 complete and 0 interrupted iterations
+k6-1           | rampa   [  63% ] 010/100 VUs  2m32.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m34.2s), 009/100 VUs, 10438 complete and 0 interrupted iterations
+k6-1           | rampa   [  64% ] 009/100 VUs  2m33.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m35.2s), 009/100 VUs, 10521 complete and 0 interrupted iterations
+k6-1           | rampa   [  64% ] 009/100 VUs  2m34.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m36.2s), 010/100 VUs, 10603 complete and 0 interrupted iterations
+k6-1           | rampa   [  65% ] 010/100 VUs  2m35.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m37.2s), 010/100 VUs, 10686 complete and 0 interrupted iterations
+k6-1           | rampa   [  65% ] 010/100 VUs  2m36.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m38.2s), 010/100 VUs, 10769 complete and 0 interrupted iterations
+k6-1           | rampa   [  65% ] 010/100 VUs  2m37.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m39.3s), 010/100 VUs, 10852 complete and 0 interrupted iterations
+k6-1           | rampa   [  66% ] 010/100 VUs  2m38.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m40.3s), 010/100 VUs, 10935 complete and 0 interrupted iterations
+k6-1           | rampa   [  66% ] 010/100 VUs  2m39.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m41.3s), 010/100 VUs, 11018 complete and 0 interrupted iterations
+k6-1           | rampa   [  67% ] 010/100 VUs  2m40.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m42.3s), 010/100 VUs, 11101 complete and 0 interrupted iterations
+k6-1           | rampa   [  67% ] 010/100 VUs  2m41.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m43.3s), 010/100 VUs, 11184 complete and 0 interrupted iterations
+k6-1           | rampa   [  67% ] 010/100 VUs  2m42.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m44.3s), 010/100 VUs, 11267 complete and 0 interrupted iterations
+k6-1           | rampa   [  68% ] 010/100 VUs  2m43.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m45.3s), 009/100 VUs, 11351 complete and 0 interrupted iterations
+k6-1           | rampa   [  68% ] 009/100 VUs  2m44.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m46.3s), 009/100 VUs, 11434 complete and 0 interrupted iterations
+k6-1           | rampa   [  69% ] 009/100 VUs  2m45.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m47.3s), 009/100 VUs, 11517 complete and 0 interrupted iterations
+k6-1           | rampa   [  69% ] 009/100 VUs  2m46.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m48.3s), 010/100 VUs, 11599 complete and 0 interrupted iterations
+k6-1           | rampa   [  70% ] 010/100 VUs  2m47.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m49.3s), 010/100 VUs, 11682 complete and 0 interrupted iterations
+k6-1           | rampa   [  70% ] 010/100 VUs  2m48.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m50.3s), 010/100 VUs, 11765 complete and 0 interrupted iterations
+k6-1           | rampa   [  70% ] 010/100 VUs  2m49.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m51.3s), 010/100 VUs, 11848 complete and 0 interrupted iterations
+k6-1           | rampa   [  71% ] 010/100 VUs  2m50.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m52.3s), 010/100 VUs, 11931 complete and 0 interrupted iterations
+k6-1           | rampa   [  71% ] 010/100 VUs  2m51.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m53.3s), 010/100 VUs, 12014 complete and 0 interrupted iterations
+k6-1           | rampa   [  72% ] 010/100 VUs  2m52.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m54.3s), 010/100 VUs, 12097 complete and 0 interrupted iterations
+k6-1           | rampa   [  72% ] 010/100 VUs  2m53.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m55.3s), 010/100 VUs, 12180 complete and 0 interrupted iterations
+k6-1           | rampa   [  72% ] 010/100 VUs  2m54.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m56.3s), 010/100 VUs, 12263 complete and 0 interrupted iterations
+k6-1           | rampa   [  73% ] 010/100 VUs  2m55.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m57.3s), 010/100 VUs, 12346 complete and 0 interrupted iterations
+k6-1           | rampa   [  73% ] 010/100 VUs  2m56.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m58.3s), 009/100 VUs, 12430 complete and 0 interrupted iterations
+k6-1           | rampa   [  74% ] 009/100 VUs  2m57.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (2m59.3s), 010/100 VUs, 12512 complete and 0 interrupted iterations
+k6-1           | rampa   [  74% ] 010/100 VUs  2m58.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m00.3s), 010/100 VUs, 12595 complete and 0 interrupted iterations
+k6-1           | rampa   [  75% ] 010/100 VUs  2m59.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m01.3s), 010/100 VUs, 12678 complete and 0 interrupted iterations
+k6-1           | rampa   [  75% ] 010/100 VUs  3m00.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m02.3s), 010/100 VUs, 12761 complete and 0 interrupted iterations
+k6-1           | rampa   [  75% ] 010/100 VUs  3m01.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m03.3s), 009/100 VUs, 12845 complete and 0 interrupted iterations
+k6-1           | rampa   [  76% ] 009/100 VUs  3m02.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m04.3s), 010/100 VUs, 12927 complete and 0 interrupted iterations
+k6-1           | rampa   [  76% ] 010/100 VUs  3m03.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m05.3s), 010/100 VUs, 13010 complete and 0 interrupted iterations
+k6-1           | rampa   [  77% ] 010/100 VUs  3m04.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m06.3s), 008/100 VUs, 13095 complete and 0 interrupted iterations
+k6-1           | rampa   [  77% ] 008/100 VUs  3m05.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m07.3s), 009/100 VUs, 13177 complete and 0 interrupted iterations
+k6-1           | rampa   [  77% ] 009/100 VUs  3m06.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m08.3s), 010/100 VUs, 13259 complete and 0 interrupted iterations
+k6-1           | rampa   [  78% ] 010/100 VUs  3m07.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m09.5s), 009/100 VUs, 13343 complete and 0 interrupted iterations
+k6-1           | rampa   [  78% ] 009/100 VUs  3m08.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m10.5s), 010/100 VUs, 13425 complete and 0 interrupted iterations
+k6-1           | rampa   [  79% ] 010/100 VUs  3m09.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m11.5s), 009/100 VUs, 13509 complete and 0 interrupted iterations
+k6-1           | rampa   [  79% ] 009/100 VUs  3m10.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m12.5s), 010/100 VUs, 13591 complete and 0 interrupted iterations
+k6-1           | rampa   [  80% ] 010/100 VUs  3m11.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m13.5s), 010/100 VUs, 13674 complete and 0 interrupted iterations
+k6-1           | rampa   [  80% ] 010/100 VUs  3m12.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m14.5s), 009/100 VUs, 13758 complete and 0 interrupted iterations
+k6-1           | rampa   [  80% ] 009/100 VUs  3m13.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m15.5s), 008/100 VUs, 13842 complete and 0 interrupted iterations
+k6-1           | rampa   [  81% ] 008/100 VUs  3m14.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m16.5s), 010/100 VUs, 13923 complete and 0 interrupted iterations
+k6-1           | rampa   [  81% ] 010/100 VUs  3m15.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m17.5s), 009/100 VUs, 14007 complete and 0 interrupted iterations
+k6-1           | rampa   [  82% ] 009/100 VUs  3m16.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m18.5s), 009/100 VUs, 14090 complete and 0 interrupted iterations
+k6-1           | rampa   [  82% ] 009/100 VUs  3m17.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m19.5s), 010/100 VUs, 14172 complete and 0 interrupted iterations
+k6-1           | rampa   [  82% ] 010/100 VUs  3m18.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m20.5s), 009/100 VUs, 14256 complete and 0 interrupted iterations
+k6-1           | rampa   [  83% ] 009/100 VUs  3m19.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m21.5s), 010/100 VUs, 14338 complete and 0 interrupted iterations
+k6-1           | rampa   [  83% ] 010/100 VUs  3m20.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m22.5s), 007/100 VUs, 14424 complete and 0 interrupted iterations
+k6-1           | rampa   [  84% ] 007/100 VUs  3m21.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m23.5s), 010/100 VUs, 14504 complete and 0 interrupted iterations
+k6-1           | rampa   [  84% ] 010/100 VUs  3m22.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m24.5s), 010/100 VUs, 14587 complete and 0 interrupted iterations
+k6-1           | rampa   [  85% ] 010/100 VUs  3m23.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m25.5s), 009/100 VUs, 14671 complete and 0 interrupted iterations
+k6-1           | rampa   [  85% ] 009/100 VUs  3m24.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m26.5s), 008/100 VUs, 14755 complete and 0 interrupted iterations
+k6-1           | rampa   [  85% ] 008/100 VUs  3m25.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m27.5s), 009/100 VUs, 14837 complete and 0 interrupted iterations
+k6-1           | rampa   [  86% ] 009/100 VUs  3m26.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m28.5s), 010/100 VUs, 14919 complete and 0 interrupted iterations
+k6-1           | rampa   [  86% ] 010/100 VUs  3m27.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m29.5s), 010/100 VUs, 15002 complete and 0 interrupted iterations
+k6-1           | rampa   [  87% ] 010/100 VUs  3m28.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m30.5s), 010/100 VUs, 15085 complete and 0 interrupted iterations
+k6-1           | rampa   [  87% ] 010/100 VUs  3m29.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m31.5s), 009/100 VUs, 15169 complete and 0 interrupted iterations
+k6-1           | rampa   [  87% ] 009/100 VUs  3m30.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m32.5s), 009/100 VUs, 15252 complete and 0 interrupted iterations
+k6-1           | rampa   [  88% ] 009/100 VUs  3m31.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m33.5s), 010/100 VUs, 15334 complete and 0 interrupted iterations
+k6-1           | rampa   [  88% ] 010/100 VUs  3m32.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m34.5s), 009/100 VUs, 15418 complete and 0 interrupted iterations
+k6-1           | rampa   [  89% ] 009/100 VUs  3m33.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m35.5s), 010/100 VUs, 15500 complete and 0 interrupted iterations
+k6-1           | rampa   [  89% ] 010/100 VUs  3m34.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m36.5s), 009/100 VUs, 15584 complete and 0 interrupted iterations
+k6-1           | rampa   [  90% ] 009/100 VUs  3m35.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m37.5s), 010/100 VUs, 15666 complete and 0 interrupted iterations
+k6-1           | rampa   [  90% ] 010/100 VUs  3m36.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m38.5s), 009/100 VUs, 15750 complete and 0 interrupted iterations
+k6-1           | rampa   [  90% ] 009/100 VUs  3m37.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m39.5s), 009/100 VUs, 15833 complete and 0 interrupted iterations
+k6-1           | rampa   [  91% ] 009/100 VUs  3m38.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m40.5s), 009/100 VUs, 15916 complete and 0 interrupted iterations
+k6-1           | rampa   [  91% ] 009/100 VUs  3m39.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m41.5s), 009/100 VUs, 15999 complete and 0 interrupted iterations
+k6-1           | rampa   [  92% ] 009/100 VUs  3m40.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m42.5s), 010/100 VUs, 16081 complete and 0 interrupted iterations
+k6-1           | rampa   [  92% ] 010/100 VUs  3m41.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m43.5s), 010/100 VUs, 16164 complete and 0 interrupted iterations
+k6-1           | rampa   [  92% ] 010/100 VUs  3m42.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m44.5s), 010/100 VUs, 16247 complete and 0 interrupted iterations
+k6-1           | rampa   [  93% ] 010/100 VUs  3m43.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m45.5s), 010/100 VUs, 16330 complete and 0 interrupted iterations
+k6-1           | rampa   [  93% ] 010/100 VUs  3m44.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m46.5s), 009/100 VUs, 16414 complete and 0 interrupted iterations
+k6-1           | rampa   [  94% ] 009/100 VUs  3m45.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m47.5s), 010/100 VUs, 16496 complete and 0 interrupted iterations
+k6-1           | rampa   [  94% ] 010/100 VUs  3m46.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m48.5s), 010/100 VUs, 16579 complete and 0 interrupted iterations
+k6-1           | rampa   [  95% ] 010/100 VUs  3m47.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m49.5s), 009/100 VUs, 16663 complete and 0 interrupted iterations
+k6-1           | rampa   [  95% ] 009/100 VUs  3m48.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m50.5s), 010/100 VUs, 16745 complete and 0 interrupted iterations
+k6-1           | rampa   [  95% ] 010/100 VUs  3m49.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m51.5s), 009/100 VUs, 16829 complete and 0 interrupted iterations
+k6-1           | rampa   [  96% ] 009/100 VUs  3m50.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m52.5s), 010/100 VUs, 16911 complete and 0 interrupted iterations
+k6-1           | rampa   [  96% ] 010/100 VUs  3m51.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m53.5s), 009/100 VUs, 16995 complete and 0 interrupted iterations
+k6-1           | rampa   [  97% ] 009/100 VUs  3m52.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m54.5s), 010/100 VUs, 17077 complete and 0 interrupted iterations
+k6-1           | rampa   [  97% ] 010/100 VUs  3m53.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m55.5s), 009/100 VUs, 17161 complete and 0 interrupted iterations
+k6-1           | rampa   [  97% ] 009/100 VUs  3m54.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m56.5s), 010/100 VUs, 17243 complete and 0 interrupted iterations
+k6-1           | rampa   [  98% ] 010/100 VUs  3m55.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m57.5s), 010/100 VUs, 17326 complete and 0 interrupted iterations
+k6-1           | rampa   [  98% ] 010/100 VUs  3m56.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m58.5s), 010/100 VUs, 17409 complete and 0 interrupted iterations
+k6-1           | rampa   [  99% ] 010/100 VUs  3m57.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (3m59.5s), 010/100 VUs, 17492 complete and 0 interrupted iterations
+k6-1           | rampa   [  99% ] 010/100 VUs  3m58.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (4m00.5s), 010/100 VUs, 17575 complete and 0 interrupted iterations
+k6-1           | rampa   [ 100% ] 010/100 VUs  3m59.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (4m01.5s), 010/100 VUs, 17658 complete and 0 interrupted iterations
+k6-1           | rampa   [ 100% ] 010/100 VUs  4m00.0s/4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (4m02.5s), 000/100 VUs, 17669 complete and 0 interrupted iterations
+k6-1           | rampa ✓ [ 100% ] 000/100 VUs  4m0s  83.00 iters/s
+k6-1           | 
+k6-1           | running (4m03.5s), 000/100 VUs, 17669 complete and 0 interrupted iterations
+k6-1           | rampa ✓ [ 100% ] 000/100 VUs  4m0s  83.00 iters/s
+k6-1           | 
+k6-1           |      ✗ HTTP 200
+k6-1           |       ↳  99% — ✓ 17668 / ✗ 1
+k6-1           |      ✓ tiene Server-Timing
+k6-1           | 
+k6-1           |      checks.........................: 99.99% 35337 out of 35338
+k6-1           |      data_received..................: 7.5 MB 31 kB/s
+k6-1           |      data_sent......................: 3.3 MB 14 kB/s
+k6-1           |      desde_cache....................: 0.00%  0 out of 17668
+k6-1           |      http_req_blocked...............: avg=11.66µs  min=2.64µs  med=5.58µs   p(90)=9.15µs   p(95)=10.85µs  p(99)=26.49µs  max=11.28ms 
+k6-1           |      http_req_connecting............: avg=4.06µs   min=0s      med=0s       p(90)=0s       p(95)=0s       p(99)=0s       max=11.16ms 
+k6-1           |    ✓ http_req_duration..............: avg=115.7ms  min=361.1µs med=121.08ms p(90)=121.77ms p(95)=122ms    p(99)=123.3ms  max=604.56ms
+k6-1           |        { expected_response:true }...: avg=115.7ms  min=361.1µs med=121.08ms p(90)=121.77ms p(95)=122ms    p(99)=123.3ms  max=604.56ms
+k6-1           |    ✓ http_req_failed................: 0.00%  1 out of 17671
+k6-1           |      http_req_receiving.............: avg=83.57µs  min=14.84µs med=77.45µs  p(90)=114.4µs  p(95)=133.93µs p(99)=212.65µs max=6.63ms  
+k6-1           |      http_req_sending...............: avg=50.51µs  min=10.33µs med=36.47µs  p(90)=54.46µs  p(95)=62.73µs  p(99)=101.13µs max=180.64ms
+k6-1           |      http_req_tls_handshaking.......: avg=0s       min=0s      med=0s       p(90)=0s       p(95)=0s       p(99)=0s       max=0s      
+k6-1           |      http_req_waiting...............: avg=115.57ms min=0s      med=120.96ms p(90)=121.64ms p(95)=121.86ms p(99)=122.97ms max=604.2ms 
+k6-1           |      http_reqs......................: 17671  72.521287/s
+k6-1           |      iteration_duration.............: avg=115.33ms min=38.66ms med=121.39ms p(90)=122.12ms p(95)=122.36ms p(99)=123.58ms max=137.85ms
+k6-1           |      iterations.....................: 17669  72.513079/s
+k6-1           |      perfiles_parciales.............: 73.62% 13008 out of 17668
+k6-1           |      tramo_agg......................: avg=58ns     min=0s      med=0s       p(90)=0s       p(95)=0s       p(99)=0s       max=220µs   
+k6-1           |      tramo_cache....................: avg=180.16µs min=60µs    med=160µs    p(90)=250µs    p(95)=310µs    p(99)=520µs    max=4.13ms  
+k6-1           |      tramo_fanout...................: avg=114.22ms min=37.81ms med=120.35ms p(90)=120.96ms p(95)=121.13ms p(99)=121.37ms max=130.88ms
+k6-1           |      tramo_rating...................: avg=103ns    min=0s      med=0s       p(90)=0s       p(95)=0s       p(99)=0s       max=100µs   
+k6-1           |      vus............................: 0      min=0              max=10 
+k6-1           |      vus_max........................: 100    min=100            max=100
+k6-1           | 
+k6-1           | 
+k6-1           | running (4m03.7s), 000/100 VUs, 17669 complete and 0 interrupted iterations
+k6-1           | rampa ✓ [ 100% ] 000/100 VUs  4m0s  83.00 iters/s
+[Kk6-1 exited with code 0
+[Korquestador-1 exited with code 2
+redis-1        | 1:signal-handler (1789232262) Received SIGTERM scheduling shutdown...
+redis-1        | 1:M 12 Sep 2026 16:57:42.138 * User requested shutdown...
+redis-1        | 1:M 12 Sep 2026 16:57:42.138 # Redis is now ready to exit, bye bye...
+[Kfuentes-1 exited with code 2
+[Kredis-1 exited with code 0
+
+# --- ESTADO extraido del log global ---
+k6-1           | time="2026-09-12T16:53:34Z" level=info msg="ESTADO_INICIAL {\"cancelaciones_efectivas\":0,\"conexiones_abiertas\":0,\"conexiones_totales\":0,\"corte_dep_ms\":120,\"deadline_ms\":700,\"fuentes\":7,\"goroutines\":3,\"perfiles_calculados\":0,\"perfiles_parciales\":0,\"uptime_s\":0}\n" source=console
+k6-1           | time="2026-09-12T16:57:38Z" level=info msg="ESTADO_FINAL {\"cancelaciones_efectivas\":21446,\"conexiones_abiertas\":35,\"conexiones_totales\":21516,\"corte_dep_ms\":120,\"deadline_ms\":700,\"fuentes\":7,\"goroutines\":174,\"perfiles_calculados\":17669,\"perfiles_parciales\":13009,\"uptime_s\":242}\n" source=console

@@ -1,0 +1,5 @@
+resultados/
+deploy/terraform/
+scripts/
+*.md
+.git

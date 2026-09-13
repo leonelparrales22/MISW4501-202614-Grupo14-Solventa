@@ -1,0 +1,79 @@
+# Ambiente local de EXP-L01. Levanta orquestador, fuentes simuladas, Redis y k6.
+#
+# Para correr una combinación de la matriz:
+#   N_FUENTES=5 CACHE_HIT=0 RUN_NAME=N5_normal_c0 docker compose --profile carga up --abort-on-container-exit
+#
+# Variables (todas opcionales; si no se ponen, quedan los valores de la ficha):
+#   N_FUENTES        cuántas fuentes consultar en paralelo   (3)
+#   LAT_P50_MS       mediana de latencia de cada fuente      (60)   perfil normal
+#   LAT_P95_MS       p95 de latencia de cada fuente          (200)  perfil normal
+#   CACHE_HIT        tasa de aciertos que k6 provoca, 0..1   (0)
+#   RPS_MAX          hasta dónde sube la carga               (83)   ≈ 5.000 cotizaciones/min
+#   RUN_NAME         cómo se llama el JSON de resultados     (local)
+#
+# Para el perfil degradado: LAT_P50_MS=150 LAT_P95_MS=600
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 10
+
+  fuentes:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: expl01:local
+    command: ["--mode=fuentes"]
+    environment:
+      ADDR: ":8081"
+      LAT_P50_MS: ${LAT_P50_MS:-60}
+      LAT_P95_MS: ${LAT_P95_MS:-200}
+      PCT_SIN_RESPUESTA: ${PCT_SIN_RESPUESTA:-0}
+    ports: ["8081:8081"]
+
+  orquestador:
+    image: expl01:local
+    command: ["--mode=orquestador"]
+    environment:
+      ADDR: ":8080"
+      FUENTES: ${N_FUENTES:-3}
+      FUENTES_URL: http://fuentes:8081
+      CORTE_DEP_MS: ${CORTE_DEP_MS:-120}
+      DEADLINE_MS: ${DEADLINE_MS:-700}
+      REDIS_ADDR: redis:6379
+      REDIS_TTL_S: 3600
+      MAX_CONEX_HOST: ${MAX_CONEX_HOST:-200}
+    ports: ["8080:8080"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      fuentes:
+        condition: service_started
+
+  # k6 solo arranca si se pasa --profile carga. Así uno puede levantar el
+  # sistema y probarlo con curl sin que se dispare la carga.
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["carga"]
+    volumes:
+      - ../k6:/scripts:ro
+      - ../resultados:/resultados
+    environment:
+      BASE_URL: http://orquestador:8080
+      N_FUENTES: ${N_FUENTES:-3}
+      CACHE_HIT: ${CACHE_HIT:-0}
+      RPS_MAX: ${RPS_MAX:-83}
+      RUN_NAME: ${RUN_NAME:-local}
+    command:
+      - run
+      - --summary-export=/resultados/${RUN_NAME:-local}.json
+      - /scripts/matriz.js
+    depends_on:
+      orquestador:
+        condition: service_started

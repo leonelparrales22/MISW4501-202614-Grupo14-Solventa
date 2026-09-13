@@ -1,0 +1,4 @@
+# k6 con el guion adentro. En Fargate no hay cómo montar un volumen con el
+# archivo, así que va dentro de la imagen.
+FROM grafana/k6:0.54.0
+COPY k6/matriz.js /matriz.js
