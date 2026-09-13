@@ -1,0 +1,27 @@
+# Terraform: proveedores descargados, estado y variables locales
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.auto.tfvars
+*.tfvars.local
+crash.log
+
+# Evidencia cruda y logs de cada ejecución del experimento (se conservan fuera del repositorio;
+# los resúmenes, series, timelines y gráficas sí se versionan)
+experimentos/exp-d03-failover/resultados/**/k6.csv
+experimentos/exp-d03-failover/resultados/**/k6_resumen.txt
+experimentos/exp-d03-failover/resultados/**/ids.json
+experimentos/exp-d03-failover/resultados/**/haproxy.log
+experimentos/exp-d03-failover/resultados/**/stubs.log
+experimentos/exp-d03-failover/resultados/**/*.csv.gz
+
+# Material de apoyo personal (la wiki es la fuente de la página publicada)
+experimentos/exp-d03-failover/GUION-VIDEO.md
+
+
+# Python
+__pycache__/
+*.pyc
+
+# Archivos locales de herramientas
+.env

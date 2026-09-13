@@ -1,0 +1,7 @@
+﻿ts,evento,detalle
+2026-09-13T03:41:13.7803965Z,k6_inicio,config=M1;rps=50;duracion=90
+2026-09-13T03:41:34.1051479Z,falla_computo,tipo=hang;instancia=a
+2026-09-13T03:42:00.7717454Z,reemplazo_iniciado,instancia=a;metodo=docker_restart
+2026-09-13T03:42:04.2676069Z,falla_base,metodo=docker_kill
+2026-09-13T03:42:19.7850112Z,base_restablecida,metodo=docker_start
+2026-09-13T03:42:52.1063024Z,k6_fin,

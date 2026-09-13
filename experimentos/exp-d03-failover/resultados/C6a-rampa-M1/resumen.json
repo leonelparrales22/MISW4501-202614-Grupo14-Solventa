@@ -1,0 +1,929 @@
+{
+  "ejecución": "C6a-rampa-M1",
+  "solicitudes": 84589,
+  "fallidas": 81188,
+  "disponibilidad": 0.040206173379517485,
+  "minutos_indisponibles_equivalentes_mes": 41463.09331000484,
+  "duracion_s": 604.960355758667,
+  "instancia_fallada": null,
+  "t_falla_computo_s": null,
+  "t_falla_base_s": null,
+  "ventana_error_computo_s": 0,
+  "fin_ventana_computo_s": null,
+  "deteccion_s": null,
+  "reintegracion_s": null,
+  "falsos_positivos": 9,
+  "ventana_error_base_s": 0,
+  "recuperacion_base_s": null,
+  "duracion_failover_base_s": null,
+  "t_base_disponible_s": null,
+  "retardo_reconexion_pool_s": null,
+  "errores_esporadicos": 81188,
+  "aceptadas_perdidas": 0,
+  "resultados_ambiguos": 17,
+  "por_instancia": {
+    "": {
+      "solicitudes": 80601,
+      "ok": 0
+    },
+    "2b8b3ded392844b7b2a6837ef9b7fd1a": {
+      "solicitudes": 52,
+      "ok": 48
+    },
+    "2df5d0a693764a13b373510566b22ff5": {
+      "solicitudes": 104,
+      "ok": 41
+    },
+    "3d78f555903e4ba6864a3078eee1e4ad": {
+      "solicitudes": 76,
+      "ok": 15
+    },
+    "4f5e949bbb7a4a56b3146c161b6c7b40": {
+      "solicitudes": 1733,
+      "ok": 1611
+    },
+    "5c138df09477451f8973151f7575e345": {
+      "solicitudes": 1665,
+      "ok": 1597
+    },
+    "945d7c1506b8428d8c2db9e209431cba": {
+      "solicitudes": 149,
+      "ok": 41
+    },
+    "ce2fce7c528f4098b65c396d24843403": {
+      "solicitudes": 73,
+      "ok": 15
+    },
+    "e54e5207ab974d9f894ca3f6104a5ab6": {
+      "solicitudes": 56,
+      "ok": 17
+    },
+    "f435d6b659be416a819cbaebafaeb307": {
+      "solicitudes": 80,
+      "ok": 16
+    }
+  },
+  "por_status": {
+    "0": 80599,
+    "201": 3401,
+    "503": 587,
+    "504": 2
+  },
+  "fases": {
+    "linea_base": {
+      "solicitudes": 84589,
+      "p95_ms": 5001.0,
+      "p95_exitosas_ms": 459.0,
+      "fallidas": 81188
+    }
+  },
+  "por_minuto": [
+    {
+      "minuto": 0,
+      "solicitudes": 3000,
+      "rps": 50.0,
+      "fallidas": 0,
+      "p95_exitosas_ms": 293.0499999999997,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 1,
+      "solicitudes": 6201,
+      "rps": 103.3,
+      "fallidas": 5993,
+      "p95_exitosas_ms": 2608.0499999999965,
+      "unhealthy_en_el_minuto": 2
+    },
+    {
+      "minuto": 2,
+      "solicitudes": 6780,
+      "rps": 113.0,
+      "fallidas": 6691,
+      "p95_exitosas_ms": 1007.1999999999997,
+      "unhealthy_en_el_minuto": 2
+    },
+    {
+      "minuto": 3,
+      "solicitudes": 10440,
+      "rps": 174.0,
+      "fallidas": 10440,
+      "p95_exitosas_ms": null,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 4,
+      "solicitudes": 10810,
+      "rps": 180.2,
+      "fallidas": 10794,
+      "p95_exitosas_ms": 1987.5,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 5,
+      "solicitudes": 10808,
+      "rps": 180.1,
+      "fallidas": 10793,
+      "p95_exitosas_ms": 1840.7999999999975,
+      "unhealthy_en_el_minuto": 2
+    },
+    {
+      "minuto": 6,
+      "solicitudes": 10794,
+      "rps": 179.9,
+      "fallidas": 10794,
+      "p95_exitosas_ms": null,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 7,
+      "solicitudes": 10834,
+      "rps": 180.6,
+      "fallidas": 10802,
+      "p95_exitosas_ms": 2398.25,
+      "unhealthy_en_el_minuto": 1
+    },
+    {
+      "minuto": 8,
+      "solicitudes": 10797,
+      "rps": 179.9,
+      "fallidas": 10797,
+      "p95_exitosas_ms": null,
+      "unhealthy_en_el_minuto": 1
+    },
+    {
+      "minuto": 9,
+      "solicitudes": 4125,
+      "rps": 68.8,
+      "fallidas": 4084,
+      "p95_exitosas_ms": 1399.0,
+      "unhealthy_en_el_minuto": 0
+    }
+  ],
+  "intervalos": [
+    {
+      "inicio_s": 62.301,
+      "fin_s": 604.96,
+      "duracion_s": 542.659,
+      "fallidas": 81188,
+      "causa": "esporadico"
+    }
+  ],
+  "eventos": [
+    {
+      "t_s": -11.892,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) (deployment ecs-svc/3559820735141730004) deployment completed."
+      }
+    },
+    {
+      "t_s": -11.89,
+      "evento": "servicio_estable",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) has reached a steady state."
+      }
+    },
+    {
+      "t_s": -2.595,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "5c138df09477451f8973151f7575e345",
+        "ip": "10.0.1.87",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": -2.594,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "4f5e949bbb7a4a56b3146c161b6c7b40",
+        "ip": "10.0.0.31",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": -0.078,
+      "evento": "k6_inicio",
+      "detalle": {
+        "config": "C6a-rampa-M1",
+        "rps": "50",
+        "duracion": "600",
+        "tipo_falla": "hang"
+      }
+    },
+    {
+      "t_s": 81.133,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "5c138df09477451f8973151f7575e345",
+        "ip": "10.0.1.87",
+        "estado": "unhealthy",
+        "razon": "Target.Timeout"
+      }
+    },
+    {
+      "t_s": 81.133,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "4f5e949bbb7a4a56b3146c161b6c7b40",
+        "ip": "10.0.0.31",
+        "estado": "unhealthy",
+        "razon": "Target.Timeout"
+      }
+    },
+    {
+      "t_s": 126.538,
+      "evento": "tarea_nueva",
+      "detalle": {
+        "instancia": "2b8b3ded392844b7b2a6837ef9b7fd1a"
+      }
+    },
+    {
+      "t_s": 145.827,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) registered 2 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t"
+      }
+    },
+    {
+      "t_s": 147.014,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "2b8b3ded392844b7b2a6837ef9b7fd1a",
+        "ip": "10.0.0.161",
+        "estado": "initial",
+        "razon": "Elb.RegistrationInProgress"
+      }
+    },
+    {
+      "t_s": 147.014,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "2df5d0a693764a13b373510566b22ff5",
+        "ip": "10.0.1.177",
+        "estado": "initial",
+        "razon": "Elb.RegistrationInProgress"
+      }
+    },
+    {
+      "t_s": 148.132,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "2b8b3ded392844b7b2a6837ef9b7fd1a",
+        "ip": "10.0.0.161",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 148.132,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "2df5d0a693764a13b373510566b22ff5",
+        "ip": "10.0.1.177",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 155.274,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) (task 5c138df09477451f8973151f7575e345) (port 8080) is unhealthy in (target-group arn:aws:e"
+      }
+    },
+    {
+      "t_s": 155.339,
+      "evento": "tarea_detenida",
+      "detalle": {
+        "instancia": "4f5e949bbb7a4a56b3146c161b6c7b40"
+      }
+    },
+    {
+      "t_s": 164.715,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) deregistered 2 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438"
+      }
+    },
+    {
+      "t_s": 164.72,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 2 tasks."
+      }
+    },
+    {
+      "t_s": 165.926,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "2b8b3ded392844b7b2a6837ef9b7fd1a",
+        "ip": "10.0.0.161",
+        "estado": "unhealthy",
+        "razon": "Target.Timeout"
+      }
+    },
+    {
+      "t_s": 165.927,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "2df5d0a693764a13b373510566b22ff5",
+        "ip": "10.0.1.177",
+        "estado": "unhealthy",
+        "razon": "Target.Timeout"
+      }
+    },
+    {
+      "t_s": 165.927,
+      "evento": "target_draining",
+      "detalle": {
+        "instancia": "5c138df09477451f8973151f7575e345",
+        "ip": "10.0.1.87",
+        "estado": "draining",
+        "razon": "Target.DeregistrationInProgress"
+      }
+    },
+    {
+      "t_s": 165.927,
+      "evento": "target_draining",
+      "detalle": {
+        "instancia": "4f5e949bbb7a4a56b3146c161b6c7b40",
+        "ip": "10.0.0.31",
+        "estado": "draining",
+        "razon": "Target.DeregistrationInProgress"
+      }
+    },
+    {
+      "t_s": 195.317,
+      "evento": "target_retirado",
+      "detalle": {
+        "instancia": "5c138df09477451f8973151f7575e345",
+        "ip": "10.0.1.87"
+      }
+    },
+    {
+      "t_s": 195.318,
+      "evento": "target_retirado",
+      "detalle": {
+        "instancia": "4f5e949bbb7a4a56b3146c161b6c7b40",
+        "ip": "10.0.0.31"
+      }
+    },
+    {
+      "t_s": 269.816,
+      "evento": "tarea_nueva",
+      "detalle": {
+        "instancia": "f435d6b659be416a819cbaebafaeb307"
+      }
+    },
+    {
+      "t_s": 280.101,
+      "evento": "tarea_nueva",
+      "detalle": {
+        "instancia": "ce2fce7c528f4098b65c396d24843403"
+      }
+    },
+    {
+      "t_s": 289.741,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t"
+      }
+    },
+    {
+      "t_s": 290.535,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "f435d6b659be416a819cbaebafaeb307",
+        "ip": "10.0.0.56",
+        "estado": "initial",
+        "razon": "Elb.RegistrationInProgress"
+      }
+    },
+    {
+      "t_s": 292.896,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "f435d6b659be416a819cbaebafaeb307",
+        "ip": "10.0.0.56",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 298.283,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) (task 2b8b3ded392844b7b2a6837ef9b7fd1a) (port 8080) is unhealthy in (target-group arn:aws:e"
+      }
+    },
+    {
+      "t_s": 298.316,
+      "evento": "tarea_detenida",
+      "detalle": {
+        "instancia": "2b8b3ded392844b7b2a6837ef9b7fd1a"
+      }
+    },
+    {
+      "t_s": 298.676,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "ce2fce7c528f4098b65c396d24843403",
+        "ip": "10.0.1.6",
+        "estado": "initial",
+        "razon": "Elb.RegistrationInProgress"
+      }
+    },
+    {
+      "t_s": 300.904,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "ce2fce7c528f4098b65c396d24843403",
+        "ip": "10.0.1.6",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 305.012,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "f435d6b659be416a819cbaebafaeb307",
+        "ip": "10.0.0.56",
+        "estado": "unhealthy",
+        "razon": "Target.Timeout"
+      }
+    },
+    {
+      "t_s": 307.721,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438"
+      }
+    },
+    {
+      "t_s": 307.726,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+      }
+    },
+    {
+      "t_s": 308.345,
+      "evento": "target_draining",
+      "detalle": {
+        "instancia": "2b8b3ded392844b7b2a6837ef9b7fd1a",
+        "ip": "10.0.0.161",
+        "estado": "draining",
+        "razon": "Target.DeregistrationInProgress"
+      }
+    },
+    {
+      "t_s": 316.535,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) (task 2df5d0a693764a13b373510566b22ff5) (port 8080) is unhealthy in (target-group arn:aws:e"
+      }
+    },
+    {
+      "t_s": 316.574,
+      "evento": "tarea_detenida",
+      "detalle": {
+        "instancia": "2df5d0a693764a13b373510566b22ff5"
+      }
+    },
+    {
+      "t_s": 318.668,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "ce2fce7c528f4098b65c396d24843403",
+        "ip": "10.0.1.6",
+        "estado": "unhealthy",
+        "razon": "Target.Timeout"
+      }
+    },
+    {
+      "t_s": 325.549,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438"
+      }
+    },
+    {
+      "t_s": 325.554,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+      }
+    },
+    {
+      "t_s": 326.135,
+      "evento": "target_draining",
+      "detalle": {
+        "instancia": "2df5d0a693764a13b373510566b22ff5",
+        "ip": "10.0.1.177",
+        "estado": "draining",
+        "razon": "Target.DeregistrationInProgress"
+      }
+    },
+    {
+      "t_s": 338.691,
+      "evento": "target_retirado",
+      "detalle": {
+        "instancia": "2b8b3ded392844b7b2a6837ef9b7fd1a",
+        "ip": "10.0.0.161"
+      }
+    },
+    {
+      "t_s": 356.476,
+      "evento": "target_retirado",
+      "detalle": {
+        "instancia": "2df5d0a693764a13b373510566b22ff5",
+        "ip": "10.0.1.177"
+      }
+    },
+    {
+      "t_s": 422.054,
+      "evento": "tarea_nueva",
+      "detalle": {
+        "instancia": "3d78f555903e4ba6864a3078eee1e4ad"
+      }
+    },
+    {
+      "t_s": 440.863,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t"
+      }
+    },
+    {
+      "t_s": 441.942,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "3d78f555903e4ba6864a3078eee1e4ad",
+        "ip": "10.0.1.178",
+        "estado": "initial",
+        "razon": "Elb.RegistrationInProgress"
+      }
+    },
+    {
+      "t_s": 443.058,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "3d78f555903e4ba6864a3078eee1e4ad",
+        "ip": "10.0.1.178",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 450.737,
+      "evento": "tarea_nueva",
+      "detalle": {
+        "instancia": "e54e5207ab974d9f894ca3f6104a5ab6"
+      }
+    },
+    {
+      "t_s": 450.764,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) (task ce2fce7c528f4098b65c396d24843403) (port 8080) is unhealthy in (target-group arn:aws:e"
+      }
+    },
+    {
+      "t_s": 450.798,
+      "evento": "tarea_detenida",
+      "detalle": {
+        "instancia": "ce2fce7c528f4098b65c396d24843403"
+      }
+    },
+    {
+      "t_s": 457.67,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "3d78f555903e4ba6864a3078eee1e4ad",
+        "ip": "10.0.1.178",
+        "estado": "unhealthy",
+        "razon": "Target.Timeout"
+      }
+    },
+    {
+      "t_s": 459.341,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438"
+      }
+    },
+    {
+      "t_s": 459.346,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+      }
+    },
+    {
+      "t_s": 459.889,
+      "evento": "target_draining",
+      "detalle": {
+        "instancia": "ce2fce7c528f4098b65c396d24843403",
+        "ip": "10.0.1.6",
+        "estado": "draining",
+        "razon": "Target.DeregistrationInProgress"
+      }
+    },
+    {
+      "t_s": 468.996,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t"
+      }
+    },
+    {
+      "t_s": 470.301,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "e54e5207ab974d9f894ca3f6104a5ab6",
+        "ip": "10.0.0.214",
+        "estado": "initial",
+        "razon": "Elb.RegistrationInProgress"
+      }
+    },
+    {
+      "t_s": 471.42,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "e54e5207ab974d9f894ca3f6104a5ab6",
+        "ip": "10.0.0.214",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 477.819,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) (task f435d6b659be416a819cbaebafaeb307) (port 8080) is unhealthy in (target-group arn:aws:e"
+      }
+    },
+    {
+      "t_s": 477.851,
+      "evento": "tarea_detenida",
+      "detalle": {
+        "instancia": "f435d6b659be416a819cbaebafaeb307"
+      }
+    },
+    {
+      "t_s": 484.49,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "e54e5207ab974d9f894ca3f6104a5ab6",
+        "ip": "10.0.0.214",
+        "estado": "unhealthy",
+        "razon": "Target.Timeout"
+      }
+    },
+    {
+      "t_s": 487.814,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438"
+      }
+    },
+    {
+      "t_s": 487.82,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+      }
+    },
+    {
+      "t_s": 489.68,
+      "evento": "target_draining",
+      "detalle": {
+        "instancia": "f435d6b659be416a819cbaebafaeb307",
+        "ip": "10.0.0.56",
+        "estado": "draining",
+        "razon": "Target.DeregistrationInProgress"
+      }
+    },
+    {
+      "t_s": 489.68,
+      "evento": "target_retirado",
+      "detalle": {
+        "instancia": "ce2fce7c528f4098b65c396d24843403",
+        "ip": "10.0.1.6"
+      }
+    },
+    {
+      "t_s": 518.383,
+      "evento": "target_retirado",
+      "detalle": {
+        "instancia": "f435d6b659be416a819cbaebafaeb307",
+        "ip": "10.0.0.56"
+      }
+    },
+    {
+      "t_s": 555.694,
+      "evento": "tarea_nueva",
+      "detalle": {
+        "instancia": "945d7c1506b8428d8c2db9e209431cba"
+      }
+    },
+    {
+      "t_s": 583.561,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t"
+      }
+    },
+    {
+      "t_s": 584.586,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "945d7c1506b8428d8c2db9e209431cba",
+        "ip": "10.0.1.65",
+        "estado": "initial",
+        "razon": "Elb.RegistrationInProgress"
+      }
+    },
+    {
+      "t_s": 585.694,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "945d7c1506b8428d8c2db9e209431cba",
+        "ip": "10.0.1.65",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 592.746,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) (task 3d78f555903e4ba6864a3078eee1e4ad) (port 8080) is unhealthy in (target-group arn:aws:e"
+      }
+    },
+    {
+      "t_s": 592.781,
+      "evento": "tarea_detenida",
+      "detalle": {
+        "instancia": "3d78f555903e4ba6864a3078eee1e4ad"
+      }
+    },
+    {
+      "t_s": 602.051,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438"
+      }
+    },
+    {
+      "t_s": 602.057,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+      }
+    },
+    {
+      "t_s": 602.482,
+      "evento": "target_draining",
+      "detalle": {
+        "instancia": "3d78f555903e4ba6864a3078eee1e4ad",
+        "ip": "10.0.1.178",
+        "estado": "draining",
+        "razon": "Target.DeregistrationInProgress"
+      }
+    },
+    {
+      "t_s": 603.589,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "945d7c1506b8428d8c2db9e209431cba",
+        "ip": "10.0.1.65",
+        "estado": "unhealthy",
+        "razon": "Target.Timeout"
+      }
+    },
+    {
+      "t_s": 605.901,
+      "evento": "k6_fin",
+      "detalle": {
+        "codigo_salida": "0"
+      }
+    },
+    {
+      "t_s": 612.449,
+      "evento": "tarea_nueva",
+      "detalle": {
+        "instancia": "35c0fc2c94d34e469c1df4fb085e85dc"
+      }
+    },
+    {
+      "t_s": 612.878,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "945d7c1506b8428d8c2db9e209431cba",
+        "ip": "10.0.1.65",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 632.946,
+      "evento": "target_retirado",
+      "detalle": {
+        "instancia": "3d78f555903e4ba6864a3078eee1e4ad",
+        "ip": "10.0.1.178"
+      }
+    },
+    {
+      "t_s": 640.092,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t"
+      }
+    },
+    {
+      "t_s": 640.35,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "35c0fc2c94d34e469c1df4fb085e85dc",
+        "ip": "10.0.0.126",
+        "estado": "initial",
+        "razon": "Elb.RegistrationInProgress"
+      }
+    },
+    {
+      "t_s": 642.575,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "35c0fc2c94d34e469c1df4fb085e85dc",
+        "ip": "10.0.0.126",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 649.188,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) (task e54e5207ab974d9f894ca3f6104a5ab6) (port 8080) is unhealthy in (target-group arn:aws:e"
+      }
+    },
+    {
+      "t_s": 649.321,
+      "evento": "tarea_detenida",
+      "detalle": {
+        "instancia": "e54e5207ab974d9f894ca3f6104a5ab6"
+      }
+    },
+    {
+      "t_s": 658.897,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438"
+      }
+    },
+    {
+      "t_s": 658.902,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+      }
+    },
+    {
+      "t_s": 659.282,
+      "evento": "target_draining",
+      "detalle": {
+        "instancia": "e54e5207ab974d9f894ca3f6104a5ab6",
+        "ip": "10.0.0.214",
+        "estado": "draining",
+        "razon": "Target.DeregistrationInProgress"
+      }
+    },
+    {
+      "t_s": 668.38,
+      "evento": "servicio_estable",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) has reached a steady state."
+      }
+    },
+    {
+      "t_s": 689.446,
+      "evento": "target_retirado",
+      "detalle": {
+        "instancia": "e54e5207ab974d9f894ca3f6104a5ab6",
+        "ip": "10.0.0.214"
+      }
+    }
+  ],
+  "veredicto": {
+    "a1_ventana_computo_ok": null,
+    "a2_sin_falsos_positivos": false,
+    "a3_sin_aceptadas_perdidas": true,
+    "b_recuperacion_base_ok": null,
+    "cumple": false
+  }
+}

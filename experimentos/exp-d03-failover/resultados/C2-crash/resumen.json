@@ -1,0 +1,271 @@
+{
+  "ejecución": "C2-crash",
+  "solicitudes": 30000,
+  "fallidas": 867,
+  "disponibilidad": 0.9711,
+  "minutos_indisponibles_equivalentes_mes": 1248.4800000000016,
+  "duracion_s": 600.061173915863,
+  "instancia_fallada": "4465b18496bb4d01b8373a4ed5aee66d",
+  "t_falla_computo_s": 120.20002603530884,
+  "t_falla_base_s": 360.60124492645264,
+  "ventana_error_computo_s": 9.633,
+  "fin_ventana_computo_s": 129.949,
+  "deteccion_s": 8.52487587928772,
+  "reintegracion_s": 52.72738790512085,
+  "falsos_positivos": 0,
+  "ventana_error_base_s": 15.15,
+  "recuperacion_base_s": 24.56675507354737,
+  "duracion_failover_base_s": 16.193000078201294,
+  "t_base_disponible_s": 386.8011589050293,
+  "retardo_reconexion_pool_s": -1.6331589050292905,
+  "errores_esporadicos": 2,
+  "aceptadas_perdidas": 0,
+  "resultados_ambiguos": 0,
+  "por_instancia": {
+    "": {
+      "solicitudes": 230,
+      "ok": 0
+    },
+    "1314f5cfa7f34b3eb519723a56e536b4": {
+      "solicitudes": 10653,
+      "ok": 10320
+    },
+    "4465b18496bb4d01b8373a4ed5aee66d": {
+      "solicitudes": 3008,
+      "ok": 3008
+    },
+    "b914c63506b343a497a95f12df293289": {
+      "solicitudes": 16109,
+      "ok": 15805
+    }
+  },
+  "por_status": {
+    "201": 29133,
+    "503": 637,
+    "502": 228,
+    "504": 2
+  },
+  "fases": {
+    "linea_base": {
+      "solicitudes": 6011,
+      "p95_ms": 234.0,
+      "p95_exitosas_ms": 234.0,
+      "fallidas": 0
+    },
+    "una_instancia": {
+      "solicitudes": 12020,
+      "p95_ms": 94.0,
+      "p95_exitosas_ms": 94.0,
+      "fallidas": 229
+    },
+    "failover_base": {
+      "solicitudes": 11969,
+      "p95_ms": 1628.2000000000007,
+      "p95_exitosas_ms": 96.0,
+      "fallidas": 638
+    }
+  },
+  "intervalos": [
+    {
+      "inicio_s": 120.316,
+      "fin_s": 129.949,
+      "duracion_s": 9.633,
+      "fallidas": 228,
+      "causa": "computo"
+    },
+    {
+      "inicio_s": 357.816,
+      "fin_s": 357.909,
+      "duracion_s": 0.093,
+      "fallidas": 1,
+      "causa": "esporadico"
+    },
+    {
+      "inicio_s": 370.018,
+      "fin_s": 385.168,
+      "duracion_s": 15.15,
+      "fallidas": 637,
+      "causa": "base"
+    },
+    {
+      "inicio_s": 555.276,
+      "fin_s": 555.358,
+      "duracion_s": 0.082,
+      "fallidas": 1,
+      "causa": "esporadico"
+    }
+  ],
+  "eventos": [
+    {
+      "t_s": -2.595,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "4465b18496bb4d01b8373a4ed5aee66d",
+        "ip": "10.0.1.79",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": -2.594,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "b914c63506b343a497a95f12df293289",
+        "ip": "10.0.0.191",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": -0.057,
+      "evento": "k6_inicio",
+      "detalle": {
+        "config": "M1-P1",
+        "rps": "50",
+        "duracion": "600",
+        "tipo_falla": "crash"
+      }
+    },
+    {
+      "t_s": 120.2,
+      "evento": "falla_computo",
+      "detalle": {
+        "tipo": "crash",
+        "instancia": "4465b18496bb4d01b8373a4ed5aee66d",
+        "ip": "10.0.1.79"
+      }
+    },
+    {
+      "t_s": 128.725,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "4465b18496bb4d01b8373a4ed5aee66d",
+        "ip": "10.0.1.79",
+        "estado": "unhealthy",
+        "razon": "Target.FailedHealthChecks"
+      }
+    },
+    {
+      "t_s": 131.1,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438"
+      }
+    },
+    {
+      "t_s": 131.655,
+      "evento": "target_draining",
+      "detalle": {
+        "instancia": "4465b18496bb4d01b8373a4ed5aee66d",
+        "ip": "10.0.1.79",
+        "estado": "draining",
+        "razon": "Target.DeregistrationInProgress"
+      }
+    },
+    {
+      "t_s": 140.521,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion, taskSet ecs-svc/3498524227671422212) has begun draining connections on 1 tasks."
+      }
+    },
+    {
+      "t_s": 141.32,
+      "evento": "tarea_nueva",
+      "detalle": {
+        "instancia": "1314f5cfa7f34b3eb519723a56e536b4"
+      }
+    },
+    {
+      "t_s": 162.205,
+      "evento": "target_retirado",
+      "detalle": {
+        "instancia": "4465b18496bb4d01b8373a4ed5aee66d",
+        "ip": "10.0.1.79"
+      }
+    },
+    {
+      "t_s": 170.545,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t"
+      }
+    },
+    {
+      "t_s": 170.699,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "1314f5cfa7f34b3eb519723a56e536b4",
+        "ip": "10.0.1.231",
+        "estado": "initial",
+        "razon": "Elb.RegistrationInProgress"
+      }
+    },
+    {
+      "t_s": 172.927,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "1314f5cfa7f34b3eb519723a56e536b4",
+        "ip": "10.0.1.231",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 179.418,
+      "evento": "servicio_estable",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) has reached a steady state."
+      }
+    },
+    {
+      "t_s": 360.601,
+      "evento": "falla_base",
+      "detalle": {
+        "metodo": "reboot_force_failover"
+      }
+    },
+    {
+      "t_s": 370.608,
+      "evento": "base_failover_inicio",
+      "detalle": {
+        "mensaje": "Multi-AZ instance failover started."
+      }
+    },
+    {
+      "t_s": 386.801,
+      "evento": "base_reiniciada",
+      "detalle": {
+        "mensaje": "DB instance restarted"
+      }
+    },
+    {
+      "t_s": 415.52,
+      "evento": "rds_evento",
+      "detalle": {
+        "mensaje": "The user requested a failover of the DB instance."
+      }
+    },
+    {
+      "t_s": 415.52,
+      "evento": "base_failover_fin",
+      "detalle": {
+        "mensaje": "Multi-AZ instance failover completed"
+      }
+    },
+    {
+      "t_s": 600.762,
+      "evento": "k6_fin",
+      "detalle": {
+        "codigo_salida": "0"
+      }
+    }
+  ],
+  "veredicto": {
+    "a1_ventana_computo_ok": true,
+    "a2_sin_falsos_positivos": true,
+    "a3_sin_aceptadas_perdidas": true,
+    "b_recuperacion_base_ok": true,
+    "cumple": true
+  }
+}

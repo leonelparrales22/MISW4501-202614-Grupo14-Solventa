@@ -1,0 +1,381 @@
+{
+  "ejecución": "M1-P1-rep-r2",
+  "solicitudes": 30000,
+  "fallidas": 1179,
+  "disponibilidad": 0.9607,
+  "minutos_indisponibles_equivalentes_mes": 1697.76,
+  "duracion_s": 600.1068902015686,
+  "instancia_fallada": "a70980ed7d7945488c70f1ba568127b8",
+  "t_falla_computo_s": 120.28142309188843,
+  "t_falla_base_s": 360.7380051612854,
+  "ventana_error_computo_s": 16.98,
+  "fin_ventana_computo_s": 136.917,
+  "deteccion_s": 11.275495052337646,
+  "reintegracion_s": 51.930827140808105,
+  "falsos_positivos": 0,
+  "ventana_error_base_s": 18.208,
+  "recuperacion_base_s": 28.92499483871461,
+  "duracion_failover_base_s": 16.896999835968018,
+  "t_base_disponible_s": 391.6013550758362,
+  "retardo_reconexion_pool_s": -1.9383550758361707,
+  "errores_esporadicos": 96,
+  "aceptadas_perdidas": 0,
+  "resultados_ambiguos": 0,
+  "por_instancia": {
+    "": {
+      "solicitudes": 383,
+      "ok": 0
+    },
+    "1a8020cbfee04861b6cf02894753bace": {
+      "solicitudes": 10671,
+      "ok": 10292
+    },
+    "a70980ed7d7945488c70f1ba568127b8": {
+      "solicitudes": 2955,
+      "ok": 2955
+    },
+    "e8a2d5a475a84d52873a501c77edab17": {
+      "solicitudes": 15991,
+      "ok": 15574
+    }
+  },
+  "por_status": {
+    "201": 28821,
+    "503": 796,
+    "0": 380,
+    "504": 3
+  },
+  "fases": {
+    "linea_base": {
+      "solicitudes": 6015,
+      "p95_ms": 838.8000000000011,
+      "p95_exitosas_ms": 520.0,
+      "fallidas": 99
+    },
+    "una_instancia": {
+      "solicitudes": 12023,
+      "p95_ms": 295.89999999999964,
+      "p95_exitosas_ms": 174.0,
+      "fallidas": 281
+    },
+    "failover_base": {
+      "solicitudes": 11962,
+      "p95_ms": 3099.0,
+      "p95_exitosas_ms": 411.89999999999964,
+      "fallidas": 799
+    }
+  },
+  "por_minuto": [
+    {
+      "minuto": 0,
+      "solicitudes": 3001,
+      "rps": 50.0,
+      "fallidas": 93,
+      "p95_exitosas_ms": 1082.6000000000004,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 1,
+      "solicitudes": 3000,
+      "rps": 50.0,
+      "fallidas": 1,
+      "p95_exitosas_ms": 153.0999999999999,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 2,
+      "solicitudes": 3000,
+      "rps": 50.0,
+      "fallidas": 286,
+      "p95_exitosas_ms": 152.0,
+      "unhealthy_en_el_minuto": 1
+    },
+    {
+      "minuto": 3,
+      "solicitudes": 3000,
+      "rps": 50.0,
+      "fallidas": 0,
+      "p95_exitosas_ms": 168.0,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 4,
+      "solicitudes": 3000,
+      "rps": 50.0,
+      "fallidas": 0,
+      "p95_exitosas_ms": 158.0,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 5,
+      "solicitudes": 3000,
+      "rps": 50.0,
+      "fallidas": 0,
+      "p95_exitosas_ms": 357.0,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 6,
+      "solicitudes": 3000,
+      "rps": 50.0,
+      "fallidas": 797,
+      "p95_exitosas_ms": 220.9000000000001,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 7,
+      "solicitudes": 3000,
+      "rps": 50.0,
+      "fallidas": 0,
+      "p95_exitosas_ms": 467.0499999999997,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 8,
+      "solicitudes": 3000,
+      "rps": 50.0,
+      "fallidas": 2,
+      "p95_exitosas_ms": 488.1500000000001,
+      "unhealthy_en_el_minuto": 0
+    },
+    {
+      "minuto": 9,
+      "solicitudes": 2999,
+      "rps": 50.0,
+      "fallidas": 0,
+      "p95_exitosas_ms": 152.0,
+      "unhealthy_en_el_minuto": 0
+    }
+  ],
+  "intervalos": [
+    {
+      "inicio_s": 0.017,
+      "fin_s": 21.477,
+      "duracion_s": 21.459,
+      "fallidas": 89,
+      "causa": "esporadico"
+    },
+    {
+      "inicio_s": 25.317,
+      "fin_s": 32.117,
+      "duracion_s": 6.8,
+      "fallidas": 4,
+      "causa": "esporadico"
+    },
+    {
+      "inicio_s": 119.936,
+      "fin_s": 136.917,
+      "duracion_s": 16.98,
+      "fallidas": 287,
+      "causa": "computo"
+    },
+    {
+      "inicio_s": 367.337,
+      "fin_s": 367.438,
+      "duracion_s": 0.101,
+      "fallidas": 1,
+      "causa": "esporadico"
+    },
+    {
+      "inicio_s": 371.456,
+      "fin_s": 389.663,
+      "duracion_s": 18.208,
+      "fallidas": 796,
+      "causa": "base"
+    },
+    {
+      "inicio_s": 534.117,
+      "fin_s": 536.925,
+      "duracion_s": 2.808,
+      "fallidas": 2,
+      "causa": "esporadico"
+    }
+  ],
+  "eventos": [
+    {
+      "t_s": -2.182,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "e8a2d5a475a84d52873a501c77edab17",
+        "ip": "10.0.0.27",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": -2.182,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "a70980ed7d7945488c70f1ba568127b8",
+        "ip": "10.0.0.26",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": -0.061,
+      "evento": "k6_inicio",
+      "detalle": {
+        "config": "M1-P1",
+        "rps": "50",
+        "duracion": "600",
+        "tipo_falla": "hang"
+      }
+    },
+    {
+      "t_s": 120.281,
+      "evento": "falla_computo",
+      "detalle": {
+        "tipo": "hang",
+        "instancia": "a70980ed7d7945488c70f1ba568127b8",
+        "ip": "10.0.0.26"
+      }
+    },
+    {
+      "t_s": 131.557,
+      "evento": "target_unhealthy",
+      "detalle": {
+        "instancia": "a70980ed7d7945488c70f1ba568127b8",
+        "ip": "10.0.0.26",
+        "estado": "unhealthy",
+        "razon": "Target.Timeout"
+      }
+    },
+    {
+      "t_s": 140.734,
+      "evento": "tarea_nueva",
+      "detalle": {
+        "instancia": "1a8020cbfee04861b6cf02894753bace"
+      }
+    },
+    {
+      "t_s": 170.126,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t"
+      }
+    },
+    {
+      "t_s": 171.095,
+      "evento": "target_estado_inicial",
+      "detalle": {
+        "instancia": "1a8020cbfee04861b6cf02894753bace",
+        "ip": "10.0.1.180",
+        "estado": "initial",
+        "razon": "Elb.RegistrationInProgress"
+      }
+    },
+    {
+      "t_s": 172.212,
+      "evento": "target_healthy",
+      "detalle": {
+        "instancia": "1a8020cbfee04861b6cf02894753bace",
+        "ip": "10.0.1.180",
+        "estado": "healthy",
+        "razon": ""
+      }
+    },
+    {
+      "t_s": 179.178,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) (task a70980ed7d7945488c70f1ba568127b8) (port 8080) is unhealthy in (target-group arn:aws:e"
+      }
+    },
+    {
+      "t_s": 179.216,
+      "evento": "tarea_detenida",
+      "detalle": {
+        "instancia": "a70980ed7d7945488c70f1ba568127b8"
+      }
+    },
+    {
+      "t_s": 188.789,
+      "evento": "ecs_target_registrado",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438"
+      }
+    },
+    {
+      "t_s": 188.794,
+      "evento": "ecs_evento",
+      "detalle": {
+        "mensaje": "(service expd03-originacion, taskSet ecs-svc/2167165345548783105) has begun draining connections on 1 tasks."
+      }
+    },
+    {
+      "t_s": 189.389,
+      "evento": "target_draining",
+      "detalle": {
+        "instancia": "a70980ed7d7945488c70f1ba568127b8",
+        "ip": "10.0.0.26",
+        "estado": "draining",
+        "razon": "Target.DeregistrationInProgress"
+      }
+    },
+    {
+      "t_s": 198.97,
+      "evento": "servicio_estable",
+      "detalle": {
+        "mensaje": "(service expd03-originacion) has reached a steady state."
+      }
+    },
+    {
+      "t_s": 219.68,
+      "evento": "target_retirado",
+      "detalle": {
+        "instancia": "a70980ed7d7945488c70f1ba568127b8",
+        "ip": "10.0.0.26"
+      }
+    },
+    {
+      "t_s": 360.738,
+      "evento": "falla_base",
+      "detalle": {
+        "metodo": "reboot_force_failover"
+      }
+    },
+    {
+      "t_s": 374.704,
+      "evento": "base_failover_inicio",
+      "detalle": {
+        "mensaje": "Multi-AZ instance failover started."
+      }
+    },
+    {
+      "t_s": 391.601,
+      "evento": "base_reiniciada",
+      "detalle": {
+        "mensaje": "DB instance restarted"
+      }
+    },
+    {
+      "t_s": 414.394,
+      "evento": "rds_evento",
+      "detalle": {
+        "mensaje": "The user requested a failover of the DB instance."
+      }
+    },
+    {
+      "t_s": 414.394,
+      "evento": "base_failover_fin",
+      "detalle": {
+        "mensaje": "Multi-AZ instance failover completed"
+      }
+    },
+    {
+      "t_s": 600.889,
+      "evento": "k6_fin",
+      "detalle": {
+        "codigo_salida": "0"
+      }
+    }
+  ],
+  "veredicto": {
+    "a1_ventana_computo_ok": true,
+    "a2_sin_falsos_positivos": true,
+    "a3_sin_aceptadas_perdidas": true,
+    "b_recuperacion_base_ok": true,
+    "cumple": true
+  }
+}

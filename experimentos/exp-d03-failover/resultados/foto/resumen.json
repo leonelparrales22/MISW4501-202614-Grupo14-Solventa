@@ -1,0 +1,166 @@
+{
+  "ejecución": "foto",
+  "solicitudes": 4500,
+  "fallidas": 1115,
+  "disponibilidad": 0.7522222222222222,
+  "minutos_indisponibles_equivalentes_mes": 10704.0,
+  "duracion_s": 89.68324685096741,
+  "instancia_fallada": "a",
+  "t_falla_computo_s": 20.243396043777466,
+  "t_falla_base_s": 50.40585494041443,
+  "ventana_error_computo_s": 16.78,
+  "fin_ventana_computo_s": 37.058,
+  "deteccion_s": 11.849865913391113,
+  "reintegracion_s": null,
+  "falsos_positivos": 0,
+  "ventana_error_base_s": 18.781,
+  "recuperacion_base_s": 18.492145059585567,
+  "duracion_failover_base_s": 15.517404079437256,
+  "t_base_disponible_s": 65.92325901985168,
+  "retardo_reconexion_pool_s": 2.9747409801483116,
+  "errores_esporadicos": 0,
+  "aceptadas_perdidas": 0,
+  "resultados_ambiguos": 0,
+  "por_instancia": {
+    "": {
+      "solicitudes": 298,
+      "ok": 0
+    },
+    "a": {
+      "solicitudes": 1376,
+      "ok": 1083
+    },
+    "b": {
+      "solicitudes": 2826,
+      "ok": 2302
+    }
+  },
+  "por_status": {
+    "201": 3385,
+    "503": 817,
+    "0": 298
+  },
+  "fases": {
+    "linea_base": {
+      "solicitudes": 1013,
+      "p95_ms": 4.0,
+      "p95_exitosas_ms": 4.0,
+      "fallidas": 0
+    },
+    "una_instancia": {
+      "solicitudes": 1513,
+      "p95_ms": 5001.0,
+      "p95_exitosas_ms": 4.0,
+      "fallidas": 313
+    },
+    "failover_base": {
+      "solicitudes": 1974,
+      "p95_ms": 3002.0,
+      "p95_exitosas_ms": 607.1000000000017,
+      "fallidas": 802
+    }
+  },
+  "por_minuto": [
+    {
+      "minuto": 0,
+      "solicitudes": 3011,
+      "rps": 50.2,
+      "fallidas": 798,
+      "p95_exitosas_ms": 4.0,
+      "unhealthy_en_el_minuto": 1
+    },
+    {
+      "minuto": 1,
+      "solicitudes": 1489,
+      "rps": 24.8,
+      "fallidas": 317,
+      "p95_exitosas_ms": 607.1000000000017,
+      "unhealthy_en_el_minuto": 0
+    }
+  ],
+  "intervalos": [
+    {
+      "inicio_s": 20.277,
+      "fin_s": 37.058,
+      "duracion_s": 16.78,
+      "fallidas": 298,
+      "causa": "computo"
+    },
+    {
+      "inicio_s": 50.117,
+      "fin_s": 68.898,
+      "duracion_s": 18.781,
+      "fallidas": 817,
+      "causa": "base"
+    }
+  ],
+  "eventos": [
+    {
+      "t_s": -0.081,
+      "evento": "k6_inicio",
+      "detalle": {
+        "config": "M1",
+        "rps": "50",
+        "duracion": "90"
+      }
+    },
+    {
+      "t_s": 20.243,
+      "evento": "falla_computo",
+      "detalle": {
+        "tipo": "hang",
+        "instancia": "a"
+      }
+    },
+    {
+      "t_s": 32.093,
+      "evento": "monitor_unhealthy",
+      "detalle": {
+        "instancia": "a",
+        "fuente": "haproxy"
+      }
+    },
+    {
+      "t_s": 46.91,
+      "evento": "reemplazo_iniciado",
+      "detalle": {
+        "instancia": "a",
+        "metodo": "docker_restart"
+      }
+    },
+    {
+      "t_s": 50.406,
+      "evento": "falla_base",
+      "detalle": {
+        "metodo": "docker_kill"
+      }
+    },
+    {
+      "t_s": 55.102,
+      "evento": "monitor_healthy",
+      "detalle": {
+        "instancia": "a",
+        "fuente": "haproxy"
+      }
+    },
+    {
+      "t_s": 65.923,
+      "evento": "base_restablecida",
+      "detalle": {
+        "metodo": "docker_start"
+      }
+    },
+    {
+      "t_s": 98.245,
+      "evento": "k6_fin",
+      "detalle": {}
+    }
+  ],
+  "veredicto": {
+    "a1_ventana_computo_ok": true,
+    "a2_sin_falsos_positivos": true,
+    "a3_sin_aceptadas_perdidas": true,
+    "b_recuperacion_base_ok": true,
+    "cumple": true
+  }
+}

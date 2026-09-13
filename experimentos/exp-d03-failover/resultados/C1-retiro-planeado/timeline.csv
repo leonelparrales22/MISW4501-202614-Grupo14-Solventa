@@ -1,0 +1,22 @@
+ts,evento,detalle
+2026-09-13T00:08:51.213320+00:00,target_estado_inicial,instancia=b16d7d8039ac48d3872ebf4ce4fcbbad;ip=10.0.1.73;estado=healthy;razon=
+2026-09-13T00:08:51.213890+00:00,target_estado_inicial,instancia=b914c63506b343a497a95f12df293289;ip=10.0.0.191;estado=healthy;razon=
+2026-09-13T00:08:43.842000+00:00,servicio_estable,mensaje=(service expd03-originacion) has reached a steady state.
+2026-09-13T00:08:43.841000+00:00,ecs_evento,mensaje=(service expd03-originacion) (deployment ecs-svc/3498524227671422212) deployment completed.
+2026-09-13T00:08:53.737251+00:00,k6_inicio,config=M1-P1;rps=50;duracion=600;tipo_falla=stop-task
+2026-09-13T00:10:53.928973+00:00,retiro_planeado,tipo=stop-task;instancia=b16d7d8039ac48d3872ebf4ce4fcbbad;ip=10.0.1.73
+2026-09-13T00:10:58.006688+00:00,target_draining,instancia=b16d7d8039ac48d3872ebf4ce4fcbbad;ip=10.0.1.73;estado=draining;razon=Target.DeregistrationInProgress
+2026-09-13T00:10:58.503000+00:00,tarea_nueva,instancia=4465b18496bb4d01b8373a4ed5aee66d
+2026-09-13T00:10:57.605000+00:00,ecs_evento,"mensaje=(service expd03-originacion, taskSet ecs-svc/3498524227671422212) has begun draining connections on 1 tasks."
+2026-09-13T00:10:57.599000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T00:11:26.228911+00:00,target_estado_inicial,instancia=4465b18496bb4d01b8373a4ed5aee66d;ip=10.0.1.79;estado=initial;razon=Elb.RegistrationInProgress
+2026-09-13T00:11:28.469187+00:00,target_healthy,instancia=4465b18496bb4d01b8373a4ed5aee66d;ip=10.0.1.79;estado=healthy;razon=
+2026-09-13T00:11:28.469732+00:00,target_retirado,instancia=b16d7d8039ac48d3872ebf4ce4fcbbad;ip=10.0.1.73
+2026-09-13T00:11:26.054000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t
+2026-09-13T00:11:44.326000+00:00,servicio_estable,mensaje=(service expd03-originacion) has reached a steady state.
+2026-09-13T00:14:54.318669+00:00,falla_base,metodo=reboot_force_failover
+2026-09-13T00:15:01.366000+00:00,base_failover_inicio,mensaje=Multi-AZ instance failover started. 
+2026-09-13T00:15:17.986000+00:00,base_reiniciada,mensaje=DB instance restarted
+2026-09-13T00:15:56.247000+00:00,base_failover_fin,mensaje=Multi-AZ instance failover completed
+2026-09-13T00:15:56.247000+00:00,rds_evento,mensaje=The user requested a failover of the DB instance.
+2026-09-13T00:18:54.471239+00:00,k6_fin,codigo_salida=0

@@ -1,0 +1,16 @@
+{
+  "run_id": "C4-tres-tareas",
+  "config": "C4-tres-tareas",
+  "tipo_falla": "hang",
+  "rps": 50,
+  "duracion_s": 600,
+  "t_falla_computo_s": 120,
+  "t_falla_base_s": 360,
+  "perfil": "constante",
+  "tareas_deseadas": 3,
+  "imagen": "v3",
+  "victima_detalle": "tipo=hang;instancia=1a8020cbfee04861b6cf02894753bace;ip=10.0.1.180",
+  "inicio": "2026-09-13T01:24:15.511309+00:00",
+  "fin": "2026-09-13T01:34:16.314661+00:00",
+  "nota": "Los identificadores persistidos se descargaron despues de la ejecucion, tras actualizar el security group con la IP publica actual; la ejecucion en si termino completa."
+}

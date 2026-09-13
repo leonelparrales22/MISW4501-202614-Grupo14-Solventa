@@ -1,0 +1,7 @@
+﻿ts,evento,detalle
+2026-09-12T04:59:43.7032446Z,k6_inicio,config=humo;rps=50;duracion=120
+2026-09-12T05:00:14.1394986Z,falla_computo,tipo=colgar;instancia=a
+2026-09-12T05:00:40.8762983Z,reemplazo_iniciado,instancia=a;metodo=docker_restart
+2026-09-12T05:00:59.7656199Z,falla_base,metodo=docker_kill
+2026-09-12T05:01:20.5169219Z,base_restablecida,metodo=docker_start
+2026-09-12T05:01:51.9744996Z,k6_fin,

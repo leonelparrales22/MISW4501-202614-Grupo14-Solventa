@@ -1,0 +1,99 @@
+ts,evento,detalle
+2026-09-13T01:57:12.419304+00:00,target_estado_inicial,instancia=5c138df09477451f8973151f7575e345;ip=10.0.1.87;estado=healthy;razon=
+2026-09-13T01:57:12.419738+00:00,target_estado_inicial,instancia=4f5e949bbb7a4a56b3146c161b6c7b40;ip=10.0.0.31;estado=healthy;razon=
+2026-09-13T01:57:03.124000+00:00,servicio_estable,mensaje=(service expd03-originacion) has reached a steady state.
+2026-09-13T01:57:03.122000+00:00,ecs_evento,mensaje=(service expd03-originacion) (deployment ecs-svc/3559820735141730004) deployment completed.
+2026-09-13T01:57:14.936232+00:00,k6_inicio,config=C6a-rampa-M1;rps=50;duracion=600;tipo_falla=hang
+2026-09-13T01:58:36.146562+00:00,target_unhealthy,instancia=5c138df09477451f8973151f7575e345;ip=10.0.1.87;estado=unhealthy;razon=Target.Timeout
+2026-09-13T01:58:36.147128+00:00,target_unhealthy,instancia=4f5e949bbb7a4a56b3146c161b6c7b40;ip=10.0.0.31;estado=unhealthy;razon=Target.Timeout
+2026-09-13T01:59:21.552000+00:00,tarea_nueva,instancia=2b8b3ded392844b7b2a6837ef9b7fd1a
+2026-09-13T01:59:42.027629+00:00,target_estado_inicial,instancia=2b8b3ded392844b7b2a6837ef9b7fd1a;ip=10.0.0.161;estado=initial;razon=Elb.RegistrationInProgress
+2026-09-13T01:59:42.027974+00:00,target_estado_inicial,instancia=2df5d0a693764a13b373510566b22ff5;ip=10.0.1.177;estado=initial;razon=Elb.RegistrationInProgress
+2026-09-13T01:59:43.145768+00:00,target_healthy,instancia=2b8b3ded392844b7b2a6837ef9b7fd1a;ip=10.0.0.161;estado=healthy;razon=
+2026-09-13T01:59:43.146111+00:00,target_healthy,instancia=2df5d0a693764a13b373510566b22ff5;ip=10.0.1.177;estado=healthy;razon=
+2026-09-13T01:59:40.841000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) registered 2 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t
+2026-09-13T01:59:50.353000+00:00,tarea_detenida,instancia=4f5e949bbb7a4a56b3146c161b6c7b40
+2026-09-13T01:59:50.289000+00:00,ecs_evento,mensaje=(service expd03-originacion) (task 4f5e949bbb7a4a56b3146c161b6c7b40) (port 8080) is unhealthy in (target-group arn:aws:e
+2026-09-13T01:59:50.288000+00:00,ecs_evento,mensaje=(service expd03-originacion) (task 5c138df09477451f8973151f7575e345) (port 8080) is unhealthy in (target-group arn:aws:e
+2026-09-13T02:00:00.940341+00:00,target_unhealthy,instancia=2b8b3ded392844b7b2a6837ef9b7fd1a;ip=10.0.0.161;estado=unhealthy;razon=Target.Timeout
+2026-09-13T02:00:00.940719+00:00,target_unhealthy,instancia=2df5d0a693764a13b373510566b22ff5;ip=10.0.1.177;estado=unhealthy;razon=Target.Timeout
+2026-09-13T02:00:00.940919+00:00,target_draining,instancia=5c138df09477451f8973151f7575e345;ip=10.0.1.87;estado=draining;razon=Target.DeregistrationInProgress
+2026-09-13T02:00:00.941155+00:00,target_draining,instancia=4f5e949bbb7a4a56b3146c161b6c7b40;ip=10.0.0.31;estado=draining;razon=Target.DeregistrationInProgress
+2026-09-13T01:59:59.789000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 2 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T01:59:59.734000+00:00,ecs_evento,"mensaje=(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 2 tasks."
+2026-09-13T01:59:59.729000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 2 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:00:30.331393+00:00,target_retirado,instancia=5c138df09477451f8973151f7575e345;ip=10.0.1.87
+2026-09-13T02:00:30.331847+00:00,target_retirado,instancia=4f5e949bbb7a4a56b3146c161b6c7b40;ip=10.0.0.31
+2026-09-13T02:01:44.830000+00:00,tarea_nueva,instancia=f435d6b659be416a819cbaebafaeb307
+2026-09-13T02:01:55.115000+00:00,tarea_nueva,instancia=ce2fce7c528f4098b65c396d24843403
+2026-09-13T02:02:05.549019+00:00,target_estado_inicial,instancia=f435d6b659be416a819cbaebafaeb307;ip=10.0.0.56;estado=initial;razon=Elb.RegistrationInProgress
+2026-09-13T02:02:04.755000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t
+2026-09-13T02:02:07.909790+00:00,target_healthy,instancia=f435d6b659be416a819cbaebafaeb307;ip=10.0.0.56;estado=healthy;razon=
+2026-09-13T02:02:13.689594+00:00,target_estado_inicial,instancia=ce2fce7c528f4098b65c396d24843403;ip=10.0.1.6;estado=initial;razon=Elb.RegistrationInProgress
+2026-09-13T02:02:15.918437+00:00,target_healthy,instancia=ce2fce7c528f4098b65c396d24843403;ip=10.0.1.6;estado=healthy;razon=
+2026-09-13T02:02:13.330000+00:00,tarea_detenida,instancia=2b8b3ded392844b7b2a6837ef9b7fd1a
+2026-09-13T02:02:13.297000+00:00,ecs_evento,mensaje=(service expd03-originacion) (task 2b8b3ded392844b7b2a6837ef9b7fd1a) (port 8080) is unhealthy in (target-group arn:aws:e
+2026-09-13T02:02:20.026017+00:00,target_unhealthy,instancia=f435d6b659be416a819cbaebafaeb307;ip=10.0.0.56;estado=unhealthy;razon=Target.Timeout
+2026-09-13T02:02:23.359228+00:00,target_draining,instancia=2b8b3ded392844b7b2a6837ef9b7fd1a;ip=10.0.0.161;estado=draining;razon=Target.DeregistrationInProgress
+2026-09-13T02:02:22.800000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:02:22.740000+00:00,ecs_evento,"mensaje=(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+2026-09-13T02:02:22.735000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:02:33.681617+00:00,target_unhealthy,instancia=ce2fce7c528f4098b65c396d24843403;ip=10.0.1.6;estado=unhealthy;razon=Target.Timeout
+2026-09-13T02:02:31.588000+00:00,tarea_detenida,instancia=2df5d0a693764a13b373510566b22ff5
+2026-09-13T02:02:31.549000+00:00,ecs_evento,mensaje=(service expd03-originacion) (task 2df5d0a693764a13b373510566b22ff5) (port 8080) is unhealthy in (target-group arn:aws:e
+2026-09-13T02:02:41.148767+00:00,target_draining,instancia=2df5d0a693764a13b373510566b22ff5;ip=10.0.1.177;estado=draining;razon=Target.DeregistrationInProgress
+2026-09-13T02:02:40.620000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:02:40.568000+00:00,ecs_evento,"mensaje=(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+2026-09-13T02:02:40.563000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:02:53.705176+00:00,target_retirado,instancia=2b8b3ded392844b7b2a6837ef9b7fd1a;ip=10.0.0.161
+2026-09-13T02:03:11.490051+00:00,target_retirado,instancia=2df5d0a693764a13b373510566b22ff5;ip=10.0.1.177
+2026-09-13T02:04:17.068000+00:00,tarea_nueva,instancia=3d78f555903e4ba6864a3078eee1e4ad
+2026-09-13T02:04:36.956550+00:00,target_estado_inicial,instancia=3d78f555903e4ba6864a3078eee1e4ad;ip=10.0.1.178;estado=initial;razon=Elb.RegistrationInProgress
+2026-09-13T02:04:38.072103+00:00,target_healthy,instancia=3d78f555903e4ba6864a3078eee1e4ad;ip=10.0.1.178;estado=healthy;razon=
+2026-09-13T02:04:35.877000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t
+2026-09-13T02:04:45.812000+00:00,tarea_detenida,instancia=ce2fce7c528f4098b65c396d24843403
+2026-09-13T02:04:45.778000+00:00,ecs_evento,mensaje=(service expd03-originacion) (task ce2fce7c528f4098b65c396d24843403) (port 8080) is unhealthy in (target-group arn:aws:e
+2026-09-13T02:04:45.751000+00:00,tarea_nueva,instancia=e54e5207ab974d9f894ca3f6104a5ab6
+2026-09-13T02:04:52.683745+00:00,target_unhealthy,instancia=3d78f555903e4ba6864a3078eee1e4ad;ip=10.0.1.178;estado=unhealthy;razon=Target.Timeout
+2026-09-13T02:04:54.903312+00:00,target_draining,instancia=ce2fce7c528f4098b65c396d24843403;ip=10.0.1.6;estado=draining;razon=Target.DeregistrationInProgress
+2026-09-13T02:04:54.418000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:04:54.360000+00:00,ecs_evento,"mensaje=(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+2026-09-13T02:04:54.355000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:05:05.315049+00:00,target_estado_inicial,instancia=e54e5207ab974d9f894ca3f6104a5ab6;ip=10.0.0.214;estado=initial;razon=Elb.RegistrationInProgress
+2026-09-13T02:05:06.434055+00:00,target_healthy,instancia=e54e5207ab974d9f894ca3f6104a5ab6;ip=10.0.0.214;estado=healthy;razon=
+2026-09-13T02:05:04.010000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t
+2026-09-13T02:05:12.865000+00:00,tarea_detenida,instancia=f435d6b659be416a819cbaebafaeb307
+2026-09-13T02:05:12.833000+00:00,ecs_evento,mensaje=(service expd03-originacion) (task f435d6b659be416a819cbaebafaeb307) (port 8080) is unhealthy in (target-group arn:aws:e
+2026-09-13T02:05:19.503989+00:00,target_unhealthy,instancia=e54e5207ab974d9f894ca3f6104a5ab6;ip=10.0.0.214;estado=unhealthy;razon=Target.Timeout
+2026-09-13T02:05:22.893000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:05:22.834000+00:00,ecs_evento,"mensaje=(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+2026-09-13T02:05:22.828000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:05:24.693917+00:00,target_draining,instancia=f435d6b659be416a819cbaebafaeb307;ip=10.0.0.56;estado=draining;razon=Target.DeregistrationInProgress
+2026-09-13T02:05:24.694290+00:00,target_retirado,instancia=ce2fce7c528f4098b65c396d24843403;ip=10.0.1.6
+2026-09-13T02:05:53.397184+00:00,target_retirado,instancia=f435d6b659be416a819cbaebafaeb307;ip=10.0.0.56
+2026-09-13T02:06:30.708000+00:00,tarea_nueva,instancia=945d7c1506b8428d8c2db9e209431cba
+2026-09-13T02:06:59.600091+00:00,target_estado_inicial,instancia=945d7c1506b8428d8c2db9e209431cba;ip=10.0.1.65;estado=initial;razon=Elb.RegistrationInProgress
+2026-09-13T02:07:00.708493+00:00,target_healthy,instancia=945d7c1506b8428d8c2db9e209431cba;ip=10.0.1.65;estado=healthy;razon=
+2026-09-13T02:06:58.575000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t
+2026-09-13T02:07:07.795000+00:00,tarea_detenida,instancia=3d78f555903e4ba6864a3078eee1e4ad
+2026-09-13T02:07:07.760000+00:00,ecs_evento,mensaje=(service expd03-originacion) (task 3d78f555903e4ba6864a3078eee1e4ad) (port 8080) is unhealthy in (target-group arn:aws:e
+2026-09-13T02:07:17.496535+00:00,target_draining,instancia=3d78f555903e4ba6864a3078eee1e4ad;ip=10.0.1.178;estado=draining;razon=Target.DeregistrationInProgress
+2026-09-13T02:07:18.603435+00:00,target_unhealthy,instancia=945d7c1506b8428d8c2db9e209431cba;ip=10.0.1.65;estado=unhealthy;razon=Target.Timeout
+2026-09-13T02:07:17.132000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:07:17.071000+00:00,ecs_evento,"mensaje=(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+2026-09-13T02:07:17.065000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:07:20.915452+00:00,k6_fin,codigo_salida=0
+2026-09-13T02:07:27.891803+00:00,target_healthy,instancia=945d7c1506b8428d8c2db9e209431cba;ip=10.0.1.65;estado=healthy;razon=
+2026-09-13T02:07:27.463000+00:00,tarea_nueva,instancia=35c0fc2c94d34e469c1df4fb085e85dc
+2026-09-13T02:07:47.959657+00:00,target_retirado,instancia=3d78f555903e4ba6864a3078eee1e4ad;ip=10.0.1.178
+2026-09-13T02:07:55.364341+00:00,target_estado_inicial,instancia=35c0fc2c94d34e469c1df4fb085e85dc;ip=10.0.0.126;estado=initial;razon=Elb.RegistrationInProgress
+2026-09-13T02:07:57.589361+00:00,target_healthy,instancia=35c0fc2c94d34e469c1df4fb085e85dc;ip=10.0.0.126;estado=healthy;razon=
+2026-09-13T02:07:55.106000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t
+2026-09-13T02:08:04.335000+00:00,tarea_detenida,instancia=e54e5207ab974d9f894ca3f6104a5ab6
+2026-09-13T02:08:04.202000+00:00,ecs_evento,mensaje=(service expd03-originacion) (task e54e5207ab974d9f894ca3f6104a5ab6) (port 8080) is unhealthy in (target-group arn:aws:e
+2026-09-13T02:08:14.295645+00:00,target_draining,instancia=e54e5207ab974d9f894ca3f6104a5ab6;ip=10.0.0.214;estado=draining;razon=Target.DeregistrationInProgress
+2026-09-13T02:08:13.993000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:08:13.916000+00:00,ecs_evento,"mensaje=(service expd03-originacion, taskSet ecs-svc/3559820735141730004) has begun draining connections on 1 tasks."
+2026-09-13T02:08:13.911000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-13T02:08:23.394000+00:00,servicio_estable,mensaje=(service expd03-originacion) has reached a steady state.
+2026-09-13T02:08:44.460290+00:00,target_retirado,instancia=e54e5207ab974d9f894ca3f6104a5ab6;ip=10.0.0.214

@@ -1,0 +1,92 @@
+name: exp-d03
+
+x-stub-env: &stub_env
+  DATABASE_URL: postgres://solventa:solventa-local@db:5432/originacion?sslmode=disable&connect_timeout=3
+  POOL_MAX_LIFETIME: ${POOL_MAX_LIFETIME:-0}
+  POOL_MAX_IDLE_TIME: ${POOL_MAX_IDLE_TIME:-0}
+  POOL_MAX_OPEN: ${POOL_MAX_OPEN:-10}
+  POOL_MAX_IDLE: ${POOL_MAX_IDLE:-10}
+  HEALTH_MODE: ${HEALTH_MODE:-superficial}
+  ADMIN_TOKEN: ${ADMIN_TOKEN:-local-token}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: solventa
+      POSTGRES_PASSWORD: solventa-local
+      POSTGRES_DB: originacion
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U solventa -d originacion"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks: [red]
+
+  stub-a:
+    build: ../servicio-originacion
+    image: exp-d03/stub-originacion:local
+    environment:
+      <<: *stub_env
+      INSTANCE_ID: a
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+    ports: ["18081:8080"]
+    networks: [red]
+
+  stub-b:
+    image: exp-d03/stub-originacion:local
+    environment:
+      <<: *stub_env
+      INSTANCE_ID: b
+    depends_on:
+      db:
+        condition: service_healthy
+      stub-a:
+        condition: service_started
+    restart: on-failure
+    ports: ["18082:8080"]
+    networks: [red]
+
+  haproxy:
+    image: haproxy:3.0-alpine
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    environment:
+      HC_INTER: ${HC_INTER:-10s}
+      HC_FALL: ${HC_FALL:-2}
+      HC_RISE: ${HC_RISE:-2}
+      HC_TIMEOUT: ${HC_TIMEOUT:-5s}
+    depends_on: [stub-a, stub-b]
+    ports: ["18080:80"]
+    networks: [red]
+
+  k6:
+    image: grafana/k6:latest
+    profiles: ["carga"]
+    volumes:
+      - ../carga:/scripts:ro
+      - ../resultados:/resultados
+    environment:
+      BASE_URL: http://haproxy:80
+      RUN_ID: ${RUN_ID:-prueba}
+      CONFIG: ${CONFIG:-local}
+      RPS: ${RPS:-50}
+      DURACION: ${DURACION:-10m}
+      K6_CSV_TIME_FORMAT: rfc3339_nano
+    command: ["run", "--quiet", "--out", "csv=/resultados/${RUN_ID:-prueba}/k6.csv", "/scripts/oferta.js"]
+    networks: [red]
+
+  analizador:
+    build: ../analisis
+    image: exp-d03/analizador:local
+    profiles: ["analisis"]
+    volumes:
+      - ../resultados:/resultados
+      - ../analisis:/app:ro
+    command: ["python", "/app/analizar.py", "/resultados/${RUN_ID:-prueba}"]
+
+networks:
+  red: {}

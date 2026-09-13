@@ -1,0 +1,7 @@
+﻿ts,evento,detalle
+2026-09-12T05:05:45.5775831Z,k6_inicio,config=M2-P1;rps=50;duracion=600
+2026-09-12T05:07:45.8139468Z,falla_computo,tipo=colgar;instancia=a
+2026-09-12T05:08:37.4315087Z,reemplazo_iniciado,instancia=a;metodo=docker_restart
+2026-09-12T05:11:46.8499548Z,falla_base,metodo=docker_kill
+2026-09-12T05:12:32.8118678Z,base_restablecida,metodo=docker_start
+2026-09-12T05:15:54.0526540Z,k6_fin,

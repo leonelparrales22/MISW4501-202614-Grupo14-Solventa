@@ -1,0 +1,87 @@
+{
+  "run_id": "C5-container-health",
+  "config": "C5-container-health",
+  "tipo_falla": "hang",
+  "rps": 50,
+  "perfil": "constante",
+  "rps_max": 450,
+  "duracion_s": 600,
+  "t_falla_computo_s": 120,
+  "t_falla_base_s": 360,
+  "sin_failover": false,
+  "sin_falla_computo": false,
+  "parametros_staging": {
+    "alb_interno": true,
+    "deregistration_delay": 30,
+    "hc_intervalo": 5,
+    "hc_timeout": 3,
+    "hc_umbral_healthy": 2,
+    "hc_umbral_unhealthy": 2,
+    "health_mode": "superficial",
+    "pool_max_idle_time": "0",
+    "pool_max_lifetime": "0"
+  },
+  "victima": {
+    "id": "158513352b4f4189867e32a612b3e6ea",
+    "arn": "arn:aws:ecs:us-east-1:366451245438:task/expd03-cluster/158513352b4f4189867e32a612b3e6ea",
+    "estado": "RUNNING",
+    "zona": "us-east-1b",
+    "ip_privada": "10.0.1.108",
+    "eni": "eni-04248ae9bdd7dbd67",
+    "ip_publica": "100.58.250.196",
+    "inicio": "2026-09-13T01:40:31.568000+00:00",
+    "definicion": "expd03-stub-originacion:11"
+  },
+  "tareas_iniciales": [
+    {
+      "id": "158513352b4f4189867e32a612b3e6ea",
+      "arn": "arn:aws:ecs:us-east-1:366451245438:task/expd03-cluster/158513352b4f4189867e32a612b3e6ea",
+      "estado": "RUNNING",
+      "zona": "us-east-1b",
+      "ip_privada": "10.0.1.108",
+      "eni": "eni-04248ae9bdd7dbd67",
+      "ip_publica": "100.58.250.196",
+      "inicio": "2026-09-13T01:40:31.568000+00:00",
+      "definicion": "expd03-stub-originacion:11"
+    },
+    {
+      "id": "9615795d7c4f44deafe3d7f6768e9ff4",
+      "arn": "arn:aws:ecs:us-east-1:366451245438:task/expd03-cluster/9615795d7c4f44deafe3d7f6768e9ff4",
+      "estado": "RUNNING",
+      "zona": "us-east-1a",
+      "ip_privada": "10.0.0.160",
+      "eni": "eni-0a04cd7bbbd9f9b25",
+      "ip_publica": "34.200.214.219",
+      "inicio": "2026-09-13T01:39:06.606000+00:00",
+      "definicion": "expd03-stub-originacion:11"
+    }
+  ],
+  "api_url": "https://89ynhvti49.execute-api.us-east-1.amazonaws.com/exp",
+  "inicio": "2026-09-13T01:42:15.885359+00:00",
+  "lector_evidencia": "9615795d7c4f44deafe3d7f6768e9ff4",
+  "tareas_finales": [
+    {
+      "id": "9615795d7c4f44deafe3d7f6768e9ff4",
+      "arn": "arn:aws:ecs:us-east-1:366451245438:task/expd03-cluster/9615795d7c4f44deafe3d7f6768e9ff4",
+      "estado": "RUNNING",
+      "zona": "us-east-1a",
+      "ip_privada": "10.0.0.160",
+      "eni": "eni-0a04cd7bbbd9f9b25",
+      "ip_publica": "34.200.214.219",
+      "inicio": "2026-09-13T01:39:06.606000+00:00",
+      "definicion": "expd03-stub-originacion:11"
+    },
+    {
+      "id": "a62723d1a0274fa58ef3421bec15fb25",
+      "arn": "arn:aws:ecs:us-east-1:366451245438:task/expd03-cluster/a62723d1a0274fa58ef3421bec15fb25",
+      "estado": "RUNNING",
+      "zona": "us-east-1a",
+      "ip_privada": "10.0.0.61",
+      "eni": "eni-00adfa50f664fe902",
+      "ip_publica": "3.231.31.199",
+      "inicio": "2026-09-13T01:46:10.401000+00:00",
+      "definicion": "expd03-stub-originacion:11"
+    }
+  ],
+  "fin": "2026-09-13T01:53:50.458248+00:00"
+}

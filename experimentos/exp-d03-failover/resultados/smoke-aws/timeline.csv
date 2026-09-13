@@ -1,0 +1,24 @@
+ts,evento,detalle
+2026-09-12T22:26:31.955383+00:00,target_estado_inicial,instancia=ce6a0e44aa01421c8fc80356f1ea1575;ip=10.0.1.65;estado=healthy;razon=
+2026-09-12T22:26:31.955746+00:00,target_estado_inicial,instancia=fd1a68c931914973bf23224c9b93cef4;ip=10.0.0.153;estado=healthy;razon=
+2026-09-12T22:26:34.564348+00:00,k6_inicio,config=M1-P1;rps=50;duracion=120;tipo_falla=colgar
+2026-09-12T22:27:04.752825+00:00,falla_computo,tipo=colgar;instancia=ce6a0e44aa01421c8fc80356f1ea1575;ip=10.0.1.65
+2026-09-12T22:27:16.990668+00:00,target_unhealthy,instancia=ce6a0e44aa01421c8fc80356f1ea1575;ip=10.0.1.65;estado=unhealthy;razon=Target.Timeout
+2026-09-12T22:27:49.985697+00:00,falla_base,metodo=reboot_force_failover
+2026-09-12T22:27:55.701000+00:00,tarea_nueva,instancia=6d0151e953db450286f89ad39f72a886
+2026-09-12T22:28:00.391000+00:00,base_failover_inicio,mensaje=Multi-AZ instance failover started. 
+2026-09-12T22:28:24.887081+00:00,target_estado_inicial,instancia=6d0151e953db450286f89ad39f72a886;ip=10.0.0.78;estado=initial;razon=Elb.RegistrationInProgress
+2026-09-12T22:28:25.995745+00:00,target_healthy,instancia=6d0151e953db450286f89ad39f72a886;ip=10.0.0.78;estado=healthy;razon=
+2026-09-12T22:28:23.626000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438:t
+2026-09-12T22:28:16.648000+00:00,base_reiniciada,mensaje=DB instance restarted
+2026-09-12T22:28:35.513055+00:00,k6_fin,codigo_salida=0
+2026-09-12T22:28:32.518000+00:00,tarea_detenida,instancia=ce6a0e44aa01421c8fc80356f1ea1575
+2026-09-12T22:28:32.486000+00:00,ecs_evento,mensaje=(service expd03-originacion) (task ce6a0e44aa01421c8fc80356f1ea1575) (port 8080) is unhealthy in (target-group arn:aws:e
+2026-09-12T22:28:41.977361+00:00,target_draining,instancia=ce6a0e44aa01421c8fc80356f1ea1575;ip=10.0.1.65;estado=draining;razon=Target.DeregistrationInProgress
+2026-09-12T22:28:41.884000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-12T22:28:41.837000+00:00,ecs_evento,"mensaje=(service expd03-originacion, taskSet ecs-svc/4032575061370499891) has begun draining connections on 1 tasks."
+2026-09-12T22:28:41.831000+00:00,ecs_target_registrado,mensaje=(service expd03-originacion) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-east-1:366451245438
+2026-09-12T22:28:51.396000+00:00,servicio_estable,mensaje=(service expd03-originacion) has reached a steady state.
+2026-09-12T22:28:55.937000+00:00,rds_evento,mensaje=The user requested a failover of the DB instance.
+2026-09-12T22:28:55.937000+00:00,base_failover_fin,mensaje=Multi-AZ instance failover completed
+2026-09-12T22:29:12.655229+00:00,target_retirado,instancia=ce6a0e44aa01421c8fc80356f1ea1575;ip=10.0.1.65
