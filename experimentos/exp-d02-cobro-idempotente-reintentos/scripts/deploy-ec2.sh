@@ -55,15 +55,22 @@ up() {
   IP="$(my_ip)"
   echo "Tu IP pública: $IP (se restringe el Security Group a ella)"
 
-  SG_ID=$(aws ec2 create-security-group --group-name "${TAG}-sg" \
-    --description "EC-D02: acceso SSH restringido, sin exposición pública del servicio" \
-    --region "$REGION" --query 'GroupId' --output text)
-  aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --region "$REGION" \
-    --protocol tcp --port 22 --cidr "${IP}/32" >/dev/null
-  # 8280 solo para grabar el vídeo probando desde tu máquina; si prefieres
-  # no exponerlo, coméntalo y usa un túnel SSH (-L 8280:localhost:8280).
-  aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --region "$REGION" \
-    --protocol tcp --port 8280 --cidr "${IP}/32" >/dev/null
+  EXISTING_SG_ID=$(aws ec2 describe-security-groups --group-names "${TAG}-sg" \
+    --region "$REGION" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+  if [ -n "$EXISTING_SG_ID" ] && [ "$EXISTING_SG_ID" != "None" ]; then
+    echo "Reutilizando Security Group existente ${TAG}-sg ($EXISTING_SG_ID) de una corrida anterior."
+    SG_ID="$EXISTING_SG_ID"
+  else
+    SG_ID=$(aws ec2 create-security-group --group-name "${TAG}-sg" \
+      --description "EC-D02: acceso SSH restringido, sin exposicion publica del servicio" \
+      --region "$REGION" --query 'GroupId' --output text)
+    aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --region "$REGION" \
+      --protocol tcp --port 22 --cidr "${IP}/32" >/dev/null
+    # 8280 solo para grabar el vídeo probando desde tu máquina; si prefieres
+    # no exponerlo, coméntalo y usa un túnel SSH (-L 8280:localhost:8280).
+    aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --region "$REGION" \
+      --protocol tcp --port 8280 --cidr "${IP}/32" >/dev/null
+  fi
 
   AMI_ID=$(resolve_ami)
   echo "AMI: $AMI_ID"
