@@ -1,0 +1,7 @@
+# Artefactos de despliegue AWS generados por scripts/deploy-ec2.sh.
+# NUNCA deben commitearse: contienen la llave privada SSH y el estado
+# de la instancia/Security Group de la sesión de despliegue.
+*.pem
+.ec2-instance-id
+.ec2-public-ip
+.ec2-sg-id

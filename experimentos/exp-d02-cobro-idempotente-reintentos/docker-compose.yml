@@ -1,0 +1,99 @@
+# Ambiente del experimento EC-D02: originación + PostgreSQL (Intento_Cobro
+# con idempotency_key UNIQUE) + Toxiproxy delante del stub de pasarela de
+# pago. El mismo compose sirve para correr local y para el despliegue
+# mínimo en EC2 (scripts/deploy-ec2.sh).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=cobros
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  stub-pasarela:
+    build:
+      context: .
+      dockerfile: stub-pasarela/Dockerfile
+    environment:
+      - PORT=9100
+    ports:
+      # Publicado para que scripts/concurrencia (corrido desde el host)
+      # pueda leer GET /debug/cobros directamente, sin pasar por
+      # Toxiproxy — es la única forma de ver cuántas veces la pasarela
+      # procesó realmente cada idempotency_key.
+      - "9100:9100"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9100/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "8474:8474" # API de Toxiproxy, para scripts/toxiproxy.sh
+      - "9101:9101" # proxy hacia stub-pasarela
+    depends_on:
+      stub-pasarela:
+        condition: service_healthy
+
+  # La imagen ghcr.io/shopify/toxiproxy es "distroless" (solo trae el
+  # binario /toxiproxy, sin shell ni toxiproxy-cli), así que la creación
+  # del proxy y toda la inyección de fallas (scripts/toxiproxy.sh) se
+  # hacen contra la API HTTP de Toxiproxy con curl, no con un CLI
+  # empaquetado. Mismo patrón que EC-D01.
+  toxiproxy-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - toxiproxy
+    entrypoint:
+      - sh
+      - -c
+      - >
+        until curl -sf http://toxiproxy:8474/version; do sleep 1; done;
+        curl -s -o /dev/null -w '%{http_code}\n' -X POST http://toxiproxy:8474/proxies
+        -H 'Content-Type: application/json'
+        -d '{"name":"pasarela","listen":"0.0.0.0:9101","upstream":"stub-pasarela:9100","enabled":true}'
+        || true
+
+  originacion:
+    build:
+      context: .
+      dockerfile: cmd/originacion/Dockerfile
+    ports:
+      - "8280:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/cobros?sslmode=disable
+      - PASARELA_URL=http://toxiproxy:9101
+      # --- Punto de sensibilidad del experimento: los escenarios
+      # sobreescriben estas variables con scripts/run-escenarios.sh ---
+      - BACKOFF_BASE_MS=${BACKOFF_BASE_MS:-500}
+      - BACKOFF_MAX_MS=${BACKOFF_MAX_MS:-60000}
+      - RETRY_WINDOW_SECONDS=${RETRY_WINDOW_SECONDS:-86400} # ADR: 24h por defecto
+      - WORKER_POLL_MS=${WORKER_POLL_MS:-1000}
+      - HARD_TIMEOUT_MS=${HARD_TIMEOUT_MS:-700}
+    depends_on:
+      db:
+        condition: service_healthy
+      toxiproxy-init:
+        condition: service_completed_successfully
+
+  # Se invoca puntualmente con `docker compose run --rm k6 run ...` desde
+  # scripts/run-escenarios.sh; no se levanta con `docker compose up`.
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["tools"]
+    entrypoint: ["k6"]
+    environment:
+      - BASE_URL=http://originacion:8080
+    volumes:
+      - ./k6:/scripts:ro
+      - ./resultados:/resultados

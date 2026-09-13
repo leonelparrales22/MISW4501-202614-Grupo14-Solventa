@@ -1,0 +1,55 @@
+Evidencia del DISEÑO INGENUO (sin claim atómico), capturada manualmente
+contra el stack local antes de aplicar la corrección descrita en el ADR-01
+de este experimento.
+
+Contexto: se creó una aceptación con la pasarela detrás de Toxiproxy en
+modo "ambiguo" (toxic timeout en stream=downstream: el request SÍ llega al
+stub y se cuenta, pero la respuesta se corta). Inmediatamente después se
+disparó UN SOLO POST /procesar-cobro manual — sin ningún script de
+concurrencia deliberado todavía.
+
+Resultado observado: el conteo real en la pasarela (GET /debug/cobros)
+ya mostraba 2 llamadas para la misma idempotency_key ANTES de restaurar
+la pasarela y de que el worker de reintentos hiciera su reintento normal.
+
+Causa raíz: el worker de reintentos en background arranca elegible para
+procesar cualquier intento "pendiente" desde el instante en que se crea
+(proximo_intento_en = now() por defecto en el esquema), con un poll cada
+WORKER_POLL_MS (1000ms por defecto). Esto significa que el disparo
+síncrono manual (POST /procesar-cobro) y el primer tick del worker en
+background pueden procesar la MISMA aceptación al mismo tiempo, sin que
+el diseño original (UNIQUE de idempotency_key + backoff, sin ningún paso
+de "reclamo" atómico antes de llamar la pasarela) lo impida. Es
+exactamente la fila 3 de la tabla de interpretación del diseño:
+
+  "Dos workers concurrentes generan dos cobros para la misma aceptación
+   -> El constraint de unicidad no bloquea correctamente la carrera: se
+   revisa el nivel de aislamiento de la transacción o se agrega un lock
+   explícito sobre aceptacion_id."
+
+Transcript real de la sesión (curl contra el stack local, 2026-09-13):
+
+$ curl -X POST http://localhost:8474/proxies/pasarela/toxics ... (activa el toxic ambiguo)
+$ curl -X POST http://localhost:8280/aceptaciones -d '{"cliente_id":"c-ambiguo",...}'
+  -> aceptacion_id=7d7675ae-cf68-4dd4-829f-c3cac2a6621e
+$ curl -X POST http://localhost:8280/procesar-cobro/7d7675ae-...
+  -> {"estado":"pendiente","intentos":1,"ultimo_error":"pasarela no respondió a tiempo: ... context deadline exceeded"}
+$ curl http://localhost:9100/debug/cobros | jq '.conteos["cobro-7d7675ae-..."]'
+  -> 2    <-- YA ERAN 2 LLAMADAS REALES, antes de restaurar la pasarela
+
+Es decir: la fila en `intento_cobro` seguía siendo una sola (por el
+UNIQUE), pero la pasarela real ya había sido llamada dos veces para la
+misma aceptación. La hipótesis original (UNIQUE + backoff, sin más
+coordinación) NO garantiza "exactamente un cobro exitoso" del lado del
+proveedor bajo esta condición de carrera real -no sintética-, aunque la
+propia base de datos del servicio se vea "limpia".
+
+Corrección aplicada: internal/store.Store.ReclamarPendiente usa un UPDATE
+condicional (compare-and-swap) `WHERE estado = 'pendiente'` que transiciona
+a 'en_proceso' antes de llamar la pasarela. Postgres serializa esa
+actualización a nivel de fila: solo UN llamador concurrente puede ganar la
+transición; el resto recibe cero filas afectadas y no llega a llamar la
+pasarela. Ver ADR-01 en la hoja de wiki de este experimento para el
+detalle completo y la justificación de por qué se prefirió un claim
+atómico de una sola sentencia sobre mantener un lock de fila (`SELECT ...
+FOR UPDATE`) abierto durante toda la llamada de red a la pasarela.

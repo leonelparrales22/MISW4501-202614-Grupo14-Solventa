@@ -1,0 +1,111 @@
+[
+{
+  "aceptacion_id": "1ea9730f-6649-4617-b40c-eb6f7ddd977c",
+  "idempotency_key": "cobro-1ea9730f-6649-4617-b40c-eb6f7ddd977c",
+  "goroutines": 20,
+  "filas_confirmadas_bd": 1,
+  "estado_final": "confirmado",
+  "requests_al_gateway": 1,
+  "cargos_reales_gateway": 1,
+  "duplicado_real": false
+}
+,
+{
+  "aceptacion_id": "37cfad79-5c6f-4b04-9802-bddfd425b200",
+  "idempotency_key": "cobro-37cfad79-5c6f-4b04-9802-bddfd425b200",
+  "goroutines": 20,
+  "filas_confirmadas_bd": 1,
+  "estado_final": "confirmado",
+  "requests_al_gateway": 1,
+  "cargos_reales_gateway": 1,
+  "duplicado_real": false
+}
+,
+{
+  "aceptacion_id": "7ae23b26-7397-4916-80df-6c4c203b43eb",
+  "idempotency_key": "cobro-7ae23b26-7397-4916-80df-6c4c203b43eb",
+  "goroutines": 20,
+  "filas_confirmadas_bd": 1,
+  "estado_final": "confirmado",
+  "requests_al_gateway": 1,
+  "cargos_reales_gateway": 1,
+  "duplicado_real": false
+}
+,
+{
+  "aceptacion_id": "9240489d-2a87-4ee1-8b62-3f257ae92dd2",
+  "idempotency_key": "cobro-9240489d-2a87-4ee1-8b62-3f257ae92dd2",
+  "goroutines": 20,
+  "filas_confirmadas_bd": 1,
+  "estado_final": "confirmado",
+  "requests_al_gateway": 1,
+  "cargos_reales_gateway": 1,
+  "duplicado_real": false
+}
+,
+{
+  "aceptacion_id": "ff17d91f-aeb0-41f0-a768-81b7b3360747",
+  "idempotency_key": "cobro-ff17d91f-aeb0-41f0-a768-81b7b3360747",
+  "goroutines": 20,
+  "filas_confirmadas_bd": 1,
+  "estado_final": "confirmado",
+  "requests_al_gateway": 1,
+  "cargos_reales_gateway": 1,
+  "duplicado_real": false
+}
+,
+{
+  "aceptacion_id": "4a2c2d54-107f-47f0-b08a-4959259daf6c",
+  "idempotency_key": "cobro-4a2c2d54-107f-47f0-b08a-4959259daf6c",
+  "goroutines": 20,
+  "filas_confirmadas_bd": 1,
+  "estado_final": "confirmado",
+  "requests_al_gateway": 1,
+  "cargos_reales_gateway": 1,
+  "duplicado_real": false
+}
+,
+{
+  "aceptacion_id": "adc03b19-d04e-41d3-9833-d37da295df91",
+  "idempotency_key": "cobro-adc03b19-d04e-41d3-9833-d37da295df91",
+  "goroutines": 20,
+  "filas_confirmadas_bd": 1,
+  "estado_final": "confirmado",
+  "requests_al_gateway": 1,
+  "cargos_reales_gateway": 1,
+  "duplicado_real": false
+}
+,
+{
+  "aceptacion_id": "03eb1ef0-d1ae-4b31-b0b6-b25c3604f967",
+  "idempotency_key": "cobro-03eb1ef0-d1ae-4b31-b0b6-b25c3604f967",
+  "goroutines": 20,
+  "filas_confirmadas_bd": 1,
+  "estado_final": "confirmado",
+  "requests_al_gateway": 1,
+  "cargos_reales_gateway": 1,
+  "duplicado_real": false
+}
+,
+{
+  "aceptacion_id": "6d92478a-d08e-482c-97b2-108b1498f3a3",
+  "idempotency_key": "cobro-6d92478a-d08e-482c-97b2-108b1498f3a3",
+  "goroutines": 20,
+  "filas_confirmadas_bd": 1,
+  "estado_final": "confirmado",
+  "requests_al_gateway": 1,
+  "cargos_reales_gateway": 1,
+  "duplicado_real": false
+}
+,
+{
+  "aceptacion_id": "99f9593d-6a99-4774-a4ec-04b4e563477f",
+  "idempotency_key": "cobro-99f9593d-6a99-4774-a4ec-04b4e563477f",
+  "goroutines": 20,
+  "filas_confirmadas_bd": 1,
+  "estado_final": "confirmado",
+  "requests_al_gateway": 1,
+  "cargos_reales_gateway": 1,
+  "duplicado_real": false
+}
+]

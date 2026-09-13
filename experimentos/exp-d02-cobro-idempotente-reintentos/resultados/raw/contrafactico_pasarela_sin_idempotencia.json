@@ -1,0 +1,9 @@
+{
+  "descripcion": "Demostración contrafáctica (SOPORTA_IDEMPOTENCIA=false en stub-pasarela): 2 requests con la MISMA idempotency_key, simulando un proveedor de pagos que NO respeta la idempotency_key propagada. Cada request se procesó como un cobro nuevo -> duplicidad real, la que la fila 2 de la tabla de interpretación del diseño anticipa. Con el proveedor real (soporta_idempotencia=true, el caso documentado en resultados/RESUMEN.md), esto no ocurre.",
+  "resultado": {
+    "cargos_reales": { "cobro-demo-pesimista": 2 },
+    "conteos": { "cobro-demo-pesimista": 2 },
+    "soporta_idempotencia": false,
+    "total_requests": 2
+  }
+}
