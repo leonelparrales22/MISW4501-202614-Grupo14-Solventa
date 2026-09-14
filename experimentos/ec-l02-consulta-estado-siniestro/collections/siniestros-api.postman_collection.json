@@ -1,0 +1,276 @@
+{
+  "info": {
+    "name": "API Siniestros",
+    "_postman_id": "b6e2f2b0-6f2a-4b7a-9f2a-1a2b3c4d5e6f",
+    "description": "Colección para probar los endpoints de consulta, registro y cambio de estado de siniestros, incluido el modo degradado que responde desde la caché con stale=true.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "siniestro_id",
+      "value": "",
+      "type": "string",
+      "description": "Se llena automáticamente al ejecutar 'Registrar siniestro'"
+    },
+    {
+      "key": "poliza_id",
+      "value": "6f1b1a2a-6c1a-4e29-9a7e-1a1a1a1a1a1a",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Listar siniestros",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/siniestros",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Listar siniestros filtrados por poliza_id",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/siniestros?poliza_id={{poliza_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros"],
+          "query": [
+            { "key": "poliza_id", "value": "{{poliza_id}}" }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Listar siniestros filtrados por estado",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/siniestros?estado=abierto",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros"],
+          "query": [
+            { "key": "estado", "value": "abierto" }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Registrar siniestro",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 201) {",
+              "    const data = pm.response.json();",
+              "    pm.collectionVariables.set('siniestro_id', data.id);",
+              "    pm.test('Siniestro creado con id', function () {",
+              "        pm.expect(data.id).to.not.be.empty;",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"poliza_id\": \"{{poliza_id}}\",\n  \"prioridad\": 3,\n  \"estado_actual\": \"abierto\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/siniestros",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Consultar siniestro por id",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/siniestros/{{siniestro_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros", "{{siniestro_id}}"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Cambiar estado del siniestro (PATCH)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Estado actualizado', function () {",
+              "    pm.response.to.have.status(200);",
+              "    const data = pm.response.json();",
+              "    pm.expect(data.estado_actual).to.eql('en_revision');",
+              "    pm.expect(data.stale).to.be.false;",
+              "    pm.expect(data.actualizado_en).to.not.be.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"estado_actual\": \"en_revision\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/siniestros/{{siniestro_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros", "{{siniestro_id}}"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Consultar siniestro en modo degradado (stale)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Requiere arrancar la API con SIMULATED_DB_LATENCY_MS mayor que",
+              "// DB_QUERY_TIMEOUT_MS (por ejemplo 1500). Ver README.",
+              "pm.test('La respuesta viene de la cache y va marcada como stale', function () {",
+              "    pm.response.to.have.status(200);",
+              "    const data = pm.response.json();",
+              "    pm.expect(data.stale).to.be.true;",
+              "    pm.expect(data.origen).to.eql('redis');",
+              "    pm.expect(pm.response.headers.get('X-Stale')).to.eql('true');",
+              "});",
+              "pm.test('Degrada dentro del presupuesto de 900ms', function () {",
+              "    pm.expect(pm.response.responseTime).to.be.below(1500);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/siniestros/{{siniestro_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros", "{{siniestro_id}}"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Health (estado de postgres, redis y degradación)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": ["{{base_url}}"],
+          "path": ["health"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Cambiar estado de id inexistente (404)",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"estado_actual\": \"cerrado\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/siniestros/00000000-0000-0000-0000-000000000000",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros", "00000000-0000-0000-0000-000000000000"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Cambiar estado sin estado_actual (400)",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/siniestros/{{siniestro_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros", "{{siniestro_id}}"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Consultar siniestro con id inexistente (404)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/siniestros/00000000-0000-0000-0000-000000000000",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros", "00000000-0000-0000-0000-000000000000"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Registrar siniestro sin poliza_id (400)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"prioridad\": 1,\n  \"estado_actual\": \"abierto\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/siniestros",
+          "host": ["{{base_url}}"],
+          "path": ["siniestros"]
+        }
+      },
+      "response": []
+    }
+  ]
+}

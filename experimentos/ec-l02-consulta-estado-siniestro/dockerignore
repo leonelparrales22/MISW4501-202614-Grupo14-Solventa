@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.md
+docs/
+postman/
+migrations/*.sql.bak
