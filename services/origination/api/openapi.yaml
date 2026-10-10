@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.1.0
+  version: 0.2.0
 paths:
   /health:
     get:
@@ -9,3 +9,105 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/risk-profiles/resolve:
+    post:
+      summary: Resolve the risk profile used to price an offer (HA-D01)
+      description: >
+        Returns the risk profile for the customer. When Open Finance is down,
+        slower than 700 ms or isolated by its circuit breaker, the answer is
+        still 200 but provisional: it uses the last cached profile (at most 30
+        days old) or, for a customer without one, the base actuarial profile.
+        No external source and no cached profile is used without an active consent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveRiskProfileRequest"
+      responses:
+        "200":
+          description: Profile resolved, in normal or provisional mode
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveRiskProfileResponse"
+        "400":
+          description: Malformed body or missing fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The customer has no active consent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The request was aborted (for example, the client disconnected)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    ResolveRiskProfileRequest:
+      type: object
+      required: [customer_id, consent_active]
+      properties:
+        customer_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        consent_active:
+          type: boolean
+          description: >
+            Whether the customer has an active consent. Asserted by the caller
+            until the audit service exposes the consent check (HU-W1.2-01).
+    ResolveRiskProfileResponse:
+      type: object
+      required: [customer_id, mode, source, profile, profile_date, unavailable_source, notice]
+      properties:
+        customer_id:
+          type: string
+        mode:
+          type: string
+          enum: [normal, provisional]
+        source:
+          type: string
+          enum: [open_finance, cache, base_actuarial]
+        profile:
+          type: object
+          required: [score, category]
+          properties:
+            score:
+              type: number
+              format: double
+            category:
+              type: string
+        profile_date:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the applied profile was calculated. Null for the base actuarial profile.
+        unavailable_source:
+          type: string
+          nullable: true
+          enum: [open_finance]
+          description: The external source that could not be used. Null in normal mode.
+        notice:
+          type: string
+          nullable: true
+          enum: [last_profile_in_use, personalization_unavailable]
+          description: >
+            Code of the message the client shows in provisional mode. Null in normal mode.
+            last_profile_in_use for source=cache, personalization_unavailable for source=base_actuarial.
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum: [invalid_request, consent_required, request_aborted]
+        message:
+          type: string
