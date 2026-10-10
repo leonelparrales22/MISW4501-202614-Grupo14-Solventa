@@ -1,10 +1,21 @@
 name: backend-ci
 on:
   pull_request:
-    paths: ["services/**", "pkg/**", "stubs/**", "go.work", ".golangci.yml", ".github/workflows/backend-ci.yml"]
+    paths: ["services/**", "pkg/**", "stubs/**", "go.work", ".golangci.yml", "Makefile", ".github/workflows/backend-ci.yml"]
   push:
     branches: [develop, main]
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23" }
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.1
+          install-only: true
+      - run: make lint
   build-test:
     runs-on: ubuntu-latest
     steps:

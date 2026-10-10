@@ -11,7 +11,7 @@ El proyecto no integra proveedores reales (restricción de alcance). Cada subcar
 | `kyc` | Verificación de identidad, listas restrictivas y AML |
 | `payment-gateway` | Cobro de primas y pago de indemnizaciones |
 | `esignature` | Firma electrónica y notificación legal |
-| `telemetry` | Telemetría/IoT para eventos paramétricos |
+| `iot` | Telemetría/IoT (clima, vuelos) para eventos paramétricos |
 | `embedded-partner` | Un socio de distribución que consume las APIs |
 
 Los servicios nunca importan un stub: lo invocan por HTTP a través de los adaptadores de `pkg/adapters`.

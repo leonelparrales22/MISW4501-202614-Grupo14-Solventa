@@ -11,7 +11,9 @@ Camino crítico del negocio: cotiza, perfila, emite y cobra. Es la fachada (*Fac
 | `orchestrator` | Orquestador de cotización: coordina perfilamiento y rating. Consulta primero la caché y luego las fuentes externas en paralelo |
 | `profiling` | Perfil de riesgo con Open Finance / Open Data (con consentimiento). Usa `Perfil_Riesgo_Cache` en Redis (TTL 30 días, se invalida al recotizar) |
 | `rating` | Motor de rating: prima y coberturas. Reglas actuariales aisladas del resto |
-| `issuance` | Aceptación de la oferta, cobro de la prima, documento contractual y activación de la cobertura |
+| `underwriting` | Suscripción automática: acepta, rechaza o ajusta el riesgo; enruta a decisión humana (bandeja del asesor) cuando aplica |
+| `issuance` | Aceptación de la oferta, documento contractual (firma) y activación de la cobertura |
+| `billing` | Cobro de la prima y reembolsos contra la pasarela: `Intento_Cobro` con `idempotency_key` única por aceptación, reintentos con backoff (HA-D02) |
 | `endorsements` | Modificaciones y endosos con trazabilidad |
 | `renewal` / `cancellation` | Renovación y cancelación con prorrateo de reembolso |
 
@@ -26,7 +28,7 @@ Las llamadas entre orquestador, perfilamiento y rating son **en proceso** (sin s
 
 ## Datos y eventos
 
-- **BD propia:** PostgreSQL (originación). Caché: ElastiCache Redis.
+- **BD propia:** PostgreSQL (originación). Caché: ElastiCache Redis (`internal/adapters/redis`, patrón cache-aside).
 - **Publica:** `PolicyIssued`, `ChargeCompleted` (con outbox). Ver [catálogo de eventos](../../docs/events/README.md).
 - **Consume:** ninguno por ahora.
 - **Depende de:** `pkg/adapters` (Open Finance, Open Data, KYC, pagos, firma), `pkg/outbox`, `pkg/idempotency`, `pkg/resilience`.

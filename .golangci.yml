@@ -1,18 +1,85 @@
 # Boundaries between services (risk R2: boundary erosion).
 # A service may only import pkg/ and its own module; never another service.
+#
+# depguard matches "pkg" by PREFIX (no wildcards), so the rules are written
+# per service: each service denies the OTHER services explicitly. A single
+# deny on ".../services" would also block a service from importing its own
+# internal packages.
 version: "2"
+
 linters:
   enable: [depguard, errcheck, govet, staticcheck, unused, gosec]
   settings:
     depguard:
       rules:
-        no-cross-service-imports:
-          files: ["**/services/**"]
+        # --- Cross-service imports -------------------------------------------
+        origination-boundaries:
+          files: ["**/services/origination/**"]
           deny:
-            - pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services"
-              desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)."
-        pure-domain:
-          files: ["**/internal/domain/**"]
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/notifications", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/stubs", desc: "Stubs are called over HTTP through pkg/adapters, never imported." }
+        claims-boundaries:
+          files: ["**/services/claims/**"]
           deny:
-            - pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/*/internal/adapters"
-              desc: "The domain must not depend on adapters (Ports & Adapters)."
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/notifications", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/stubs", desc: "Stubs are called over HTTP through pkg/adapters, never imported." }
+        partners-boundaries:
+          files: ["**/services/partners/**"]
+          deny:
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/notifications", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/stubs", desc: "Stubs are called over HTTP through pkg/adapters, never imported." }
+        audit-boundaries:
+          files: ["**/services/audit/**"]
+          deny:
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/notifications", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/stubs", desc: "Stubs are called over HTTP through pkg/adapters, never imported." }
+        notifications-boundaries:
+          files: ["**/services/notifications/**"]
+          deny:
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit", desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/stubs", desc: "Stubs are called over HTTP through pkg/adapters, never imported." }
+
+        # --- Shared library ----------------------------------------------------
+        pkg-is-a-leaf:
+          files: ["**/pkg/**"]
+          deny:
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services", desc: "pkg/ must not import services." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/stubs", desc: "pkg/ must not import stubs." }
+
+        # --- Ports & Adapters inside a service ---------------------------------
+        # domain, application and ports must not depend on adapters nor on
+        # infrastructure libraries; only adapters (and cmd/) may.
+        pure-core:
+          files:
+            - "**/internal/domain/**"
+            - "**/internal/application/**"
+            - "**/internal/ports/**"
+          deny:
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters", desc: "The core must not depend on adapters (Ports & Adapters)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters", desc: "The core must not depend on adapters (Ports & Adapters)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners/internal/adapters", desc: "The core must not depend on adapters (Ports & Adapters)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters", desc: "The core must not depend on adapters (Ports & Adapters)." }
+            - { pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/notifications/internal/adapters", desc: "The core must not depend on adapters (Ports & Adapters)." }
+            - { pkg: "github.com/go-chi/chi", desc: "HTTP belongs to adapters/http." }
+            - { pkg: "github.com/jackc/pgx", desc: "PostgreSQL belongs to adapters/postgres." }
+            - { pkg: "database/sql", desc: "Persistence belongs to adapters/postgres." }
+            - { pkg: "github.com/redis/go-redis", desc: "Redis belongs to adapters/redis." }
+            - { pkg: "github.com/aws/aws-sdk-go-v2", desc: "AWS SDK belongs to adapters (messaging, s3)." }
+
+formatters:
+  enable: [gofmt, goimports]

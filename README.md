@@ -53,20 +53,29 @@ services/<service>/
 └── Dockerfile
 ```
 
-## Reglas de fronteras
+## Reglas del repositorio
 
-1. Un servicio **nunca importa** a otro servicio; solo `pkg/`. Se hace cumplir con `depguard` en `.golangci.yml`.
-2. Cada servicio es dueño exclusivo de su base de datos; ningún servicio lee tablas de otro.
-3. Los servicios se comunican por API (a través del Gateway) o por eventos (SNS/SQS). Ver [docs/events](docs/events/README.md).
-4. El código de `internal/` no es importable desde fuera del servicio (lo garantiza Go).
-5. El dominio no depende de adaptadores.
+Las reglas de arquitectura (fronteras entre servicios, Puertos y Adaptadores, base de datos por servicio), el idioma, la Definición de Terminado y el flujo de Git y Pull Requests están en [`AGENTS.md`](AGENTS.md). Las fronteras entre servicios se verifican automáticamente con `depguard` (ver `.golangci.yml`). Las decisiones tomadas y su motivo están en [`docs/decisions`](docs/decisions/README.md).
 
-## Stack y convenciones
+## Stack
 
-- Go 1.23, `chi/v5` para HTTP, `pgx/v5` para PostgreSQL, Testify y Testcontainers-Go para pruebas.
-- Cobertura mínima de pruebas unitarias: 70 %; ningún PR se integra con pruebas fallidas.
-- Código, carpetas y archivos en inglés; solo los `README.md` están en español.
-- Ramas: `develop` es la rama de integración y los PRs se abren contra ella.
+Go 1.23, `chi/v5` para HTTP, `pgx/v5` para PostgreSQL, Testify y Testcontainers-Go para pruebas.
+
+## Requisitos previos
+
+| Herramienta | Versión | Para qué | Instalación |
+|---|---|---|---|
+| Go | 1.23 o superior | Compilar y probar | https://go.dev/dl/ |
+| make | cualquiera | Ejecutar los comandos del proyecto | Incluido en macOS/Linux (Xcode CLT o `build-essential`) |
+| golangci-lint | **v2.x** (la configuración usa `version: "2"`; la v1 no la soporta) | `make lint` | macOS: `brew install golangci-lint` · Cualquiera: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
+| Docker | reciente | Imágenes de los servicios y, más adelante, el ambiente local y las pruebas de integración | https://docs.docker.com/get-docker/ |
+
+Verifica la instalación:
+
+```
+go version
+golangci-lint --version   # debe indicar v2.x
+```
 
 ## Comandos
 

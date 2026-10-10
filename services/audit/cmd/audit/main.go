@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -18,7 +19,8 @@ func main() {
 	})
 	addr := ":" + getenv("PORT", "8080")
 	log.Printf("audit listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, r))
+	srv := &http.Server{Addr: addr, Handler: r, ReadHeaderTimeout: 5 * time.Second}
+	log.Fatal(srv.ListenAndServe())
 }
 
 func getenv(k, d string) string {

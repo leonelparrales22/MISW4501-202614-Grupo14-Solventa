@@ -10,7 +10,8 @@ Recibe, prioriza, evalúa y resuelve siniestros, incluidos los paramétricos que
 |---|---|
 | `filing` | Radicación y seguimiento del siniestro (web y móvil) |
 | `triage` | Priorización automática por severidad, monto y tiempo de respuesta comprometido |
-| `assessors` | Asignación y seguimiento de peritos y talleres según ubicación y especialidad |
+| `assessors` | Prestadores (peritos y talleres) y su asignación al caso: elige el más cercano por distancia y especialidad, ampliando el radio si no hay disponibles (HU-W2.3-01). Seguimiento de la intervención y cierre del caso (HU-W2.3-02). Es el único dueño del cálculo de distancia |
+| `assistance` | Asistencia en sitio: recibe las solicitudes del móvil con la ubicación del asegurado (HU-M2.3-01), las muestra en la bandeja de entrantes y gestiona su despacho y cierre con motivo (HU-W2.3-03). Para elegir prestador **llama a `assessors`**; no calcula distancias |
 | `parametric` | Pago automático cuando un evento externo (retraso de vuelo, clima) cruza un umbral |
 | `evidence` | Referencia a fotos/video geoetiquetados; el binario vive en S3 (`s3_key`, tipo, geolocalización) |
 
@@ -22,9 +23,9 @@ Recibe, prioriza, evalúa y resuelve siniestros, incluidos los paramétricos que
 
 ## Datos y eventos
 
-- **BD propia:** PostgreSQL (siniestros). Caché: Redis. Objetos: S3.
+- **BD propia:** PostgreSQL (siniestros). Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
 - **Publica:** `ClaimApproved` (dispara notificación y pago paramétrico). Ver [catálogo de eventos](../../docs/events/README.md).
-- **Depende de:** `pkg/adapters` (telemetría/IoT, pagos), `pkg/outbox`.
+- **Depende de:** `pkg/adapters` (`iot`, `payments`), `pkg/outbox`.
 
 ## Historias asociadas
 
