@@ -2,11 +2,11 @@
 
 El proyecto no integra proveedores reales (restricción de alcance). Cada subcarpeta es un módulo Go que simula un tercero, con latencia y fallos configurables para los experimentos (junto con Toxiproxy).
 
-**Estado:** carpetas reservadas; sin código todavía.
+**Estado:** `openfinance` implementado (HA-D01); el resto de carpetas sigue reservado.
 
 | Stub | Simula |
 |---|---|
-| `openfinance` | Datos financieros consentidos (Open Finance) |
+| `openfinance` | Datos financieros consentidos (Open Finance): `GET /profiles/{id}` determinista por cliente y `GET /health`; `PORT` (9000) y `ARTIFICIAL_DELAY_MS` opcionales |
 | `opendata` | Fuentes públicas (clima, geolocalización, listas oficiales) |
 | `kyc` | Verificación de identidad, listas restrictivas y AML |
 | `payment-gateway` | Cobro de primas y pago de indemnizaciones |
