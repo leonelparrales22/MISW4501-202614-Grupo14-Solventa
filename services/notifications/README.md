@@ -8,7 +8,7 @@ Envía notificaciones push al asegurado: pago paramétrico automático, vencimie
 
 | Módulo (`internal/`) | Qué hace |
 |---|---|
-| `push` | Envío por Firebase Cloud Messaging (FCM) |
+| `push` | Reglas de envío push (destinatarios, preferencias, reintentos). El cliente HTTP de Firebase Cloud Messaging vive en `internal/adapters/fcm` |
 | `templates` | Plantillas de mensajes por tipo de evento e idioma |
 
 ## Datos y eventos

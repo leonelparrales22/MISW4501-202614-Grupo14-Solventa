@@ -7,4 +7,5 @@ Documentación que cambia junto con el código. La documentación de diseño (ar
 | [`api`](api/README.md) | Contratos OpenAPI, versionado y ejemplos para socios |
 | [`events`](events/README.md) | Catálogo de eventos entre servicios |
 | [`runbooks`](runbooks/README.md) | Procedimientos operativos |
+| [`decisions`](decisions/README.md) | Bitácora de decisiones del repositorio |
 | [`architecture`](architecture/README.md) | Trazabilidad entre el repositorio y la arquitectura |

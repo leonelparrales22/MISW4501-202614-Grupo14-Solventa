@@ -6,7 +6,7 @@ Módulo Go (`.../pkg`) que enlazan los servicios. Es lo **único** que un servic
 
 | Paquete | Propósito |
 |---|---|
-| `adapters/{openfinance,opendata,kyc,payments,esignature}` | Capa de adaptadores (*library* en proceso): aísla el modelo interno del formato de cada proveedor externo. Incluye circuit breaker y degradación (≤ 120 ms por dependencia, corte duro 700 ms) |
+| `adapters/{openfinance,opendata,kyc,payments,esignature,iot}` | Capa de adaptadores (*library* en proceso): aísla el modelo interno del formato de cada proveedor externo. Incluye circuit breaker y degradación (≤ 120 ms por dependencia, corte duro 700 ms) |
 | `resilience` | Timeouts, reintentos con backoff, circuit breaker |
 | `events` | Contratos de eventos y publicación/consumo sobre SNS/SQS |
 | `outbox` | *Transactional outbox*: persiste el evento junto con la operación de negocio |

@@ -12,6 +12,6 @@ use (
 	./stubs/kyc
 	./stubs/payment-gateway
 	./stubs/esignature
-	./stubs/telemetry
+	./stubs/iot
 	./stubs/embedded-partner
 )
