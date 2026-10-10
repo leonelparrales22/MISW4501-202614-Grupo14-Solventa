@@ -1,0 +1,18 @@
+# Boundaries between services (risk R2: boundary erosion).
+# A service may only import pkg/ and its own module; never another service.
+version: "2"
+linters:
+  enable: [depguard, errcheck, govet, staticcheck, unused, gosec]
+  settings:
+    depguard:
+      rules:
+        no-cross-service-imports:
+          files: ["**/services/**"]
+          deny:
+            - pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services"
+              desc: "A service must not import another service; communicate via API (Gateway) or events (SNS/SQS)."
+        pure-domain:
+          files: ["**/internal/domain/**"]
+          deny:
+            - pkg: "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/*/internal/adapters"
+              desc: "The domain must not depend on adapters (Ports & Adapters)."

@@ -1,0 +1,21 @@
+# Go
+bin/
+*.test
+*.out
+coverage.*
+go.work.sum
+# Entorno
+.env
+.env.*
+!.env.example
+# IDE / SO
+.idea/
+.vscode/
+.DS_Store
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.example.tfvars
+crash.log

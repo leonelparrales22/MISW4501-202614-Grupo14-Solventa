@@ -1,0 +1,11 @@
+openapi: 3.0.3
+info:
+  title: Solventa - claims service
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      summary: Shallow health check (ALB, ADR-02)
+      responses:
+        "200":
+          description: OK
