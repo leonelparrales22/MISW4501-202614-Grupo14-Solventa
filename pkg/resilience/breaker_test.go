@@ -95,95 +95,155 @@ func TestHalfOpenFailureReopens(t *testing.T) {
 	assert.Equal(t, "open", b.State())
 }
 
-// --- Caller cancellation (HA-L01, decision D-3 b) ------------------------------
+// --- Failure-ratio mode (HA-L01, decision D-3 c) --------------------------------
 
-func newBudgetAwareBreaker() *resilience.Breaker {
-	return resilience.NewBreaker("budget", resilience.Config{
-		ConsecutiveFailures:      3,
-		OpenTimeout:              50 * time.Millisecond,
-		HalfOpenSuccesses:        3,
-		IgnoreCallerCancellation: true,
+// newRatioBreaker uses the thresholds origination runs with (50 % of failed
+// calls with at least 20 calls in the window) and the given windows.
+func newRatioBreaker(window, openTimeout time.Duration) *resilience.Breaker {
+	return resilience.NewBreaker("ratio", resilience.Config{
+		ConsecutiveFailures: 3, // not used in this mode
+		OpenTimeout:         openTimeout,
+		HalfOpenSuccesses:   3,
+		FailureRatio:        0.5,
+		MinRequests:         20,
+		Window:              window,
 	})
 }
 
-func canceledContext() context.Context {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	return ctx
-}
-
-func TestDefaultConfigDoesNotIgnoreCallerCancellation(t *testing.T) {
-	assert.False(t, resilience.DefaultConfig().IgnoreCallerCancellation)
-}
-
-func TestExecuteContextReturnsResultWhileClosed(t *testing.T) {
-	b := newBudgetAwareBreaker()
-	got, err := resilience.ExecuteContext(context.Background(), b, func() (string, error) { return "ok", nil })
-	require.NoError(t, err)
-	assert.Equal(t, "ok", got)
-}
-
-func TestCallerCancellationDoesNotOpenTheCircuitWhenIgnored(t *testing.T) {
-	b := newBudgetAwareBreaker()
-	ctx := canceledContext()
-
-	for i := 0; i < 5; i++ {
-		_, err := resilience.ExecuteContext(ctx, b, func() (int, error) { return 0, context.Canceled })
-		require.ErrorIs(t, err, context.Canceled, "the caller still gets the original error")
-		assert.Equal(t, "context canceled", err.Error())
-	}
-	assert.Equal(t, "closed", b.State(), "a call abandoned by the caller is not a failure of the dependency")
-}
-
-func TestCallerBudgetExpiryDoesNotOpenTheCircuitWhenIgnored(t *testing.T) {
-	b := newBudgetAwareBreaker()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+// budgetCut runs a call that the caller abandons because its latency budget
+// expired, as the parallel profiling does with a slow source (120 ms).
+func budgetCut(b *resilience.Breaker) error {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Millisecond))
 	defer cancel()
-	<-ctx.Done()
-
-	for i := 0; i < 5; i++ {
-		_, err := resilience.ExecuteContext(ctx, b, func() (int, error) { return 0, ctx.Err() })
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-	}
-	assert.Equal(t, "closed", b.State())
+	_, err := resilience.Execute(b, func() (int, error) {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	})
+	return err
 }
 
-func TestCallerCancellationStillCountsByDefault(t *testing.T) {
-	b := newTestBreaker()
-	ctx := canceledContext()
-
-	for i := 0; i < 3; i++ {
-		_, _ = resilience.ExecuteContext(ctx, b, func() (int, error) { return 0, context.Canceled })
-	}
-	assert.Equal(t, "open", b.State(), "without the option the validated EC-D01 behavior is unchanged")
+func TestDefaultConfigKeepsTheConsecutiveFailuresMode(t *testing.T) {
+	cfg := resilience.DefaultConfig()
+	assert.Zero(t, cfg.FailureRatio)
+	assert.Zero(t, cfg.MinRequests)
+	assert.Zero(t, cfg.Window)
+	assert.Equal(t, 5*time.Second, resilience.DefaultWindow)
 }
 
-func TestDependencyErrorsStillOpenTheCircuitWhenCancellationIsIgnored(t *testing.T) {
-	b := newBudgetAwareBreaker()
+func TestBudgetCutCountsAsAFailure(t *testing.T) {
+	b := resilience.NewBreaker("budget", resilience.Config{ConsecutiveFailures: 3, OpenTimeout: time.Minute, HalfOpenSuccesses: 3})
 	for i := 0; i < 3; i++ {
-		_, err := resilience.ExecuteContext(context.Background(), b, func() (int, error) { return 0, errBoom })
-		require.ErrorIs(t, err, errBoom)
+		require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded, "the caller still gets the original error")
 	}
-	assert.Equal(t, "open", b.State())
+	assert.Equal(t, "open", b.State(), "a call cut by the caller's budget is a failure of the dependency")
+}
+
+func TestRatioModeDoesNotOpenWithTheNormalLatencyTail(t *testing.T) {
+	b := newRatioBreaker(time.Minute, time.Minute)
+	// About 17 % of the calls miss the budget (EXP-L01 normal profile), even in
+	// bursts of three that would open the consecutive-failures mode.
+	for round := 0; round < 4; round++ {
+		for i := 0; i < 3; i++ {
+			require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
+		}
+		for i := 0; i < 15; i++ {
+			require.NoError(t, succeed(b))
+		}
+	}
+	assert.Equal(t, "closed", b.State(), "12 failures out of 72 calls must not isolate the source")
+}
+
+func TestRatioModeOpensWhenHalfTheCallsFailWithEnoughRequests(t *testing.T) {
+	b := newRatioBreaker(time.Minute, time.Minute)
+	for i := 0; i < 10; i++ {
+		require.NoError(t, succeed(b))
+	}
+	for i := 0; i < 9; i++ {
+		require.ErrorIs(t, fail(b), errBoom)
+	}
+	assert.Equal(t, "closed", b.State(), "9 failures out of 19 calls are below 50 %")
+
+	require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
+	assert.Equal(t, "open", b.State(), "10 failures out of 20 calls reach 50 %")
 
 	called := false
-	_, err := resilience.ExecuteContext(context.Background(), b, func() (int, error) { called = true; return 1, nil })
+	_, err := resilience.Execute(b, func() (int, error) { called = true; return 1, nil })
 	assert.ErrorIs(t, err, resilience.ErrOpen)
-	assert.False(t, called)
+	assert.False(t, called, "an open circuit must not call the dependency")
 }
 
-func TestDependencyOwnTimeoutCountsWhileTheCallerIsWaiting(t *testing.T) {
-	b := newBudgetAwareBreaker()
-	for i := 0; i < 3; i++ {
-		_, _ = resilience.ExecuteContext(context.Background(), b, func() (int, error) { return 0, context.DeadlineExceeded })
+func TestRatioModeNeedsTheMinimumNumberOfRequests(t *testing.T) {
+	b := newRatioBreaker(time.Minute, time.Minute)
+	for i := 0; i < 19; i++ {
+		require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
 	}
-	assert.Equal(t, "open", b.State(), "the dependency's own timeout is a failure of the dependency")
+	assert.Equal(t, "closed", b.State(), "19 calls are not enough, even if all of them failed")
+
+	require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
+	assert.Equal(t, "open", b.State(), "a persistently slow dependency is isolated (HA-D01 CA-1)")
 }
 
-func TestExecuteKeepsCountingEveryErrorWithTheOption(t *testing.T) {
-	b := newBudgetAwareBreaker()
-	for i := 0; i < 3; i++ {
-		_, _ = resilience.Execute(b, func() (int, error) { return 0, context.Canceled })
+func TestRatioModeCountsWithinOneWindow(t *testing.T) {
+	window := 50 * time.Millisecond
+	b := newRatioBreaker(window, time.Minute)
+	for i := 0; i < 15; i++ {
+		require.Error(t, fail(b))
 	}
-	assert.Equal(t, "open", b.State(), "Execute does not know the caller's context")
+	time.Sleep(3 * window)
+	for i := 0; i < 15; i++ {
+		require.Error(t, fail(b))
+	}
+	assert.Equal(t, "closed", b.State(), "the counts start over in every window")
+
+	for i := 0; i < 5; i++ {
+		require.Error(t, fail(b))
+	}
+	assert.Equal(t, "open", b.State(), "20 failed calls in the same window")
+}
+
+func TestRatioModeZeroWindowUsesTheDefault(t *testing.T) {
+	b := resilience.NewBreaker("default-window", resilience.Config{
+		OpenTimeout: time.Minute, HalfOpenSuccesses: 3, FailureRatio: 0.5, MinRequests: 20,
+	})
+	for i := 0; i < 20; i++ {
+		require.Error(t, fail(b))
+	}
+	assert.Equal(t, "open", b.State())
+}
+
+// openRatioBreaker opens a ratio breaker with a short open window and waits
+// until it lets the probes through (half-open).
+func openRatioBreaker(t *testing.T) *resilience.Breaker {
+	t.Helper()
+	b := newRatioBreaker(time.Minute, 50*time.Millisecond)
+	for i := 0; i < 20; i++ {
+		_ = budgetCut(b)
+	}
+	require.Equal(t, "open", b.State())
+	time.Sleep(80 * time.Millisecond)
+	require.Equal(t, "half-open", b.State())
+	return b
+}
+
+func TestRatioModeHalfOpenBudgetCutReopens(t *testing.T) {
+	b := openRatioBreaker(t)
+	require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
+	assert.Equal(t, "open", b.State(), "a probe cut by the budget is a failed probe")
+}
+
+func TestRatioModeHalfOpenFailureAfterSuccessesReopens(t *testing.T) {
+	b := openRatioBreaker(t)
+	require.NoError(t, succeed(b))
+	require.NoError(t, succeed(b))
+	require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
+	assert.Equal(t, "open", b.State(), "one failed probe reopens, as in EC-D01")
+}
+
+func TestRatioModeClosesAfterThreeConsecutiveHalfOpenSuccesses(t *testing.T) {
+	b := openRatioBreaker(t)
+	require.NoError(t, succeed(b))
+	require.NoError(t, succeed(b))
+	assert.Equal(t, "half-open", b.State(), "two successes must not close the circuit")
+	require.NoError(t, succeed(b))
+	assert.Equal(t, "closed", b.State())
 }

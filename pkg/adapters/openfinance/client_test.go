@@ -181,8 +181,10 @@ func TestInjectedHTTPClientStillHonorsTheTimeout(t *testing.T) {
 	assert.Less(t, time.Since(start), 300*time.Millisecond)
 }
 
-func TestCallerBudgetDoesNotTripTheBreakerWhenIgnored(t *testing.T) {
+func TestCallerBudgetCountsAsAFailure(t *testing.T) {
+	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		select {
 		case <-time.After(500 * time.Millisecond):
 		case <-r.Context().Done():
@@ -190,14 +192,18 @@ func TestCallerBudgetDoesNotTripTheBreakerWhenIgnored(t *testing.T) {
 	}))
 	defer srv.Close()
 	cfg := testConfig(srv.URL, time.Second)
-	cfg.Breaker.IgnoreCallerCancellation = true
+	cfg.Breaker.OpenTimeout = time.Minute
 	c := openfinance.NewClient(cfg)
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 3; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		_, err := c.FetchProfile(ctx, "c1")
 		cancel()
 		require.ErrorIs(t, err, openfinance.ErrSourceUnavailable)
 	}
-	assert.Equal(t, "closed", c.BreakerState(), "the caller's budget is not a failure of Open Finance")
+	assert.Equal(t, "open", c.BreakerState(), "a call cut by the caller's budget is a failure of Open Finance (D-3 c)")
+
+	_, err := c.FetchProfile(context.Background(), "c1")
+	assert.ErrorIs(t, err, resilience.ErrOpen)
+	assert.Equal(t, int32(3), hits.Load(), "an open circuit does not call Open Finance")
 }

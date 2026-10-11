@@ -87,7 +87,7 @@ func (c *Client) FetchProfile(ctx context.Context, customerID string) (Profile, 
 	if customerID == "" {
 		return Profile{}, ErrInvalidCustomerID
 	}
-	p, err := resilience.ExecuteContext(ctx, c.breaker, func() (Profile, error) {
+	p, err := resilience.Execute(c.breaker, func() (Profile, error) {
 		return c.fetch(ctx, customerID)
 	})
 	if err != nil {
