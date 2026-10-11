@@ -48,6 +48,21 @@ un usuario por rol, y la tabla «local ↔ AWS» con lo que Moto no reproduce).
 Con ID tokens de 5 minutos, la corrida con `WAIT_FOR_EXPIRY=1` dura unos 6 minutos: la cota espera hasta el `exp` del token del
 asesor (más 30 s como máximo) y luego el vencimiento del token de operaciones, emitido después.
 
+## Resultados en staging (2026-10-11)
+
+Ventana `staging/ha-s01` aplicada y destruida el mismo día (`us-east-2`). Corridas del agente principal y del validador:
+
+| Corrida | Resultado |
+|---|---|
+| Sin espera, antes del ajuste | 17 `OK`, 4 `FAIL`, 5 `RECORD`, 4 `SKIPPED`: la firma y el *payload* alterados respondían `403` (`ACCESS_DENIED`) en T y M |
+| Ajuste | `ACCESS_DENIED` → `401` en `modules/apigateway` y en la API de prueba (el `403` de la falta de API key no cambia) |
+| Sin espera, después del ajuste | 21 `OK`, 0 `FAIL`, 5 `RECORD`, 4 `SKIPPED` (los de espera) |
+| Con `WAIT_FOR_EXPIRY=1` | 25 `OK`, 0 `FAIL`: vencido → `401` en T y M; el ID token revocado dejó de pasar **310 s** después de revocarlo, a `exp` + 19–20 s (cota `exp` + 30 s) |
+
+`RECORD` reales: el access token en lugar del ID token → `401` (las rutas esperan ID tokens, D-4); `GetUser` con el access token
+revocado → `400 NotAuthorizedException`; el ID token recién revocado → `200` (ventana residual, ver `docs/api/README.md`). La
+contraseña, las API keys y los tokens aparecieron 0 veces en las salidas.
+
 ## Uso
 
 Con la ventana aplicada (procedimiento en el README de la composición):

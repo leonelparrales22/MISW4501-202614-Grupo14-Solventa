@@ -1,6 +1,6 @@
 # `infra` — infraestructura como código y ambiente local
 
-**Estado:** módulos [`apigateway`](terraform/modules/apigateway/README.md) (HA-L01; authorizer de Cognito y rutas humanas de HA-S01) y [`cognito`](terraform/modules/cognito/README.md) (HA-S01), probados con `terraform test` y proveedor simulado; composiciones efímeras [`staging/ha-l01`](terraform/environments/staging/ha-l01/README.md) y [`staging/ha-s01`](terraform/environments/staging/ha-s01/README.md), nunca aplicadas; el resto de carpetas sigue reservado.
+**Estado:** módulos [`apigateway`](terraform/modules/apigateway/README.md) (HA-L01; authorizer de Cognito y rutas humanas de HA-S01) y [`cognito`](terraform/modules/cognito/README.md) (HA-S01), probados con `terraform test` y proveedor simulado; composiciones efímeras [`staging/ha-l01`](terraform/environments/staging/ha-l01/README.md) y [`staging/ha-s01`](terraform/environments/staging/ha-s01/README.md) (esta última aplicada y destruida el 2026-10-11, con sus resultados en su README); el resto de carpetas sigue reservado.
 
 - `terraform/modules`: `network`, `ecr`, `ecs`, `alb`, `apigateway`, `rds`, `elasticache`, `messaging` (SNS/SQS con DLQ), `s3`, `secrets`, `cognito`, `observability`.
 - `terraform/environments`: `staging` (efímero, solo durante experimentos) y `production-demo` (entrega evaluable).

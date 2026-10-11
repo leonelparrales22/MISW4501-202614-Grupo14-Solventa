@@ -5,8 +5,20 @@ simulado: **CA-1** (401 del authorizer de Cognito), **CA-2** (tokens reales veri
 la integración), **CA-3** (alta solo administrativa y `custom:partner_id` no escribible), **CA-4** (revocación y ventana
 residual medida) y **CA-5** (API key y usage plan separados de Cognito). Se aplica y se destruye **en la misma sesión**.
 
-> **Estado:** código validado (`terraform fmt` y `validate`). **Nunca se ha aplicado.** Aplicarlo exige la autorización de la
-> ventana (estimación de costo escrita y aprobada) y destruirlo en la misma sesión.
+> **Estado:** **aplicada y destruida el 2026-10-11** (14:51–15:43, `us-east-2`, 82 recursos más el ajuste del 401; estado remoto en
+> el bucket de T4). Cualquier ventana nueva exige otra vez la autorización (estimación de costo escrita y aprobada) y destruirla en la
+> misma sesión.
+
+### Resultados de la ventana del 2026-10-11
+
+| Criterio | Resultado medido en AWS |
+|---|---|
+| CA-1 | Sin token, con basura o con un token de otro emisor → `401`; token **vencido** → `401`; token del pool con la **firma o el contenido alterados** → AWS respondía `403` (`ACCESS_DENIED`) y, tras mapear `ACCESS_DENIED` → `401` en el módulo y en la API de prueba, → `401` en las dos APIs. El `401` del módulo lleva `Access-Control-Allow-Origin` y el `OPTIONS` responde `200` sin token |
+| CA-2 | El módulo `apigateway` real **reenvía `Authorization`** a la integración (el *backend* de prueba devolvió las claims). `pkg/security` verificó y autorizó **tokens reales** de los 4 roles y de los dos clientes: 5/5 pruebas, `403` por rol y por titularidad. El tramo «servicio desplegado» queda para HU-W1.1-01 |
+| CA-3 | `SignUp` con el cliente web → `NotAuthorizedException`; `UpdateUserAttributes(custom:partner_id)` → rechazado; cada usuario semilla en un solo grupo, el suyo |
+| CA-4 | `RevokeToken` → `200`; renovación con el refresh revocado → rechazada; el ID token revocado siguió pasando **310 s** después de revocarlo y dejó de pasar a `exp` + 19–20 s (cota: `exp` + 30 s); `GetUser` con el access token revocado → `NotAuthorizedException` |
+| CA-5 | Ruta humana solo con API key → `401`; ruta de socio solo con *Bearer* → `403`; ruta de socio con API key → `200` |
+| Front | Inicio de sesión de los 4 roles contra este pool, renovación silenciosa a los 5 min (`REFRESH_TOKEN_AUTH`) y cierre de sesión (`RevokeToken`) verificados desde el navegador (CloudTrail) |
 
 ## Topología
 
