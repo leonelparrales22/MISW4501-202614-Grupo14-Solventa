@@ -4,8 +4,10 @@ Levanta, solo durante una ventana de medición, lo necesario para evidenciar en 
 local: **CA-1** (p95 ≤ 400 ms y p99 ≤ 800 ms bajo la rampa de EXP-L01), **CA-4** (caché del gateway con aislamiento por socio)
 y **CA-5** (rate limiting por socio). Se aplica y se destruye **en la misma sesión**.
 
-> **Estado:** código validado (`terraform fmt`, `validate` y `plan` de solo lectura: 62 recursos). **Nunca se ha aplicado.**
-> Aplicarlo exige la autorización de la ventana (estimación de costo escrita y aprobada) y destruirlo en la misma sesión.
+> **Estado:** **aplicada y destruida el 2026-10-11** (fase sin costo 15:45–15:48, fase que cobra 15:51–16:20, `us-east-2`, 62
+> recursos; estado remoto en el bucket de T4). Resultados en
+> [`tests/load-k6/ha-l01/resultados/2026-10-11-staging.md`](../../../../../tests/load-k6/ha-l01/resultados/2026-10-11-staging.md).
+> Cualquier ventana nueva exige otra vez la autorización (estimación de costo escrita y aprobada) y destruirla en la misma sesión.
 
 ## Topología (opción A de la decisión D-8, alineada con ADR-02 sin NAT)
 
