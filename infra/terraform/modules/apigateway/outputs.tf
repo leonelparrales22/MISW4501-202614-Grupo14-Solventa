@@ -28,3 +28,8 @@ output "api_key_values" {
   value       = { for k, key in aws_api_gateway_api_key.partner : k => key.value }
   sensitive   = true
 }
+
+output "cognito_authorizer_id" {
+  description = "ID of the COGNITO_USER_POOLS authorizer of the human routes (HA-S01; null without cognito_user_pool_arns)."
+  value       = one(aws_api_gateway_authorizer.cognito[*].id)
+}

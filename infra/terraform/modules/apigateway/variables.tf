@@ -76,3 +76,47 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+# --- Human channels (HA-S01) -----------------------------------------------------------
+
+variable "cognito_user_pool_arns" {
+  description = "ARNs of the Cognito user pools of the human channels (output user_pool_arn of modules/cognito). Empty: no authorizer and no human routes (partner-only API)."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for arn in var.cognito_user_pool_arns : can(regex("^arn:aws:cognito-idp:", arn))])
+    error_message = "cognito_user_pool_arns must contain Cognito user pool ARNs."
+  }
+}
+
+variable "human_routes" {
+  description = "Human-channel routes (portal web and mobile app) behind the Cognito authorizer. Key: path segment under /v1 (for example quotes); the route and every sub-path (/{proxy+}) are proxied to the same path of the backend. Each one gets a CORS preflight (OPTIONS) without authorization."
+  type = map(object({
+    methods = list(string)
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for r in values(var.human_routes) : length(r.methods) > 0 && alltrue([for m in r.methods : contains(["GET", "POST", "PUT", "PATCH", "DELETE"], m)])
+    ])
+    error_message = "Each human route needs at least one method among GET, POST, PUT, PATCH and DELETE (OPTIONS is added automatically, without authorization)."
+  }
+
+  validation {
+    condition     = alltrue([for k in keys(var.human_routes) : can(regex("^[a-z0-9][a-z0-9-]*$", k))])
+    error_message = "Human route keys must be a single lowercase path segment (for example quotes)."
+  }
+
+  validation {
+    condition     = !contains(keys(var.human_routes), "risk-profiles")
+    error_message = "risk-profiles is the partner quoting journey (API key only); it cannot be a human route (CA-5)."
+  }
+}
+
+variable "cors_allow_origin" {
+  description = "Value of Access-Control-Allow-Origin in the CORS preflight and the gateway 4XX responses (the web client sends a Bearer token, not cookies). Pin it to the portal origin outside test windows."
+  type        = string
+  default     = "*"
+}
