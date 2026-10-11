@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.2.0
+  version: 0.3.0
 paths:
   /health:
     get:
@@ -11,13 +11,18 @@ paths:
           description: OK
   /v1/risk-profiles/resolve:
     post:
-      summary: Resolve the risk profile used to price an offer (HA-D01)
+      summary: Resolve the risk profile used to price an offer (HA-D01, HA-L01)
       description: >
-        Returns the risk profile for the customer. When Open Finance is down,
-        slower than 700 ms or isolated by its circuit breaker, the answer is
-        still 200 but provisional: it uses the last cached profile (at most 30
-        days old) or, for a customer without one, the base actuarial profile.
-        No external source and no cached profile is used without an active consent.
+        Returns the risk profile for the customer. The external sources (Open
+        Finance, Open Data, KYC) are consulted in parallel, each with a latency
+        budget (120 ms by default) inside a total cut (700 ms); a source that
+        misses its budget is canceled and the profile is calculated with the
+        signals that arrived, marked as partial. When no profile can be
+        calculated online (Open Finance missing while it is required, or no
+        source at all), the answer is still 200 but provisional: it uses the
+        last cached profile (at most 30 days old) or, for a customer without
+        one, the base actuarial profile. No external source and no cached
+        profile is used without an active consent.
       requestBody:
         required: true
         content:
@@ -33,6 +38,55 @@ paths:
                 $ref: "#/components/schemas/ResolveRiskProfileResponse"
         "400":
           description: Malformed body or missing fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The customer has no active consent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The request was aborted (for example, the client disconnected)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/risk-profiles/{customer_id}:
+    get:
+      summary: Read the risk profile used to price an offer (HA-L01)
+      description: >
+        Same answer as POST /v1/risk-profiles/resolve, exposed as a read so the
+        API Gateway can serve it from its cache without recalculating. The
+        gateway cache key is the path, the consent_active query parameter and
+        the partner API key, so partners never share entries.
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+        - name: consent_active
+          in: query
+          required: true
+          description: >
+            Whether the customer has an active consent. Asserted by the caller
+            until the audit service exposes the consent check (HU-W1.2-01).
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Profile resolved, in normal or provisional mode
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveRiskProfileResponse"
+        "400":
+          description: Missing or invalid parameters
           content:
             application/json:
               schema:
@@ -66,7 +120,7 @@ components:
             until the audit service exposes the consent check (HU-W1.2-01).
     ResolveRiskProfileResponse:
       type: object
-      required: [customer_id, mode, source, profile, profile_date, unavailable_source, notice]
+      required: [customer_id, mode, source, profile, profile_date, unavailable_source, notice, partial, sources]
       properties:
         customer_id:
           type: string
@@ -75,7 +129,11 @@ components:
           enum: [normal, provisional]
         source:
           type: string
-          enum: [open_finance, cache, base_actuarial]
+          enum: [open_finance, external_sources, cache, base_actuarial]
+          description: >
+            open_finance when Open Finance alone calculated the profile,
+            external_sources when the parallel profiling over several sources
+            did (HA-L01), cache or base_actuarial in provisional mode.
         profile:
           type: object
           required: [score, category]
@@ -102,6 +160,39 @@ components:
           description: >
             Code of the message the client shows in provisional mode. Null in normal mode.
             last_profile_in_use for source=cache, personalization_unavailable for source=base_actuarial.
+        partial:
+          type: boolean
+          description: >
+            True when the profile was calculated online without some of the
+            external sources (they missed their budget, failed or were
+            isolated). Always false in provisional mode, which is reported by
+            mode and source.
+        sources:
+          type: array
+          description: >
+            State and latency of each external source consulted, in priority
+            order (screen E2). Empty when a single source answered directly.
+            In provisional mode it shows which source failed.
+          items:
+            $ref: "#/components/schemas/SourceState"
+    SourceState:
+      type: object
+      required: [name, status, latency_ms]
+      properties:
+        name:
+          type: string
+          enum: [open_finance, open_data, kyc]
+        status:
+          type: string
+          enum: [ok, timeout, error, circuit_open]
+          description: >
+            ok answered inside its budget; timeout missed its budget and was
+            canceled; error answered with a failure; circuit_open was isolated
+            by its circuit breaker and not called.
+        latency_ms:
+          type: integer
+          minimum: 0
+          description: Time from the start of the consultation until the source ended or was canceled.
     Error:
       type: object
       required: [error, message]
