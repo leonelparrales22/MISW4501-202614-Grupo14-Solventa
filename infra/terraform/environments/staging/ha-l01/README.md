@@ -35,6 +35,8 @@ tarea k6 ──(internet)──▶ API Gateway REST (caché 0,5 GB + usage plans
 | `ttl` | — (obligatoria) | Fecha `AAAA-MM-DD` límite; etiqueta `TTL` |
 | `services_enabled` | `false` | Corre las tareas `origination` y `fuentes`. Primero `false` (crea los repositorios ECR), se suben las imágenes y luego `true` |
 | `k6_enabled` | `false` | Corre la tarea k6 (con `services_enabled = true`) |
+| `k6_sequence` | `"peak cache ratelimit"` | Pasos de la tarea k6 después de su compuerta, en orden: `peak` (CA-1), `cache` (CA-4), `ratelimit` (CA-5), separados por espacios; permite repetir un paso suelto |
+| `k6_peak_runs` | `3` | Corridas de `peak.js` en el paso `peak` (1 a 3) |
 | `open_finance_required` | `true` | `OPEN_FINANCE_REQUIRED` del servicio (D-2) |
 | `source_latency_profile` | `normal` | Perfil de Toxiproxy: `normal` (85 ± 55 ms) o `degradado` (150 ± 120 ms) |
 | `cache_ttl_seconds` | `60` | TTL del `GET` cacheado (D-6) |
@@ -79,10 +81,14 @@ cuando las imágenes ya están en ECR.
    → `apply <tmp>/p1.tfplan`. Esperar `aws ecs wait services-stable --cluster solventa-stg-ha-l01 --services origination sources`,
    el target del ALB `healthy` (`aws elbv2 describe-target-health`) y la caché del stage `AVAILABLE` (`aws apigateway get-stage`);
    revisar en los logs el arranque de `origination` (configuración del circuito) y que `toxiproxy-init` terminó con código 0.
-4. **P2 (k6):** `plan`/`apply` con `-var services_enabled=true -var k6_enabled=true`. La tarea k6 corre la secuencia (`peak.js` ×3
-   con `STRICT_LATENCY=1`, `gateway-cache.js`, `rate-limit.js`); se sigue con
+4. **P2 (k6):** `plan`/`apply` con `-var services_enabled=true -var k6_enabled=true`. La tarea k6 primero comprueba el recorrido
+   (`k6/ready.js`, hasta 10 intentos cada 30 s) y, solo si pasa, corre los pasos de `k6_sequence` (`peak.js` ×`k6_peak_runs` con
+   `STRICT_LATENCY=1`, `gateway-cache.js`, `rate-limit.js`), con marcas de hora UTC y código de salida por corrida
+   ([secuencia](../../../../../tests/load-k6/ha-l01/README.md)); se sigue con
    `MSYS_NO_PATHCONV=1 aws logs tail /ecs/solventa-stg-ha-l01 --log-stream-name-prefix ha-l01/k6 --since 1h --format short` hasta
-   `== HA-L01 staging sequence finished`. Al terminar, `apply` con `-var k6_enabled=false` (la tarea k6 deja de cobrar).
+   `== HA-L01 staging sequence finished` o `== HA-L01 NOT READY: no load sent` (el recorrido está roto y no se envió carga). Al
+   terminar, `apply` con `-var k6_enabled=false` (la tarea k6 deja de cobrar). Para repetir un solo paso: `k6_enabled=false`,
+   luego `-var k6_sequence=<paso> -var k6_peak_runs=1 -var k6_enabled=true`.
 5. **Evidencia antes del destroy:** el destroy borra el log group, así que antes se guardan fuera del repositorio los logs de k6 y de
    los servicios y las métricas del stage (`aws cloudwatch get-metric-statistics --namespace AWS/ApiGateway --dimensions
    Name=ApiName,Value=solventa-stg-ha-l01 Name=Stage,Value=staging`: `Count`, `Latency`, `IntegrationLatency`, `CacheHitCount`,

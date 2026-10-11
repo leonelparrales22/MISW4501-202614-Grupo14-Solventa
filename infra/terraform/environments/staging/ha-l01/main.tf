@@ -428,6 +428,11 @@ resource "aws_ecs_task_definition" "k6" {
         { name = "BASE_URL", value = module.apigateway.invoke_url },
         { name = "API_KEY_A", value = module.apigateway.api_key_values["socio-a"] },
         { name = "API_KEY_B", value = module.apigateway.api_key_values["socio-b"] },
+        # Steps and labels of tests/load-k6/ha-l01/k6/sequence.sh.
+        { name = "K6_SEQUENCE", value = var.k6_sequence },
+        { name = "PEAK_RUNS", value = tostring(var.k6_peak_runs) },
+        { name = "OPEN_FINANCE_REQUIRED", value = tostring(var.open_finance_required) },
+        { name = "PROFILE", value = var.source_latency_profile },
       ]
       logConfiguration = { logDriver = "awslogs", options = local.log_options }
     },

@@ -49,6 +49,28 @@ variable "k6_enabled" {
   default     = false
 }
 
+variable "k6_sequence" {
+  description = "Steps of the k6 task after its readiness gate, in order: peak (CA-1), cache (CA-4) and ratelimit (CA-5), separated by spaces. Lets a single step be repeated."
+  type        = string
+  default     = "peak cache ratelimit"
+
+  validation {
+    condition     = can(regex("^(peak|cache|ratelimit)( (peak|cache|ratelimit))*$", var.k6_sequence))
+    error_message = "k6_sequence must be a space-separated list of: peak, cache, ratelimit."
+  }
+}
+
+variable "k6_peak_runs" {
+  description = "Number of peak.js runs of the peak step (CA-1)."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.k6_peak_runs >= 1 && var.k6_peak_runs <= 3 && floor(var.k6_peak_runs) == var.k6_peak_runs
+    error_message = "k6_peak_runs must be 1, 2 or 3."
+  }
+}
+
 variable "open_finance_required" {
   description = "OPEN_FINANCE_REQUIRED of the origination service (decision D-2)."
   type        = bool
