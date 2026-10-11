@@ -28,39 +28,49 @@ luego con `false` (decisión D-2), ejecuta la prueba de contrato y destruye el a
 | Fase | Falla inyectada (Toxiproxy) | Qué se espera |
 |---|---|---|
 | `normal` | latencia 85 ± 55 ms en las tres fuentes (≈ 18 % de las llamadas sobre 120 ms; EXP-L01 midió 17 %) | 100 % HTTP 200; parte de los perfiles parciales; con `OPEN_FINANCE_REQUIRED=true`, ≈ 18 % provisionales (Open Finance no llegó); **ningún circuito se abre** |
-| `degradado` | latencia 150 ± 120 ms (≈ 62 % sobre 120 ms; EXP-L01 midió 61 %) | 100 % HTTP 200; más de la mitad de las llamadas se cortan, así que los tres circuitos se abren (decisión D-3 c) y casi todas las ofertas salen provisionales |
-| `caida` | Open Data caída; las otras con el perfil `normal` | 100 % HTTP 200; Open Data como `error` y luego `circuit_open` (el circuito la aísla sin esperar) |
+| `degradado` | latencia 150 ± 120 ms (≈ 62 % sobre 120 ms; EXP-L01 midió 61 %) | 100 % HTTP 200; las fuentes siguen vivas y por debajo del 80 % de fallas, así que **ningún circuito debería abrirse** (ver la salvedad abajo); ≈ 62 % provisionales con `true` y ≈ 25 % con `false` |
+| `caida` | Open Data caída; las otras con el perfil `normal` | 100 % HTTP 200; Open Data como `error` y luego `circuit_open` (el circuito la aísla sin esperar); Open Finance y KYC sin transiciones |
 
 Al final de cada fase k6 imprime: solicitudes, fallas, `provisional`, `partial`, porcentaje de llamadas faltantes por fuente
 y latencias (indicativas), y el script agrega las transiciones del circuit breaker que registró originación durante la fase.
-Los umbrales locales son `http_req_failed == 0` y `checks == 1`: si una solicitud se pierde o una respuesta no cumple el
-contrato, el script termina con error.
+Al recrear originación imprime también la configuración del circuito que quedó activa. Los umbrales locales son
+`http_req_failed == 0` y `checks == 1`: si una solicitud se pierde o una respuesta no cumple el contrato, el script termina con
+error (las transiciones se informan, no hacen fallar el script).
 
-El circuit breaker de cada fuente cuenta el corte por presupuesto como falla y abre por proporción: al menos el 50 % de las
-llamadas fallidas con un mínimo de 20 llamadas en una ventana de 5 s (`BREAKER_FAILURE_RATIO`, `BREAKER_MIN_REQUESTS`,
-`BREAKER_WINDOW_MS`; ver el README de `services/origination`). La cola normal de latencia no lo abre; una fuente lenta o caída
-de forma persistente queda aislada.
+El circuit breaker de cada fuente cuenta el corte por presupuesto como falla y abre por proporción (al menos el 80 % de las
+llamadas fallidas con un mínimo de 20 llamadas en una ventana de 5 s) **o tras 30 fallas seguidas**, contadas por el propio
+circuito sin reiniciarse al terminar cada ventana: así una fuente colgada queda aislada aunque haya poco tráfico. La cola normal
+de latencia y una fuente degradada pero viva no lo abren; una fuente caída o colgada de forma persistente queda aislada. Ver el
+README de `services/origination`.
 
 Variables del script: `SMOKE_RAMP_UP` / `SMOKE_SUSTAIN` (por defecto `10s` / `20s` por fase; la rampa completa de EXP-L01 es
-`1m` / `3m`) y `MODES` (por defecto `"true false"`).
+`1m` / `3m`), `MODES` (por defecto `"true false"`) y los parámetros del circuito, que el compose toma del entorno con los
+valores por defecto del servicio: `BREAKER_FAILURE_RATIO` (0.8), `BREAKER_MIN_REQUESTS` (20), `BREAKER_WINDOW_MS` (5000),
+`BREAKER_CONSECUTIVE_FAILURES` (30), `BREAKER_OPEN_TIMEOUT_MS` (5000) y `BREAKER_HALF_OPEN_SUCCESSES` (3). Por ejemplo:
+`BREAKER_FAILURE_RATIO=0.5 ./run.sh`.
 
-## Resultado de referencia (humo local, 2026-10-10, circuito por proporción)
+## Resultado de referencia (humo local, 2026-10-10, umbral 0,8 + 30 fallas seguidas)
 
 Rampa corta de `run.sh` (10 s + 20 s por fase, ≈ 2 100 solicitudes por fase), dos corridas. 0 % de fallas y 100 % de checks en
 todas las fases; Schemathesis: 3 operaciones, 101/101 en cada check.
 
 | `OPEN_FINANCE_REQUIRED` | Fase | Provisionales | Parciales | Transiciones del circuito |
 |---|---|---|---|---|
-| `true` | normal | 18,0 % / 19,8 % | 26,6 % / 26,8 % | ninguna |
-| `true` | degradado | 99,6 % / 98,7 % | 0,4 % / 1,2 % | los tres abren al inicio de la fase; las sondas casi siempre fallan y reabren |
-| `true` | caída de Open Data | 18,8 % / 18,8 % | 81,2 % / 81,2 % | Open Data abierta (sondas cada 5 s); las otras dos solo se recuperan de la fase anterior |
-| `false` | normal | 0,8 % / 0,8 % | 46,9 % / 44,9 % | ninguna |
-| `false` | degradado | 96,4 % / 98,6 % | 3,6 % / 1,4 % | los tres abren al inicio de la fase |
-| `false` | caída de Open Data | 2,7 % / 4,6 % | 97,3 % / 95,4 % | ídem `true` |
+| `true` | normal | 16,9 % / 19,5 % | 27,8 % / 27,5 % | ninguna |
+| `true` | degradado | 62,6 % / 63,0 % | 31,9 % / 32,1 % | ninguna |
+| `true` | caída de Open Data | 18,0 % / 18,1 % | 82,0 % / 81,9 % | solo Open Data (abre y las sondas reabren cada 5 s) |
+| `false` | normal | 0,5 % / 0,7 % | 44,8 % / 46,2 % | ninguna |
+| `false` | degradado | 25,1 % / **39,1 %** | 70,0 % / 60,9 % | ninguna / **KYC abrió en falso** al inicio de la fase y siguió abierta |
+| `false` | caída de Open Data | 3,5 % / 6,9 % | 96,5 % / 93,1 % | Open Data / Open Data y la recuperación de KYC de la fase anterior |
 
-Antes de que el corte por presupuesto contara como falla (decisión D-3 b, reemplazada por la c), el perfil `degradado` daba
-63 % de provisionales con `true` y 26 % con `false`, porque ningún circuito se abría y cada cotización esperaba 120 ms a cada
-fuente lenta.
+**Salvedad (fuente degradada pero viva):** la proporción se evalúa desde la llamada 20 de cada ventana; con tan pocas llamadas,
+una fuente con ≈ 62 % de cortes llega a veces al 80 % por azar, y una vez abierto el circuito casi nunca cierra (el half-open
+necesita 3 éxitos seguidos, ≈ 5 % con esa fuente). Se vio una vez en 10 fases `degradado` medidas (las 4 de la tabla y 6 más
+repetidas solo con esa fase: 62,4–63,8 % provisionales con `true` y 23,7–25,4 % con `false`, sin transiciones). No la causan
+las 30 fallas seguidas. El valor de `BREAKER_MIN_REQUESTS` es configurable; su ajuste es decisión del equipo.
+
+Con el umbral anterior (50 %) el perfil `degradado` abría los tres circuitos y daba ≈ 96–99 % de provisionales con cualquier
+valor de `OPEN_FINANCE_REQUIRED`; con 0,8 vuelve a los valores de EXP-L01 (≈ 62 % con `true`, ≈ 25 % con `false`).
 
 La latencia local (p95 ≈ 122 ms) solo confirma que el abanico no espera más que el presupuesto; no es la medición de CA-1.
 

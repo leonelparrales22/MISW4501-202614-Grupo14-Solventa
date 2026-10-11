@@ -102,9 +102,10 @@ func TestLoadConfigBreakerOpensByFailureRatio(t *testing.T) {
 	cfg, err := loadConfig(env(requiredEnv()))
 
 	require.NoError(t, err)
-	assert.InDelta(t, 0.5, cfg.breaker.FailureRatio, 1e-9, "D-3 (c): opens at 50 % of failed calls")
+	assert.InDelta(t, 0.8, cfg.breaker.FailureRatio, 1e-9, "D-3 (c), adjusted: opens at 80 % of failed calls")
 	assert.Equal(t, uint32(20), cfg.breaker.MinRequests, "D-3 (c): with at least 20 calls")
 	assert.Equal(t, 5*time.Second, cfg.breaker.Window, "D-3 (c): within a 5 s window")
+	assert.Equal(t, uint32(30), cfg.breaker.ConsecutiveFailureLimit, "safety net: or after 30 failures in a row")
 	assert.Equal(t, 5*time.Second, cfg.breaker.OpenTimeout, "EC-D01: 5 s open")
 	assert.Equal(t, uint32(3), cfg.breaker.HalfOpenSuccesses, "EC-D01: 3 successful probes close")
 }
@@ -114,6 +115,7 @@ func TestLoadConfigBreakerRatioOverrides(t *testing.T) {
 	m["BREAKER_FAILURE_RATIO"] = "0.6"
 	m["BREAKER_MIN_REQUESTS"] = "30"
 	m["BREAKER_WINDOW_MS"] = "10000"
+	m["BREAKER_CONSECUTIVE_FAILURES"] = "12"
 
 	cfg, err := loadConfig(env(m))
 
@@ -121,6 +123,7 @@ func TestLoadConfigBreakerRatioOverrides(t *testing.T) {
 	assert.InDelta(t, 0.6, cfg.breaker.FailureRatio, 1e-9)
 	assert.Equal(t, uint32(30), cfg.breaker.MinRequests)
 	assert.Equal(t, 10*time.Second, cfg.breaker.Window)
+	assert.Equal(t, uint32(12), cfg.breaker.ConsecutiveFailureLimit, "BREAKER_CONSECUTIVE_FAILURES sets the safety net")
 }
 
 func TestLoadConfigZeroRatioKeepsTheConsecutiveFailures(t *testing.T) {
@@ -132,6 +135,7 @@ func TestLoadConfigZeroRatioKeepsTheConsecutiveFailures(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, cfg.breaker.FailureRatio)
 	assert.Equal(t, uint32(3), cfg.breaker.ConsecutiveFailures, "EC-D01 mode")
+	assert.Zero(t, cfg.breaker.ConsecutiveFailureLimit, "the safety net belongs to the failure-ratio mode")
 	assert.NotNil(t, newProfileSource(cfg, newHTTPClient(cfg.maxConnsPerHost)))
 }
 
@@ -188,6 +192,33 @@ func TestBudgetCutsOpenTheSourceCircuitByRatio(t *testing.T) {
 		assert.Equal(t, domain.SourceStatusTimeout, status(), "cut by the 20 ms budget")
 	}
 	assert.Equal(t, domain.SourceStatusCircuitOpen, status(), "D-3 (c): the budget cuts isolate the slow source")
+}
+
+func TestFailuresInARowOpenTheSourceCircuitWithLowTraffic(t *testing.T) {
+	m := requiredEnv()
+	m["OPEN_FINANCE_URL"] = slowProvider(t)
+	m["SOURCE_BUDGET_MS"] = "20"
+	m["BREAKER_WINDOW_MS"] = "60" // a scaled window: about 3 calls per window, never the 20 the ratio needs
+	cfg, err := loadConfig(env(m))
+	require.NoError(t, err)
+	source := newProfileSource(cfg, newHTTPClient(cfg.maxConnsPerHost))
+
+	status := func() domain.SourceStatus {
+		_, err := source.FetchProfile(context.Background(), "c1")
+		var unavailable *ports.SourcesUnavailableError
+		require.ErrorAs(t, err, &unavailable)
+		return unavailable.Outcomes[0].Status
+	}
+	for i := 0; i < 30; i++ {
+		require.Equal(t, domain.SourceStatusTimeout, status(), "call %d reaches the provider: fewer failures in a row do not open", i+1)
+	}
+	// gobreaker ignores a call that ends after its window closed; when the
+	// 30th was one of those, the circuit opens with the next failure.
+	opened := false
+	for i := 0; i < 2 && !opened; i++ {
+		opened = status() == domain.SourceStatusCircuitOpen
+	}
+	assert.True(t, opened, "the default 30 failures in a row isolate the source with low traffic")
 }
 
 func TestLoadConfigParallelOverrides(t *testing.T) {

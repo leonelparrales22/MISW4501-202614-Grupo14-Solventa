@@ -103,17 +103,38 @@ type parallelEnv struct {
 	of, od, kyc *latencyProvider
 }
 
+// productionBreaker is the circuit breaker of each source as main configures
+// it by default (D-3 c, adjusted): a call cut by the budget is a failure, and
+// the circuit opens at 80 % of failed calls with at least 20 calls in a 5 s
+// window, or after 30 failures in a row; 5 s open, 3 probes to close.
+func productionBreaker() resilience.Config {
+	return resilience.Config{
+		OpenTimeout: 5 * time.Second, HalfOpenSuccesses: 3,
+		FailureRatio: 0.8, MinRequests: 20, Window: 5 * time.Second, ConsecutiveFailureLimit: 30,
+	}
+}
+
 // newParallelEnv wires the service as main does, with the production budgets
 // and circuit-breaker settings and the Redis cache on miniredis.
 func newParallelEnv(t *testing.T, openFinanceRequired bool) *parallelEnv {
 	t.Helper()
+	return newParallelEnvWithBreaker(t, openFinanceRequired, productionBreaker())
+}
+
+func newParallelEnvWithBreaker(t *testing.T, openFinanceRequired bool, breaker resilience.Config) *parallelEnv {
+	t.Helper()
 	mr := miniredis.RunT(t)
 	rc := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = rc.Close() })
-	return newParallelEnvWithCache(t, openFinanceRequired, redisadapter.NewProfileCache(rc, 0, 0))
+	return buildParallelEnv(t, openFinanceRequired, redisadapter.NewProfileCache(rc, 0, 0), breaker)
 }
 
 func newParallelEnvWithCache(t *testing.T, openFinanceRequired bool, cache ports.RiskProfileCache) *parallelEnv {
+	t.Helper()
+	return buildParallelEnv(t, openFinanceRequired, cache, productionBreaker())
+}
+
+func buildParallelEnv(t *testing.T, openFinanceRequired bool, cache ports.RiskProfileCache, breaker resilience.Config) *parallelEnv {
 	t.Helper()
 	e := &parallelEnv{
 		of:  newLatencyProvider(t, 0.2),
@@ -124,12 +145,6 @@ func newParallelEnvWithCache(t *testing.T, openFinanceRequired bool, cache ports
 		}},
 	}
 	t.Cleanup(e.httpClient.CloseIdleConnections)
-	// D-3 (c): a call cut by the budget is a failure and the circuit opens at
-	// 50 % of failed calls with at least 20 calls in a 5 s window.
-	breaker := resilience.Config{
-		OpenTimeout: 5 * time.Second, HalfOpenSuccesses: 3,
-		FailureRatio: 0.5, MinRequests: 20, Window: 5 * time.Second,
-	}
 	required := ""
 	if openFinanceRequired {
 		required = domain.ExternalSourceOpenFinance
@@ -399,6 +414,41 @@ func TestPersistentlySlowSourceOpensItsCircuit(t *testing.T) {
 		"D-3 (c): the budget cuts isolate the slow source (HA-D01 CA-1)")
 	assert.Equal(t, before, e.od.hits.Load(), "an open circuit is reported without calling the provider")
 	assert.Less(t, res.elapsed, sourceBudget, "the client no longer waits for the isolated source")
+	assert.Equal(t, true, res.body["partial"])
+}
+
+func TestHungSourceIsIsolatedWithLowTraffic(t *testing.T) {
+	// A scaled window keeps every window below the 20 calls the ratio needs:
+	// one quote after another, each waiting 120 ms for the hung source, gives
+	// about 5 calls per 600 ms window (like about one quote per second with
+	// the 5 s window). Only the 30 failures in a row can isolate the source.
+	breaker := productionBreaker()
+	breaker.Window = 600 * time.Millisecond
+	e := newParallelEnvWithBreaker(t, true, breaker)
+	e.od.setDelay(slowDelay)
+
+	for i := 0; i < 30; i++ {
+		res := e.resolve(t, fmt.Sprintf("c%d", i))
+		require.Equal(t, http.StatusOK, res.status)
+		require.Equal(t, "timeout", sourceStates(t, res.body)["open_data"]["status"],
+			"quote %d still calls the hung source: fewer failures in a row do not open the circuit", i+1)
+	}
+
+	// gobreaker ignores a call that ends after its window closed; when the
+	// 30th was one of those, the circuit opens with the next failure.
+	before := e.od.hits.Load()
+	res := e.resolve(t, "after-30")
+	if sourceStates(t, res.body)["open_data"]["status"] != "circuit_open" {
+		before = e.od.hits.Load()
+		res = e.resolve(t, "after-31")
+	}
+
+	require.Equal(t, http.StatusOK, res.status)
+	assert.Equal(t, "circuit_open", sourceStates(t, res.body)["open_data"]["status"],
+		"30 failures in a row isolate the hung source with low traffic (HA-D01 CA-1)")
+	assert.Equal(t, before, e.od.hits.Load(), "an open circuit is reported without calling the provider")
+	assert.Less(t, res.elapsed, sourceBudget, "the client no longer waits for the isolated source")
+	assert.Equal(t, "normal", res.body["mode"])
 	assert.Equal(t, true, res.body["partial"])
 }
 

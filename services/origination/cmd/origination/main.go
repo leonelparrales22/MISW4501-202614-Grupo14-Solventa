@@ -129,8 +129,8 @@ func newProfileSource(cfg config, httpClient *http.Client) *profiling.ParallelSo
 	log.Printf("parallel profiling: %d sources, budget=%s, deadline=%s, open finance required=%t",
 		len(sources), cfg.sourceBudget, cfg.profilingDeadline, cfg.openFinanceRequired)
 	if b := cfg.breaker; b.FailureRatio > 0 {
-		log.Printf("circuit breaker per source: opens at %.0f%% failed calls with at least %d calls in %s, open %s, closes after %d probes",
-			b.FailureRatio*100, b.MinRequests, b.Window, b.OpenTimeout, b.HalfOpenSuccesses)
+		log.Printf("circuit breaker per source: opens at %.0f%% failed calls with at least %d calls in %s or after %d failures in a row, open %s, closes after %d probes",
+			b.FailureRatio*100, b.MinRequests, b.Window, b.ConsecutiveFailureLimit, b.OpenTimeout, b.HalfOpenSuccesses)
 	} else {
 		log.Printf("circuit breaker per source: opens after %d consecutive failures, open %s, closes after %d probes",
 			b.ConsecutiveFailures, b.OpenTimeout, b.HalfOpenSuccesses)
@@ -219,19 +219,27 @@ func loadParallelConfig(getenv func(string) string, cfg *config) error {
 	return loadBreakerRatio(getenv, &cfg.breaker)
 }
 
-// Defaults of the failure-ratio mode of the circuit breaker (decision D-3 c).
+// Defaults of the failure-ratio mode of the circuit breaker (decision D-3 c,
+// adjusted after the validation of HA-L01).
 const (
-	defaultBreakerFailureRatio = 0.5
+	defaultBreakerFailureRatio = 0.8
 	defaultBreakerMinRequests  = 20
+	// defaultBreakerFailuresInARow is the safety net of the failure-ratio
+	// mode: a source that hangs is isolated even when the traffic is too low
+	// to reach BREAKER_MIN_REQUESTS calls within one window.
+	defaultBreakerFailuresInARow = 30
 )
 
 // loadBreakerRatio reads the failure-ratio mode of the circuit breaker of each
 // source (HA-L01, decision D-3 c). A call cut by the per-source budget counts
 // as a failure, and the circuit opens when at least BREAKER_FAILURE_RATIO of
 // the calls failed, with at least BREAKER_MIN_REQUESTS calls within a
-// BREAKER_WINDOW_MS window: a source that is persistently slow or down is
-// isolated, while the normal latency tail does not open the circuit.
-// BREAKER_FAILURE_RATIO=0 goes back to the consecutive failures of EC-D01.
+// BREAKER_WINDOW_MS window, or after BREAKER_CONSECUTIVE_FAILURES failures in
+// a row (30 by default in this mode, counted across windows): a source that is
+// persistently slow or down is isolated with any traffic, while the normal
+// latency tail and a degraded but alive source do not open the circuit.
+// BREAKER_FAILURE_RATIO=0 goes back to the consecutive failures of EC-D01
+// (BREAKER_CONSECUTIVE_FAILURES, 3 by default, read by loadConfig).
 func loadBreakerRatio(getenv func(string) string, breaker *resilience.Config) error {
 	ratio, err := ratioVar(getenv, "BREAKER_FAILURE_RATIO", defaultBreakerFailureRatio)
 	if err != nil {
@@ -248,6 +256,13 @@ func loadBreakerRatio(getenv func(string) string, breaker *resilience.Config) er
 	breaker.FailureRatio = ratio
 	breaker.MinRequests = minRequests
 	breaker.Window = time.Duration(windowMs) * time.Millisecond
+	if ratio > 0 {
+		breaker.ConsecutiveFailureLimit = defaultBreakerFailuresInARow
+		if getenv("BREAKER_CONSECUTIVE_FAILURES") != "" {
+			// Already validated by loadConfig.
+			breaker.ConsecutiveFailureLimit = breaker.ConsecutiveFailures
+		}
+	}
 	return nil
 }
 

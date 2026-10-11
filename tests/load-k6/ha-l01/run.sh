@@ -16,6 +16,8 @@
 #   SMOKE_RAMP_UP / SMOKE_SUSTAIN  ramp and hold of each phase (default 10s / 20s;
 #                                  the full ramp of EXP-L01 is 1m / 3m)
 #   MODES                          values of OPEN_FINANCE_REQUIRED (default "true false")
+#   BREAKER_*                      circuit-breaker parameters of docker-compose.yml (defaults of
+#                                  the service: ratio 0.8, 20 calls, 5000 ms window, 30 in a row)
 set -euo pipefail
 cd "$(dirname "$0")"
 # Git Bash on Windows rewrites container paths such as /scripts/peak.js.
@@ -59,6 +61,7 @@ OPEN_FINANCE_REQUIRED=true $COMPOSE up -d --build --wait origination
 for required in $MODES; do
   echo "== OPEN_FINANCE_REQUIRED=$required (origination recreated, circuits closed)"
   OPEN_FINANCE_REQUIRED="$required" $COMPOSE up -d --wait --no-deps --force-recreate origination
+  $COMPOSE logs --no-log-prefix origination 2>/dev/null | grep "circuit breaker per source" | sed 's/^/   /' || true
   for profile in normal degradado caida; do
     ./toxiproxy.sh up
     ./toxiproxy.sh "$profile"
