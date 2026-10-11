@@ -10,9 +10,16 @@ terraform {
   }
 
   # Bootstrap: the bucket that stores every state cannot hold its own state
-  # before it exists. The first apply runs with local state, which is then
-  # migrated into the bucket under bootstrap/remote-state/terraform.tfstate
-  # (see README.md).
+  # before it exists. The first apply ran with local state, which was then
+  # migrated into the bucket it creates, under
+  # bootstrap/remote-state/terraform.tfstate (see README.md).
+  backend "s3" {
+    bucket       = "solventa-tfstate-368083581678"
+    key          = "bootstrap/remote-state/terraform.tfstate"
+    region       = "us-east-2"
+    use_lockfile = true
+    encrypt      = true
+  }
 }
 
 provider "aws" {
