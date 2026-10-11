@@ -98,10 +98,11 @@ Este bucket guarda también su propio estado, pero para crearlo Terraform necesi
 Por eso se aplica una única vez, así:
 
 1. `terraform init` y `terraform apply` **sin** bloque `backend` (estado local en la carpeta).
-2. Respaldo manual del `terraform.tfstate` local.
-3. Bloque `backend "s3"` en `versions.tf` con la clave `bootstrap/remote-state/terraform.tfstate` y
-   `terraform init -migrate-state`, que copia el estado local al bucket.
-4. `terraform plan` → «No changes» y borrado del estado local del disco.
+2. Bloque `backend "s3"` en `versions.tf` con la clave `bootstrap/remote-state/terraform.tfstate` y
+   `terraform init -migrate-state`, que copia el estado local al bucket. La migración no borra el estado local: queda en disco
+   como respaldo hasta comprobar la copia.
+3. `terraform state list` (los 7 recursos) y `terraform plan` → «No changes»; recién entonces se borra el estado local del
+   disco. Desde ahí el versionado del bucket conserva las versiones anteriores del estado.
 
 Para aplicarlo, el usuario necesita `s3:CreateBucket`, `s3:PutBucketOwnershipControls`, `s3:PutBucketPublicAccessBlock`,
 `s3:PutBucketVersioning`, `s3:PutEncryptionConfiguration`, `s3:PutBucketPolicy`, `s3:PutLifecycleConfiguration`,
