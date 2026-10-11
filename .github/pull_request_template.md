@@ -1,19 +1,19 @@
-## Summary
-<!-- What changes and why, in a few lines. Title must follow Conventional Commits: type(scope): description (STORY-ID) -->
+## Resumen
+<!-- Qué cambia y por qué, en pocas líneas. El título sigue Conventional Commits: tipo(alcance): descripción (ID-HISTORIA) -->
 
-## What it includes
-<!-- Changes per service or package. -->
+## Qué incluye
+<!-- Cambios por servicio o paquete. -->
 
-## Decisions
-<!-- Decisions taken and alternatives discarded, if any. -->
+## Decisiones
+<!-- Decisiones tomadas y alternativas descartadas, si las hay. -->
 
-## Documentation
-<!-- README, OpenAPI or event catalog updated. -->
+## Documentación
+<!-- README, OpenAPI o catálogo de eventos actualizados. -->
 
-## How it was verified
+## Cómo se verificó
 - [ ] `make lint`
-- [ ] `make test` (coverage >= 70 %)
+- [ ] `make test` (cobertura >= 70 %)
 - [ ] `make build`
 
-## Notes for the reviewer
-<!-- Risks, pending items or points that need attention. -->
+## Notas para quien revisa
+<!-- Riesgos, pendientes o puntos que requieren atención. -->
