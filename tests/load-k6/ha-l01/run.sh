@@ -17,7 +17,7 @@
 #                                  the full ramp of EXP-L01 is 1m / 3m)
 #   MODES                          values of OPEN_FINANCE_REQUIRED (default "true false")
 #   BREAKER_*                      circuit-breaker parameters of docker-compose.yml (defaults of
-#                                  the service: ratio 0.8, 20 calls, 5000 ms window, 30 in a row)
+#                                  the service: ratio 0.8, 50 calls, 5000 ms window, 30 in a row)
 set -euo pipefail
 cd "$(dirname "$0")"
 # Git Bash on Windows rewrites container paths such as /scripts/peak.js.
