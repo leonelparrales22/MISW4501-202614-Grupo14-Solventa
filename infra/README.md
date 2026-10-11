@@ -1,6 +1,6 @@
 # `infra` — infraestructura como código y ambiente local
 
-**Estado:** carpetas reservadas; sin código todavía.
+**Estado:** [`terraform/modules/cognito`](terraform/modules/cognito/README.md) implementado (user pool de los canales humanos, HA-S01; probado con `terraform test` y proveedor simulado); el resto de carpetas sigue reservado.
 
 - `terraform/modules`: `network`, `ecr`, `ecs`, `alb`, `apigateway`, `rds`, `elasticache`, `messaging` (SNS/SQS con DLQ), `s3`, `secrets`, `cognito`, `observability`.
 - `terraform/environments`: `staging` (efímero, solo durante experimentos) y `production-demo` (entrega evaluable).
