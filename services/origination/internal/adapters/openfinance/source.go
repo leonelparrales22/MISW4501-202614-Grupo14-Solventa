@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/openfinance"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/resilience"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 )
@@ -28,11 +29,15 @@ func NewSource(client Fetcher) *Source {
 }
 
 // FetchProfile maps the provider profile to the domain and the provider
-// failures to ports.ErrSourceUnavailable.
+// failures to ports.ErrSourceUnavailable (plus ports.ErrCircuitOpen when the
+// circuit breaker rejected the call, HA-L01).
 func (s *Source) FetchProfile(ctx context.Context, customerID string) (domain.RiskProfile, error) {
 	p, err := s.client.FetchProfile(ctx, customerID)
 	if err != nil {
 		if errors.Is(err, openfinance.ErrSourceUnavailable) {
+			if errors.Is(err, resilience.ErrOpen) {
+				return domain.RiskProfile{}, fmt.Errorf("%w: %w: %w", ports.ErrSourceUnavailable, ports.ErrCircuitOpen, err)
+			}
 			return domain.RiskProfile{}, fmt.Errorf("%w: %w", ports.ErrSourceUnavailable, err)
 		}
 		return domain.RiskProfile{}, err

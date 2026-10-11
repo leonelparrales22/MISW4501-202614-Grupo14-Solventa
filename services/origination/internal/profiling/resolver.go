@@ -45,12 +45,18 @@ func (r *Resolver) Resolve(ctx context.Context, customerID string, consentActive
 		if cerr := r.cache.Set(ctx, profile); cerr != nil {
 			slog.Warn("could not refresh the risk profile cache", "error", cerr)
 		}
-		return domain.ProfileResolution{Profile: profile, Mode: domain.ModeNormal, Source: domain.SourceOpenFinance}, nil
+		return domain.ProfileResolution{
+			Profile: profile,
+			Mode:    domain.ModeNormal,
+			Source:  profile.FreshSource(),
+			Sources: profile.Sources,
+		}, nil
 	}
 	if ctx.Err() != nil {
 		return domain.ProfileResolution{}, ctx.Err()
 	}
 	slog.Warn("external profile source failed, degrading", "error", err)
+	outcomes := sourceOutcomes(err)
 
 	if cached, found := r.validCachedProfile(ctx, customerID); found {
 		return domain.ProfileResolution{
@@ -58,6 +64,7 @@ func (r *Resolver) Resolve(ctx context.Context, customerID string, consentActive
 			Mode:              domain.ModeProvisional,
 			Source:            domain.SourceCache,
 			UnavailableSource: domain.ExternalSourceOpenFinance,
+			Sources:           outcomes,
 		}, nil
 	}
 	return domain.ProfileResolution{
@@ -65,7 +72,19 @@ func (r *Resolver) Resolve(ctx context.Context, customerID string, consentActive
 		Mode:              domain.ModeProvisional,
 		Source:            domain.SourceBaseActuarial,
 		UnavailableSource: domain.ExternalSourceOpenFinance,
+		Sources:           outcomes,
 	}, nil
+}
+
+// sourceOutcomes returns the per-source outcomes carried by the error of the
+// parallel profiling (HA-L01), so a degraded answer still shows which source
+// failed. It is nil for a single source (HA-D01).
+func sourceOutcomes(err error) []domain.SourceOutcome {
+	var unavailable *ports.SourcesUnavailableError
+	if errors.As(err, &unavailable) {
+		return unavailable.Outcomes
+	}
+	return nil
 }
 
 func (r *Resolver) validCachedProfile(ctx context.Context, customerID string) (domain.RiskProfile, bool) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -27,7 +28,8 @@ const (
 	NoticePersonalizationUnavailable = "personalization_unavailable"
 )
 
-// ProfileResolver is the use case behind POST /v1/risk-profiles/resolve.
+// ProfileResolver is the use case behind POST /v1/risk-profiles/resolve and
+// GET /v1/risk-profiles/{customer_id}.
 type ProfileResolver interface {
 	Resolve(ctx context.Context, customerID string, consentActive bool) (domain.ProfileResolution, error)
 }
@@ -40,6 +42,10 @@ func NewRouter(resolver ProfileResolver) http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 	r.Post("/v1/risk-profiles/resolve", resolveProfile(resolver))
+	// Same answer as the POST, as a read the API Gateway can cache per partner
+	// (HA-L01 CA-4, decision D-6): the cache key is built from the path, the
+	// query and the partner API key, never from a body.
+	r.Get("/v1/risk-profiles/{customer_id}", getProfile(resolver))
 	return r
 }
 
@@ -54,13 +60,22 @@ type profileBody struct {
 }
 
 type resolveResponse struct {
-	CustomerID        string      `json:"customer_id"`
-	Mode              string      `json:"mode"`
-	Source            string      `json:"source"`
-	Profile           profileBody `json:"profile"`
-	ProfileDate       *time.Time  `json:"profile_date"`
-	UnavailableSource *string     `json:"unavailable_source"`
-	Notice            *string     `json:"notice"`
+	CustomerID        string       `json:"customer_id"`
+	Mode              string       `json:"mode"`
+	Source            string       `json:"source"`
+	Profile           profileBody  `json:"profile"`
+	ProfileDate       *time.Time   `json:"profile_date"`
+	UnavailableSource *string      `json:"unavailable_source"`
+	Notice            *string      `json:"notice"`
+	Partial           bool         `json:"partial"`
+	Sources           []sourceBody `json:"sources"`
+}
+
+// sourceBody is the state of one external source, shown by screen E2.
+type sourceBody struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	LatencyMs int64  `json:"latency_ms"`
 }
 
 type errorResponse struct {
@@ -81,16 +96,41 @@ func resolveProfile(resolver ProfileResolver) http.HandlerFunc {
 			return
 		}
 
-		res, err := resolver.Resolve(req.Context(), in.CustomerID, *in.ConsentActive)
-		switch {
-		case errors.Is(err, profiling.ErrConsentRequired):
-			writeError(w, http.StatusUnprocessableEntity, "consent_required", "an active consent is required to profile the customer")
-		case err != nil:
-			slog.Error("could not resolve the risk profile", "error", err)
-			writeError(w, http.StatusServiceUnavailable, "request_aborted", "the request was aborted before an offer could be produced")
-		default:
-			writeJSON(w, http.StatusOK, toResponse(in.CustomerID, res))
+		respond(w, req, resolver, in.CustomerID, *in.ConsentActive)
+	}
+}
+
+func getProfile(resolver ProfileResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		customerID, err := url.PathUnescape(chi.URLParam(req, "customer_id"))
+		if err != nil || customerID == "" || len(customerID) > maxCustomerIDSize {
+			writeError(w, http.StatusBadRequest, "invalid_request", "customer_id (max 128 chars) is required")
+			return
 		}
+		var consentActive bool
+		switch req.URL.Query().Get("consent_active") {
+		case "true":
+			consentActive = true
+		case "false":
+			consentActive = false
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_request", "consent_active (true or false) is required")
+			return
+		}
+		respond(w, req, resolver, customerID, consentActive)
+	}
+}
+
+func respond(w http.ResponseWriter, req *http.Request, resolver ProfileResolver, customerID string, consentActive bool) {
+	res, err := resolver.Resolve(req.Context(), customerID, consentActive)
+	switch {
+	case errors.Is(err, profiling.ErrConsentRequired):
+		writeError(w, http.StatusUnprocessableEntity, "consent_required", "an active consent is required to profile the customer")
+	case err != nil:
+		slog.Error("could not resolve the risk profile", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "request_aborted", "the request was aborted before an offer could be produced")
+	default:
+		writeJSON(w, http.StatusOK, toResponse(customerID, res))
 	}
 }
 
@@ -100,6 +140,13 @@ func toResponse(customerID string, res domain.ProfileResolution) resolveResponse
 		Mode:       string(res.Mode),
 		Source:     string(res.Source),
 		Profile:    profileBody{Score: res.Profile.Score, Category: res.Profile.Category},
+		// partial describes an online calculation; a provisional answer is
+		// already flagged by mode and source.
+		Partial: res.Mode == domain.ModeNormal && res.Profile.Partial,
+		Sources: make([]sourceBody, 0, len(res.Sources)),
+	}
+	for _, o := range res.Sources {
+		out.Sources = append(out.Sources, sourceBody{Name: o.Source, Status: string(o.Status), LatencyMs: o.Latency.Milliseconds()})
 	}
 	if !res.Profile.CalculatedAt.IsZero() {
 		d := res.Profile.CalculatedAt.UTC()

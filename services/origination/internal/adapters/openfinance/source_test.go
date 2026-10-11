@@ -3,6 +3,7 @@ package openfinance_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pkgof "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/openfinance"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/resilience"
 	adapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/openfinance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 )
@@ -52,4 +54,21 @@ func TestFetchProfileKeepsOtherErrors(t *testing.T) {
 
 	require.ErrorIs(t, err, boom)
 	assert.NotErrorIs(t, err, ports.ErrSourceUnavailable)
+}
+
+func TestFetchProfileMapsOpenCircuit(t *testing.T) {
+	src := adapter.NewSource(fakeFetcher{err: fmt.Errorf("%w: %w", pkgof.ErrSourceUnavailable, resilience.ErrOpen)})
+
+	_, err := src.FetchProfile(context.Background(), "c1")
+
+	assert.ErrorIs(t, err, ports.ErrSourceUnavailable, "HA-D01 still degrades")
+	assert.ErrorIs(t, err, ports.ErrCircuitOpen, "HA-L01 reports circuit_open")
+}
+
+func TestFetchProfileUnavailableIsNotCircuitOpen(t *testing.T) {
+	src := adapter.NewSource(fakeFetcher{err: pkgof.ErrSourceUnavailable})
+
+	_, err := src.FetchProfile(context.Background(), "c1")
+
+	assert.NotErrorIs(t, err, ports.ErrCircuitOpen)
 }
