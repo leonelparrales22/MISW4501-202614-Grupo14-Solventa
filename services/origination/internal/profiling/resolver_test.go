@@ -228,3 +228,64 @@ func TestEveryRequestGetsAnAnswerDuringAnOutage(t *testing.T) {
 	}
 	assert.Equal(t, requests, count, "no request may be lost")
 }
+
+// --- HA-L01: per-source outcomes ----------------------------------------------
+
+func outcomesFixture() []domain.SourceOutcome {
+	return []domain.SourceOutcome{
+		{Source: domain.ExternalSourceOpenFinance, Status: domain.SourceStatusTimeout, Latency: 120 * time.Millisecond},
+		{Source: domain.ExternalSourceOpenData, Status: domain.SourceStatusOK, Latency: 40 * time.Millisecond},
+		{Source: domain.ExternalSourceKYC, Status: domain.SourceStatusCircuitOpen},
+	}
+}
+
+func TestResolveCopiesSourceOutcomesWhenDegraded(t *testing.T) {
+	outcomes := outcomesFixture()
+	src := &fakeSource{err: &ports.SourcesUnavailableError{Outcomes: outcomes}}
+
+	t.Run("from cache", func(t *testing.T) {
+		cache := newFakeCache()
+		cached := freshProfile()
+		cached.CustomerID = "c1"
+		cache.items["c1"] = cached
+
+		got, err := newResolver(src, cache).Resolve(context.Background(), "c1", true)
+
+		require.NoError(t, err)
+		assert.Equal(t, domain.SourceCache, got.Source)
+		assert.Equal(t, domain.ExternalSourceOpenFinance, got.UnavailableSource)
+		assert.Equal(t, outcomes, got.Sources, "E2b shows which source failed")
+	})
+	t.Run("from base profile", func(t *testing.T) {
+		got, err := newResolver(src, newFakeCache()).Resolve(context.Background(), "new", true)
+
+		require.NoError(t, err)
+		assert.Equal(t, domain.SourceBaseActuarial, got.Source)
+		assert.Equal(t, outcomes, got.Sources)
+	})
+}
+
+func TestResolveSingleSourceFailureHasNoOutcomes(t *testing.T) {
+	got, err := newResolver(&fakeSource{err: ports.ErrSourceUnavailable}, newFakeCache()).Resolve(context.Background(), "new", true)
+
+	require.NoError(t, err)
+	assert.Empty(t, got.Sources)
+}
+
+func TestResolveNormalTakesTheSourceFromTheProfile(t *testing.T) {
+	p := freshProfile()
+	p.Partial = true
+	p.Sources = []domain.SourceOutcome{
+		{Source: domain.ExternalSourceOpenFinance, Status: domain.SourceStatusOK},
+		{Source: domain.ExternalSourceOpenData, Status: domain.SourceStatusTimeout},
+		{Source: domain.ExternalSourceKYC, Status: domain.SourceStatusOK},
+	}
+
+	got, err := newResolver(&fakeSource{profile: p}, newFakeCache()).Resolve(context.Background(), "c1", true)
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.ModeNormal, got.Mode)
+	assert.Equal(t, domain.SourceExternal, got.Source)
+	assert.True(t, got.Profile.Partial)
+	assert.Equal(t, p.Sources, got.Sources)
+}

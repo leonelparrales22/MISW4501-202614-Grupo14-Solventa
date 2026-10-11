@@ -1,0 +1,118 @@
+# HA-L01 local smoke scenario: origination + Redis + the Open Finance, Open
+# Data and KYC stubs, each behind its own Toxiproxy proxy. Toxiproxy injects
+# the latency profiles of EXP-L01 and the outages; the stubs only serve
+# profiles. Run it with ./run.sh. Build context is the repository root.
+#
+# Origination is published on 8080 (ORIGINATION_PORT), the URL the web client
+# uses in development. The Toxiproxy API is published on 8475 so this scenario
+# never clashes with tests/resilience/ha-d01 (8474).
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  openfinance:
+    build:
+      context: ../../..
+      dockerfile: stubs/openfinance/Dockerfile
+    environment:
+      - PORT=9000
+
+  opendata:
+    build:
+      context: ../../..
+      dockerfile: stubs/opendata/Dockerfile
+    environment:
+      - PORT=9010
+
+  kyc:
+    build:
+      context: ../../..
+      dockerfile: stubs/kyc/Dockerfile
+    environment:
+      - PORT=9020
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "8475:8474" # Toxiproxy API, used by toxiproxy.sh
+    depends_on:
+      - openfinance
+      - opendata
+      - kyc
+
+  # The Toxiproxy image is distroless (no shell, no CLI), so the proxies are
+  # created through its HTTP API.
+  toxiproxy-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - toxiproxy
+    entrypoint:
+      - sh
+      - -c
+      - >
+        until curl -sf http://toxiproxy:8474/version; do sleep 1; done;
+        for p in openfinance:9001:9000 opendata:9011:9010 kyc:9021:9020; do
+        name=$${p%%:*}; rest=$${p#*:}; listen=$${rest%%:*}; upstream=$${rest#*:};
+        curl -sf -X POST http://toxiproxy:8474/proxies -H 'Content-Type: application/json'
+        -d "{\"name\":\"$$name\",\"listen\":\"0.0.0.0:$$listen\",\"upstream\":\"$$name:$$upstream\",\"enabled\":true}" || exit 1;
+        done
+
+  origination:
+    build:
+      context: ../../..
+      dockerfile: services/origination/Dockerfile
+    ports:
+      - "${ORIGINATION_PORT:-8080}:8080"
+    environment:
+      - PORT=8080
+      - REDIS_ADDR=redis:6379
+      - OPEN_FINANCE_URL=http://toxiproxy:9001
+      - OPEN_DATA_URL=http://toxiproxy:9011
+      - KYC_URL=http://toxiproxy:9021
+      - OPEN_FINANCE_TIMEOUT_MS=700
+      - SOURCE_BUDGET_MS=120
+      - PROFILING_DEADLINE_MS=700
+      - HTTP_MAX_CONNS_PER_HOST=200
+      - OPEN_FINANCE_REQUIRED=${OPEN_FINANCE_REQUIRED:-true}
+      # Circuit breaker of each source: the defaults of the service, overridable
+      # from the shell (e.g. BREAKER_FAILURE_RATIO=0.5 ./run.sh).
+      - BREAKER_OPEN_TIMEOUT_MS=${BREAKER_OPEN_TIMEOUT_MS:-5000}
+      - BREAKER_HALF_OPEN_SUCCESSES=${BREAKER_HALF_OPEN_SUCCESSES:-3}
+      - BREAKER_FAILURE_RATIO=${BREAKER_FAILURE_RATIO:-0.8}
+      - BREAKER_MIN_REQUESTS=${BREAKER_MIN_REQUESTS:-20}
+      - BREAKER_WINDOW_MS=${BREAKER_WINDOW_MS:-5000}
+      - BREAKER_CONSECUTIVE_FAILURES=${BREAKER_CONSECUTIVE_FAILURES:-30}
+    depends_on:
+      redis:
+        condition: service_healthy
+      toxiproxy-init:
+        condition: service_completed_successfully
+
+  # Started on demand by run.sh (docker compose run --rm k6 ...).
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["tools"]
+    entrypoint: ["k6"]
+    environment:
+      - BASE_URL=http://origination:8080
+    volumes:
+      - ./k6:/scripts:ro
+
+  # Contract test (OBJ 05) against the running service.
+  schemathesis:
+    image: schemathesis/schemathesis:v3.39.16
+    profiles: ["tools"]
+    volumes:
+      - ../../../services/origination/api:/api:ro
+    command:
+      - run
+      - /api/openapi.yaml
+      - --base-url=http://origination:8080
+      - --checks=all
+      - --hypothesis-max-examples=50
+      - --hypothesis-seed=1

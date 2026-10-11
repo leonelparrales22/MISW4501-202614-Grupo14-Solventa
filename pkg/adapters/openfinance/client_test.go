@@ -135,3 +135,75 @@ func TestZeroTimeoutFallsBackToDefault(t *testing.T) {
 	_, err := c.FetchProfile(context.Background(), "c1")
 	require.NoError(t, err)
 }
+
+// --- HA-L01: shared connection pool and per-dependency budget -----------------
+
+type countingTransport struct {
+	calls atomic.Int32
+	next  http.RoundTripper
+}
+
+func (t *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	t.calls.Add(1)
+	return t.next.RoundTrip(r)
+}
+
+func TestInjectedHTTPClientCarriesTheCalls(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"customer_id":"c1","score":0.1,"category":"preferred","updated_at":"2026-10-01T10:00:00Z"}`))
+	}))
+	defer srv.Close()
+	transport := &countingTransport{next: http.DefaultTransport}
+	cfg := testConfig(srv.URL, time.Second)
+	cfg.HTTPClient = &http.Client{Transport: transport}
+
+	_, err := openfinance.NewClient(cfg).FetchProfile(context.Background(), "c1")
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), transport.calls.Load())
+}
+
+func TestInjectedHTTPClientStillHonorsTheTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	cfg := testConfig(srv.URL, 40*time.Millisecond)
+	cfg.HTTPClient = &http.Client{} // no client-level timeout
+
+	start := time.Now()
+	_, err := openfinance.NewClient(cfg).FetchProfile(context.Background(), "c1")
+
+	assert.ErrorIs(t, err, openfinance.ErrSourceUnavailable)
+	assert.Less(t, time.Since(start), 300*time.Millisecond)
+}
+
+func TestCallerBudgetCountsAsAFailure(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	cfg := testConfig(srv.URL, time.Second)
+	cfg.Breaker.OpenTimeout = time.Minute
+	c := openfinance.NewClient(cfg)
+
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		_, err := c.FetchProfile(ctx, "c1")
+		cancel()
+		require.ErrorIs(t, err, openfinance.ErrSourceUnavailable)
+	}
+	assert.Equal(t, "open", c.BreakerState(), "a call cut by the caller's budget is a failure of Open Finance (D-3 c)")
+
+	_, err := c.FetchProfile(context.Background(), "c1")
+	assert.ErrorIs(t, err, resilience.ErrOpen)
+	assert.Equal(t, int32(3), hits.Load(), "an open circuit does not call Open Finance")
+}
