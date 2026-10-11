@@ -4,7 +4,7 @@ Cada servicio mantiene su contrato en `services/<service>/api/openapi.yaml`; Sch
 
 | Servicio | Contrato | Estado |
 |---|---|---|
-| origination | [openapi.yaml](../../services/origination/api/openapi.yaml) | `/health` y `POST /v1/risk-profiles/resolve` (HA-D01) |
+| origination | [openapi.yaml](../../services/origination/api/openapi.yaml) | 0.3.0: `/health`, `POST /v1/risk-profiles/resolve` (HA-D01) y `GET /v1/risk-profiles/{customer_id}` (HA-L01); la respuesta agrega `partial` y `sources[]` (estado y latencia por fuente) |
 | claims | [openapi.yaml](../../services/claims/api/openapi.yaml) | Solo `/health` |
 | partners | [openapi.yaml](../../services/partners/api/openapi.yaml) | Solo `/health` |
 | audit | [openapi.yaml](../../services/audit/api/openapi.yaml) | Solo `/health` |

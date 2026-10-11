@@ -2,14 +2,14 @@
 
 Camino crítico del negocio: cotiza, perfila, emite y cobra. Es la fachada (*Facade*) del ciclo de vida de la póliza.
 
-**Estado:** `GET /health` y `POST /v1/risk-profiles/resolve` (HA-D01: oferta continua ante caída de la fuente externa). El resto de módulos sigue reservado.
+**Estado:** `GET /health`, `POST /v1/risk-profiles/resolve` (HA-D01: oferta continua ante caída de la fuente externa) y `GET /v1/risk-profiles/{customer_id}` con las fuentes externas consultadas en paralelo (HA-L01: cotización embebida rápida bajo tráfico pico). El resto de módulos sigue reservado.
 
 ## Responsabilidades
 
 | Módulo (`internal/`) | Qué hace |
 |---|---|
 | `orchestrator` | Orquestador de cotización: coordina perfilamiento y rating. Consulta primero la caché y luego las fuentes externas en paralelo |
-| `profiling` | Perfil de riesgo con Open Finance / Open Data (con consentimiento). **HA-D01:** `Resolver` con la cadena de degradación Open Finance → `Perfil_Riesgo_Cache` (Redis, TTL 30 días) → perfil actuarial base; la oferta degradada sale marcada como provisional. La invalidación al recotizar llega con HU-W1.2-02 |
+| `profiling` | Perfil de riesgo con Open Finance / Open Data (con consentimiento). **HA-D01:** `Resolver` con la cadena de degradación Open Finance → `Perfil_Riesgo_Cache` (Redis, TTL 30 días) → perfil actuarial base; la oferta degradada sale marcada como provisional. La invalidación al recotizar llega con HU-W1.2-02. **HA-L01:** `ParallelSource` consulta Open Finance, Open Data y KYC en paralelo (120 ms por fuente, corte total de 700 ms), cancela la fuente lenta y arma el perfil parcial con las señales que llegaron; `CombineProvisional` es la regla provisional de combinación (reemplazable por HU-W1.2-02) |
 | `rating` | Motor de rating: prima y coberturas. Reglas actuariales aisladas del resto |
 | `underwriting` | Suscripción automática: acepta, rechaza o ajusta el riesgo; enruta a decisión humana (bandeja del asesor) cuando aplica |
 | `issuance` | Aceptación de la oferta, documento contractual (firma) y activación de la cobertura |
@@ -23,8 +23,10 @@ Las llamadas entre orquestador, perfilamiento y rating son **en proceso** (sin s
 
 | Adaptador | Qué hace |
 |---|---|
-| `http` | Router `chi`: `GET /health` (superficial) y `POST /v1/risk-profiles/resolve` |
-| `openfinance` | Puente entre el cliente compartido `pkg/adapters/openfinance` (timeout 700 ms + circuit breaker) y el puerto `RiskProfileSource` |
+| `http` | Router `chi`: `GET /health` (superficial), `POST /v1/risk-profiles/resolve` y `GET /v1/risk-profiles/{customer_id}?consent_active=…` (misma respuesta, lectura cacheable por el API Gateway por socio; HA-L01) |
+| `openfinance` | Puente entre el cliente compartido `pkg/adapters/openfinance` (timeout 700 ms + circuit breaker) y el puerto `RiskProfileSource`; el circuito abierto se informa como `circuit_open` (HA-L01) |
+| `opendata` | Puente entre `pkg/adapters/opendata` y el puerto `RiskProfileSource` (HA-L01) |
+| `kyc` | Puente entre `pkg/adapters/kyc` y el puerto `RiskProfileSource` (HA-L01) |
 | `redis` | `Perfil_Riesgo_Cache` (cache-aside), clave `risk_profile:{customer_id}`, TTL 30 días y timeout propio de 100 ms por operación para que Redis nunca bloquee la oferta |
 
 ## Oferta continua ante caída de la fuente (HA-D01)
@@ -43,6 +45,38 @@ Open Finance caído, lento o aislado
 - `consent_active` lo afirma el llamador mientras `audit` no expone la consulta de consentimiento (HU-W1.2-01); entonces se reemplazará por un puerto.
 - Fuera de esta historia: respetar/recotizar ofertas provisionales y notificar (HU-W1.2-03), consulta concurrente de las tres fuentes (HA-L01 / HU-W1.2-02).
 
+## Cotización en paralelo (HA-L01)
+
+El `Resolver` de HA-D01 recibe como fuente un `ParallelSource` (*scatter-gather*) que consulta a la vez Open Finance, Open
+Data y KYC. Cada fuente tiene su presupuesto (`SOURCE_BUDGET_MS`, 120 ms) dentro de un corte total (`PROFILING_DEADLINE_MS`,
+700 ms); la fuente que no llega se **cancela** (la cancelación se propaga hasta la conexión HTTP) y el cliente no la espera.
+
+```
+llegan las tres fuentes ─────────────────────────────▶ mode=normal, source=external_sources, partial=false
+falta una fuente opcional (Open Data o KYC) ─────────▶ mode=normal, source=external_sources, partial=true
+falta Open Finance y OPEN_FINANCE_REQUIRED=true ─────▶ se cancelan las demás → cadena de HA-D01 (cache / base_actuarial), provisional
+falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial con las que llegaron; provisional solo si no llega ninguna
+```
+
+- `sources[]` informa cada fuente con `status` (`ok`, `timeout`, `error`, `circuit_open`) y `latency_ms`; lo pinta la pantalla
+  E2/E2b. En modo provisional muestra qué fuente falló. Con una sola fuente configurada (Open Finance, como en
+  `tests/resilience/ha-d01`) la respuesta sigue siendo la de HA-D01 (`source=open_finance`).
+- `OPEN_FINANCE_REQUIRED` (decisión D-2, por defecto `true`) privilegia la exactitud del precio: sin la señal financiera la
+  oferta sale provisional. **Consecuencia esperada:** con el perfil de latencia `normal` de EXP-L01 (Open Finance supera
+  120 ms cerca del 17 % de las veces) alrededor del 17 % de las cotizaciones salen provisionales. Con `false` las fuentes son
+  equivalentes y casi ninguna sale provisional, pero más perfiles quedan parciales. En el humo local (2026-10-10, perfil
+  `normal`): `true` → 19,2 % provisionales y 27,1 % parciales; `false` → 0,9 % provisionales y 43,9 % parciales. Detalle en
+  [`tests/load-k6/ha-l01`](../../tests/load-k6/ha-l01/README.md).
+- La regla de combinación es provisional (`CombineProvisional`, decisión D-4): promedio de los `score` que llegaron y la
+  categoría y fecha de la fuente de mayor prioridad presente (Open Finance > Open Data > KYC). La regla actuarial definitiva
+  es de HU-W1.2-02.
+- El corte por presupuesto **no cuenta como falla** del circuit breaker (decisión D-3 b, `IgnoreCallerCancellation` en
+  `pkg/resilience`): el circuito de cada fuente se abre por errores, 5xx o conexión rechazada, y la lentitud la acota el
+  propio presupuesto. Así la cola normal de latencia no aísla la fuente.
+- Los tres adaptadores comparten un `http.Client` con un pool de `HTTP_MAX_CONNS_PER_HOST` conexiones por host (EXP-L01).
+- `GET /v1/risk-profiles/{customer_id}?consent_active=true` devuelve lo mismo que el `POST` para que el API Gateway lo sirva
+  desde su caché por socio (clave = ruta + query + API key; TTL 60 s, decisión D-6) sin recalcular.
+
 ## Configuración (variables de entorno)
 
 | Variable | Defecto | Descripción |
@@ -55,6 +89,15 @@ Open Finance caído, lento o aislado
 | `BREAKER_OPEN_TIMEOUT_MS` | `5000` | Tiempo abierto antes de las sondas |
 | `BREAKER_HALF_OPEN_SUCCESSES` | `3` | Éxitos consecutivos que cierran el circuito |
 | `PROFILE_CACHE_TTL_HOURS` | `720` | Vigencia del perfil en caché (30 días) |
+| `OPEN_DATA_URL` | vacío | URL base de Open Data. Vacía: la fuente queda fuera del abanico (aviso en el log) |
+| `KYC_URL` | vacío | URL base de KYC. Vacía: la fuente queda fuera del abanico (aviso en el log) |
+| `SOURCE_BUDGET_MS` | `120` | Presupuesto de latencia de cada fuente (CA-2 de HA-L01) |
+| `PROFILING_DEADLINE_MS` | `700` | Corte total del abanico (CA-2 de HA-L01) |
+| `HTTP_MAX_CONNS_PER_HOST` | `200` | Pool de conexiones por host del cliente HTTP compartido (EXP-L01) |
+| `OPEN_FINANCE_REQUIRED` | `true` | Sin Open Finance no se calcula el perfil en línea y la oferta sale provisional (D-2). `false`: fuentes equivalentes |
+
+`OPEN_FINANCE_TIMEOUT_MS` queda como tope del adaptador de Open Finance (Open Data y KYC usan 700 ms); en el recorrido el corte
+efectivo de cada fuente es el menor entre ese tope y `SOURCE_BUDGET_MS`. Los `BREAKER_*` se aplican a cada fuente por separado.
 
 ## Requisitos de calidad que gobiernan el servicio
 
@@ -83,3 +126,7 @@ REDIS_ADDR=localhost:6379 OPEN_FINANCE_URL=http://localhost:9000 \
 ```
 
 Pruebas: `go test ./services/origination/...` (incluye `tests/integration`, que ejercita cada criterio de aceptación de HA-D01). La simulación de la caída con Toxiproxy y k6 está en [`tests/resilience/ha-d01`](../../tests/resilience/ha-d01/README.md).
+
+Con las tres fuentes (HA-L01), agregar `OPEN_DATA_URL=http://localhost:9010 KYC_URL=http://localhost:9020`. `tests/integration/parallel_quoting_test.go`
+verifica los presupuestos, la cancelación sin conexiones ni goroutines remanentes y el perfil parcial; el escenario de carga local con
+Toxiproxy, k6 y Schemathesis está en [`tests/load-k6/ha-l01`](../../tests/load-k6/ha-l01/README.md).

@@ -38,6 +38,22 @@ respuesta no cumple el contrato, el script termina con error.
 Variables del script: `SMOKE_RAMP_UP` / `SMOKE_SUSTAIN` (por defecto `10s` / `20s` por fase; la rampa completa de EXP-L01 es
 `1m` / `3m`) y `MODES` (por defecto `"true false"`).
 
+## Resultado de referencia (humo local, 2026-10-10)
+
+Rampa corta de `run.sh` (10 s + 20 s por fase, ≈ 2 100 solicitudes por fase). 0 % de fallas y 100 % de checks en todas las fases;
+Schemathesis: 3 operaciones, 101/101 en cada check.
+
+| `OPEN_FINANCE_REQUIRED` | Fase | Provisionales | Parciales |
+|---|---|---|---|
+| `true` | normal | 19,2 % | 27,1 % |
+| `true` | degradado | 63,2 % | 32,1 % |
+| `true` | caída de Open Data | 18,6 % | 81,4 % |
+| `false` | normal | 0,9 % | 43,9 % |
+| `false` | degradado | 25,8 % | 69,3 % |
+| `false` | caída de Open Data | 3,3 % | 96,7 % |
+
+La latencia local (p95 ≈ 122 ms) solo confirma que el abanico no espera más que el presupuesto; no es la medición de CA-1.
+
 ## Qué significa `OPEN_FINANCE_REQUIRED` (D-2)
 
 - `true` (defecto): si Open Finance no llega dentro de su presupuesto (lenta, con error o con el circuito abierto), se cancelan
