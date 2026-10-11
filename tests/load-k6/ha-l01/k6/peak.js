@@ -6,14 +6,17 @@
 // when a request is lost or an answer is malformed. With STRICT_LATENCY=1
 // (staging, CA-1) it also enforces p95 <= 400 ms and p99 <= 800 ms.
 //
-// Variables: BASE_URL, RPS_MAX (83), RAMP_UP (1m), SUSTAIN (3m), CACHE_HIT
-// (0.5, share of requests for a repeated customer), PROFILE and
-// OPEN_FINANCE_REQUIRED (labels for the summary), STRICT_LATENCY.
+// Variables: BASE_URL (the service locally, the API Gateway stage in staging),
+// API_KEY (partner key, sent as x-api-key when set), RPS_MAX (83), RAMP_UP
+// (1m), SUSTAIN (3m), CACHE_HIT (0.5, share of requests for a repeated
+// customer), PROFILE and OPEN_FINANCE_REQUIRED (labels for the summary),
+// STRICT_LATENCY.
 import http from "k6/http";
 import { check } from "k6";
 import { Rate } from "k6/metrics";
 
 const BASE_URL = __ENV.BASE_URL || "http://localhost:8080";
+const API_KEY = __ENV.API_KEY || "";
 const RPS_MAX = parseInt(__ENV.RPS_MAX || "83", 10);
 const RAMP_UP = __ENV.RAMP_UP || "1m";
 const SUSTAIN = __ENV.SUSTAIN || "3m";
@@ -22,6 +25,9 @@ const PROFILE = __ENV.PROFILE || "unlabeled";
 const OPEN_FINANCE_REQUIRED = __ENV.OPEN_FINANCE_REQUIRED || "?";
 const STRICT_LATENCY = __ENV.STRICT_LATENCY === "1";
 const WARM_POOL = 200;
+const HEADERS = API_KEY
+  ? { "Content-Type": "application/json", "x-api-key": API_KEY }
+  : { "Content-Type": "application/json" };
 
 const provisional = new Rate("provisional");
 const partial = new Rate("partial");
@@ -65,7 +71,7 @@ export default function () {
   const res = http.post(
     `${BASE_URL}/v1/risk-profiles/resolve`,
     JSON.stringify({ customer_id: customerId(), consent_active: true }),
-    { headers: { "Content-Type": "application/json" } },
+    { headers: HEADERS },
   );
 
   let body = {};

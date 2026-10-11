@@ -76,6 +76,18 @@ curl -s 'localhost:8080/v1/risk-profiles/c1?consent_active=true'
 docker compose -p ha-l01 --profile tools down -v
 ```
 
+## Guiones para staging (a través del API Gateway)
+
+| Guion | Criterio | Qué hace | Umbrales |
+|---|---|---|---|
+| `k6/peak.js` con `STRICT_LATENCY=1` y `API_KEY` | CA-1 | Rampa de EXP-L01 contra el stage, tres corridas | `p(95)<400`, `p(99)<800`, `http_req_failed<1%` |
+| `k6/gateway-cache.js` | CA-4 | Por cliente: el socio A lee dos veces y el socio B una (`GET /v1/risk-profiles/{id}`) | la segunda lectura de A es idéntica a la primera (> 95 %); la de B nunca coincide con la de A (100 %) |
+| `k6/rate-limit.js` | CA-5 | Socio A a 200 req/s (sobre su plan de 100) y socio B a 50 req/s al mismo tiempo | A recibe `429`; B 0 % de `429` y p95 < 400 ms |
+
+Variables: `BASE_URL` (URL del stage), `API_KEY` / `API_KEY_A` / `API_KEY_B` (claves de prueba de los socios). La imagen de la
+tarea k6 de la ventana se construye con el `Dockerfile` de esta carpeta (`docker build -t <repo-ecr-k6>:ha-l01 .`) y ejecuta
+`k6/sequence.sh` (CA-1 ×3, CA-4, CA-5). La infraestructura está en `infra/terraform/environments/staging/ha-l01`.
+
 ## Trazabilidad
 
 HA-L01 (CA-2, CA-3; CA-1 como humo) · EXP-L01 (rama `ExperimentoL01_perfilamientoParalelo`: rampa 8 → 83 req/s y perfiles de
