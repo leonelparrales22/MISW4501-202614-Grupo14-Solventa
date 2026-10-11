@@ -40,8 +40,8 @@ Design documentation (architecture, decisions, experiments, backlog) lives in th
 
 ## 3. Language and Style Conventions
 
-- **Everything in the repository is written in English:** code (identifiers, packages, endpoint paths), comments, log messages, OpenAPI descriptions, commit messages, PR titles and descriptions, and files such as this one.
-- **The only exception is `README.md` files, which are written in Spanish.**
+- **Everything in the repository is written in English:** code (identifiers, packages, endpoint paths), comments, log messages, OpenAPI descriptions, commit messages, and files such as this one.
+- **The exceptions are `README.md` files and pull request titles and descriptions, which are written in Spanish** (team agreement).
 - **Error handling and security:**
   - Do not use `log.Fatal` or `panic` in business logic or HTTP handlers; propagate errors. Both are acceptable only in `cmd/<service>/main.go` for startup failures.
   - HTTP servers must always set explicit timeouts (`ReadHeaderTimeout: 5 * time.Second` at minimum) to satisfy `gosec`.
