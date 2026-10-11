@@ -97,8 +97,10 @@ func TestHalfOpenFailureReopens(t *testing.T) {
 
 // --- Failure-ratio mode (HA-L01, decision D-3 c) --------------------------------
 
-// newRatioBreaker uses the thresholds origination runs with (50 % of failed
-// calls with at least 20 calls in the window) and the given windows.
+// newRatioBreaker opens at 50 % of failed calls with at least 20 calls in the
+// window (decision D-3 c; origination now defaults to 80 %, see the tests of
+// the safety net below), without the consecutive-failure limit, and uses the
+// given windows.
 func newRatioBreaker(window, openTimeout time.Duration) *resilience.Breaker {
 	return resilience.NewBreaker("ratio", resilience.Config{
 		ConsecutiveFailures: 3, // not used in this mode
@@ -246,4 +248,116 @@ func TestRatioModeClosesAfterThreeConsecutiveHalfOpenSuccesses(t *testing.T) {
 	assert.Equal(t, "half-open", b.State(), "two successes must not close the circuit")
 	require.NoError(t, succeed(b))
 	assert.Equal(t, "closed", b.State())
+}
+
+// --- Consecutive-failure limit of the failure-ratio mode (HA-L01) -------------
+
+// newSafetyNetBreaker uses the thresholds origination runs with: 80 % of
+// failed calls with at least minRequests calls in the window, or 30 failed
+// calls in a row.
+func newSafetyNetBreaker(window time.Duration, minRequests uint32) *resilience.Breaker {
+	return resilience.NewBreaker("safety-net", resilience.Config{
+		OpenTimeout:             time.Minute,
+		HalfOpenSuccesses:       3,
+		FailureRatio:            0.8,
+		MinRequests:             minRequests,
+		Window:                  window,
+		ConsecutiveFailureLimit: 30,
+	})
+}
+
+// lowTrafficCuts runs n budget cuts in bursts of at most 10 calls, one burst
+// per window, so no window ever reaches the 20 calls the ratio needs.
+func lowTrafficCuts(t *testing.T, b *resilience.Breaker, n int, window time.Duration) {
+	t.Helper()
+	for n > 0 {
+		burst := min(n, 10)
+		for i := 0; i < burst; i++ {
+			require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
+		}
+		n -= burst
+		time.Sleep(2 * window)
+	}
+}
+
+func TestLowTrafficWithoutTheLimitNeverOpens(t *testing.T) {
+	window := 30 * time.Millisecond
+	b := resilience.NewBreaker("no-limit", resilience.Config{
+		OpenTimeout: time.Minute, HalfOpenSuccesses: 3, FailureRatio: 0.8, MinRequests: 20, Window: window,
+	})
+	lowTrafficCuts(t, b, 60, window)
+	assert.Equal(t, "closed", b.State(), "with fewer than 20 calls per window the ratio alone never isolates a hung dependency")
+}
+
+func TestConsecutiveFailureLimitOpensWithLowTraffic(t *testing.T) {
+	window := 30 * time.Millisecond
+	b := newSafetyNetBreaker(window, 20)
+
+	lowTrafficCuts(t, b, 29, window)
+	assert.Equal(t, "closed", b.State(), "29 failures in a row do not open the circuit")
+
+	require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
+	assert.Equal(t, "open", b.State(), "the 30th failure in a row isolates the dependency, whatever the window")
+
+	called := false
+	_, err := resilience.Execute(b, func() (int, error) { called = true; return 1, nil })
+	assert.ErrorIs(t, err, resilience.ErrOpen)
+	assert.False(t, called, "an open circuit must not call the dependency")
+}
+
+func TestASuccessStartsTheFailuresInARowOver(t *testing.T) {
+	b := newSafetyNetBreaker(time.Minute, 1000) // the ratio never applies here
+	for i := 0; i < 29; i++ {
+		require.Error(t, fail(b))
+	}
+	require.NoError(t, succeed(b))
+	for i := 0; i < 29; i++ {
+		require.Error(t, fail(b))
+	}
+	assert.Equal(t, "closed", b.State(), "a success starts the count over")
+
+	require.Error(t, fail(b))
+	assert.Equal(t, "open", b.State())
+}
+
+func TestRatio80DoesNotOpenWithTheDegradedProfile(t *testing.T) {
+	b := newSafetyNetBreaker(time.Minute, 20)
+	// 11 of every 18 calls fail (61 %, the degraded profile of EXP-L01), never
+	// more than two in a row: neither the ratio nor the limit is reached.
+	pattern := "FFSFFSFSFFSFSFFSFS"
+	for round := 0; round < 5; round++ {
+		for _, call := range pattern {
+			if call == 'F' {
+				require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
+			} else {
+				require.NoError(t, succeed(b))
+			}
+		}
+	}
+	assert.Equal(t, "closed", b.State(), "55 failures out of 90 calls (61 %) are below 80 %")
+}
+
+func TestRatio80OpensWhenEveryCallFails(t *testing.T) {
+	b := newSafetyNetBreaker(time.Minute, 20)
+	for i := 0; i < 19; i++ {
+		require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
+	}
+	assert.Equal(t, "closed", b.State(), "19 calls are not enough for the ratio")
+
+	require.ErrorIs(t, budgetCut(b), context.DeadlineExceeded)
+	assert.Equal(t, "open", b.State(), "100 % of 20 calls: the ratio opens before the limit of 30")
+}
+
+func TestRatio80OpensAtEightyPercent(t *testing.T) {
+	b := newSafetyNetBreaker(time.Minute, 20)
+	for i := 0; i < 4; i++ {
+		require.NoError(t, succeed(b))
+	}
+	for i := 0; i < 15; i++ {
+		require.Error(t, fail(b))
+	}
+	assert.Equal(t, "closed", b.State(), "15 failures out of 19 calls: not enough calls yet")
+
+	require.Error(t, fail(b))
+	assert.Equal(t, "open", b.State(), "16 failures out of 20 calls reach 80 %")
 }
