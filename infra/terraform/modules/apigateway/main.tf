@@ -262,6 +262,14 @@ locals {
   # missing API key, throttling...). Without CORS headers the browser hides the
   # status and the web client cannot tell an expired session from a CORS error.
   cors_gateway_responses = local.auth_enabled ? toset(["UNAUTHORIZED", "ACCESS_DENIED", "EXPIRED_TOKEN", "DEFAULT_4XX"]) : toset([])
+
+  # Status codes that differ from the API Gateway default. With only the
+  # Cognito authorizer, ACCESS_DENIED means a token of this user pool whose
+  # signature or payload was tampered with: AWS answers 403 by default
+  # (verified in the HA-S01 staging window), but an invalid token must get 401
+  # so the client signs in again. A missing API key is INVALID_API_KEY and keeps
+  # its 403. Revisit this if a resource policy or another authorizer is added.
+  gateway_response_status = { ACCESS_DENIED = "401" }
 }
 
 resource "aws_api_gateway_authorizer" "cognito" {
@@ -386,12 +394,14 @@ resource "aws_api_gateway_integration_response" "human_options" {
   depends_on = [aws_api_gateway_integration.human_options]
 }
 
-# Same body as the API Gateway default; only the CORS headers are added.
+# Same body as the API Gateway default; the CORS headers are added and the
+# status of ACCESS_DENIED becomes 401 (see local.gateway_response_status).
 resource "aws_api_gateway_gateway_response" "cors" {
   for_each = local.cors_gateway_responses
 
   rest_api_id   = aws_api_gateway_rest_api.this.id
   response_type = each.key
+  status_code   = lookup(local.gateway_response_status, each.key, null)
 
   response_parameters = {
     "gatewayresponse.header.Access-Control-Allow-Origin"  = "'${var.cors_allow_origin}'"

@@ -245,11 +245,28 @@ resource "aws_api_gateway_integration_response" "module_backend" {
   depends_on = [aws_api_gateway_integration.module_backend]
 }
 
+# Same mapping as modules/apigateway: a tampered token of the pool
+# (ACCESS_DENIED, 403 by default) answers 401 like any invalid token (CA-1).
+resource "aws_api_gateway_gateway_response" "access_denied" {
+  rest_api_id   = aws_api_gateway_rest_api.test.id
+  response_type = "ACCESS_DENIED"
+  status_code   = "401"
+
+  response_parameters = {
+    "gatewayresponse.header.Access-Control-Allow-Origin" = "'*'"
+  }
+
+  response_templates = {
+    "application/json" = "{\"message\":$context.error.messageString}"
+  }
+}
+
 resource "aws_api_gateway_deployment" "test" {
   rest_api_id = aws_api_gateway_rest_api.test.id
 
   triggers = {
     redeployment = sha1(jsonencode([
+      aws_api_gateway_gateway_response.access_denied,
       aws_api_gateway_authorizer.cognito,
       aws_api_gateway_method.get,
       aws_api_gateway_integration.get,
