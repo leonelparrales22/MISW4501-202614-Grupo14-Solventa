@@ -3,6 +3,7 @@ module github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg
 go 1.23
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/sony/gobreaker v1.0.0
 	github.com/stretchr/testify v1.10.0
 )
