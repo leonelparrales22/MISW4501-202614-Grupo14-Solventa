@@ -263,13 +263,19 @@ locals {
   # status and the web client cannot tell an expired session from a CORS error.
   cors_gateway_responses = local.auth_enabled ? toset(["UNAUTHORIZED", "ACCESS_DENIED", "EXPIRED_TOKEN", "DEFAULT_4XX"]) : toset([])
 
-  # Status codes that differ from the API Gateway default. With only the
-  # Cognito authorizer, ACCESS_DENIED means a token of this user pool whose
-  # signature or payload was tampered with: AWS answers 403 by default
-  # (verified in the HA-S01 staging window), but an invalid token must get 401
-  # so the client signs in again. A missing API key is INVALID_API_KEY and keeps
-  # its 403. Revisit this if a resource policy or another authorizer is added.
-  gateway_response_status = { ACCESS_DENIED = "401" }
+  # Status code of each customized gateway response. UNAUTHORIZED and
+  # EXPIRED_TOKEN keep the API Gateway defaults (written explicitly because AWS
+  # stores them and a null would show a perpetual diff). With only the Cognito
+  # authorizer, ACCESS_DENIED means a token of this user pool whose signature
+  # or payload was tampered with: AWS answers 403 by default (verified in the
+  # HA-S01 staging window), but an invalid token must get 401 so the client
+  # signs in again. A missing API key is INVALID_API_KEY and keeps its 403.
+  # Revisit this if a resource policy or another authorizer is added.
+  gateway_response_status = {
+    UNAUTHORIZED  = "401"
+    ACCESS_DENIED = "401"
+    EXPIRED_TOKEN = "403"
+  }
 }
 
 resource "aws_api_gateway_authorizer" "cognito" {

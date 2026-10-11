@@ -121,7 +121,8 @@ run "human_routes_use_the_cognito_authorizer" {
   assert {
     condition = (
       aws_api_gateway_gateway_response.cors["ACCESS_DENIED"].status_code == "401" &&
-      aws_api_gateway_gateway_response.cors["UNAUTHORIZED"].status_code == null &&
+      aws_api_gateway_gateway_response.cors["UNAUTHORIZED"].status_code == "401" &&
+      aws_api_gateway_gateway_response.cors["EXPIRED_TOKEN"].status_code == "403" &&
       aws_api_gateway_gateway_response.cors["DEFAULT_4XX"].status_code == null
     )
     error_message = "A tampered token of the user pool (ACCESS_DENIED) must answer 401 like any invalid token (HA-S01 CA-1)."
