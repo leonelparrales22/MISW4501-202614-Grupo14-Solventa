@@ -83,3 +83,6 @@ components:
 - `pkg/security`: emisor de prueba dentro de los `_test.go` (llave RSA generada en el test y JWKS servido con `httptest`), sin AWS.
 - Pruebas de handlers y casos de uso: se inyecta el llamante con `security.WithClaims`; no hace falta un token real.
 - Configuración de Cognito y del API Gateway: `terraform test` con proveedor simulado en `infra/terraform/modules/*/tests`.
+- Ciclo manual con tokens reales sin AWS: Cognito emulado con Moto en Docker ([`tests/security/ha-s01/local`](../../tests/security/ha-s01/local/README.md)).
+  Solo cambia la configuración (`AUTH_ISSUER` con el pool de Moto y `AUTH_JWKS_URL` obligatoria); la prueba
+  `pkg/security/moto_integration_test.go` corre solo con `AUTH_MOTO_URL`.

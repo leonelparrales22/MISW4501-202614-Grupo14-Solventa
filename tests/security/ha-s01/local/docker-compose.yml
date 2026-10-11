@@ -1,0 +1,26 @@
+# Local Cognito for HA-S01: Moto server emulating the Cognito user pools API
+# (InitiateAuth, admin operations and the JWKS of each pool). Only for the
+# local loop (front + backend without AWS); AWS uses the Terraform module
+# infra/terraform/modules/cognito. Seed it with ./seed.sh.
+#
+# Moto listens on 5000 inside the container; it is published on 127.0.0.1:5100
+# (5000 clashes with AirPlay on macOS). The state lives in memory: `down -v`
+# (or a restart) starts from scratch, and seed.sh recreates the same IDs.
+name: ha-s01-local-cognito
+
+services:
+  moto:
+    image: motoserver/moto:5.2.3
+    ports:
+      - "127.0.0.1:${MOTO_PORT:-5100}:5000"
+    environment:
+      # Deterministic user pool and app client IDs (hash of region, name and
+      # settings), so the local configuration of the front and the backend
+      # does not change between runs.
+      - MOTO_COGNITO_IDP_USER_POOL_ID_STRATEGY=HASH
+      - MOTO_COGNITO_IDP_USER_POOL_CLIENT_ID_STRATEGY=HASH
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/moto-api/')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15

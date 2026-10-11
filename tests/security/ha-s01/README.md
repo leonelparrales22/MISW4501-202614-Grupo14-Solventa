@@ -8,6 +8,9 @@ separación entre personas y socios. Corre contra la ventana efímera
 > **Estado:** preparado; **no se ha ejecutado en AWS** (la ventana I4 de HA-S01 está pendiente). Se probó en local contra un
 > doble de Cognito y del API (todos los casos, incluido el de vencimiento con tokens cortos).
 
+Para trabajar **sin AWS**, Cognito se emula con Moto en [`local/`](local/README.md) (compose, siembra de pool, grupos, clientes y
+un usuario por rol, y la tabla «local ↔ AWS» con lo que Moto no reproduce).
+
 | Caso | Esperado | Criterio |
 |---|---|---|
 | Ruta humana sin token | `401` | CA-1 |

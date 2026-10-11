@@ -62,6 +62,21 @@ Requisitos previos: estimación de costo escrita y autorizada, credenciales de l
    ([guion y casos](../../../../../tests/security/ha-s01/README.md)). Registrar la salida, en especial las líneas `RECORD` (D-6).
 4. `terraform … destroy -var-file=ha-s01.tfvars` en la misma sesión y comprobar `terraform state list` vacío.
 
+## Local (Moto) ↔ AWS: qué cambia
+
+En el portátil, Cognito se emula con Moto ([`tests/security/ha-s01/local`](../../../../../tests/security/ha-s01/local/README.md)).
+Pasar de ahí a esta composición solo cambia configuración:
+
+| Aspecto | Local (Moto) | AWS (esta composición) |
+|---|---|---|
+| Quién crea el pool, grupos, clientes y usuarios | `seed.sh` con la CLI de AWS contra `http://localhost:5100` | Módulo `cognito` (`terraform apply`) |
+| Endpoint de Cognito del front | `cognito.endpoint` en `environment.development.ts` | Sin `endpoint` (el regional de `us-east-2`) |
+| `AUTH_ISSUER` / `AUTH_JWKS_URL` del backend | Emisor con formato Cognito + JWKS de Moto (obligatorio) | Salidas `issuer` y `jwks_url` (el JWKS se deduce del emisor) |
+| Pool y clientes | IDs deterministas de Moto | Salidas `user_pool_id`, `web_client_id`, `client_ids` |
+| Vigencia de los tokens | 1 h fija | 5 min (ID y access) |
+| `RevokeToken` / `SignUp` | No implementado / se acepta | Revoca / `NotAuthorizedException`: se verifican aquí (CA-3, CA-4) |
+| Authorizer del API Gateway y API key de socios | No existen en local | `GET /ha-s01/humana` y `GET /ha-s01/socio` (CA-1, CA-5) |
+
 Validación local (sin AWS): `terraform -chdir=infra/terraform/environments/staging/ha-s01 init -backend=false` y `… validate`.
 Con credenciales de solo lectura también se puede revisar el plan con la plantilla tal cual:
 `TF_VAR_seed_user_password=<ficticia> terraform … plan -var-file=ha-s01.example.tfvars` (no aplica nada).
