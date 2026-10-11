@@ -4,6 +4,14 @@
 //
 // # What it does
 //
+//   - Verifies the token with a [JWKSVerifier]: RS256 only, a known key id,
+//     the exact issuer, an allowed audience or client, the configured token
+//     use and the validity window. The user pool keys are downloaded once at
+//     startup and kept in memory, so verifying a request adds no network hop
+//     (an unknown key id triggers at most one reload per minute).
+//   - Answers 401 without a valid bearer token ([Authenticate]) and 403 when
+//     the caller lacks the role ([RequireRole]), without calling the next
+//     handler. The error body is {"error": "...", "message": "..."}.
 //   - Models the four human roles as the Cognito groups "insured", "advisor",
 //     "operations" and "partner" (one group per user).
 //   - Turns the token claims into a [Claims] value (subject, username, email,
