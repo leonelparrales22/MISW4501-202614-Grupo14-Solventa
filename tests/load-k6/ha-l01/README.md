@@ -105,13 +105,41 @@ docker compose -p ha-l01 --profile tools down -v
 
 | Guion | Criterio | Qué hace | Umbrales |
 |---|---|---|---|
+| `k6/ready.js` | compuerta | 30 cotizaciones seguidas con la clave del socio A antes de cualquier carga: comprueba el recorrido gateway → VPC Link → ALB → originación → Toxiproxy → stubs | 100 % de respuestas `200` con el arreglo `sources`; ≥ 50 % con alguna fuente `ok` (≈ 99 % con el perfil `normal`, ≈ 76 % con `degradado`, 0 % si Toxiproxy no creó los proxies) |
 | `k6/peak.js` con `STRICT_LATENCY=1` y `API_KEY` | CA-1 | Rampa de EXP-L01 contra el stage, tres corridas | `p(95)<400`, `p(99)<800`, `http_req_failed<1%` |
 | `k6/gateway-cache.js` | CA-4 | Por cliente: el socio A lee dos veces y el socio B una (`GET /v1/risk-profiles/{id}`) | la segunda lectura de A es idéntica a la primera (> 95 %); la de B nunca coincide con la de A (100 %) |
 | `k6/rate-limit.js` | CA-5 | Socio A a 200 req/s (sobre su plan de 100) y socio B a 50 req/s al mismo tiempo | A recibe `429`; B 0 % de `429` y p95 < 400 ms |
 
 Variables: `BASE_URL` (URL del stage), `API_KEY` / `API_KEY_A` / `API_KEY_B` (claves de prueba de los socios). La imagen de la
-tarea k6 de la ventana se construye con el `Dockerfile` de esta carpeta (`docker build -t <repo-ecr-k6>:ha-l01 .`) y ejecuta
-`k6/sequence.sh` (CA-1 ×3, CA-4, CA-5). La infraestructura está en `infra/terraform/environments/staging/ha-l01`.
+tarea k6 de la ventana se construye con el `Dockerfile` de esta carpeta (`docker build -t <repo-ecr-k6>:<image_tag> .`) y ejecuta
+`k6/sequence.sh`. La infraestructura está en `infra/terraform/environments/staging/ha-l01`.
+
+**Secuencia de la tarea k6 (`k6/sequence.sh`):**
+
+1. **Compuerta:** hasta `READY_ATTEMPTS` intentos (10) de `ready.js`, separados `READY_INTERVAL_S` segundos (30). Si ninguno pasa,
+   imprime `== HA-L01 NOT READY: no load sent` y queda en espera **sin enviar carga** (el recorrido está roto: se corrige antes de
+   medir y no se gastan peticiones). Las dos variables solo existen para acortar el ensayo local; la tarea de AWS usa los defectos.
+2. **Pasos de `K6_SEQUENCE`** (por defecto `peak cache ratelimit`), en ese orden: `peak` corre `peak.js` `PEAK_RUNS` veces (por
+   defecto 3, de 1 a 3), `cache` corre `gateway-cache.js` y `ratelimit` corre `rate-limit.js`. Así se puede repetir un paso suelto
+   (p. ej. `K6_SEQUENCE=cache`) sin repetir toda la secuencia. Un valor fuera de esos conjuntos no envía carga.
+3. Cada corrida imprime su inicio y su fin en UTC y su código de salida (`== HA-L01 <paso> run <n> start <ISO>` /
+   `== HA-L01 <paso> run <n> end <ISO> exit <código>`; 0 = todos los umbrales cumplidos), para recortar las métricas de
+   CloudWatch por corrida. El resumen de `peak.js` lleva `PROFILE` (perfil de Toxiproxy y número de corrida) y
+   `OPEN_FINANCE_REQUIRED`, que la tarea recibe de la composición.
+4. Al final imprime `== HA-L01 staging sequence finished (exit status <0|1>; …)` y queda en espera: el servicio ECS no repite la
+   secuencia; la ventana se destruye con `terraform destroy`.
+
+Ensayo local de la imagen (sin gateway: la compuerta y `peak` pasan; `cache` y `ratelimit` fallan como se espera porque no hay
+caché ni límite):
+
+```bash
+docker compose -p ha-l01 up -d --wait origination && ./toxiproxy.sh normal
+docker build -t solventa-ha-l01-k6:local .
+docker run -d --name k6-dry --network ha-l01_default -e BASE_URL=http://origination:8080 -e API_KEY_A=x -e API_KEY_B=y \
+  -e RAMP_UP=5s -e SUSTAIN=10s -e CUSTOMERS=20 -e DURATION=10s -e PEAK_RUNS=1 solventa-ha-l01-k6:local
+docker logs -f k6-dry       # hasta "staging sequence finished"; luego docker rm -f k6-dry
+docker compose -p ha-l01 --profile tools down -v
+```
 
 ## Trazabilidad
 
