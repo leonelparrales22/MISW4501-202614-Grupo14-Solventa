@@ -54,7 +54,10 @@ type Config struct {
 	// reach MinRequests within one window (HA-L01). The Breaker keeps this
 	// count itself: unlike the counts of the window, it does not start over
 	// at the end of every window, only with a success or a state change.
-	// Zero disables it. Failure-ratio mode only.
+	// gobreaker ignores the result of a call that ends after its window
+	// closed, so when the call that reaches the limit is one of those, the
+	// circuit opens with the next failure. Zero disables it. Failure-ratio
+	// mode only.
 	ConsecutiveFailureLimit uint32
 }
 
