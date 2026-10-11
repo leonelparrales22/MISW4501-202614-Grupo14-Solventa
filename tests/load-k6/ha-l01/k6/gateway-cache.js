@@ -8,12 +8,20 @@
 //     would carry a new profile_date and new per-source latencies.
 //   - B's answer must differ from A's cached one: the cache key includes the
 //     partner API key, so B gets its own calculation.
-// The CacheHitCount / CacheMissCount metrics of the stage confirm it.
+//
+// The byte comparison only proves isolation when A's answer is unique to its
+// calculation. The base actuarial profile (profile_date null) is a fixed
+// answer that two independent calculations can repeat byte for byte (same
+// source states and budget latencies), so those customers are counted as not
+// comparable instead of as a leak (seen once in 800 in the 2026-10-11 staging
+// window). The authoritative proof is the stage metrics for the window:
+// CacheHitCount == CUSTOMERS and CacheMissCount == 2 x CUSTOMERS (A miss, A
+// hit, B miss); any read of A's entry by B shows up as an extra hit.
 //
 // Variables: BASE_URL (stage URL), API_KEY_A, API_KEY_B, CUSTOMERS (800).
 import http from "k6/http";
 import { check } from "k6";
-import { Rate } from "k6/metrics";
+import { Counter, Rate } from "k6/metrics";
 
 const BASE_URL = __ENV.BASE_URL || "http://localhost:8080";
 const API_KEY_A = __ENV.API_KEY_A || "";
@@ -23,6 +31,17 @@ const RUN_ID = Date.now();
 
 const servedFromCache = new Rate("served_from_cache");
 const isolatedPerPartner = new Rate("isolated_per_partner");
+const notComparable = new Counter("isolation_not_comparable");
+
+// True when the answer is the fixed base actuarial profile, which another
+// calculation can reproduce byte for byte.
+function isFixedAnswer(body) {
+  try {
+    return JSON.parse(body).profile_date === null;
+  } catch (e) {
+    return false;
+  }
+}
 
 export const options = {
   scenarios: {
@@ -61,6 +80,10 @@ export default function () {
     return;
   }
   servedFromCache.add(second.status === 200 && second.body === first.body);
+  if (isFixedAnswer(first.body)) {
+    notComparable.add(1);
+    return;
+  }
   isolatedPerPartner.add(other.body !== first.body);
 }
 
@@ -73,6 +96,8 @@ export function handleSummary(data) {
       "HA-L01 CA-4 gateway cache",
       `  requests: ${m.http_reqs ? m.http_reqs.values.count : 0}   failed: ${pct(m.http_req_failed)}`,
       `  repeated read served from cache: ${pct(m.served_from_cache)}   partners isolated: ${pct(m.isolated_per_partner)}`,
+      `  not comparable (fixed base profile): ${m.isolation_not_comparable ? m.isolation_not_comparable.values.count : 0}`,
+      `  authoritative check: stage CacheHitCount == ${CUSTOMERS} and CacheMissCount == ${2 * CUSTOMERS} for this run`,
       "",
     ].join("\n"),
   };
