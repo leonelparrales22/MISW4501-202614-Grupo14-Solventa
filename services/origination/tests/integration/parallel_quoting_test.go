@@ -103,8 +103,8 @@ type parallelEnv struct {
 	of, od, kyc *latencyProvider
 }
 
-// newParallelEnv wires the service as main does, with the production budgets,
-// a short circuit-breaker window and the Redis cache on miniredis.
+// newParallelEnv wires the service as main does, with the production budgets
+// and circuit-breaker settings and the Redis cache on miniredis.
 func newParallelEnv(t *testing.T, openFinanceRequired bool) *parallelEnv {
 	t.Helper()
 	mr := miniredis.RunT(t)
@@ -124,9 +124,11 @@ func newParallelEnvWithCache(t *testing.T, openFinanceRequired bool, cache ports
 		}},
 	}
 	t.Cleanup(e.httpClient.CloseIdleConnections)
+	// D-3 (c): a call cut by the budget is a failure and the circuit opens at
+	// 50 % of failed calls with at least 20 calls in a 5 s window.
 	breaker := resilience.Config{
-		ConsecutiveFailures: 3, OpenTimeout: openWindow, HalfOpenSuccesses: 3,
-		IgnoreCallerCancellation: true, // D-3 (b)
+		OpenTimeout: 5 * time.Second, HalfOpenSuccesses: 3,
+		FailureRatio: 0.5, MinRequests: 20, Window: 5 * time.Second,
 	}
 	required := ""
 	if openFinanceRequired {
@@ -330,25 +332,47 @@ func TestAllSourcesDownDegradeToTheHAD01Chain(t *testing.T) {
 	}
 }
 
-func TestBudgetDoesNotOpenTheCircuitButProviderErrorsDo(t *testing.T) {
+func TestOccasionalBudgetCutsDoNotOpenTheCircuit(t *testing.T) {
 	e := newParallelEnv(t, true)
 
-	e.od.setDelay(400 * time.Millisecond)
-	for i := 0; i < 5; i++ {
-		assert.Equal(t, "timeout", sourceStates(t, e.resolve(t, "c1").body)["open_data"]["status"])
+	// One call in six to Open Data misses the budget, about the 17 % of the
+	// normal profile of EXP-L01: the latency tail must not isolate the source.
+	for i := 0; i < 36; i++ {
+		want := "ok"
+		e.od.setDelay(0)
+		if i%6 == 0 {
+			want = "timeout"
+			e.od.setDelay(400 * time.Millisecond)
+		}
+		assert.Equal(t, want, sourceStates(t, e.resolve(t, "c1").body)["open_data"]["status"], "call %d", i)
 	}
-	assert.Equal(t, "timeout", sourceStates(t, e.resolve(t, "c1").body)["open_data"]["status"],
-		"D-3 (b): cuts by the budget never isolate the source")
+}
 
-	e.od.setDelay(0)
-	e.od.down.Store(true)
-	for i := 0; i < 3; i++ {
-		assert.Equal(t, "error", sourceStates(t, e.resolve(t, "c1").body)["open_data"]["status"])
+func TestPersistentlySlowSourceOpensItsCircuit(t *testing.T) {
+	e := newParallelEnv(t, true)
+	e.od.setDelay(slowDelay)
+
+	// 20 quotes at the same time: every call to Open Data is cut by the budget.
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			res := e.resolve(t, fmt.Sprintf("c%d", i))
+			assert.Equal(t, http.StatusOK, res.status)
+			assert.Equal(t, true, res.body["partial"])
+		}(i)
 	}
+	wg.Wait()
+
 	before := e.od.hits.Load()
 	res := e.resolve(t, "c1")
-	assert.Equal(t, "circuit_open", sourceStates(t, res.body)["open_data"]["status"])
+
+	require.Equal(t, http.StatusOK, res.status)
+	assert.Equal(t, "circuit_open", sourceStates(t, res.body)["open_data"]["status"],
+		"D-3 (c): the budget cuts isolate the slow source (HA-D01 CA-1)")
 	assert.Equal(t, before, e.od.hits.Load(), "an open circuit is reported without calling the provider")
+	assert.Less(t, res.elapsed, sourceBudget, "the client no longer waits for the isolated source")
 	assert.Equal(t, true, res.body["partial"])
 }
 

@@ -4,6 +4,7 @@
 #   1. normal     latency profile of EXP-L01 on the three sources
 #   2. degradado  degraded latency profile on the three sources
 #   3. caida      Open Data down, the others with the normal profile
+# and prints the circuit-breaker transitions of each phase (decision D-3 c).
 # Then the contract test (Schemathesis) and the environment is destroyed
 # (docker compose down -v).
 #
@@ -35,6 +36,23 @@ k6() { # profile open_finance_required
     k6 run --quiet /scripts/peak.js
 }
 
+# Circuit-breaker state changes logged by origination (decision D-3 c). The
+# log is counted by lines, not by time, so the clock of the Docker VM does not
+# matter. With the normal profile no circuit should open.
+transitions_logged() {
+  $COMPOSE logs --no-log-prefix origination 2>/dev/null | grep "circuit breaker state change" || true
+}
+transitions_since() { # lines already printed
+  local lines
+  lines=$(transitions_logged | tail -n +"$(($1 + 1))")
+  if [ -z "$lines" ]; then
+    echo "   circuit transitions: none"
+  else
+    echo "   circuit transitions:"
+    echo "$lines" | sed 's/^/     /'
+  fi
+}
+
 echo "== Building and starting the environment"
 OPEN_FINANCE_REQUIRED=true $COMPOSE up -d --build --wait origination
 
@@ -44,7 +62,9 @@ for required in $MODES; do
   for profile in normal degradado caida; do
     ./toxiproxy.sh up
     ./toxiproxy.sh "$profile"
+    before=$(transitions_logged | wc -l)
     k6 "$profile" "$required"
+    transitions_since "$before"
   done
   ./toxiproxy.sh up
 done

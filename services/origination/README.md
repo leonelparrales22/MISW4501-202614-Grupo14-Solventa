@@ -39,7 +39,7 @@ Open Finance caído, lento o aislado
   └ sin perfil en caché (cliente nuevo) ▶ mode=provisional, source=base_actuarial
 ```
 
-- El circuit breaker abre con 3 fallas consecutivas, permanece abierto 5 s y se cierra tras 3 éxitos consecutivos en half-open (combinación validada en EC-D01).
+- El circuit breaker permanece abierto 5 s y se cierra tras 3 éxitos consecutivos en half-open; una sonda fallida lo reabre (combinación validada en EC-D01). Desde HA-L01 abre por **proporción de fallas** (≥ 50 % con al menos 20 llamadas en una ventana de 5 s, decisión D-3 c; ver «Cotización en paralelo»); con `BREAKER_FAILURE_RATIO=0` vuelve a abrir con 3 fallas consecutivas, como en EC-D01.
 - Una falla de Redis nunca rompe la respuesta: si no se puede leer la caché se usa el perfil base; si no se puede escribir, la oferta sigue siendo normal.
 - La respuesta incluye lo que pintan las pantallas del prototipo: `mode`, `source`, `profile_date` (E3b), `unavailable_source` y `notice` (`last_profile_in_use` para E3b, `personalization_unavailable` para E3c y el aviso de E2b). Los textos los traduce cada cliente.
 - `consent_active` lo afirma el llamador mientras `audit` no expone la consulta de consentimiento (HU-W1.2-01); entonces se reemplazará por un puerto.
@@ -65,14 +65,20 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
   oferta sale provisional. **Consecuencia esperada:** con el perfil de latencia `normal` de EXP-L01 (Open Finance supera
   120 ms cerca del 17 % de las veces) alrededor del 17 % de las cotizaciones salen provisionales. Con `false` las fuentes son
   equivalentes y casi ninguna sale provisional, pero más perfiles quedan parciales. En el humo local (2026-10-10, perfil
-  `normal`): `true` → 19,2 % provisionales y 27,1 % parciales; `false` → 0,9 % provisionales y 43,9 % parciales. Detalle en
-  [`tests/load-k6/ha-l01`](../../tests/load-k6/ha-l01/README.md).
+  `normal`, dos corridas): `true` → 18,0–19,8 % provisionales y ≈ 27 % parciales; `false` → 0,8 % provisionales y 45–47 %
+  parciales. Con el perfil `degradado` (≈ 62 % de llamadas sobre 120 ms) los circuitos se abren y ≈ 96–99 % de las ofertas
+  salen provisionales con cualquiera de los dos valores. Detalle en [`tests/load-k6/ha-l01`](../../tests/load-k6/ha-l01/README.md).
 - La regla de combinación es provisional (`CombineProvisional`, decisión D-4): promedio de los `score` que llegaron y la
   categoría y fecha de la fuente de mayor prioridad presente (Open Finance > Open Data > KYC). La regla actuarial definitiva
   es de HU-W1.2-02.
-- El corte por presupuesto **no cuenta como falla** del circuit breaker (decisión D-3 b, `IgnoreCallerCancellation` en
-  `pkg/resilience`): el circuito de cada fuente se abre por errores, 5xx o conexión rechazada, y la lentitud la acota el
-  propio presupuesto. Así la cola normal de latencia no aísla la fuente.
+- El corte por presupuesto **cuenta como falla** del circuit breaker de la fuente, igual que un error, un 5xx o una conexión
+  rechazada, y cada circuito abre por **proporción** (decisión D-3 c, modo `FailureRatio` de `pkg/resilience`): cuando, en una
+  ventana de `BREAKER_WINDOW_MS` (5 s), hubo al menos `BREAKER_MIN_REQUESTS` llamadas (20) y fallaron al menos
+  `BREAKER_FAILURE_RATIO` de ellas (50 %). Así una fuente lenta o colgada de forma persistente queda aislada (HA-D01 CA-1) y
+  el cliente deja de esperarla, mientras que la cola normal de latencia (≈ 17 % de cortes con el perfil `normal` de EXP-L01)
+  no abre el circuito. Half-open como en EC-D01: 5 s abierto, una sonda fallida (también la cortada por el presupuesto)
+  reabre y 3 éxitos seguidos cierran. Una fuente con más de la mitad de las llamadas sobre 120 ms (perfil `degradado`) sí
+  queda aislada.
 - Los tres adaptadores comparten un `http.Client` con un pool de `HTTP_MAX_CONNS_PER_HOST` conexiones por host (EXP-L01).
 - `GET /v1/risk-profiles/{customer_id}?consent_active=true` devuelve lo mismo que el `POST` para que el API Gateway lo sirva
   desde su caché por socio (clave = ruta + query + API key; TTL 60 s, decisión D-6) sin recalcular.
@@ -85,9 +91,12 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `REDIS_ADDR` | — (obligatoria) | Dirección de Redis / ElastiCache |
 | `OPEN_FINANCE_URL` | — (obligatoria) | URL base de Open Finance (en local, el stub detrás de Toxiproxy) |
 | `OPEN_FINANCE_TIMEOUT_MS` | `700` | Corte duro de la dependencia |
-| `BREAKER_CONSECUTIVE_FAILURES` | `3` | Fallas consecutivas que abren el circuito |
+| `BREAKER_CONSECUTIVE_FAILURES` | `3` | Fallas consecutivas que abren el circuito; solo se usa con `BREAKER_FAILURE_RATIO=0` |
 | `BREAKER_OPEN_TIMEOUT_MS` | `5000` | Tiempo abierto antes de las sondas |
 | `BREAKER_HALF_OPEN_SUCCESSES` | `3` | Éxitos consecutivos que cierran el circuito |
+| `BREAKER_FAILURE_RATIO` | `0.5` | Proporción de llamadas fallidas (incluido el corte por presupuesto) que abre el circuito dentro de la ventana (D-3 c). Entre 0 y 1; `0` vuelve a las fallas consecutivas de EC-D01 (no recomendado con el presupuesto de 120 ms: la cola normal de latencia abriría el circuito) |
+| `BREAKER_MIN_REQUESTS` | `20` | Llamadas mínimas dentro de la ventana antes de evaluar la proporción |
+| `BREAKER_WINDOW_MS` | `5000` | Ventana de conteo del circuito cerrado; los conteos empiezan de cero en cada ventana |
 | `PROFILE_CACHE_TTL_HOURS` | `720` | Vigencia del perfil en caché (30 días) |
 | `OPEN_DATA_URL` | vacío | URL base de Open Data. Vacía: la fuente queda fuera del abanico (aviso en el log) |
 | `KYC_URL` | vacío | URL base de KYC. Vacía: la fuente queda fuera del abanico (aviso en el log) |

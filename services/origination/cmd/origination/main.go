@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -127,6 +128,13 @@ func newProfileSource(cfg config, httpClient *http.Client) *profiling.ParallelSo
 	}
 	log.Printf("parallel profiling: %d sources, budget=%s, deadline=%s, open finance required=%t",
 		len(sources), cfg.sourceBudget, cfg.profilingDeadline, cfg.openFinanceRequired)
+	if b := cfg.breaker; b.FailureRatio > 0 {
+		log.Printf("circuit breaker per source: opens at %.0f%% failed calls with at least %d calls in %s, open %s, closes after %d probes",
+			b.FailureRatio*100, b.MinRequests, b.Window, b.OpenTimeout, b.HalfOpenSuccesses)
+	} else {
+		log.Printf("circuit breaker per source: opens after %d consecutive failures, open %s, closes after %d probes",
+			b.ConsecutiveFailures, b.OpenTimeout, b.HalfOpenSuccesses)
+	}
 	return profiling.NewParallelSource(sources, profiling.ParallelConfig{
 		Budget:   cfg.sourceBudget,
 		Deadline: cfg.profilingDeadline,
@@ -138,7 +146,8 @@ func newProfileSource(cfg config, httpClient *http.Client) *profiling.ParallelSo
 // and OPEN_FINANCE_URL are required; the rest default to the values validated
 // by experiment EC-D01 and the 30-day profile validity. The parallel profiling
 // (HA-L01) defaults to a 120 ms budget per source, a 700 ms total cut, a pool
-// of 200 connections per host and Open Finance as a required source (D-2).
+// of 200 connections per host and Open Finance as a required source (D-2);
+// the circuit breaker of each source opens by failure ratio (D-3 c).
 func loadConfig(getenv func(string) string) (config, error) {
 	def := resilience.DefaultConfig()
 	cfg := config{
@@ -207,10 +216,51 @@ func loadParallelConfig(getenv func(string) string, cfg *config) error {
 	}
 	cfg.sourceBudget = time.Duration(budgetMs) * time.Millisecond
 	cfg.profilingDeadline = time.Duration(deadlineMs) * time.Millisecond
-	// D-3 (b): a call cut by the per-source budget is not a provider failure,
-	// so the budget alone never opens a circuit.
-	cfg.breaker.IgnoreCallerCancellation = true
+	return loadBreakerRatio(getenv, &cfg.breaker)
+}
+
+// Defaults of the failure-ratio mode of the circuit breaker (decision D-3 c).
+const (
+	defaultBreakerFailureRatio = 0.5
+	defaultBreakerMinRequests  = 20
+)
+
+// loadBreakerRatio reads the failure-ratio mode of the circuit breaker of each
+// source (HA-L01, decision D-3 c). A call cut by the per-source budget counts
+// as a failure, and the circuit opens when at least BREAKER_FAILURE_RATIO of
+// the calls failed, with at least BREAKER_MIN_REQUESTS calls within a
+// BREAKER_WINDOW_MS window: a source that is persistently slow or down is
+// isolated, while the normal latency tail does not open the circuit.
+// BREAKER_FAILURE_RATIO=0 goes back to the consecutive failures of EC-D01.
+func loadBreakerRatio(getenv func(string) string, breaker *resilience.Config) error {
+	ratio, err := ratioVar(getenv, "BREAKER_FAILURE_RATIO", defaultBreakerFailureRatio)
+	if err != nil {
+		return err
+	}
+	minRequests, err := uint32Var(getenv, "BREAKER_MIN_REQUESTS", defaultBreakerMinRequests)
+	if err != nil {
+		return err
+	}
+	windowMs, err := intVar(getenv, "BREAKER_WINDOW_MS", int(resilience.DefaultWindow/time.Millisecond))
+	if err != nil {
+		return err
+	}
+	breaker.FailureRatio = ratio
+	breaker.MinRequests = minRequests
+	breaker.Window = time.Duration(windowMs) * time.Millisecond
 	return nil
+}
+
+func ratioVar(getenv func(string) string, name string, def float64) (float64, error) {
+	raw := getenv(name)
+	if raw == "" {
+		return def, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(v) || v < 0 || v > 1 {
+		return 0, fmt.Errorf("%s must be a number between 0 and 1, got %q", name, raw)
+	}
+	return v, nil
 }
 
 func boolVar(getenv func(string) string, name string, def bool) (bool, error) {

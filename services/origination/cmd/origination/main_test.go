@@ -96,7 +96,98 @@ func TestLoadConfigBudgets(t *testing.T) {
 	assert.True(t, cfg.openFinanceRequired, "D-2: Open Finance required by default")
 	assert.Empty(t, cfg.openDataURL)
 	assert.Empty(t, cfg.kycURL)
-	assert.True(t, cfg.breaker.IgnoreCallerCancellation, "D-3 (b): the budget never opens a circuit")
+}
+
+func TestLoadConfigBreakerOpensByFailureRatio(t *testing.T) {
+	cfg, err := loadConfig(env(requiredEnv()))
+
+	require.NoError(t, err)
+	assert.InDelta(t, 0.5, cfg.breaker.FailureRatio, 1e-9, "D-3 (c): opens at 50 % of failed calls")
+	assert.Equal(t, uint32(20), cfg.breaker.MinRequests, "D-3 (c): with at least 20 calls")
+	assert.Equal(t, 5*time.Second, cfg.breaker.Window, "D-3 (c): within a 5 s window")
+	assert.Equal(t, 5*time.Second, cfg.breaker.OpenTimeout, "EC-D01: 5 s open")
+	assert.Equal(t, uint32(3), cfg.breaker.HalfOpenSuccesses, "EC-D01: 3 successful probes close")
+}
+
+func TestLoadConfigBreakerRatioOverrides(t *testing.T) {
+	m := requiredEnv()
+	m["BREAKER_FAILURE_RATIO"] = "0.6"
+	m["BREAKER_MIN_REQUESTS"] = "30"
+	m["BREAKER_WINDOW_MS"] = "10000"
+
+	cfg, err := loadConfig(env(m))
+
+	require.NoError(t, err)
+	assert.InDelta(t, 0.6, cfg.breaker.FailureRatio, 1e-9)
+	assert.Equal(t, uint32(30), cfg.breaker.MinRequests)
+	assert.Equal(t, 10*time.Second, cfg.breaker.Window)
+}
+
+func TestLoadConfigZeroRatioKeepsTheConsecutiveFailures(t *testing.T) {
+	m := requiredEnv()
+	m["BREAKER_FAILURE_RATIO"] = "0"
+
+	cfg, err := loadConfig(env(m))
+
+	require.NoError(t, err)
+	assert.Zero(t, cfg.breaker.FailureRatio)
+	assert.Equal(t, uint32(3), cfg.breaker.ConsecutiveFailures, "EC-D01 mode")
+	assert.NotNil(t, newProfileSource(cfg, newHTTPClient(cfg.maxConnsPerHost)))
+}
+
+func TestLoadConfigRejectsInvalidBreakerRatioValues(t *testing.T) {
+	tests := map[string]map[string]string{
+		"ratio above one":    {"BREAKER_FAILURE_RATIO": "1.5"},
+		"negative ratio":     {"BREAKER_FAILURE_RATIO": "-0.1"},
+		"non numeric ratio":  {"BREAKER_FAILURE_RATIO": "half"},
+		"nan ratio":          {"BREAKER_FAILURE_RATIO": "NaN"},
+		"zero min requests":  {"BREAKER_MIN_REQUESTS": "0"},
+		"zero window":        {"BREAKER_WINDOW_MS": "0"},
+		"non numeric window": {"BREAKER_WINDOW_MS": "5s"},
+	}
+	for name, extra := range tests {
+		t.Run(name, func(t *testing.T) {
+			m := requiredEnv()
+			for k, v := range extra {
+				m[k] = v
+			}
+			_, err := loadConfig(env(m))
+			assert.Error(t, err)
+		})
+	}
+}
+
+func slowProvider(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(time.Second):
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func TestBudgetCutsOpenTheSourceCircuitByRatio(t *testing.T) {
+	m := requiredEnv()
+	m["OPEN_FINANCE_URL"] = slowProvider(t)
+	m["SOURCE_BUDGET_MS"] = "20"
+	m["BREAKER_MIN_REQUESTS"] = "5"
+	cfg, err := loadConfig(env(m))
+	require.NoError(t, err)
+	source := newProfileSource(cfg, newHTTPClient(cfg.maxConnsPerHost))
+
+	status := func() domain.SourceStatus {
+		_, err := source.FetchProfile(context.Background(), "c1")
+		var unavailable *ports.SourcesUnavailableError
+		require.ErrorAs(t, err, &unavailable)
+		return unavailable.Outcomes[0].Status
+	}
+	for i := 0; i < 5; i++ {
+		assert.Equal(t, domain.SourceStatusTimeout, status(), "cut by the 20 ms budget")
+	}
+	assert.Equal(t, domain.SourceStatusCircuitOpen, status(), "D-3 (c): the budget cuts isolate the slow source")
 }
 
 func TestLoadConfigParallelOverrides(t *testing.T) {
