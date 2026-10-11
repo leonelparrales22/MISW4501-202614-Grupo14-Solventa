@@ -1,6 +1,7 @@
 package resilience_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -92,4 +93,97 @@ func TestHalfOpenFailureReopens(t *testing.T) {
 	require.NoError(t, succeed(b))
 	require.Error(t, fail(b))
 	assert.Equal(t, "open", b.State())
+}
+
+// --- Caller cancellation (HA-L01, decision D-3 b) ------------------------------
+
+func newBudgetAwareBreaker() *resilience.Breaker {
+	return resilience.NewBreaker("budget", resilience.Config{
+		ConsecutiveFailures:      3,
+		OpenTimeout:              50 * time.Millisecond,
+		HalfOpenSuccesses:        3,
+		IgnoreCallerCancellation: true,
+	})
+}
+
+func canceledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+func TestDefaultConfigDoesNotIgnoreCallerCancellation(t *testing.T) {
+	assert.False(t, resilience.DefaultConfig().IgnoreCallerCancellation)
+}
+
+func TestExecuteContextReturnsResultWhileClosed(t *testing.T) {
+	b := newBudgetAwareBreaker()
+	got, err := resilience.ExecuteContext(context.Background(), b, func() (string, error) { return "ok", nil })
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got)
+}
+
+func TestCallerCancellationDoesNotOpenTheCircuitWhenIgnored(t *testing.T) {
+	b := newBudgetAwareBreaker()
+	ctx := canceledContext()
+
+	for i := 0; i < 5; i++ {
+		_, err := resilience.ExecuteContext(ctx, b, func() (int, error) { return 0, context.Canceled })
+		require.ErrorIs(t, err, context.Canceled, "the caller still gets the original error")
+		assert.Equal(t, "context canceled", err.Error())
+	}
+	assert.Equal(t, "closed", b.State(), "a call abandoned by the caller is not a failure of the dependency")
+}
+
+func TestCallerBudgetExpiryDoesNotOpenTheCircuitWhenIgnored(t *testing.T) {
+	b := newBudgetAwareBreaker()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	<-ctx.Done()
+
+	for i := 0; i < 5; i++ {
+		_, err := resilience.ExecuteContext(ctx, b, func() (int, error) { return 0, ctx.Err() })
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	}
+	assert.Equal(t, "closed", b.State())
+}
+
+func TestCallerCancellationStillCountsByDefault(t *testing.T) {
+	b := newTestBreaker()
+	ctx := canceledContext()
+
+	for i := 0; i < 3; i++ {
+		_, _ = resilience.ExecuteContext(ctx, b, func() (int, error) { return 0, context.Canceled })
+	}
+	assert.Equal(t, "open", b.State(), "without the option the validated EC-D01 behavior is unchanged")
+}
+
+func TestDependencyErrorsStillOpenTheCircuitWhenCancellationIsIgnored(t *testing.T) {
+	b := newBudgetAwareBreaker()
+	for i := 0; i < 3; i++ {
+		_, err := resilience.ExecuteContext(context.Background(), b, func() (int, error) { return 0, errBoom })
+		require.ErrorIs(t, err, errBoom)
+	}
+	assert.Equal(t, "open", b.State())
+
+	called := false
+	_, err := resilience.ExecuteContext(context.Background(), b, func() (int, error) { called = true; return 1, nil })
+	assert.ErrorIs(t, err, resilience.ErrOpen)
+	assert.False(t, called)
+}
+
+func TestDependencyOwnTimeoutCountsWhileTheCallerIsWaiting(t *testing.T) {
+	b := newBudgetAwareBreaker()
+	for i := 0; i < 3; i++ {
+		_, _ = resilience.ExecuteContext(context.Background(), b, func() (int, error) { return 0, context.DeadlineExceeded })
+	}
+	assert.Equal(t, "open", b.State(), "the dependency's own timeout is a failure of the dependency")
+}
+
+func TestExecuteKeepsCountingEveryErrorWithTheOption(t *testing.T) {
+	b := newBudgetAwareBreaker()
+	for i := 0; i < 3; i++ {
+		_, _ = resilience.Execute(b, func() (int, error) { return 0, context.Canceled })
+	}
+	assert.Equal(t, "open", b.State(), "Execute does not know the caller's context")
 }
