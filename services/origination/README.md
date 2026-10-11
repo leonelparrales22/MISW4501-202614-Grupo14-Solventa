@@ -2,14 +2,14 @@
 
 Camino crítico del negocio: cotiza, perfila, emite y cobra. Es la fachada (*Facade*) del ciclo de vida de la póliza.
 
-**Estado:** esqueleto; solo expone `GET /health`.
+**Estado:** `GET /health` y `POST /v1/risk-profiles/resolve` (HA-D01: oferta continua ante caída de la fuente externa). El resto de módulos sigue reservado.
 
 ## Responsabilidades
 
 | Módulo (`internal/`) | Qué hace |
 |---|---|
 | `orchestrator` | Orquestador de cotización: coordina perfilamiento y rating. Consulta primero la caché y luego las fuentes externas en paralelo |
-| `profiling` | Perfil de riesgo con Open Finance / Open Data (con consentimiento). Usa `Perfil_Riesgo_Cache` en Redis (TTL 30 días, se invalida al recotizar) |
+| `profiling` | Perfil de riesgo con Open Finance / Open Data (con consentimiento). **HA-D01:** `Resolver` con la cadena de degradación Open Finance → `Perfil_Riesgo_Cache` (Redis, TTL 30 días) → perfil actuarial base; la oferta degradada sale marcada como provisional. La invalidación al recotizar llega con HU-W1.2-02 |
 | `rating` | Motor de rating: prima y coberturas. Reglas actuariales aisladas del resto |
 | `underwriting` | Suscripción automática: acepta, rechaza o ajusta el riesgo; enruta a decisión humana (bandeja del asesor) cuando aplica |
 | `issuance` | Aceptación de la oferta, documento contractual (firma) y activación de la cobertura |
@@ -18,6 +18,43 @@ Camino crítico del negocio: cotiza, perfila, emite y cobra. Es la fachada (*Fac
 | `renewal` / `cancellation` | Renovación y cancelación con prorrateo de reembolso |
 
 Las llamadas entre orquestador, perfilamiento y rating son **en proceso** (sin salto de red).
+
+## Adaptadores (`internal/adapters`)
+
+| Adaptador | Qué hace |
+|---|---|
+| `http` | Router `chi`: `GET /health` (superficial) y `POST /v1/risk-profiles/resolve` |
+| `openfinance` | Puente entre el cliente compartido `pkg/adapters/openfinance` (timeout 700 ms + circuit breaker) y el puerto `RiskProfileSource` |
+| `redis` | `Perfil_Riesgo_Cache` (cache-aside), clave `risk_profile:{customer_id}`, TTL 30 días y timeout propio de 100 ms por operación para que Redis nunca bloquee la oferta |
+
+## Oferta continua ante caída de la fuente (HA-D01)
+
+```
+sin consentimiento activo ───────────▶ 422 consent_required (no se consulta nada)
+Open Finance responde (< 700 ms) ────▶ mode=normal,      source=open_finance  (y calienta la caché)
+Open Finance caído, lento o aislado
+  └ perfil en caché de ≤ 30 días ────▶ mode=provisional, source=cache          (con profile_date)
+  └ sin perfil en caché (cliente nuevo) ▶ mode=provisional, source=base_actuarial
+```
+
+- El circuit breaker abre con 3 fallas consecutivas, permanece abierto 5 s y se cierra tras 3 éxitos consecutivos en half-open (combinación validada en EC-D01).
+- Una falla de Redis nunca rompe la respuesta: si no se puede leer la caché se usa el perfil base; si no se puede escribir, la oferta sigue siendo normal.
+- La respuesta incluye lo que pintan las pantallas del prototipo: `mode`, `source`, `profile_date` (E3b), `unavailable_source` y `notice` (`last_profile_in_use` para E3b, `personalization_unavailable` para E3c y el aviso de E2b). Los textos los traduce cada cliente.
+- `consent_active` lo afirma el llamador mientras `audit` no expone la consulta de consentimiento (HU-W1.2-01); entonces se reemplazará por un puerto.
+- Fuera de esta historia: respetar/recotizar ofertas provisionales y notificar (HU-W1.2-03), consulta concurrente de las tres fuentes (HA-L01 / HU-W1.2-02).
+
+## Configuración (variables de entorno)
+
+| Variable | Defecto | Descripción |
+|---|---|---|
+| `PORT` | `8080` | Puerto HTTP |
+| `REDIS_ADDR` | — (obligatoria) | Dirección de Redis / ElastiCache |
+| `OPEN_FINANCE_URL` | — (obligatoria) | URL base de Open Finance (en local, el stub detrás de Toxiproxy) |
+| `OPEN_FINANCE_TIMEOUT_MS` | `700` | Corte duro de la dependencia |
+| `BREAKER_CONSECUTIVE_FAILURES` | `3` | Fallas consecutivas que abren el circuito |
+| `BREAKER_OPEN_TIMEOUT_MS` | `5000` | Tiempo abierto antes de las sondas |
+| `BREAKER_HALF_OPEN_SUCCESSES` | `3` | Éxitos consecutivos que cierran el circuito |
+| `PROFILE_CACHE_TTL_HOURS` | `720` | Vigencia del perfil en caché (30 días) |
 
 ## Requisitos de calidad que gobiernan el servicio
 
@@ -41,5 +78,8 @@ Experimentos relacionados: [EXP-L01](https://github.com/leonelparrales22/MISW450
 ## Desarrollo
 
 ```
-go run ./services/origination/cmd/origination   # PORT=8080 por defecto
+REDIS_ADDR=localhost:6379 OPEN_FINANCE_URL=http://localhost:9000 \
+  go run ./services/origination/cmd/origination
 ```
+
+Pruebas: `go test ./services/origination/...` (incluye `tests/integration`, que ejercita cada criterio de aceptación de HA-D01). La simulación de la caída con Toxiproxy y k6 está en [`tests/resilience/ha-d01`](../../tests/resilience/ha-d01/README.md).

@@ -1,0 +1,73 @@
+# HA-D01 resilience scenario: origination + Redis + Open Finance stub behind
+# Toxiproxy. Toxiproxy injects the outage and the latency; the stub only serves
+# profiles. Run it with ./run.sh. Build context is the repository root.
+#
+# Origination is published on 8180 to avoid clashing with a service already
+# listening on 8080 in a development machine.
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  openfinance:
+    build:
+      context: ../../..
+      dockerfile: stubs/openfinance/Dockerfile
+    environment:
+      - PORT=9000
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "8474:8474" # Toxiproxy API, used by toxiproxy.sh
+    depends_on:
+      - openfinance
+
+  # The Toxiproxy image is distroless (no shell, no CLI), so the proxy is
+  # created through its HTTP API.
+  toxiproxy-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - toxiproxy
+    entrypoint:
+      - sh
+      - -c
+      - >
+        until curl -sf http://toxiproxy:8474/version; do sleep 1; done;
+        curl -sf -X POST http://toxiproxy:8474/proxies
+        -H 'Content-Type: application/json'
+        -d '{"name":"openfinance","listen":"0.0.0.0:9001","upstream":"openfinance:9000","enabled":true}'
+
+  origination:
+    build:
+      context: ../../..
+      dockerfile: services/origination/Dockerfile
+    ports:
+      - "8180:8080"
+    environment:
+      - PORT=8080
+      - REDIS_ADDR=redis:6379
+      - OPEN_FINANCE_URL=http://toxiproxy:9001
+      - OPEN_FINANCE_TIMEOUT_MS=700
+      - BREAKER_CONSECUTIVE_FAILURES=3
+      - BREAKER_OPEN_TIMEOUT_MS=5000
+      - BREAKER_HALF_OPEN_SUCCESSES=3
+    depends_on:
+      redis:
+        condition: service_healthy
+      toxiproxy-init:
+        condition: service_completed_successfully
+
+  # Started on demand by run.sh (docker compose run --rm k6 ...).
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["tools"]
+    entrypoint: ["k6"]
+    environment:
+      - BASE_URL=http://origination:8080
+    volumes:
+      - ./k6:/scripts:ro
