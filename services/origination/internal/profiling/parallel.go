@@ -36,9 +36,11 @@ type ParallelConfig struct {
 	Deadline time.Duration
 	// Required names the source without which no profile is calculated online
 	// (decision D-2: Open Finance when OPEN_FINANCE_REQUIRED=true). When it
-	// misses its budget, fails or is isolated, the other calls are canceled
-	// and the caller degrades. Empty means the sources are equivalent: any
-	// signal that arrives is enough. It must be the name of one of the sources.
+	// misses its budget, fails or is isolated, the caller degrades. The other
+	// calls are not canceled early: each one ends within its own budget, so
+	// its circuit breaker records only its real result and its outcome is
+	// reported. Empty means the sources are equivalent: any signal that
+	// arrives is enough. It must be the name of one of the sources.
 	Required string
 	// Combine builds the profile from the signals that arrived. Nil uses
 	// CombineProvisional.
@@ -97,9 +99,13 @@ type sourceResult struct {
 }
 
 // FetchProfile consults every source concurrently and returns as soon as all
-// of them answered, the required one failed, or the deadline expired. The
-// calls still in flight are canceled on return; their goroutines finish on
-// their own and never block, because the results channel has room for all.
+// of them answered, each one within its own budget, or the deadline expired.
+// A failed required source does not cut the others short: the answer is
+// never later than the common budget, and no healthy source is canceled
+// (and counted as a failure by its circuit breaker) because another one
+// failed. The calls still in flight are canceled on return; their goroutines
+// finish on their own and never block, because the results channel has room
+// for all.
 func (p *ParallelSource) FetchProfile(ctx context.Context, customerID string) (domain.RiskProfile, error) {
 	fanCtx, cancel := context.WithTimeout(ctx, p.cfg.Deadline)
 	defer cancel()
@@ -150,8 +156,8 @@ func (p *ParallelSource) FetchProfile(ctx context.Context, customerID string) (d
 	return profile, nil
 }
 
-// collect gathers results until every source answered, the required source
-// failed, or the fan-out context ended.
+// collect gathers results until every source answered or the fan-out context
+// ended.
 func (p *ParallelSource) collect(ctx context.Context, results <-chan sourceResult, outcomes []domain.SourceOutcome, answered []bool, signals []domain.RiskProfile) {
 	for pending := len(p.sources); pending > 0; pending-- {
 		select {
@@ -160,10 +166,6 @@ func (p *ParallelSource) collect(ctx context.Context, results <-chan sourceResul
 			outcomes[r.index] = r.outcome
 			if r.outcome.Status == domain.SourceStatusOK {
 				signals[r.index] = r.profile
-				continue
-			}
-			if p.sources[r.index].Name == p.cfg.Required {
-				return
 			}
 		case <-ctx.Done():
 			return

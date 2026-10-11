@@ -54,9 +54,13 @@ Data y KYC. Cada fuente tiene su presupuesto (`SOURCE_BUDGET_MS`, 120 ms) dentro
 ```
 llegan las tres fuentes ─────────────────────────────▶ mode=normal, source=external_sources, partial=false
 falta una fuente opcional (Open Data o KYC) ─────────▶ mode=normal, source=external_sources, partial=true
-falta Open Finance y OPEN_FINANCE_REQUIRED=true ─────▶ se cancelan las demás → cadena de HA-D01 (cache / base_actuarial), provisional
+falta Open Finance y OPEN_FINANCE_REQUIRED=true ─────▶ cadena de HA-D01 (cache / base_actuarial), provisional
 falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial con las que llegaron; provisional solo si no llega ninguna
 ```
+
+- Cuando falla Open Finance con `OPEN_FINANCE_REQUIRED=true`, Open Data y KYC **no se cancelan antes de tiempo**: cada una termina
+  dentro de su propio presupuesto, su circuit breaker registra solo su resultado real (una fuente sana nunca queda `circuit_open`
+  porque falló otra) y `sources[]` muestra su estado verdadero. La respuesta provisional nunca se demora más que el presupuesto común.
 
 - `sources[]` informa cada fuente con `status` (`ok`, `timeout`, `error`, `circuit_open`) y `latency_ms`; lo pinta la pantalla
   E2/E2b. En modo provisional muestra qué fuente falló. Con una sola fuente configurada (Open Finance, como en

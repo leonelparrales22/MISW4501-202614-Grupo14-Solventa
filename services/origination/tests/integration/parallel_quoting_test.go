@@ -296,9 +296,35 @@ func TestOpenFinanceRequiredDegradesWhenItIsSlow(t *testing.T) {
 	assert.Equal(t, false, res.body["partial"])
 	states := sourceStates(t, res.body)
 	assert.Equal(t, "timeout", states["open_finance"]["status"], "E2b shows which source failed")
+	assert.Equal(t, "ok", states["open_data"]["status"])
+	assert.Equal(t, "ok", states["kyc"]["status"])
 
 	fresh := e.resolve(t, "new-customer")
 	assert.Equal(t, "base_actuarial", fresh.body["source"])
+}
+
+func TestHealthySourcesKeepTheirCircuitWhenOpenFinanceFails(t *testing.T) {
+	e := newParallelEnv(t, true)
+	e.of.down.Store(true)
+	// Open Data and KYC answer after Open Finance already failed. They must
+	// not be canceled: a canceled call would count as a failure of their own
+	// circuit breakers and isolate two healthy sources.
+	e.od.setDelay(30 * time.Millisecond)
+	e.kyc.setDelay(30 * time.Millisecond)
+
+	for i := 0; i < 40; i++ {
+		res := e.resolve(t, fmt.Sprintf("c%d", i))
+
+		require.Equal(t, http.StatusOK, res.status)
+		assert.Equal(t, "provisional", res.body["mode"], "D-2: without Open Finance the offer is provisional")
+		assert.Less(t, res.elapsed, answerLimit, "the provisional answer is not delayed beyond the budget")
+		states := sourceStates(t, res.body)
+		assert.Contains(t, []any{"error", "circuit_open"}, states["open_finance"]["status"], "call %d", i)
+		assert.Equal(t, "ok", states["open_data"]["status"], "call %d: Open Data reports its real result", i)
+		assert.Equal(t, "ok", states["kyc"]["status"], "call %d: KYC reports its real result", i)
+	}
+	assert.Equal(t, "circuit_open", sourceStates(t, e.resolve(t, "last").body)["open_finance"]["status"],
+		"only the failing source is isolated")
 }
 
 func TestOpenFinanceNotRequiredGivesAPartialProfile(t *testing.T) {

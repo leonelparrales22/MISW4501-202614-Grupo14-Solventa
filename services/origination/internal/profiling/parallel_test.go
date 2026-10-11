@@ -224,7 +224,26 @@ func TestAllSourcesFailDegradesToHAD01Chain(t *testing.T) {
 	assert.Equal(t, domain.SourceBaseActuarial, res.Source)
 }
 
-func TestCircuitOpenSourceIsReportedWithoutWaiting(t *testing.T) {
+func TestFailedRequiredSourceDoesNotCancelTheHealthyOnes(t *testing.T) {
+	isolated := &delayedSource{err: fmt.Errorf("%w: %w", ports.ErrSourceUnavailable, ports.ErrCircuitOpen)}
+	// Open Data and KYC answer after the required source already failed.
+	od := &delayedSource{delay: 30 * time.Millisecond, score: 0.4, category: "standard"}
+	kyc := &delayedSource{delay: 30 * time.Millisecond, score: 0.6, category: "standard"}
+	src := profiling.NewParallelSource(named(isolated, od, kyc), openFinanceRequired())
+
+	start := time.Now()
+	_, err := src.FetchProfile(context.Background(), "c1")
+	elapsed := time.Since(start)
+
+	var unavailable *ports.SourcesUnavailableError
+	require.ErrorAs(t, err, &unavailable, "without the required source the caller degrades")
+	assert.Equal(t, map[string]domain.SourceStatus{"open_finance": "circuit_open", "open_data": "ok", "kyc": "ok"}, statuses(unavailable.Outcomes),
+		"the healthy sources report their real result")
+	assert.Zero(t, od.canceled.Load()+kyc.canceled.Load(), "a failed required source does not cancel the others")
+	assert.Less(t, elapsed, testBudget, "the answer waits for the others only within their budget")
+}
+
+func TestFailedRequiredSourceWaitsAtMostTheBudget(t *testing.T) {
 	isolated := &delayedSource{err: fmt.Errorf("%w: %w", ports.ErrSourceUnavailable, ports.ErrCircuitOpen)}
 	od, kyc := slowSource(), slowSource()
 	src := profiling.NewParallelSource(named(isolated, od, kyc), openFinanceRequired())
@@ -235,9 +254,13 @@ func TestCircuitOpenSourceIsReportedWithoutWaiting(t *testing.T) {
 
 	var unavailable *ports.SourcesUnavailableError
 	require.ErrorAs(t, err, &unavailable)
-	assert.Less(t, elapsed, 60*time.Millisecond, "an isolated required source ends the fan-out at once")
+	assert.Less(t, elapsed, cutMargin, "the provisional answer is never later than the common budget")
 	assert.Equal(t, domain.SourceStatusCircuitOpen, unavailable.Outcomes[0].Status)
-	assert.Equal(t, domain.SourceStatusTimeout, unavailable.Outcomes[1].Status, "the other calls are canceled")
+	assert.Equal(t, domain.SourceStatusTimeout, unavailable.Outcomes[1].Status, "cut at its own budget")
+	assert.Equal(t, domain.SourceStatusTimeout, unavailable.Outcomes[2].Status, "cut at its own budget")
+	assert.GreaterOrEqual(t, unavailable.Outcomes[1].Latency, testBudget)
+	assert.Equal(t, int32(1), od.canceled.Load())
+	assert.Equal(t, int32(1), kyc.canceled.Load())
 	assert.Eventually(t, func() bool { return od.inFlight.Load() == 0 && kyc.inFlight.Load() == 0 }, 100*time.Millisecond, 5*time.Millisecond)
 }
 

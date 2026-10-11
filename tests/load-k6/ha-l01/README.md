@@ -66,9 +66,10 @@ La latencia local (p95 ≈ 122 ms) solo confirma que el abanico no espera más q
 
 ## Qué significa `OPEN_FINANCE_REQUIRED` (D-2)
 
-- `true` (defecto): si Open Finance no llega dentro de su presupuesto (lenta, con error o con el circuito abierto), se cancelan
-  las demás consultas y la oferta sale **provisional** desde la caché o el perfil base (cadena de HA-D01). Se privilegia la
-  exactitud del precio. Con el perfil `normal` se espera cerca de un 17–18 % de cotizaciones provisionales.
+- `true` (defecto): si Open Finance no llega dentro de su presupuesto (lenta, con error o con el circuito abierto), la oferta sale
+  **provisional** desde la caché o el perfil base (cadena de HA-D01). Open Data y KYC no se cancelan antes de tiempo: cada una
+  termina dentro de su presupuesto y su circuito registra solo su resultado real. Se privilegia la exactitud del precio. Con el
+  perfil `normal` se espera cerca de un 17–18 % de cotizaciones provisionales.
 - `false`: las fuentes son equivalentes; basta con una señal para calcular el perfil (parcial). La oferta solo sale provisional
   si no llega ninguna fuente.
 
