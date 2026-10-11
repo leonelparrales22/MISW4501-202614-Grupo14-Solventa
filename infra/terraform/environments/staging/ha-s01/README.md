@@ -38,15 +38,30 @@ curl ──▶ API REST de prueba, integraciones MOCK (sin backend):
 Salidas: `region`, `invoke_url`, `human_url`, `partner_url`, `user_pool_id`, `issuer`, `jwks_url`, `client_ids`,
 `web_client_id`, `seed_user_emails`, `api_key_id` y `api_key_value` (sensible; clave de prueba que se destruye con la ventana).
 
+### Plantilla de variables (`ha-s01.example.tfvars`)
+
+[`ha-s01.example.tfvars`](ha-s01.example.tfvars) trae todas las variables con valores de ejemplo **menos la contraseña**
+(convención del `.gitignore`: `*.tfvars` ignorado, `!*.example.tfvars` versionado). Para usarla:
+
+1. Copiarla a `ha-s01.tfvars` (git la ignora) y completar `ttl` con la fecha límite real de la ventana (y, si hace falta,
+   los usuarios semilla).
+2. Definir la contraseña solo en el entorno: `export TF_VAR_seed_user_password='…'`. **Nunca** se escribe en la plantilla
+   ni en la copia.
+3. `terraform -chdir=infra/terraform/environments/staging/ha-s01 plan -var-file=ha-s01.tfvars` (y `apply`/`destroy` con el
+   mismo `-var-file` cuando la ventana esté autorizada).
+
 ## Procedimiento de la ventana (paso I4 del plan de HA-S01; no ejecutado)
 
 Requisitos previos: estimación de costo escrita y autorizada, credenciales de la cuenta del proyecto con MFA, y permisos sobre
 `cognito-idp` y `apigateway`.
 
 1. `export TF_VAR_seed_user_password='…'` (cumple la política: 12+ caracteres con mayúsculas, minúsculas, números y símbolos).
-2. `terraform -chdir=infra/terraform/environments/staging/ha-s01 init` y `… apply -var ttl=<fecha>`.
+2. `terraform -chdir=infra/terraform/environments/staging/ha-s01 init` y `… apply -var-file=ha-s01.tfvars` (o `-var ttl=<fecha>`
+   sin archivo de variables).
 3. `bash tests/security/ha-s01/verify-access.sh` y, para el caso del token vencido, `WAIT_FOR_EXPIRY=1 bash …`
    ([guion y casos](../../../../../tests/security/ha-s01/README.md)). Registrar la salida, en especial las líneas `RECORD` (D-6).
-4. `terraform … destroy -var ttl=<fecha>` en la misma sesión y comprobar `terraform state list` vacío.
+4. `terraform … destroy -var-file=ha-s01.tfvars` en la misma sesión y comprobar `terraform state list` vacío.
 
 Validación local (sin AWS): `terraform -chdir=infra/terraform/environments/staging/ha-s01 init -backend=false` y `… validate`.
+Con credenciales de solo lectura también se puede revisar el plan con la plantilla tal cual:
+`TF_VAR_seed_user_password=<ficticia> terraform … plan -var-file=ha-s01.example.tfvars` (no aplica nada).

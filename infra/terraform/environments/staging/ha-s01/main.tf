@@ -1,5 +1,5 @@
 # Ephemeral staging window to verify HA-S01 in AWS (CA-1, CA-3, CA-4 and CA-5)
-# with tests/security/ha-s01/verificar-acceso.sh:
+# with tests/security/ha-s01/verify-access.sh:
 #
 #   curl --> Cognito user pool (InitiateAuth, SignUp, UpdateUserAttributes, RevokeToken)
 #   curl --> test REST API (MOCK integrations, no backend):
