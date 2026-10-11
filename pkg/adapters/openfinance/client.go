@@ -44,6 +44,10 @@ type Config struct {
 	BaseURL string
 	Timeout time.Duration
 	Breaker resilience.Config
+	// HTTPClient, when set, carries the calls so several adapters can share one
+	// connection pool (EXP-L01 used 200 connections per host). Timeout above
+	// still bounds every call. When nil, a client with Timeout is created.
+	HTTPClient *http.Client
 }
 
 // Client calls the Open Finance provider through a circuit breaker.
@@ -60,8 +64,12 @@ func NewClient(cfg Config) *Client {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: timeout}
+	}
 	return &Client{
-		http:    &http.Client{Timeout: timeout},
+		http:    httpClient,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 		timeout: timeout,
 		breaker: resilience.NewBreaker("open-finance", cfg.Breaker),
@@ -79,7 +87,7 @@ func (c *Client) FetchProfile(ctx context.Context, customerID string) (Profile, 
 	if customerID == "" {
 		return Profile{}, ErrInvalidCustomerID
 	}
-	p, err := resilience.Execute(c.breaker, func() (Profile, error) {
+	p, err := resilience.ExecuteContext(ctx, c.breaker, func() (Profile, error) {
 		return c.fetch(ctx, customerID)
 	})
 	if err != nil {
