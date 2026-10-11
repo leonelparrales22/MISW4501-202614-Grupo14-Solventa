@@ -1,13 +1,21 @@
-# Ephemeral staging window to verify HA-S01 in AWS (CA-1, CA-3, CA-4 and CA-5)
-# with tests/security/ha-s01/verify-access.sh:
+# Ephemeral staging window to verify HA-S01 in AWS (CA-1 to CA-5) with
+# tests/security/ha-s01/verify-access.sh and the optional pkg/security
+# integration test (cognito_staging_integration_test.go):
 #
 #   curl --> Cognito user pool (InitiateAuth, SignUp, UpdateUserAttributes, RevokeToken)
-#   curl --> test REST API (MOCK integrations, no backend):
-#              GET /ha-s01/humana  Cognito authorizer; echoes the claims it received
-#              GET /ha-s01/socio   API key + usage plan only
+#   curl --> test REST API (MOCK integrations, no backend, no stage cache):
+#              GET /ha-s01/humana     Cognito authorizer; echoes the claims it received
+#              GET /ha-s01/socio      API key + usage plan only
+#              GET /v1/ha-s01-check   Cognito authorizer; echoes the claims (backend of the module)
+#   curl --> real modules/apigateway (stage cache 0.5 GB, detailed metrics):
+#              GET /v1/ha-s01-check   human route: Cognito authorizer -> HTTP_PROXY to the
+#                                     test API above; a 200 with the claims proves that the
+#                                     module forwards the Authorization header
+#              OPTIONS                CORS preflight without authorization; 4XX with CORS
+#              GET /v1/risk-profiles/{customer_id}  partner route, API key only
 #
-# No VPC, NAT, ALB, Fargate, RDS, Redis, stage cache or CloudWatch logs.
-# Everything is destroyed in the same session (R8/R12 of Nicolás's workflow).
+# No VPC, NAT, ALB, Fargate, RDS, Redis or CloudWatch logs. Everything is
+# destroyed in the same session (R8/R12 of Nicolás's workflow).
 
 module "cognito" {
   source = "../../../modules/cognito"
@@ -50,15 +58,22 @@ locals {
   }
 
   # The human route echoes the claims that reach the integration (they travel
-  # inside the routed request); the partner route answers a fixed body.
+  # inside the routed request); the partner route answers a fixed body. The
+  # backend of the real module echoes the claims too, under its own route name.
   response_templates = {
-    humana = <<-EOT
+    humana         = <<-EOT
       {"route":"humana","sub":"$context.authorizer.claims.sub","groups":"$context.authorizer.claims['cognito:groups']","partner_id":"$context.authorizer.claims['custom:partner_id']","token_use":"$context.authorizer.claims.token_use"}
     EOT
-    socio  = <<-EOT
+    socio          = <<-EOT
       {"route":"socio","api_key_id":"$context.identity.apiKeyId"}
     EOT
+    module_backend = <<-EOT
+      {"route":"module-backend","sub":"$context.authorizer.claims.sub","groups":"$context.authorizer.claims['cognito:groups']","partner_id":"$context.authorizer.claims['custom:partner_id']","token_use":"$context.authorizer.claims.token_use"}
+    EOT
   }
+
+  # Human route of the real apigateway module (path segment under /v1).
+  module_check_route = "ha-s01-check"
 
   cors_headers = {
     "method.response.header.Access-Control-Allow-Origin"  = "'*'"
@@ -172,6 +187,64 @@ resource "aws_api_gateway_integration_response" "options" {
   depends_on = [aws_api_gateway_integration.options]
 }
 
+# --- Backend of the real apigateway module: GET /v1/ha-s01-check (BN-2) -------------
+# The module proxies its human route (HTTP_PROXY) to this route, which runs the
+# same Cognito authorizer and echoes the claims. If the module did not forward
+# the Authorization header, this authorizer would answer 401 instead of 200.
+
+resource "aws_api_gateway_resource" "v1" {
+  rest_api_id = aws_api_gateway_rest_api.test.id
+  parent_id   = aws_api_gateway_rest_api.test.root_resource_id
+  path_part   = "v1"
+}
+
+resource "aws_api_gateway_resource" "module_backend" {
+  rest_api_id = aws_api_gateway_rest_api.test.id
+  parent_id   = aws_api_gateway_resource.v1.id
+  path_part   = local.module_check_route
+}
+
+resource "aws_api_gateway_method" "module_backend" {
+  rest_api_id      = aws_api_gateway_rest_api.test.id
+  resource_id      = aws_api_gateway_resource.module_backend.id
+  http_method      = "GET"
+  authorization    = "COGNITO_USER_POOLS"
+  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "module_backend" {
+  rest_api_id = aws_api_gateway_rest_api.test.id
+  resource_id = aws_api_gateway_resource.module_backend.id
+  http_method = aws_api_gateway_method.module_backend.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "module_backend" {
+  rest_api_id = aws_api_gateway_rest_api.test.id
+  resource_id = aws_api_gateway_resource.module_backend.id
+  http_method = aws_api_gateway_method.module_backend.http_method
+  status_code = "200"
+
+  response_parameters = { "method.response.header.Access-Control-Allow-Origin" = true }
+}
+
+resource "aws_api_gateway_integration_response" "module_backend" {
+  rest_api_id = aws_api_gateway_rest_api.test.id
+  resource_id = aws_api_gateway_resource.module_backend.id
+  http_method = aws_api_gateway_method.module_backend.http_method
+  status_code = aws_api_gateway_method_response.module_backend.status_code
+
+  response_parameters = { "method.response.header.Access-Control-Allow-Origin" = "'*'" }
+  response_templates  = { "application/json" = trimspace(local.response_templates.module_backend) }
+
+  depends_on = [aws_api_gateway_integration.module_backend]
+}
+
 resource "aws_api_gateway_deployment" "test" {
   rest_api_id = aws_api_gateway_rest_api.test.id
 
@@ -184,6 +257,9 @@ resource "aws_api_gateway_deployment" "test" {
       aws_api_gateway_method.options,
       aws_api_gateway_integration.options,
       aws_api_gateway_integration_response.options,
+      aws_api_gateway_method.module_backend,
+      aws_api_gateway_integration.module_backend,
+      aws_api_gateway_integration_response.module_backend,
     ]))
   }
 
@@ -192,7 +268,7 @@ resource "aws_api_gateway_deployment" "test" {
   }
 }
 
-# No cache cluster, no access or execution logs (cost of the window ~ US$ 0).
+# No cache cluster, no access or execution logs (cost of this API ~ US$ 0).
 resource "aws_api_gateway_stage" "test" {
   rest_api_id   = aws_api_gateway_rest_api.test.id
   deployment_id = aws_api_gateway_deployment.test.id
@@ -225,4 +301,22 @@ resource "aws_api_gateway_usage_plan_key" "partner" {
   key_id        = aws_api_gateway_api_key.partner.id
   key_type      = "API_KEY"
   usage_plan_id = aws_api_gateway_usage_plan.partner.id
+}
+
+# --- Real modules/apigateway with the Cognito authorizer (BN-2) ----------------------
+# The artifact the team will use, unchanged: authorizer on human_routes (and
+# their {proxy+}), OPTIONS without authorization, gateway 4XX answers with CORS
+# and the partner routes behind the API key. Its "backend" is the MOCK route
+# /v1/ha-s01-check of the test API (INTERNET integration, no VPC link).
+# It creates the 0.5 GB stage cache and detailed metrics: ~ US$ 0.036/h.
+
+module "apigateway" {
+  source = "../../../modules/apigateway"
+
+  name                   = "${var.name}-module"
+  backend_base_url       = aws_api_gateway_stage.test.invoke_url
+  cognito_user_pool_arns = [module.cognito.user_pool_arn]
+  human_routes           = { (local.module_check_route) = { methods = ["GET"] } }
+  partners               = { socio-a = { rate_limit = 5, burst_limit = 10 } }
+  # cors_allow_origin keeps its default "*" (the web client sends a Bearer token).
 }

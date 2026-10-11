@@ -18,8 +18,10 @@ name = "solventa-stg-ha-s01"
 
 # Test users created by the administrator (D-13: permanent password, no
 # invitation, no email sent). One group per user; partner_id only for partners.
+# The insured user is test data only (in production: after KYC, HU-M1.1-01).
 seed_users = {
   advisor    = { email = "asesor.ha-s01@example.com", group = "advisor" }
   operations = { email = "operaciones.ha-s01@example.com", group = "operations" }
   partner    = { email = "socio.ha-s01@example.com", group = "partner", partner_id = "socio-a" }
+  insured    = { email = "asegurado.ha-s01@example.com", group = "insured" }
 }

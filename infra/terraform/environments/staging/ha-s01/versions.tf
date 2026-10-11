@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.6"
+  required_version = ">= 1.11"
 
   required_providers {
     aws = {
@@ -8,9 +8,17 @@ terraform {
     }
   }
 
-  # Ephemeral verification window: local state, applied and destroyed in the
-  # same session. Move it to the team's remote state (S3 with locking) once it
-  # exists.
+  # Remote state in the project bucket (T4, infra/terraform/bootstrap/remote-state):
+  # one key per composition and S3 native locking (use_lockfile, Terraform >= 1.11).
+  # The state never stays on disk; the window is applied and destroyed in the
+  # same session.
+  backend "s3" {
+    bucket       = "solventa-tfstate-368083581678"
+    key          = "staging/ha-s01/terraform.tfstate"
+    region       = "us-east-2"
+    use_lockfile = true
+    encrypt      = true
+  }
 }
 
 provider "aws" {

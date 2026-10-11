@@ -43,8 +43,13 @@ output "web_client_id" {
   value       = module.cognito.client_ids["web"]
 }
 
+output "mobile_client_id" {
+  description = "App client ID of the mobile channel (pkg/security staging test: AUTH_STAGING_CLIENT_IDS)."
+  value       = module.cognito.client_ids["mobile"]
+}
+
 output "seed_user_emails" {
-  description = "Email of each seed user (advisor, operations, partner)."
+  description = "Email of each seed user (advisor, operations, partner, insured)."
   value       = { for k, u in var.seed_users : k => u.email }
 }
 
@@ -56,5 +61,28 @@ output "api_key_id" {
 output "api_key_value" {
   description = "Test partner API key of the window; it is destroyed with it."
   value       = aws_api_gateway_api_key.partner.value
+  sensitive   = true
+}
+
+# --- Real modules/apigateway -----------------------------------------------------------
+
+output "module_invoke_url" {
+  description = "Base URL of the stage of the real apigateway module."
+  value       = module.apigateway.invoke_url
+}
+
+output "module_human_url" {
+  description = "Human route of the real module (Cognito authorizer, HTTP_PROXY to the test API backend)."
+  value       = "${module.apigateway.invoke_url}/v1/${local.module_check_route}"
+}
+
+output "module_partner_url" {
+  description = "Partner route of the real module (API key only; its backend does not exist in the window)."
+  value       = "${module.apigateway.invoke_url}/v1/risk-profiles/${local.module_check_route}?consent_active=true"
+}
+
+output "module_api_key_value" {
+  description = "Test API key of socio-a in the real module; it is destroyed with the window."
+  value       = module.apigateway.api_key_values["socio-a"]
   sensitive   = true
 }
