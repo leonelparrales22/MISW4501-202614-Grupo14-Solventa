@@ -105,12 +105,12 @@ type parallelEnv struct {
 
 // productionBreaker is the circuit breaker of each source as main configures
 // it by default (D-3 c, adjusted): a call cut by the budget is a failure, and
-// the circuit opens at 80 % of failed calls with at least 20 calls in a 5 s
+// the circuit opens at 80 % of failed calls with at least 50 calls in a 5 s
 // window, or after 30 failures in a row; 5 s open, 3 probes to close.
 func productionBreaker() resilience.Config {
 	return resilience.Config{
 		OpenTimeout: 5 * time.Second, HalfOpenSuccesses: 3,
-		FailureRatio: 0.8, MinRequests: 20, Window: 5 * time.Second, ConsecutiveFailureLimit: 30,
+		FailureRatio: 0.8, MinRequests: 50, Window: 5 * time.Second, ConsecutiveFailureLimit: 30,
 	}
 }
 
@@ -393,9 +393,11 @@ func TestPersistentlySlowSourceOpensItsCircuit(t *testing.T) {
 	e := newParallelEnv(t, true)
 	e.od.setDelay(slowDelay)
 
-	// 20 quotes at the same time: every call to Open Data is cut by the budget.
+	// 50 quotes at the same time, the calls the ratio needs: every call to Open
+	// Data is cut by the budget, so either rule opens the circuit (the 30
+	// failures in a row come first).
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -418,7 +420,7 @@ func TestPersistentlySlowSourceOpensItsCircuit(t *testing.T) {
 }
 
 func TestHungSourceIsIsolatedWithLowTraffic(t *testing.T) {
-	// A scaled window keeps every window below the 20 calls the ratio needs:
+	// A scaled window keeps every window below the 50 calls the ratio needs:
 	// one quote after another, each waiting 120 ms for the hung source, gives
 	// about 5 calls per 600 ms window (like about one quote per second with
 	// the 5 s window). Only the 30 failures in a row can isolate the source.

@@ -103,7 +103,7 @@ func TestLoadConfigBreakerOpensByFailureRatio(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.InDelta(t, 0.8, cfg.breaker.FailureRatio, 1e-9, "D-3 (c), adjusted: opens at 80 % of failed calls")
-	assert.Equal(t, uint32(20), cfg.breaker.MinRequests, "D-3 (c): with at least 20 calls")
+	assert.Equal(t, uint32(50), cfg.breaker.MinRequests, "D-3 (c), adjusted: with at least 50 calls")
 	assert.Equal(t, 5*time.Second, cfg.breaker.Window, "D-3 (c): within a 5 s window")
 	assert.Equal(t, uint32(30), cfg.breaker.ConsecutiveFailureLimit, "safety net: or after 30 failures in a row")
 	assert.Equal(t, 5*time.Second, cfg.breaker.OpenTimeout, "EC-D01: 5 s open")
@@ -198,7 +198,7 @@ func TestFailuresInARowOpenTheSourceCircuitWithLowTraffic(t *testing.T) {
 	m := requiredEnv()
 	m["OPEN_FINANCE_URL"] = slowProvider(t)
 	m["SOURCE_BUDGET_MS"] = "20"
-	m["BREAKER_WINDOW_MS"] = "60" // a scaled window: about 3 calls per window, never the 20 the ratio needs
+	m["BREAKER_WINDOW_MS"] = "60" // a scaled window: about 3 calls per window, never the 50 the ratio needs
 	cfg, err := loadConfig(env(m))
 	require.NoError(t, err)
 	source := newProfileSource(cfg, newHTTPClient(cfg.maxConnsPerHost))

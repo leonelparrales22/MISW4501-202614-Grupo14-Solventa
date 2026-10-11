@@ -223,7 +223,9 @@ func loadParallelConfig(getenv func(string) string, cfg *config) error {
 // adjusted after the validation of HA-L01).
 const (
 	defaultBreakerFailureRatio = 0.8
-	defaultBreakerMinRequests  = 20
+	// defaultBreakerMinRequests keeps a degraded but alive source from
+	// reaching the ratio by chance in a window with few calls.
+	defaultBreakerMinRequests = 50
 	// defaultBreakerFailuresInARow is the safety net of the failure-ratio
 	// mode: a source that hangs is isolated even when the traffic is too low
 	// to reach BREAKER_MIN_REQUESTS calls within one window.

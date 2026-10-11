@@ -38,36 +38,40 @@ Al recrear originación imprime también la configuración del circuito que qued
 error (las transiciones se informan, no hacen fallar el script).
 
 El circuit breaker de cada fuente cuenta el corte por presupuesto como falla y abre por proporción (al menos el 80 % de las
-llamadas fallidas con un mínimo de 20 llamadas en una ventana de 5 s) **o tras 30 fallas seguidas**, contadas por el propio
+llamadas fallidas con un mínimo de 50 llamadas en una ventana de 5 s) **o tras 30 fallas seguidas**, contadas por el propio
 circuito sin reiniciarse al terminar cada ventana: así una fuente colgada queda aislada aunque haya poco tráfico. La cola normal
 de latencia y una fuente degradada pero viva no lo abren; una fuente caída o colgada de forma persistente queda aislada. Ver el
 README de `services/origination`.
 
 Variables del script: `SMOKE_RAMP_UP` / `SMOKE_SUSTAIN` (por defecto `10s` / `20s` por fase; la rampa completa de EXP-L01 es
 `1m` / `3m`), `MODES` (por defecto `"true false"`) y los parámetros del circuito, que el compose toma del entorno con los
-valores por defecto del servicio: `BREAKER_FAILURE_RATIO` (0.8), `BREAKER_MIN_REQUESTS` (20), `BREAKER_WINDOW_MS` (5000),
+valores por defecto del servicio: `BREAKER_FAILURE_RATIO` (0.8), `BREAKER_MIN_REQUESTS` (50), `BREAKER_WINDOW_MS` (5000),
 `BREAKER_CONSECUTIVE_FAILURES` (30), `BREAKER_OPEN_TIMEOUT_MS` (5000) y `BREAKER_HALF_OPEN_SUCCESSES` (3). Por ejemplo:
 `BREAKER_FAILURE_RATIO=0.5 ./run.sh`.
 
-## Resultado de referencia (humo local, 2026-10-10, umbral 0,8 + 30 fallas seguidas)
+## Resultado de referencia (humo local, 2026-10-11: umbral 0,8, mínimo de 50 llamadas, 30 fallas seguidas)
 
-Rampa corta de `run.sh` (10 s + 20 s por fase, ≈ 2 100 solicitudes por fase), dos corridas. 0 % de fallas y 100 % de checks en
+Rampa corta de `run.sh` (10 s + 20 s por fase, ≈ 2 100 solicitudes por fase), tres corridas. 0 % de fallas y 100 % de checks en
 todas las fases; Schemathesis: 3 operaciones, 101/101 en cada check.
 
 | `OPEN_FINANCE_REQUIRED` | Fase | Provisionales | Parciales | Transiciones del circuito |
 |---|---|---|---|---|
-| `true` | normal | 16,9 % / 19,5 % | 27,8 % / 27,5 % | ninguna |
-| `true` | degradado | 62,6 % / 63,0 % | 31,9 % / 32,1 % | ninguna |
-| `true` | caída de Open Data | 18,0 % / 18,1 % | 82,0 % / 81,9 % | solo Open Data (abre y las sondas reabren cada 5 s) |
-| `false` | normal | 0,5 % / 0,7 % | 44,8 % / 46,2 % | ninguna |
-| `false` | degradado | 25,1 % / **39,1 %** | 70,0 % / 60,9 % | ninguna / **KYC abrió en falso** al inicio de la fase y siguió abierta |
-| `false` | caída de Open Data | 3,5 % / 6,9 % | 96,5 % / 93,1 % | Open Data / Open Data y la recuperación de KYC de la fase anterior |
+| `true` | normal | 18,4 % / 19,1 % / 18,4 % | 29,1 % / 28,2 % / 25,9 % | ninguna |
+| `true` | degradado | 63,8 % / 63,5 % / 63,7 % | 32,2 % / 31,5 % / 31,1 % | ninguna |
+| `true` | caída de Open Data | 19,3 % / 20,4 % / 19,8 % | 80,7 % / 79,6 % / 80,2 % | solo Open Data (abre y las sondas reabren cada 5 s) |
+| `false` | normal | 0,5 % / 0,7 % / 0,3 % | 44,6 % / 44,4 % / 44,5 % | ninguna |
+| `false` | degradado | 23,0 % / 24,8 % / 24,7 % | 71,5 % / 70,7 % / 70,7 % | ninguna |
+| `false` | caída de Open Data | 2,7 % / 2,5 % / 3,5 % | 97,3 % / 97,5 % / 96,5 % | solo Open Data |
 
-**Salvedad (fuente degradada pero viva):** la proporción se evalúa desde la llamada 20 de cada ventana; con tan pocas llamadas,
-una fuente con ≈ 62 % de cortes llega a veces al 80 % por azar, y una vez abierto el circuito casi nunca cierra (el half-open
-necesita 3 éxitos seguidos, ≈ 5 % con esa fuente). Se vio una vez en 10 fases `degradado` medidas (las 4 de la tabla y 6 más
-repetidas solo con esa fase: 62,4–63,8 % provisionales con `true` y 23,7–25,4 % con `false`, sin transiciones). No la causan
-las 30 fallas seguidas. El valor de `BREAKER_MIN_REQUESTS` es configurable; su ajuste es decisión del equipo.
+Además se repitió 3 veces por modo solo la fase `degradado` (61,2–64,5 % provisionales con `true` y 24,1–24,9 % con `false`): en
+total, **ninguna transición en 12 fases `degradado` ni en 6 fases `normal`**.
+
+**Por qué 50 llamadas (fuente degradada pero viva):** con un mínimo de 20, la proporción se evaluaba con tan pocas llamadas que una
+fuente con ≈ 62 % de cortes llegaba a veces al 80 % por azar, y una vez abierto el circuito casi nunca cerraba (el half-open
+necesita 3 éxitos seguidos, ≈ 5 % con esa fuente). En el humo del 2026-10-10 pasó una vez en 10 fases `degradado` (KYC, con
+`false`: 39,1 % de provisionales en lugar de ≈ 25 %). Con 50 la red de 30 fallas seguidas sigue aislando una fuente colgada con
+poco tráfico: con Open Data colgada y ≈ 2 cotizaciones por segundo (≈ 9 llamadas por ventana), las 30 primeras la esperan hasta el
+presupuesto y desde la 31.ª sale `circuit_open` sin llamarla. `BREAKER_MIN_REQUESTS` sigue siendo configurable.
 
 Con el umbral anterior (50 %) el perfil `degradado` abría los tres circuitos y daba ≈ 96–99 % de provisionales con cualquier
 valor de `OPEN_FINANCE_REQUIRED`; con 0,8 vuelve a los valores de EXP-L01 (≈ 62 % con `true`, ≈ 25 % con `false`).
