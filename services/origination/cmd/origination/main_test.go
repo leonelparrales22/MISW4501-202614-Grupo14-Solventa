@@ -305,7 +305,7 @@ func TestNewProfileSourceConsultsTheThreeSources(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, got.Sources, 3)
-	assert.InDelta(t, 0.4, got.Score, 1e-9)
+	assert.InDelta(t, 0.34, got.Score, 1e-9, "0.5·0.2 + 0.3·0.4 + 0.2·0.6")
 	assert.Equal(t, domain.SourceExternal, got.FreshSource())
 }
 
@@ -334,6 +334,56 @@ func TestNewProfileSourceHonorsOpenFinanceRequired(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.True(t, got.Partial)
-		assert.InDelta(t, 0.5, got.Score, 1e-9)
+		assert.InDelta(t, 0.48, got.Score, 1e-9, "weights renormalized over Open Data and KYC")
 	})
+}
+
+func TestLoadConfigScoreWeights(t *testing.T) {
+	t.Run("defaults are the provisional actuarial weights", func(t *testing.T) {
+		cfg, err := loadConfig(env(requiredEnv()))
+
+		require.NoError(t, err)
+		assert.Equal(t, map[string]float64{"open_finance": 0.5, "open_data": 0.3, "kyc": 0.2}, cfg.scoreWeights)
+	})
+	t.Run("overrides", func(t *testing.T) {
+		m := requiredEnv()
+		m["SCORE_WEIGHT_OPEN_FINANCE"] = "0.7"
+		m["SCORE_WEIGHT_OPEN_DATA"] = "0.3"
+		m["SCORE_WEIGHT_KYC"] = "0"
+
+		cfg, err := loadConfig(env(m))
+
+		require.NoError(t, err)
+		assert.Equal(t, map[string]float64{"open_finance": 0.7, "open_data": 0.3, "kyc": 0}, cfg.scoreWeights)
+	})
+	for _, name := range []string{"SCORE_WEIGHT_OPEN_FINANCE", "SCORE_WEIGHT_OPEN_DATA", "SCORE_WEIGHT_KYC"} {
+		t.Run("rejects an invalid "+name, func(t *testing.T) {
+			for _, bad := range []string{"heavy", "-0.1", "1.5"} {
+				m := requiredEnv()
+				m[name] = bad
+
+				_, err := loadConfig(env(m))
+
+				assert.Error(t, err, bad)
+			}
+		})
+	}
+}
+
+func TestLoadConfigProfileReuse(t *testing.T) {
+	cfg, err := loadConfig(env(requiredEnv()))
+	require.NoError(t, err)
+	assert.True(t, cfg.profileReuse, "HU-W1.2-02: the complete cached profile is reused by default")
+	assert.Len(t, resolverOptions(cfg), 1)
+
+	m := requiredEnv()
+	m["PROFILE_REUSE_ENABLED"] = "false"
+	cfg, err = loadConfig(env(m))
+	require.NoError(t, err)
+	assert.False(t, cfg.profileReuse)
+	assert.Empty(t, resolverOptions(cfg), "the kill switch goes back to HA-D01 / HA-L01")
+
+	m["PROFILE_REUSE_ENABLED"] = "sometimes"
+	_, err = loadConfig(env(m))
+	assert.Error(t, err)
 }

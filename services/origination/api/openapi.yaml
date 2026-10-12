@@ -11,17 +11,22 @@ paths:
           description: OK
   /v1/risk-profiles/resolve:
     post:
-      summary: Resolve the risk profile used to price an offer (HA-D01, HA-L01)
+      summary: Resolve the risk profile used to price an offer (HA-D01, HA-L01, HU-W1.2-02)
       description: >
-        Returns the risk profile for the customer. The external sources (Open
-        Finance, Open Data, KYC) are consulted in parallel, each with a latency
+        Returns the risk profile for the customer. A complete profile of the
+        customer calculated at most 30 days ago is reused as a normal answer
+        (source=cache) and no external source is queried (HU-W1.2-02). Otherwise
+        the external sources (Open Finance, Open Data, KYC) are consulted in
+        parallel, each with a latency
         budget (120 ms by default) inside a total cut (700 ms); a source that
         misses its budget is canceled and the profile is calculated with the
-        signals that arrived, marked as partial. When no profile can be
+        signals that arrived, marked as partial and combined with the
+        provisional actuarial weights of each source. When no profile can be
         calculated online (Open Finance missing while it is required, or no
         source at all), the answer is still 200 but provisional: it uses the
-        last cached profile (at most 30 days old) or, for a customer without
-        one, the base actuarial profile. No external source and no cached
+        last cached profile (at most 30 days old, a partial one since a complete
+        one would have been reused) or, for a customer without one, the base
+        actuarial profile. No external source and no cached
         profile is used without an active consent.
       requestBody:
         required: true
@@ -133,7 +138,10 @@ components:
           description: >
             open_finance when Open Finance alone calculated the profile,
             external_sources when the parallel profiling over several sources
-            did (HA-L01), cache or base_actuarial in provisional mode.
+            did (HA-L01), cache when a cached profile was used (normal mode:
+            a complete profile reused without querying, HU-W1.2-02; provisional
+            mode: a partial one while the sources fail), base_actuarial in
+            provisional mode when there is none.
         profile:
           type: object
           required: [score, category]
@@ -166,7 +174,7 @@ components:
             True when the profile was calculated online without some of the
             external sources (they missed their budget, failed or were
             isolated). Always false in provisional mode, which is reported by
-            mode and source.
+            mode and source, and for a profile reused from the cache.
         sources:
           type: array
           description: >

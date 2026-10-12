@@ -42,9 +42,13 @@ type ParallelConfig struct {
 	// reported. Empty means the sources are equivalent: any signal that
 	// arrives is enough. It must be the name of one of the sources.
 	Required string
-	// Combine builds the profile from the signals that arrived. Nil uses
-	// CombineProvisional.
+	// Combine builds the profile from the signals that arrived. When nil, the
+	// profile is built with Weights, or with CombineProvisional if Weights is
+	// empty too.
 	Combine CombineFunc
+	// Weights are the actuarial weights of each source by name (HU-W1.2-02),
+	// see CombineWeighted. Ignored when Combine is set.
+	Weights map[string]float64
 }
 
 // CombineProvisional is the provisional rule of HA-L01 (decision D-4): the
@@ -86,7 +90,7 @@ func NewParallelSource(sources []NamedSource, cfg ParallelConfig) *ParallelSourc
 	if cfg.Deadline <= 0 {
 		cfg.Deadline = DefaultProfilingDeadline
 	}
-	if cfg.Combine == nil {
+	if cfg.Combine == nil && len(cfg.Weights) == 0 {
 		cfg.Combine = CombineProvisional
 	}
 	return &ParallelSource{sources: sources, cfg: cfg}
@@ -133,6 +137,7 @@ func (p *ParallelSource) FetchProfile(ctx context.Context, customerID string) (d
 	// A source still in flight did not answer in the time it was given.
 	elapsed := time.Since(start)
 	arrived := make([]domain.RiskProfile, 0, len(p.sources))
+	arrivedNames := make([]string, 0, len(p.sources))
 	requiredArrived := p.cfg.Required == ""
 	for i, s := range p.sources {
 		if !answered[i] {
@@ -141,6 +146,7 @@ func (p *ParallelSource) FetchProfile(ctx context.Context, customerID string) (d
 		}
 		if outcomes[i].Status == domain.SourceStatusOK {
 			arrived = append(arrived, signals[i])
+			arrivedNames = append(arrivedNames, s.Name)
 			if s.Name == p.cfg.Required {
 				requiredArrived = true
 			}
@@ -150,7 +156,12 @@ func (p *ParallelSource) FetchProfile(ctx context.Context, customerID string) (d
 		return domain.RiskProfile{}, &ports.SourcesUnavailableError{Outcomes: outcomes}
 	}
 
-	profile := p.cfg.Combine(customerID, arrived)
+	var profile domain.RiskProfile
+	if p.cfg.Combine != nil {
+		profile = p.cfg.Combine(customerID, arrived)
+	} else {
+		profile = CombineWeighted(customerID, arrived, arrivedNames, p.cfg.Weights)
+	}
 	profile.Partial = len(arrived) < len(p.sources)
 	profile.Sources = outcomes
 	return profile, nil

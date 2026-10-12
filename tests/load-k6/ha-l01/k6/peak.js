@@ -87,7 +87,7 @@ export default function () {
     "mode is normal or provisional": () => body.mode === "normal" || body.mode === "provisional",
     "sources is an array": () => Array.isArray(body.sources),
     "normal answers come from the sources": () =>
-      body.mode !== "normal" || body.source === "external_sources" || body.source === "open_finance",
+      body.mode !== "normal" || body.source === "external_sources" || body.source === "open_finance" || body.source === "cache",
     "provisional answers name the missing source": () =>
       body.mode !== "provisional" || body.unavailable_source === "open_finance",
   });

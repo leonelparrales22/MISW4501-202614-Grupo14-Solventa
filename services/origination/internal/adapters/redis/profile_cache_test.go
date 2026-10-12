@@ -78,3 +78,52 @@ func TestRedisDownReturnsErrors(t *testing.T) {
 	assert.Error(t, getErr)
 	assert.Error(t, setErr)
 }
+
+func TestPartialFlagRoundTrips(t *testing.T) {
+	c, _ := newCache(t, 0)
+	require.NoError(t, c.Set(context.Background(), domain.RiskProfile{CustomerID: "partial", Partial: true}))
+	require.NoError(t, c.Set(context.Background(), domain.RiskProfile{CustomerID: "complete"}))
+
+	partial, _, err := c.Get(context.Background(), "partial")
+	require.NoError(t, err)
+	complete, _, err := c.Get(context.Background(), "complete")
+	require.NoError(t, err)
+
+	assert.True(t, partial.Partial)
+	assert.False(t, complete.Partial)
+}
+
+func TestEntryWrittenBeforeThePartialFlagIsReadAsComplete(t *testing.T) {
+	c, mr := newCache(t, 0)
+	require.NoError(t, mr.Set("risk_profile:c1", `{"customer_id":"c1","score":0.4,"category":"standard","calculated_at":"2026-10-01T09:00:00Z"}`))
+
+	got, found, err := c.Get(context.Background(), "c1")
+
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.False(t, got.Partial)
+}
+
+func TestInvalidateRemovesTheProfile(t *testing.T) {
+	c, _ := newCache(t, 0)
+	require.NoError(t, c.Set(context.Background(), domain.RiskProfile{CustomerID: "c1"}))
+
+	require.NoError(t, c.Invalidate(context.Background(), "c1"))
+	_, found, err := c.Get(context.Background(), "c1")
+
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
+func TestInvalidateMissingProfileIsNotAnError(t *testing.T) {
+	c, _ := newCache(t, 0)
+
+	assert.NoError(t, c.Invalidate(context.Background(), "ghost"))
+}
+
+func TestInvalidateWithRedisDownReturnsAnError(t *testing.T) {
+	c, mr := newCache(t, 0)
+	mr.Close()
+
+	assert.Error(t, c.Invalidate(context.Background(), "c1"))
+}

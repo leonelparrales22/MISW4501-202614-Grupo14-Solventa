@@ -99,6 +99,7 @@ func (p *latencyProvider) setDelay(d time.Duration) { p.delay.Store(int64(d)) }
 
 type parallelEnv struct {
 	api         http.Handler
+	resolver    *profiling.Resolver
 	httpClient  *http.Client
 	of, od, kyc *latencyProvider
 }
@@ -134,7 +135,10 @@ func newParallelEnvWithCache(t *testing.T, openFinanceRequired bool, cache ports
 	return buildParallelEnv(t, openFinanceRequired, cache, productionBreaker())
 }
 
-func buildParallelEnv(t *testing.T, openFinanceRequired bool, cache ports.RiskProfileCache, breaker resilience.Config) *parallelEnv {
+// envTune adjusts the parallel profiling and the Resolver of a test environment.
+type envTune func(*profiling.ParallelConfig, *[]profiling.Option)
+
+func buildParallelEnv(t *testing.T, openFinanceRequired bool, cache ports.RiskProfileCache, breaker resilience.Config, tune ...envTune) *parallelEnv {
 	t.Helper()
 	e := &parallelEnv{
 		of:  newLatencyProvider(t, 0.2),
@@ -149,6 +153,11 @@ func buildParallelEnv(t *testing.T, openFinanceRequired bool, cache ports.RiskPr
 	if openFinanceRequired {
 		required = domain.ExternalSourceOpenFinance
 	}
+	parallelCfg := profiling.ParallelConfig{Budget: sourceBudget, Deadline: profilingDeadline, Required: required}
+	var resolverOpts []profiling.Option
+	for _, f := range tune {
+		f(&parallelCfg, &resolverOpts)
+	}
 	source := profiling.NewParallelSource([]profiling.NamedSource{
 		{Name: domain.ExternalSourceOpenFinance, Source: ofadapter.NewSource(openfinance.NewClient(openfinance.Config{
 			BaseURL: e.of.srv.URL, Breaker: breaker, HTTPClient: e.httpClient,
@@ -159,10 +168,10 @@ func buildParallelEnv(t *testing.T, openFinanceRequired bool, cache ports.RiskPr
 		{Name: domain.ExternalSourceKYC, Source: kycadapter.NewSource(kyc.NewClient(kyc.Config{
 			BaseURL: e.kyc.srv.URL, Breaker: breaker, HTTPClient: e.httpClient,
 		}))},
-	}, profiling.ParallelConfig{Budget: sourceBudget, Deadline: profilingDeadline, Required: required})
+	}, parallelCfg)
 
-	resolver := profiling.NewResolver(source, cache, realClock{})
-	e.api = httpadapter.NewRouter(resolver)
+	e.resolver = profiling.NewResolver(source, cache, realClock{}, resolverOpts...)
+	e.api = httpadapter.NewRouter(e.resolver)
 	return e
 }
 
@@ -187,6 +196,13 @@ func (c *memoryCache) Set(_ context.Context, p domain.RiskProfile) error {
 	return nil
 }
 
+func (c *memoryCache) Invalidate(_ context.Context, id string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.items, id)
+	return nil
+}
+
 type timedResult struct {
 	result
 	elapsed time.Duration
@@ -194,7 +210,12 @@ type timedResult struct {
 
 func (e *parallelEnv) resolve(t *testing.T, customerID string) timedResult {
 	t.Helper()
-	payload, _ := json.Marshal(map[string]any{"customer_id": customerID, "consent_active": true})
+	return e.resolveWithConsent(t, customerID, true)
+}
+
+func (e *parallelEnv) resolveWithConsent(t *testing.T, customerID string, consent bool) timedResult {
+	t.Helper()
+	payload, _ := json.Marshal(map[string]any{"customer_id": customerID, "consent_active": consent})
 	req := httptest.NewRequest(http.MethodPost, "/v1/risk-profiles/resolve", bytes.NewReader(payload))
 	rec := httptest.NewRecorder()
 	start := time.Now()

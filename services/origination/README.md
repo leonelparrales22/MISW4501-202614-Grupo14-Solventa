@@ -9,7 +9,7 @@ Camino crítico del negocio: cotiza, perfila, emite y cobra. Es la fachada (*Fac
 | Módulo (`internal/`) | Qué hace |
 |---|---|
 | `orchestrator` | Orquestador de cotización: coordina perfilamiento y rating. Consulta primero la caché y luego las fuentes externas en paralelo |
-| `profiling` | Perfil de riesgo con Open Finance / Open Data (con consentimiento). **HA-D01:** `Resolver` con la cadena de degradación Open Finance → `Perfil_Riesgo_Cache` (Redis, TTL 30 días) → perfil actuarial base; la oferta degradada sale marcada como provisional. La invalidación al recotizar llega con HU-W1.2-02. **HA-L01:** `ParallelSource` consulta Open Finance, Open Data y KYC en paralelo (120 ms por fuente, corte total de 700 ms), cancela la fuente lenta y arma el perfil parcial con las señales que llegaron; `CombineProvisional` es la regla provisional de combinación (reemplazable por HU-W1.2-02) |
+| `profiling` | Perfil de riesgo con Open Finance / Open Data (con consentimiento). **HA-D01:** `Resolver` con la cadena de degradación Open Finance → `Perfil_Riesgo_Cache` (Redis, TTL 30 días) → perfil actuarial base; la oferta degradada sale marcada como provisional. **HU-W1.2-02:** el `Resolver` (con la opción `WithCachedProfileReuse`, activa por defecto en `main`) reutiliza un perfil **completo** de ≤ 30 días sin consultar el ecosistema, comparte una sola consulta entre solicitudes simultáneas del mismo cliente (`singleflight`) y expone `Invalidate` para la recotización. **HA-L01:** `ParallelSource` consulta Open Finance, Open Data y KYC en paralelo (120 ms por fuente, corte total de 700 ms), cancela la fuente lenta y arma el perfil parcial con las señales que llegaron; `CombineProvisional` es la regla de combinación por defecto; con `Weights` se usa `CombineWeighted` (HU-W1.2-02) |
 | `rating` | Motor de rating: prima y coberturas. Reglas actuariales aisladas del resto |
 | `underwriting` | Suscripción automática: acepta, rechaza o ajusta el riesgo; enruta a decisión humana (bandeja del asesor) cuando aplica |
 | `issuance` | Aceptación de la oferta, documento contractual (firma) y activación de la cobertura |
@@ -29,21 +29,25 @@ Las llamadas entre orquestador, perfilamiento y rating son **en proceso** (sin s
 | `kyc` | Puente entre `pkg/adapters/kyc` y el puerto `RiskProfileSource` (HA-L01) |
 | `redis` | `Perfil_Riesgo_Cache` (cache-aside), clave `risk_profile:{customer_id}`, TTL 30 días y timeout propio de 100 ms por operación para que Redis nunca bloquee la oferta |
 
-## Oferta continua ante caída de la fuente (HA-D01)
+## Perfil de riesgo: reutilización, cálculo y oferta continua (HU-W1.2-02, HA-D01)
 
 ```
-sin consentimiento activo ───────────▶ 422 consent_required (no se consulta nada)
+sin consentimiento activo ───────────▶ 422 consent_required (no se consulta nada, ni la caché)
+perfil COMPLETO en caché de ≤ 30 días ▶ mode=normal,      source=cache          (cero consultas externas)
 Open Finance responde (< 700 ms) ────▶ mode=normal,      source=open_finance  (y calienta la caché)
 Open Finance caído, lento o aislado
-  └ perfil en caché de ≤ 30 días ────▶ mode=provisional, source=cache          (con profile_date)
+  └ perfil PARCIAL en caché de ≤ 30 días ▶ mode=provisional, source=cache         (con profile_date)
   └ sin perfil en caché (cliente nuevo) ▶ mode=provisional, source=base_actuarial
 ```
 
 - El circuit breaker permanece abierto 5 s y se cierra tras 3 éxitos consecutivos en half-open; una sonda fallida lo reabre (combinación validada en EC-D01). Desde HA-L01 abre por **proporción de fallas** (≥ 80 % con al menos 50 llamadas en una ventana de 5 s) **o tras 30 fallas seguidas** (decisión D-3 c, ajustada tras la validación; ver «Cotización en paralelo»); con `BREAKER_FAILURE_RATIO=0` vuelve a abrir con 3 fallas consecutivas, como en EC-D01.
+- **Reutilización (HU-W1.2-02, criterio 1):** solo se reutiliza un perfil completo (el que no se armó sin alguna fuente). Si la caché guarda uno parcial (`Partial` se persiste en Redis), se vuelve a consultar el ecosistema y el parcial solo respalda una respuesta provisional si las fuentes fallan. Como un perfil completo se reutiliza antes de consultar, el camino «caché provisional» de HA-D01 solo se alcanza con perfiles parciales. Las entradas escritas antes de este cambio no tienen la marca y se leen como completas. El perfil parcial sigue guardándose en caché, como en HA-L01.
+- **Recotización:** `Resolver.Invalidate` descarta el perfil (`ports.RiskProfileCache.Invalidate`, `DEL` en Redis); el orquestador de HU-W1.2-03 lo invoca en proceso, por eso no hay endpoint.
+- **Una consulta por cliente:** las solicitudes simultáneas del mismo cliente comparten un único abanico de consultas (`singleflight`); corre desacoplado del llamador, acotado por el corte de 700 ms, así que un cliente que se desconecta no hace fallar a los demás.
 - Una falla de Redis nunca rompe la respuesta: si no se puede leer la caché se usa el perfil base; si no se puede escribir, la oferta sigue siendo normal.
-- La respuesta incluye lo que pintan las pantallas del prototipo: `mode`, `source`, `profile_date` (E3b), `unavailable_source` y `notice` (`last_profile_in_use` para E3b, `personalization_unavailable` para E3c y el aviso de E2b). Los textos los traduce cada cliente.
+- La respuesta incluye lo que pintan las pantallas del prototipo: `mode`, `source`, `profile_date` (E3b), `unavailable_source` y `notice` (`last_profile_in_use` para E3b (perfil parcial en caché), `personalization_unavailable` para E3c y el aviso de E2b). Los textos los traduce cada cliente.
 - `consent_active` lo afirma el llamador mientras `audit` no expone la consulta de consentimiento (HU-W1.2-01); entonces se reemplazará por un puerto.
-- Fuera de esta historia: respetar/recotizar ofertas provisionales y notificar (HU-W1.2-03), consulta concurrente de las tres fuentes (HA-L01 / HU-W1.2-02).
+- Fuera de esta historia: respetar/recotizar ofertas provisionales y notificar (HU-W1.2-03), registro del linaje del perfil (HU-W4.1-01).
 
 ## Cotización en paralelo (HA-L01)
 
@@ -72,9 +76,11 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
   0,3–0,7 % provisionales y ≈ 44,5 % parciales. Perfil `degradado` (≈ 62 % de llamadas sobre 120 ms, fuentes vivas): `true` →
   61–65 % provisionales; `false` → 23–25 %, sin circuitos abiertos en falso en 12 fases. Detalle en
   [`tests/load-k6/ha-l01`](../../tests/load-k6/ha-l01/README.md).
-- La regla de combinación es provisional (`CombineProvisional`, decisión D-4): promedio de los `score` que llegaron y la
-  categoría y fecha de la fuente de mayor prioridad presente (Open Finance > Open Data > KYC). La regla actuarial definitiva
-  es de HU-W1.2-02.
+- La regla de combinación del servicio es la **provisional actuarial** de HU-W1.2-02 (`CombineWeighted`, versión `v1`): promedio
+  ponderado de los `score` que llegaron, con pesos Open Finance 0,5, Open Data 0,3 y KYC 0,2 renormalizados sobre las fuentes
+  presentes; la categoría sale del score combinado (< 0,2 `preferred`, > 0,8 `high_risk`, resto `standard`) y la fecha es la de
+  la fuente de mayor prioridad presente. Los pesos son provisionales hasta que actuaría defina la fórmula y se configuran con
+  `SCORE_WEIGHT_*`. Sin pesos, `ParallelSource` conserva `CombineProvisional` (decisión D-4: promedio simple).
 - El corte por presupuesto **cuenta como falla** del circuit breaker de la fuente, igual que un error, un 5xx o una conexión
   rechazada, y cada circuito abre (decisión D-3 c, ajustada tras la validación; modo `FailureRatio` de `pkg/resilience`):
   - por **proporción**: cuando, en una ventana de `BREAKER_WINDOW_MS` (5 s), hubo al menos `BREAKER_MIN_REQUESTS` llamadas (50)
@@ -113,6 +119,10 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `PROFILE_CACHE_TTL_HOURS` | `720` | Vigencia del perfil en caché (30 días) |
 | `OPEN_DATA_URL` | vacío | URL base de Open Data. Vacía: la fuente queda fuera del abanico (aviso en el log) |
 | `KYC_URL` | vacío | URL base de KYC. Vacía: la fuente queda fuera del abanico (aviso en el log) |
+| `PROFILE_REUSE_ENABLED` | `true` | Reutiliza el perfil completo de ≤ 30 días sin consultar las fuentes (HU-W1.2-02). Con `false` se vuelve al comportamiento de HA-D01 / HA-L01: siempre se consulta primero y la caché solo respalda una respuesta provisional. Sirve como interruptor de apagado |
+| `SCORE_WEIGHT_OPEN_FINANCE` | `0.5` | Peso de Open Finance en el score (HU-W1.2-02). Entre 0 y 1; son relativos, `0` deja la fuente fuera del score |
+| `SCORE_WEIGHT_OPEN_DATA` | `0.3` | Peso de Open Data en el score |
+| `SCORE_WEIGHT_KYC` | `0.2` | Peso de KYC en el score |
 | `SOURCE_BUDGET_MS` | `120` | Presupuesto de latencia de cada fuente (CA-2 de HA-L01) |
 | `PROFILING_DEADLINE_MS` | `700` | Corte total del abanico (CA-2 de HA-L01) |
 | `HTTP_MAX_CONNS_PER_HOST` | `200` | Pool de conexiones por host del cliente HTTP compartido (EXP-L01) |

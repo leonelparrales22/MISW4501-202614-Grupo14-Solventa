@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,6 +47,8 @@ type fakeCache struct {
 	getErr error
 	setErr error
 	gets   int
+
+	invalidated []string
 }
 
 func newFakeCache() *fakeCache { return &fakeCache{items: map[string]domain.RiskProfile{}} }
@@ -71,8 +74,29 @@ func (c *fakeCache) Set(_ context.Context, p domain.RiskProfile) error {
 	return nil
 }
 
+func (c *fakeCache) Invalidate(_ context.Context, id string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.invalidated = append(c.invalidated, id)
+	delete(c.items, id)
+	return nil
+}
+
 func freshProfile() domain.RiskProfile {
 	return domain.RiskProfile{Score: 0.31, Category: "standard", CalculatedAt: now.Add(-time.Hour)}
+}
+
+// partialProfile is a cached profile calculated without some source: it is not
+// reused as is, but it backs a provisional answer when the sources fail.
+func partialProfile() domain.RiskProfile {
+	p := freshProfile()
+	p.Partial = true
+	return p
+}
+
+// newReusingResolver reuses a complete cached profile, as main does by default.
+func newReusingResolver(src ports.RiskProfileSource, cache ports.RiskProfileCache) *profiling.Resolver {
+	return profiling.NewResolver(src, cache, fakeClock{}, profiling.WithCachedProfileReuse())
 }
 
 func newResolver(src ports.RiskProfileSource, cache ports.RiskProfileCache) *profiling.Resolver {
@@ -288,4 +312,173 @@ func TestResolveNormalTakesTheSourceFromTheProfile(t *testing.T) {
 	assert.Equal(t, domain.SourceExternal, got.Source)
 	assert.True(t, got.Profile.Partial)
 	assert.Equal(t, p.Sources, got.Sources)
+}
+
+// --- HU-W1.2-02: reuse of the cached profile ------------------------------------
+
+func completeProfile(age time.Duration) domain.RiskProfile {
+	p := freshProfile()
+	p.CustomerID = "c1"
+	p.CalculatedAt = now.Add(-age)
+	return p
+}
+
+func TestResolveReusesACompleteCachedProfileWithoutQueryingTheSource(t *testing.T) {
+	cache := newFakeCache()
+	cache.items["c1"] = completeProfile(48 * time.Hour)
+	src := &fakeSource{err: ports.ErrSourceUnavailable}
+
+	got, err := newReusingResolver(src, cache).Resolve(context.Background(), "c1", true)
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.ModeNormal, got.Mode)
+	assert.Equal(t, domain.SourceCache, got.Source)
+	assert.Empty(t, got.UnavailableSource)
+	assert.Equal(t, cache.items["c1"], got.Profile)
+	assert.Zero(t, src.calls, "no query to the external ecosystem")
+}
+
+func TestResolveCompleteCachedProfileAgeLimit(t *testing.T) {
+	tests := map[string]struct {
+		age         time.Duration
+		wantSource  domain.ProfileSource
+		wantQueried bool
+	}{
+		"just inside 30 days": {age: 30*24*time.Hour - time.Minute, wantSource: domain.SourceCache},
+		"exactly 30 days":     {age: 30 * 24 * time.Hour, wantSource: domain.SourceCache},
+		"older than 30 days":  {age: 30*24*time.Hour + time.Minute, wantSource: domain.SourceOpenFinance, wantQueried: true},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			cache := newFakeCache()
+			cache.items["c1"] = completeProfile(tc.age)
+			src := &fakeSource{profile: freshProfile()}
+
+			got, err := newReusingResolver(src, cache).Resolve(context.Background(), "c1", true)
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSource, got.Source)
+			assert.Equal(t, tc.wantQueried, src.calls > 0)
+		})
+	}
+}
+
+func TestResolveQueriesTheSourcesAgainWhenTheCachedProfileIsPartial(t *testing.T) {
+	cache := newFakeCache()
+	cached := partialProfile()
+	cached.CustomerID = "c1"
+	cache.items["c1"] = cached
+	fresh := freshProfile()
+	src := &fakeSource{profile: fresh}
+
+	got, err := newReusingResolver(src, cache).Resolve(context.Background(), "c1", true)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, src.calls, "a partial profile is not reused: the customer stays degraded until the sources answer")
+	assert.Equal(t, domain.ModeNormal, got.Mode)
+	assert.Equal(t, domain.SourceOpenFinance, got.Source)
+	assert.False(t, cache.items["c1"].Partial, "the complete profile replaces the partial one")
+}
+
+func TestResolveCacheReadErrorQueriesTheSource(t *testing.T) {
+	cache := newFakeCache()
+	cache.getErr = errors.New("redis down")
+	src := &fakeSource{profile: freshProfile()}
+
+	got, err := newReusingResolver(src, cache).Resolve(context.Background(), "c1", true)
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.ModeNormal, got.Mode)
+	assert.Equal(t, 1, src.calls)
+}
+
+func TestInvalidateMakesTheNextResolutionQueryTheSource(t *testing.T) {
+	cache := newFakeCache()
+	cache.items["c1"] = completeProfile(time.Hour)
+	src := &fakeSource{profile: freshProfile()}
+	r := newReusingResolver(src, cache)
+
+	require.NoError(t, r.Invalidate(context.Background(), "c1"))
+	got, err := r.Resolve(context.Background(), "c1", true)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"c1"}, cache.invalidated)
+	assert.Equal(t, 1, src.calls, "after a requote the sources are queried again")
+	assert.Equal(t, domain.SourceOpenFinance, got.Source)
+}
+
+// blockingSource answers only when released, so concurrent callers pile up.
+type blockingSource struct {
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (s *blockingSource) FetchProfile(_ context.Context, id string) (domain.RiskProfile, error) {
+	s.calls.Add(1)
+	<-s.release
+	p := freshProfile()
+	p.CustomerID = id
+	return p, nil
+}
+
+func TestResolveConcurrentRequestsForTheSameCustomerShareOneCalculation(t *testing.T) {
+	src := &blockingSource{release: make(chan struct{})}
+	r := newReusingResolver(src, newFakeCache())
+
+	const callers = 20
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := r.Resolve(context.Background(), "c1", true)
+			assert.NoError(t, err)
+			assert.Equal(t, domain.ModeNormal, got.Mode)
+		}()
+	}
+	// The callers join the in-flight calculation before it is released.
+	require.Eventually(t, func() bool { return src.calls.Load() >= 1 }, time.Second, time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+	close(src.release)
+	wg.Wait()
+
+	assert.Equal(t, int32(1), src.calls.Load(), "one query to the sources, not one per caller")
+}
+
+func TestResolveACallerThatGivesUpDoesNotFailTheOthers(t *testing.T) {
+	src := &blockingSource{release: make(chan struct{})}
+	r := newReusingResolver(src, newFakeCache())
+	quitting, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.Resolve(quitting, "c1", true)
+		done <- err
+	}()
+	require.Eventually(t, func() bool { return src.calls.Load() == 1 }, time.Second, time.Millisecond)
+	stayed := make(chan domain.ProfileResolution, 1)
+	go func() {
+		got, _ := r.Resolve(context.Background(), "c1", true)
+		stayed <- got
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+	assert.ErrorIs(t, <-done, context.Canceled)
+	close(src.release)
+
+	assert.Equal(t, domain.ModeNormal, (<-stayed).Mode)
+}
+
+func TestResolveWithoutReuseAlwaysQueriesTheSourceFirst(t *testing.T) {
+	cache := newFakeCache()
+	cache.items["c1"] = completeProfile(time.Hour)
+	src := &fakeSource{err: ports.ErrSourceUnavailable}
+
+	got, err := newResolver(src, cache).Resolve(context.Background(), "c1", true)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, src.calls, "HA-D01 / HA-L01 behavior: the cache only backs a provisional answer")
+	assert.Equal(t, domain.ModeProvisional, got.Mode)
+	assert.Equal(t, domain.SourceCache, got.Source)
 }

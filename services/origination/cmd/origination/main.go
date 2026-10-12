@@ -39,6 +39,7 @@ func main() {
 		newProfileSource(cfg, newHTTPClient(cfg.maxConnsPerHost)),
 		redisadapter.NewProfileCache(redisClient, cfg.profileCacheTTL, 0),
 		systemClock{},
+		resolverOptions(cfg)...,
 	)
 
 	srv := &http.Server{
@@ -51,6 +52,16 @@ func main() {
 	}
 	log.Printf("origination listening on %s", srv.Addr)
 	log.Fatal(srv.ListenAndServe())
+}
+
+// resolverOptions returns the options of the Resolver: the reuse of a complete
+// cached profile (HU-W1.2-02) unless PROFILE_REUSE_ENABLED=false.
+func resolverOptions(cfg config) []profiling.Option {
+	if !cfg.profileReuse {
+		log.Printf("PROFILE_REUSE_ENABLED=false: the sources are always queried first")
+		return nil
+	}
+	return []profiling.Option{profiling.WithCachedProfileReuse()}
 }
 
 type systemClock struct{}
@@ -72,6 +83,11 @@ type config struct {
 	profilingDeadline   time.Duration
 	maxConnsPerHost     int
 	openFinanceRequired bool
+
+	// Provisional actuarial weights by source name (HU-W1.2-02).
+	scoreWeights map[string]float64
+	// profileReuse enables the reuse of a complete cached profile (HU-W1.2-02).
+	profileReuse bool
 }
 
 // newHTTPClient builds the client shared by the external-source adapters: one
@@ -139,6 +155,7 @@ func newProfileSource(cfg config, httpClient *http.Client) *profiling.ParallelSo
 		Budget:   cfg.sourceBudget,
 		Deadline: cfg.profilingDeadline,
 		Required: required,
+		Weights:  cfg.scoreWeights,
 	})
 }
 
@@ -216,7 +233,32 @@ func loadParallelConfig(getenv func(string) string, cfg *config) error {
 	}
 	cfg.sourceBudget = time.Duration(budgetMs) * time.Millisecond
 	cfg.profilingDeadline = time.Duration(deadlineMs) * time.Millisecond
+	if err := loadScoreWeights(getenv, cfg); err != nil {
+		return err
+	}
+	if cfg.profileReuse, err = boolVar(getenv, "PROFILE_REUSE_ENABLED", true); err != nil {
+		return err
+	}
 	return loadBreakerRatio(getenv, &cfg.breaker)
+}
+
+// loadScoreWeights reads the provisional actuarial weights of each source
+// (HU-W1.2-02); they are relative, so they need not add up to 1, and a weight
+// of 0 leaves the source out of the score.
+func loadScoreWeights(getenv func(string) string, cfg *config) error {
+	cfg.scoreWeights = profiling.DefaultWeights()
+	for source, name := range map[string]string{
+		domain.ExternalSourceOpenFinance: "SCORE_WEIGHT_OPEN_FINANCE",
+		domain.ExternalSourceOpenData:    "SCORE_WEIGHT_OPEN_DATA",
+		domain.ExternalSourceKYC:         "SCORE_WEIGHT_KYC",
+	} {
+		w, err := ratioVar(getenv, name, cfg.scoreWeights[source])
+		if err != nil {
+			return err
+		}
+		cfg.scoreWeights[source] = w
+	}
+	return nil
 }
 
 // Defaults of the failure-ratio mode of the circuit breaker (decision D-3 c,

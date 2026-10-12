@@ -19,13 +19,15 @@ trap cleanup EXIT
 k6() { $COMPOSE --profile tools run --rm -e EXPECT_MODE="$1" -e DURATION="$2" k6 run /scripts/outage.js; }
 
 # The circuit closes only after 3 consecutive successful probes, so they are
-# sent one by one before asserting normal answers again.
+# sent one by one before asserting normal answers again. Each probe uses its own
+# customer: a complete cached profile is reused without querying (HU-W1.2-02),
+# so repeating one customer would reach Open Finance only once.
 recover() {
   ./toxiproxy.sh up
   sleep "$OPEN_WINDOW_SECONDS"
   for i in 1 2 3; do
     curl -sf -X POST "$API/v1/risk-profiles/resolve" -H 'Content-Type: application/json' \
-      -d '{"customer_id":"probe","consent_active":true}' >/dev/null
+      -d "{\"customer_id\":\"probe-$i-$(date +%s%N)\",\"consent_active\":true}" >/dev/null
   done
 }
 
