@@ -97,3 +97,52 @@ run "region_is_validated" {
 
   expect_failures = [var.region]
 }
+
+run "trust_policy_accepts_only_the_immutable_subject_of_the_deploy_branches" {
+  command = plan
+
+  assert {
+    condition = toset(flatten([
+      for c in data.aws_iam_policy_document.trust.statement[0].condition :
+      c.values if c.variable == "token.actions.githubusercontent.com:sub"
+      ])) == toset([
+      "repo:leonelparrales22@52500190/MISW4501-202614-Grupo14-Solventa@1325296709:ref:refs/heads/develop",
+      "repo:leonelparrales22@52500190/MISW4501-202614-Grupo14-Solventa@1325296709:ref:refs/heads/main",
+    ])
+    error_message = "The sub must be the immutable one (owner and repository IDs) and only for develop and main; a name-based sub is never emitted by this repository."
+  }
+
+  assert {
+    condition = flatten([
+      for c in data.aws_iam_policy_document.trust.statement[0].condition :
+      c.values if c.variable == "token.actions.githubusercontent.com:aud"
+    ]) == ["sts.amazonaws.com"]
+    error_message = "The audience must be sts.amazonaws.com."
+  }
+}
+
+run "role_can_only_push_to_the_image_repositories" {
+  command = plan
+
+  assert {
+    condition = toset(flatten([
+      for s in data.aws_iam_policy_document.push.statement : s.actions if s.sid == "PushImages"
+      ])) == toset([
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart",
+    ])
+    error_message = "The role must be able to push (including the manifest reads buildx does) and nothing else: no delete, no layer download."
+  }
+
+  assert {
+    condition = flatten([
+      for s in data.aws_iam_policy_document.push.statement : s.actions if s.sid == "EcrLogin"
+    ]) == ["ecr:GetAuthorizationToken"]
+    error_message = "The only action allowed on every resource is GetAuthorizationToken."
+  }
+}

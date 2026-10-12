@@ -81,6 +81,9 @@ jobs:
           context: .
           file: ${{ steps.meta.outputs.dockerfile }}
           push: true
+          # One plain manifest per tag: buildx's provenance attestation adds untagged
+          # child manifests that the ECR lifecycle policy (expire untagged) could delete.
+          provenance: false
           tags: ${{ env.ECR_REGISTRY }}/solventa/${{ matrix.image }}:${{ steps.meta.outputs.tag }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
