@@ -17,8 +17,8 @@ Requiere Docker con `docker compose`. El script levanta el ambiente, ejecuta las
 
 | Fase | Falla inyectada | Resultado esperado (k6 `outage.js`) |
 |---|---|---|
-| 1. Línea base | ninguna | 100 % `mode=normal`, `source=open_finance`; calienta la caché de los clientes `warm-*` |
-| 2. Caída total | proxy deshabilitado | 100 % HTTP 200 `provisional`: `warm-*` desde `cache` con `profile_date`; clientes nuevos con `base_actuarial` |
+| 1. Línea base | ninguna | 100 % `mode=normal` (`open_finance`, o `cache` si el cliente ya tiene perfil completo); calienta la caché de los clientes `warm-*` |
+| 2. Caída total | proxy deshabilitado | 100 % HTTP 200: `warm-*` reutilizan su perfil completo (`normal`, `cache`, con `profile_date`) sin consultar; clientes nuevos `provisional` con `base_actuarial` (HU-W1.2-02) |
 | 3. Recuperación | proxy restablecido | tras la ventana de 5 s y 3 sondas, 100 % `normal` |
 | 4. Latencia | 900 ms (> 700 ms) | igual que la fase 2 |
 | 5. Recuperación | restablecido | igual que la fase 3 |

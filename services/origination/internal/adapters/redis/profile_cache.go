@@ -25,6 +25,9 @@ type entry struct {
 	Score        float64   `json:"score"`
 	Category     string    `json:"category"`
 	CalculatedAt time.Time `json:"calculated_at"`
+	// Partial is absent in entries written before HU-W1.2-02, which are read
+	// as complete.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // ProfileCache implements ports.RiskProfileCache.
@@ -65,7 +68,7 @@ func (c *ProfileCache) Get(ctx context.Context, customerID string) (domain.RiskP
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return domain.RiskProfile{}, false, err
 	}
-	return domain.RiskProfile{CustomerID: e.CustomerID, Score: e.Score, Category: e.Category, CalculatedAt: e.CalculatedAt}, true, nil
+	return domain.RiskProfile{CustomerID: e.CustomerID, Score: e.Score, Category: e.Category, CalculatedAt: e.CalculatedAt, Partial: e.Partial}, true, nil
 }
 
 // Set stores the profile with the configured TTL.
@@ -73,9 +76,17 @@ func (c *ProfileCache) Set(ctx context.Context, p domain.RiskProfile) error {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	raw, err := json.Marshal(entry{CustomerID: p.CustomerID, Score: p.Score, Category: p.Category, CalculatedAt: p.CalculatedAt})
+	raw, err := json.Marshal(entry{CustomerID: p.CustomerID, Score: p.Score, Category: p.Category, CalculatedAt: p.CalculatedAt, Partial: p.Partial})
 	if err != nil {
 		return err
 	}
 	return c.client.Set(ctx, key(p.CustomerID), raw, c.ttl).Err()
+}
+
+// Invalidate removes the cached profile; a missing key is not an error.
+func (c *ProfileCache) Invalidate(ctx context.Context, customerID string) error {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	return c.client.Del(ctx, key(customerID)).Err()
 }

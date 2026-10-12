@@ -109,13 +109,15 @@ func (c *jwksCache) lookup(kid string) *rsa.PublicKey {
 }
 
 func (c *jwksCache) fetch(ctx context.Context) (map[string]*rsa.PublicKey, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
+	// c.url is the JWKS endpoint of the user pool, set by configuration and
+	// validated at startup (Config.JWKSURL); no request input reaches it.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil) //nolint:gosec // G704: trusted configuration, not request input
 	if err != nil {
 		return nil, fmt.Errorf("security: building the JWKS request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(req) //nolint:gosec // G704: the URL is trusted configuration, see above
 	if err != nil {
 		return nil, fmt.Errorf("security: downloading the JWKS: %w", err)
 	}
