@@ -97,6 +97,18 @@ type ProfileResolution struct {
 	Sources []SourceOutcome
 }
 
+// CategoryForScore maps a score (0 = lowest risk) to its risk category.
+func CategoryForScore(score float64) string {
+	switch {
+	case score > 0.8:
+		return "high_risk"
+	case score < 0.2:
+		return "preferred"
+	default:
+		return "standard"
+	}
+}
+
 // BaseCategory is the category of the base actuarial profile.
 const BaseCategory = "base_actuarial"
 

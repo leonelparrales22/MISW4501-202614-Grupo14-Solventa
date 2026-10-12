@@ -51,3 +51,22 @@ func TestContractValuesOfTheParallelProfiling(t *testing.T) {
 	assert.Equal(t, domain.SourceStatus("error"), domain.SourceStatusError)
 	assert.Equal(t, domain.SourceStatus("circuit_open"), domain.SourceStatusCircuitOpen)
 }
+
+func TestCategoryForScore(t *testing.T) {
+	tests := map[string]struct {
+		score float64
+		want  string
+	}{
+		"lowest":    {0, "preferred"},
+		"below 0.2": {0.199, "preferred"},
+		"at 0.2":    {0.2, "standard"},
+		"at 0.8":    {0.8, "standard"},
+		"above 0.8": {0.801, "high_risk"},
+		"highest":   {1, "high_risk"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, domain.CategoryForScore(tc.score))
+		})
+	}
+}

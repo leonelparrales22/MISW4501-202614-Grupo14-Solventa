@@ -51,6 +51,9 @@ type RiskProfileCache interface {
 	// Get returns found=false on a miss; a miss is not an error.
 	Get(ctx context.Context, customerID string) (profile domain.RiskProfile, found bool, err error)
 	Set(ctx context.Context, profile domain.RiskProfile) error
+	// Invalidate removes the cached profile (the customer is requoted);
+	// removing a missing one is not an error.
+	Invalidate(ctx context.Context, customerID string) error
 }
 
 // Clock allows the cached-profile age to be tested deterministically.
