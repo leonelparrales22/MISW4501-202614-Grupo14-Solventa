@@ -15,6 +15,18 @@ variable "github_repository" {
   default     = "leonelparrales22/MISW4501-202614-Grupo14-Solventa"
 }
 
+variable "github_owner_id" {
+  description = "Numeric ID of the GitHub account that owns the repository (gh api repos/<owner>/<name> --jq .owner.id)."
+  type        = string
+  default     = "52500190"
+}
+
+variable "github_repository_id" {
+  description = "Numeric ID of the GitHub repository (gh api repos/<owner>/<name> --jq .id)."
+  type        = string
+  default     = "1325296709"
+}
+
 variable "deploy_branches" {
   description = "Branches whose workflow runs may assume the CD role. Pull requests are never allowed."
   type        = set(string)

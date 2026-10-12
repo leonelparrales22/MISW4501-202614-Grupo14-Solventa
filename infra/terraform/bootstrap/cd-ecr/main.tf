@@ -23,6 +23,9 @@ locals {
     "openfinance",
   ])
 
+  github_owner = split("/", var.github_repository)[0]
+  github_name  = split("/", var.github_repository)[1]
+
   oidc_url          = "token.actions.githubusercontent.com"
   oidc_provider_arn = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_oidc_provider_arn
 
@@ -113,10 +116,15 @@ data "aws_iam_policy_document" "trust" {
     }
 
     # Exact match on the ref: only runs on the deploy branches of this repository.
+    # The repository uses immutable subject claims, so GitHub embeds the numeric IDs
+    # of the owner and the repository in the sub:
+    #   repo:<owner>@<owner_id>/<name>@<repo_id>:ref:refs/heads/<branch>
+    # The IDs survive a rename and cannot be inherited by a new repository that
+    # reuses the old name.
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_url}:sub"
-      values   = [for b in sort(tolist(var.deploy_branches)) : "repo:${var.github_repository}:ref:refs/heads/${b}"]
+      values   = [for b in sort(tolist(var.deploy_branches)) : "repo:${local.github_owner}@${var.github_owner_id}/${local.github_name}@${var.github_repository_id}:ref:refs/heads/${b}"]
     }
   }
 }
@@ -140,6 +148,8 @@ data "aws_iam_policy_document" "push" {
     sid = "PushImages"
     actions = [
       "ecr:BatchCheckLayerAvailability",
+      # buildx reads manifests while pushing (existing tags and attestations).
+      "ecr:BatchGetImage",
       "ecr:CompleteLayerUpload",
       "ecr:DescribeImages",
       "ecr:InitiateLayerUpload",
