@@ -34,9 +34,15 @@ type ProfileResolver interface {
 	Resolve(ctx context.Context, customerID string, consentActive bool) (domain.ProfileResolution, error)
 }
 
+// Option mounts optional routes on the service router.
+type Option func(chi.Router)
+
 // NewRouter builds the service router.
-func NewRouter(resolver ProfileResolver) http.Handler {
+func NewRouter(resolver ProfileResolver, opts ...Option) http.Handler {
 	r := chi.NewRouter()
+	for _, opt := range opts {
+		opt(r)
+	}
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
