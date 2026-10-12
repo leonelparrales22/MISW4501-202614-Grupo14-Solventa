@@ -1,11 +1,12 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.3.0
+  version: 0.4.0
 paths:
   /health:
     get:
       summary: Shallow health check (ALB, ADR-02)
+      security: []
       responses:
         "200":
           description: OK
@@ -108,8 +109,283 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/offers/{offer_id}/acceptance:
+    post:
+      summary: Accept an offer and trigger underwriting (HU-W1.3-01)
+      description: >
+        Registers the acceptance of the offer by its owner (offer, date and
+        time, channel) before any later step: it is the no-loss point of the
+        journey. Underwriting runs asynchronously afterwards; poll
+        GET /v1/acceptances/{acceptance_id} until the status leaves
+        registered. Accepting an offer that already has an acceptance returns
+        that acceptance with 200 (also after the offer expired), so retrying
+        is safe and never repeats the process; no Idempotency-Key header is
+        needed. Only the insured who owns the offer may accept it.
+        Offers, underwriting, the advisor inbox, issuance and the storage are
+        in-memory stand-ins for now (PENDING: HU-W1.2-03, the underwriting
+        engine, HU-W1.1-02, HU-W1.3-02/HA-D02 and PostgreSQL).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/OfferID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptOfferRequest"
+      responses:
+        "202":
+          description: Acceptance registered; underwriting will run asynchronously
+          headers:
+            Location:
+              description: Path of the acceptance to poll.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acceptance"
+        "200":
+          description: The offer was already accepted; the existing acceptance in its current state
+          headers:
+            Location:
+              description: Path of the acceptance to poll.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acceptance"
+        "400":
+          description: Invalid offer_id, malformed body or invalid channel (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an insured or does not own the offer (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The offer does not exist (offer_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The offer validity is over (offer_expired); nothing is registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OfferExpiredError"
+        "503":
+          description: The acceptance could not be registered (acceptance_not_registered); retrying is safe
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: Read the acceptance of an offer (HU-W1.3-01)
+      description: >
+        Returns the acceptance of the offer, so a client that only kept the
+        offer id can resume the journey. Readable by the owner, advisors and
+        operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/OfferID"
+      responses:
+        "200":
+          description: The acceptance in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acceptance"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The offer has no acceptance (acceptance_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/AcceptanceUnavailable"
+  /v1/acceptances/{acceptance_id}:
+    get:
+      summary: Read an acceptance (HU-W1.3-01)
+      description: >
+        Returns the acceptance and its processing state; the client polls it
+        after accepting. Readable by the owner, advisors and operations
+        analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: acceptance_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The acceptance in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acceptance"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The acceptance does not exist (acceptance_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/AcceptanceUnavailable"
 components:
+  securitySchemes:
+    cognitoJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: ID token of the Cognito user pool (HA-S01).
+  parameters:
+    OfferID:
+      name: offer_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+  responses:
+    InvalidRequest:
+      description: Invalid path parameter (invalid_request)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing, invalid or expired token (unauthorized)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Role not allowed or acceptance of another customer (forbidden)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    AcceptanceUnavailable:
+      description: The acceptance could not be read (acceptance_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
   schemas:
+    AcceptOfferRequest:
+      type: object
+      required: [channel]
+      properties:
+        channel:
+          type: string
+          enum: [web, mobile]
+          description: Channel where the customer accepted the offer.
+    Acceptance:
+      type: object
+      required: [acceptance_id, offer_id, customer_id, channel, accepted_at, status, underwriting, processing, updated_at]
+      properties:
+        acceptance_id:
+          type: string
+          format: uuid
+        offer_id:
+          type: string
+        customer_id:
+          type: string
+          description: Owner of the offer (the sub claim of their token).
+        channel:
+          type: string
+          enum: [web, mobile]
+        accepted_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [registered, issuance_pending, in_review]
+          description: >
+            registered - persisted, underwriting pending or being retried;
+            issuance_pending - automatic underwriting approved and issuance
+            started; in_review - routed to a human decision in the advisor inbox.
+        underwriting:
+          type: object
+          nullable: true
+          description: Null until underwriting decides.
+          required: [outcome, reason, decided_at]
+          properties:
+            outcome:
+              type: string
+              enum: [approved, human_review]
+            reason:
+              type: string
+              nullable: true
+              enum: [provisional_offer, low_risk_score]
+              description: Why it went to human review. Null when approved.
+            decided_at:
+              type: string
+              format: date-time
+        processing:
+          type: object
+          required: [attempts, last_failure_at, next_attempt_at]
+          properties:
+            attempts:
+              type: integer
+              minimum: 0
+              description: >
+                Failed processing attempts so far. Greater than 0 while the
+                status is registered means the journey is resuming.
+            last_failure_at:
+              type: string
+              format: date-time
+              nullable: true
+            next_attempt_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: When the next attempt runs. Null once the status left registered.
+        updated_at:
+          type: string
+          format: date-time
+    OfferExpiredError:
+      type: object
+      required: [error, message, offer_id, expires_at]
+      properties:
+        error:
+          type: string
+          enum: [offer_expired]
+        message:
+          type: string
+        offer_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
     ResolveRiskProfileRequest:
       type: object
       required: [customer_id, consent_active]
@@ -207,6 +483,15 @@ components:
       properties:
         error:
           type: string
-          enum: [invalid_request, consent_required, request_aborted]
+          enum:
+            - invalid_request
+            - consent_required
+            - request_aborted
+            - unauthorized
+            - forbidden
+            - offer_not_found
+            - acceptance_not_found
+            - acceptance_not_registered
+            - acceptance_unavailable
         message:
           type: string

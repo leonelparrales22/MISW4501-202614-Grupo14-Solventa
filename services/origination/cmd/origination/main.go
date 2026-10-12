@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -17,12 +18,15 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/opendata"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/openfinance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/resilience"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/http"
 	kycadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/kyc"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/memory"
 	odadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/opendata"
 	ofadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/openfinance"
 	redisadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/redis"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/issuance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/profiling"
 )
 
@@ -42,9 +46,20 @@ func main() {
 		resolverOptions(cfg)...,
 	)
 
+	var opts []httpadapter.Option
+	if cfg.acceptances.enabled {
+		verifier, err := security.NewJWKSVerifier(context.Background(), cfg.acceptances.auth)
+		if err != nil {
+			log.Fatalf("could not load the user pool keys: %v", err)
+		}
+		opts = append(opts, httpadapter.WithAcceptances(newAcceptanceService(context.Background(), cfg.acceptances), verifier))
+	} else {
+		log.Printf("%s is not set: the offer acceptance routes (HU-W1.3-01) are not mounted", security.EnvIssuer)
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
-		Handler:           httpadapter.NewRouter(resolver),
+		Handler:           httpadapter.NewRouter(resolver, opts...),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -88,6 +103,36 @@ type config struct {
 	scoreWeights map[string]float64
 	// profileReuse enables the reuse of a complete cached profile (HU-W1.2-02).
 	profileReuse bool
+
+	// Offer acceptance (HU-W1.3-01).
+	acceptances acceptanceConfig
+}
+
+// acceptanceConfig configures the offer acceptance (HU-W1.3-01). Its routes
+// are human routes, so they are mounted only when the Cognito verification
+// (AUTH_*) is configured.
+type acceptanceConfig struct {
+	enabled       bool
+	auth          security.Config
+	processor     issuance.ProcessorConfig
+	flakyFailures int
+}
+
+// newAcceptanceService wires the offer acceptance over the in-memory adapters
+// (PENDING: PostgreSQL, HU-W1.2-03 offers, the underwriting engine, the
+// HU-W1.1-02 inbox and the HU-W1.3-02 issuance) and starts the processor that
+// runs underwriting asynchronously and resumes failed acceptances.
+func newAcceptanceService(ctx context.Context, cfg acceptanceConfig) *issuance.AcceptanceService {
+	clock := systemClock{}
+	offers := memory.NewOfferStub(clock)
+	acceptances := memory.NewAcceptanceStore()
+	processor := issuance.NewProcessor(offers, acceptances,
+		memory.NewUnderwriterStub(clock, cfg.flakyFailures), memory.NewReviewQueueStub(), memory.NewIssuanceStub(),
+		clock, cfg.processor)
+	go processor.Run(ctx)
+	log.Printf("offer acceptance: in-memory adapters (pending PostgreSQL and the real dependencies), poll every %s, retry from %s up to %s",
+		cfg.processor.PollInterval, cfg.processor.RetryBase, cfg.processor.RetryMax)
+	return issuance.NewAcceptanceService(offers, acceptances, clock, processor.Notify)
 }
 
 // newHTTPClient builds the client shared by the external-source adapters: one
@@ -209,7 +254,51 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if err := loadParallelConfig(getenv, &cfg); err != nil {
 		return config{}, err
 	}
+	if err := loadAcceptanceConfig(getenv, &cfg.acceptances); err != nil {
+		return config{}, err
+	}
 	return cfg, nil
+}
+
+// loadAcceptanceConfig reads the offer acceptance variables (HU-W1.3-01). The
+// routes are enabled when AUTH_ISSUER is set; then the rest of AUTH_* must be
+// valid too.
+func loadAcceptanceConfig(getenv func(string) string, cfg *acceptanceConfig) error {
+	if getenv(security.EnvIssuer) != "" {
+		auth, err := security.ConfigFromEnv(getenv)
+		if err != nil {
+			return err
+		}
+		cfg.enabled, cfg.auth = true, auth
+	}
+
+	var err error
+	var pollMs, attemptMs, baseMs, maxMs int
+	if pollMs, err = intVar(getenv, "ACCEPTANCE_POLL_INTERVAL_MS", int(issuance.DefaultPollInterval/time.Millisecond)); err != nil {
+		return err
+	}
+	if attemptMs, err = intVar(getenv, "ACCEPTANCE_ATTEMPT_TIMEOUT_MS", int(issuance.DefaultAttemptTimeout/time.Millisecond)); err != nil {
+		return err
+	}
+	if baseMs, err = intVar(getenv, "ACCEPTANCE_RETRY_BASE_MS", int(issuance.DefaultRetryBase/time.Millisecond)); err != nil {
+		return err
+	}
+	if maxMs, err = intVar(getenv, "ACCEPTANCE_RETRY_MAX_MS", int(issuance.DefaultRetryMax/time.Millisecond)); err != nil {
+		return err
+	}
+	if maxMs < baseMs {
+		return fmt.Errorf("ACCEPTANCE_RETRY_MAX_MS (%d) must not be lower than ACCEPTANCE_RETRY_BASE_MS (%d)", maxMs, baseMs)
+	}
+	if cfg.flakyFailures, err = nonNegativeIntVar(getenv, "UNDERWRITING_STUB_FLAKY_FAILURES", memory.DefaultFlakyFailures); err != nil {
+		return err
+	}
+	cfg.processor = issuance.ProcessorConfig{
+		PollInterval:   time.Duration(pollMs) * time.Millisecond,
+		AttemptTimeout: time.Duration(attemptMs) * time.Millisecond,
+		RetryBase:      time.Duration(baseMs) * time.Millisecond,
+		RetryMax:       time.Duration(maxMs) * time.Millisecond,
+	}
+	return nil
 }
 
 // loadParallelConfig reads the variables of the parallel profiling (HA-L01).
@@ -342,6 +431,18 @@ func intVar(getenv func(string) string, name string, def int) (int, error) {
 	v, err := strconv.Atoi(raw)
 	if err != nil || v <= 0 {
 		return 0, fmt.Errorf("%s must be a positive integer, got %q", name, raw)
+	}
+	return v, nil
+}
+
+func nonNegativeIntVar(getenv func(string) string, name string, def int) (int, error) {
+	raw := getenv(name)
+	if raw == "" {
+		return def, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer, got %q", name, raw)
 	}
 	return v, nil
 }
