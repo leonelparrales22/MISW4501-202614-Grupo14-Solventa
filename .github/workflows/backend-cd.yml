@@ -1,0 +1,89 @@
+name: backend-cd
+# Continuous delivery, image publishing step: builds the Docker image of every
+# changed service/stub and pushes it to ECR tagged with the commit SHA.
+# Deploying to ECS comes later, once the persistent cluster exists.
+on:
+  push:
+    branches: [develop, main]
+    paths: ["services/**", "pkg/**", "stubs/**", "go.work", "go.work.sum", ".dockerignore", "scripts/ci/**", ".github/workflows/backend-cd.yml"]
+  workflow_dispatch:
+
+# Never cancel a publish in flight; queue the next one for the same branch.
+concurrency:
+  group: backend-cd-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+  # Created by infra/terraform/bootstrap/cd-ecr.
+  AWS_ROLE_ARN: arn:aws:iam::368083581678:role/solventa-github-actions-ecr
+  ECR_REGISTRY: 368083581678.dkr.ecr.us-east-2.amazonaws.com
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.changed.outputs.images }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: changed
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
+        run: echo "images=$(scripts/ci/changed-images.sh "$BASE_SHA" "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: plan
+    if: needs.plan.outputs.images != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC token exchanged for short-lived AWS credentials
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.plan.outputs.images) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - name: Resolve the Dockerfile and tag
+        id: meta
+        run: |
+          if [ -f "services/${{ matrix.image }}/Dockerfile" ]; then
+            echo "dockerfile=services/${{ matrix.image }}/Dockerfile" >> "$GITHUB_OUTPUT"
+          else
+            echo "dockerfile=stubs/${{ matrix.image }}/Dockerfile" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      # Tags are immutable in ECR: a re-run of the same commit must not try to overwrite.
+      - name: Check whether the image already exists
+        id: exists
+        run: |
+          if aws ecr describe-images --repository-name "solventa/${{ matrix.image }}" \
+              --image-ids "imageTag=${{ steps.meta.outputs.tag }}" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and push
+        if: steps.exists.outputs.found == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ steps.meta.outputs.dockerfile }}
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/solventa/${{ matrix.image }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: Summary
+        run: |
+          echo "- \`solventa/${{ matrix.image }}:${{ steps.meta.outputs.tag }}\` (already existed: ${{ steps.exists.outputs.found }})" >> "$GITHUB_STEP_SUMMARY"
