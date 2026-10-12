@@ -1,0 +1,157 @@
+# Continuous delivery base (image publishing): permanent ECR repositories and
+# the IAM role that GitHub Actions assumes through OIDC to push to them.
+#
+# No long-lived AWS keys are stored in GitHub: the workflow exchanges its OIDC
+# token for short-lived credentials, and the trust policy only accepts runs of
+# the configured branches of this repository (never pull requests).
+#
+# Applied once and permanent, like bootstrap/remote-state. Deploying the images
+# to ECS is a later step: it needs the persistent cluster, which does not exist yet.
+
+locals {
+  account_id = "368083581678"
+
+  # Same image names as the Dockerfiles of services/ and stubs/.
+  images = toset([
+    "audit",
+    "claims",
+    "notifications",
+    "origination",
+    "partners",
+    "kyc",
+    "opendata",
+    "openfinance",
+  ])
+
+  oidc_url          = "token.actions.githubusercontent.com"
+  oidc_provider_arn = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_oidc_provider_arn
+
+  # Shared and permanent resource: no Story and no TTL tags.
+  default_tags = {
+    Project = "solventa"
+    Owner   = "nicolas"
+    Env     = "shared"
+    Purpose = "cd-image-publishing"
+  }
+}
+
+# --- Registries -------------------------------------------------------------------------
+
+resource "aws_ecr_repository" "this" {
+  for_each = local.images
+
+  name = "solventa/${each.key}"
+
+  # Images are tagged with the commit SHA and never overwritten, so a deployed
+  # tag always means the same bytes and a rollback is a redeploy of an old tag.
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = false
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "this" {
+  for_each = aws_ecr_repository.this
+
+  repository = each.value.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after ${var.untagged_expiry_days} days"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = var.untagged_expiry_days
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep only the ${var.images_to_keep} most recent images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = var.images_to_keep
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+}
+
+# --- GitHub Actions identity -------------------------------------------------------------
+
+resource "aws_iam_openid_connect_provider" "github" {
+  count = var.create_oidc_provider ? 1 : 0
+
+  url            = "https://${local.oidc_url}"
+  client_id_list = ["sts.amazonaws.com"]
+}
+
+data "aws_iam_policy_document" "trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    # Exact match on the ref: only runs on the deploy branches of this repository.
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_url}:sub"
+      values   = [for b in sort(tolist(var.deploy_branches)) : "repo:${var.github_repository}:ref:refs/heads/${b}"]
+    }
+  }
+}
+
+resource "aws_iam_role" "cd" {
+  name                 = "solventa-github-actions-ecr"
+  description          = "Assumed by the backend-cd workflow (GitHub OIDC) to push images to the solventa/* ECR repositories."
+  assume_role_policy   = data.aws_iam_policy_document.trust.json
+  max_session_duration = 3600
+}
+
+data "aws_iam_policy_document" "push" {
+  # GetAuthorizationToken does not support resource-level permissions.
+  statement {
+    sid       = "EcrLogin"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "PushImages"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart",
+    ]
+    resources = [for r in aws_ecr_repository.this : r.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "push" {
+  name   = "push-images"
+  role   = aws_iam_role.cd.id
+  policy = data.aws_iam_policy_document.push.json
+}

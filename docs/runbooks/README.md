@@ -7,6 +7,7 @@ Procedimientos operativos. **Estado:** se agregan a medida que existan los ambie
 | Levantar el ambiente local (PostgreSQL, Redis, LocalStack, Toxiproxy) | Pendiente (tarea T2 del plan de sprints) |
 | Ejecutar pruebas de carga y resiliencia | Pendiente |
 | Failover y rollback en AWS | Pendiente |
+| [Publicar imágenes en ECR (CD)](../../infra/terraform/bootstrap/cd-ecr/README.md) | Disponible: primera aplicación y funcionamiento de `backend-cd`. El despliegue en ECS y su rollback siguen pendientes |
 | Rotación de credenciales de socios | Pendiente |
 | [Aprovisionar usuarios internos y del portal del socio](#aprovisionar-usuarios-internos-y-del-portal-del-socio) (grupo de Cognito y `custom:partner_id`) | Disponible (staging). En el Sprint 1 el alta es administrativa con Terraform (módulo `infra/terraform/modules/cognito`, HA-S01); el alta desde el sistema llega con HU-W3.1-01. Los asegurados se aprovisionan tras la verificación KYC (HU-M1.1-01) |
 
