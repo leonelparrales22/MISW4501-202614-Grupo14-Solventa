@@ -14,21 +14,27 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/email"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/kyc"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/opendata"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/openfinance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/observability"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/resilience"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
+	emailadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/email"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/filestore"
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/http"
 	kycadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/kyc"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/links"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/memory"
 	odadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/opendata"
 	ofadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/openfinance"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/pdf"
 	redisadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/redis"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/issuance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/orchestrator"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/profiling"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/rating"
 )
@@ -66,11 +72,22 @@ func main() {
 		if err != nil {
 			log.Fatalf("could not load the user pool keys: %v", err)
 		}
+		var starter ports.IssuanceStarter = memory.NewIssuanceStub()
+		if cfg.contracts.enabled {
+			contract, err := newContractWiring(context.Background(), cfg.contracts)
+			if err != nil {
+				log.Fatalf("could not set up the contractual document: %v", err)
+			}
+			starter = memory.NewActivationStub(contract.service, systemClock{})
+			opts = append(opts, httpadapter.WithContractDocuments(contract.reader, verifier))
+		} else {
+			log.Printf("%s is not set: the contractual document and its notification (HU-W1.3-03) are not wired", envEmailURL)
+		}
 		opts = append(opts,
-			httpadapter.WithAcceptances(newAcceptanceService(context.Background(), cfg.acceptances), verifier),
+			httpadapter.WithAcceptances(newAcceptanceService(context.Background(), cfg.acceptances, starter), verifier),
 			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver), verifier))
 	} else {
-		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01) are not mounted", security.EnvIssuer)
+		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01, contract documents HU-W1.3-03) are not mounted", security.EnvIssuer)
 	}
 
 	srv := &http.Server{
@@ -128,6 +145,9 @@ type config struct {
 
 	// Offer acceptance (HU-W1.3-01).
 	acceptances acceptanceConfig
+
+	// Contractual document and notification (HU-W1.3-03).
+	contracts contractConfig
 }
 
 // acceptanceConfig configures the offer acceptance (HU-W1.3-01). Its routes
@@ -144,17 +164,53 @@ type acceptanceConfig struct {
 // (PENDING: PostgreSQL, HU-W1.2-03 offers, the underwriting engine, the
 // HU-W1.1-02 inbox and the HU-W1.3-02 issuance) and starts the processor that
 // runs underwriting asynchronously and resumes failed acceptances.
-func newAcceptanceService(ctx context.Context, cfg acceptanceConfig) *issuance.AcceptanceService {
+func newAcceptanceService(ctx context.Context, cfg acceptanceConfig, starter ports.IssuanceStarter) *issuance.AcceptanceService {
 	clock := systemClock{}
 	offers := memory.NewOfferStub(clock)
 	acceptances := memory.NewAcceptanceStore()
 	processor := issuance.NewProcessor(offers, acceptances,
-		memory.NewUnderwriterStub(clock, cfg.flakyFailures), memory.NewReviewQueueStub(), memory.NewIssuanceStub(),
+		memory.NewUnderwriterStub(clock, cfg.flakyFailures), memory.NewReviewQueueStub(), starter,
 		clock, cfg.processor)
 	go processor.Run(ctx)
 	log.Printf("offer acceptance: in-memory adapters (pending PostgreSQL and the real dependencies), poll every %s, retry from %s up to %s",
 		cfg.processor.PollInterval, cfg.processor.RetryBase, cfg.processor.RetryMax)
 	return issuance.NewAcceptanceService(offers, acceptances, clock, processor.Notify)
+}
+
+// contractWiring is the contractual document of HU-W1.3-03, ready to serve.
+type contractWiring struct {
+	service *issuance.ContractService
+	reader  *issuance.ContractReader
+}
+
+// newContractWiring wires the contractual issuance (HU-W1.3-03): the PDF
+// generator, the document directory, the signed links, the e-mail provider
+// and the in-memory repository and audit log (PENDING: PostgreSQL and the
+// audit service). It starts the worker that issues the documents.
+func newContractWiring(ctx context.Context, cfg contractConfig) (contractWiring, error) {
+	store, err := filestore.New(cfg.documentsDir)
+	if err != nil {
+		return contractWiring{}, err
+	}
+	signer, err := links.NewSigner(cfg.linkSecret)
+	if err != nil {
+		return contractWiring{}, err
+	}
+	clock := systemClock{}
+	repo, audit := memory.NewContractStore(), memory.NewIssuanceAuditLog()
+	notifier := emailadapter.NewNotifier(email.NewClient(email.Config{
+		BaseURL: cfg.emailURL, Timeout: cfg.emailTimeout, Breaker: resilience.DefaultConfig(),
+	}))
+	service := issuance.NewContractService(issuance.ContractDeps{
+		Repo: repo, Generator: pdf.New(), Store: store, Signer: signer, Notifier: notifier, Audit: audit, Clock: clock,
+	}, cfg.service)
+	go service.Run(ctx)
+	log.Printf("contractual document: PDF in %s, e-mail via %s, links valid %s, in-memory repository and audit log (pending PostgreSQL and the audit service)",
+		store.Dir(), cfg.emailURL, cfg.service.LinkTTL)
+	return contractWiring{
+		service: service,
+		reader:  issuance.NewContractReader(repo, store, audit, signer, clock),
+	}, nil
 }
 
 // newAssistedQuoteService wires the advisor quote (HU-W1.1-01) over the
@@ -287,6 +343,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if err := loadAcceptanceConfig(getenv, &cfg.acceptances); err != nil {
 		return config{}, err
 	}
+	if err := loadContractConfig(getenv, cfg.port, &cfg.contracts); err != nil {
+		return config{}, err
+	}
 	return cfg, nil
 }
 
@@ -328,6 +387,74 @@ func loadAcceptanceConfig(getenv func(string) string, cfg *acceptanceConfig) err
 		RetryBase:      time.Duration(baseMs) * time.Millisecond,
 		RetryMax:       time.Duration(maxMs) * time.Millisecond,
 	}
+	return nil
+}
+
+// envEmailURL names the variable that turns the contractual document on.
+const envEmailURL = "EMAIL_URL"
+
+// contractConfig configures the contractual document and its notification
+// (HU-W1.3-03). It is enabled when EMAIL_URL is set; then the signing secret
+// and the document directory are required too.
+type contractConfig struct {
+	enabled      bool
+	emailURL     string
+	emailTimeout time.Duration
+	documentsDir string
+	linkSecret   string
+	service      issuance.ContractConfig
+}
+
+// loadContractConfig reads the HU-W1.3-03 variables. publicPort is the port of
+// the service, used for the default public URL of the document links.
+func loadContractConfig(getenv func(string) string, publicPort string, cfg *contractConfig) error {
+	cfg.emailURL = getenv(envEmailURL)
+	if cfg.emailURL == "" {
+		return nil
+	}
+	cfg.enabled = true
+	cfg.documentsDir = getenv("DOCUMENTS_DIR")
+	cfg.linkSecret = getenv("DOCUMENT_LINK_SECRET")
+	if cfg.documentsDir == "" {
+		return fmt.Errorf("DOCUMENTS_DIR is required when %s is set", envEmailURL)
+	}
+	if len(cfg.linkSecret) < links.MinSecretLength {
+		return fmt.Errorf("DOCUMENT_LINK_SECRET (at least %d characters) is required when %s is set", links.MinSecretLength, envEmailURL)
+	}
+
+	var err error
+	var pollMs, attemptMs, baseMs, maxMs, emailMs, linkHours int
+	if pollMs, err = intVar(getenv, "CONTRACT_POLL_INTERVAL_MS", int(issuance.DefaultContractPollInterval/time.Millisecond)); err != nil {
+		return err
+	}
+	if attemptMs, err = intVar(getenv, "CONTRACT_ATTEMPT_TIMEOUT_MS", int(issuance.DefaultContractAttemptTimeout/time.Millisecond)); err != nil {
+		return err
+	}
+	if baseMs, err = intVar(getenv, "CONTRACT_RETRY_BASE_MS", int(issuance.DefaultContractRetryBase/time.Millisecond)); err != nil {
+		return err
+	}
+	if maxMs, err = intVar(getenv, "CONTRACT_RETRY_MAX_MS", int(issuance.DefaultContractRetryMax/time.Millisecond)); err != nil {
+		return err
+	}
+	if maxMs < baseMs {
+		return fmt.Errorf("CONTRACT_RETRY_MAX_MS (%d) must not be lower than CONTRACT_RETRY_BASE_MS (%d)", maxMs, baseMs)
+	}
+	if cfg.service.MaxAttempts, err = intVar(getenv, "CONTRACT_MAX_ATTEMPTS", issuance.DefaultContractMaxAttempts); err != nil {
+		return err
+	}
+	if emailMs, err = intVar(getenv, "EMAIL_TIMEOUT_MS", int(email.DefaultTimeout/time.Millisecond)); err != nil {
+		return err
+	}
+	if linkHours, err = intVar(getenv, "DOCUMENT_LINK_TTL_HOURS", int(issuance.DefaultDocumentLinkTTL/time.Hour)); err != nil {
+		return err
+	}
+	cfg.emailTimeout = time.Duration(emailMs) * time.Millisecond
+	cfg.service.PollInterval = time.Duration(pollMs) * time.Millisecond
+	cfg.service.AttemptTimeout = time.Duration(attemptMs) * time.Millisecond
+	cfg.service.RetryBase = time.Duration(baseMs) * time.Millisecond
+	cfg.service.RetryMax = time.Duration(maxMs) * time.Millisecond
+	cfg.service.LinkTTL = time.Duration(linkHours) * time.Hour
+	cfg.service.PublicBaseURL = orDefault(getenv("DOCUMENTS_PUBLIC_BASE_URL"), "http://localhost:"+publicPort)
 	return nil
 }
 

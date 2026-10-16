@@ -2,7 +2,7 @@
 
 Camino crítico del negocio: cotiza, perfila, emite y cobra. Es la fachada (*Facade*) del ciclo de vida de la póliza.
 
-**Estado:** `GET /health`, `POST /v1/risk-profiles/resolve` (HA-D01: oferta continua ante caída de la fuente externa) y `GET /v1/risk-profiles/{customer_id}` con las fuentes externas consultadas en paralelo (HA-L01: cotización embebida rápida bajo tráfico pico). **HU-W1.3-01:** `POST /v1/offers/{offer_id}/acceptance`, `GET /v1/offers/{offer_id}/acceptance` y `GET /v1/acceptances/{acceptance_id}` (aceptación de la oferta y disparo asíncrono de la suscripción), con autenticación Cognito (`pkg/security`) y **adaptadores en memoria pendientes de reemplazo** (ofertas, suscripción, bandeja del asesor, emisión y persistencia; ver «Aceptación de la oferta»). **HU-W1.1-01:** `POST /v1/assisted-quotes`, `GET /v1/assisted-quotes/{quote_id}` y `GET /v1/customers?document_id=` (cotización asistida por asesor con el mismo perfilamiento y un motor de rating `v1`), con clientes y cotizaciones **en memoria** pendientes de PostgreSQL (ver «Cotización asistida»). El resto de módulos sigue reservado.
+**Estado:** `GET /health`, `POST /v1/risk-profiles/resolve` (HA-D01: oferta continua ante caída de la fuente externa) y `GET /v1/risk-profiles/{customer_id}` con las fuentes externas consultadas en paralelo (HA-L01: cotización embebida rápida bajo tráfico pico). **HU-W1.3-01:** `POST /v1/offers/{offer_id}/acceptance`, `GET /v1/offers/{offer_id}/acceptance` y `GET /v1/acceptances/{acceptance_id}` (aceptación de la oferta y disparo asíncrono de la suscripción), con autenticación Cognito (`pkg/security`) y **adaptadores en memoria pendientes de reemplazo** (ofertas, suscripción, bandeja del asesor, emisión y persistencia; ver «Aceptación de la oferta»). **HU-W1.1-01:** `POST /v1/assisted-quotes`, `GET /v1/assisted-quotes/{quote_id}` y `GET /v1/customers?document_id=` (cotización asistida por asesor con el mismo perfilamiento y un motor de rating `v1`), con clientes y cotizaciones **en memoria** pendientes de PostgreSQL (ver «Cotización asistida»). **HU-W1.3-03:** `GET /v1/policies/{policy_id}/issuance-status`, `GET /v1/policies/{policy_id}/contract-document` y `GET /v1/documents/{token}` (documento contractual en PDF y notificación de emisión tras la activación de la cobertura), con el repositorio, la auditoría y los documentos **locales o en memoria** pendientes de PostgreSQL, del servicio `audit` y de S3 (ver «Documento contractual»). El resto de módulos sigue reservado.
 
 ## Responsabilidades
 
@@ -12,7 +12,7 @@ Camino crítico del negocio: cotiza, perfila, emite y cobra. Es la fachada (*Fac
 | `profiling` | Perfil de riesgo con Open Finance / Open Data (con consentimiento). **HA-D01:** `Resolver` con la cadena de degradación Open Finance → `Perfil_Riesgo_Cache` (Redis, TTL 30 días) → perfil actuarial base; la oferta degradada sale marcada como provisional. **HU-W1.2-02:** el `Resolver` (con la opción `WithCachedProfileReuse`, activa por defecto en `main`) reutiliza un perfil **completo** de ≤ 30 días sin consultar el ecosistema, comparte una sola consulta entre solicitudes simultáneas del mismo cliente (`singleflight`) y expone `Invalidate` para la recotización. **HA-L01:** `ParallelSource` consulta Open Finance, Open Data y KYC en paralelo (120 ms por fuente, corte total de 700 ms), cancela la fuente lenta y arma el perfil parcial con las señales que llegaron; `CombineProvisional` es la regla de combinación por defecto; con `Weights` se usa `CombineWeighted` (HU-W1.2-02) |
 | `rating` | Motor de rating: prima y coberturas. Reglas actuariales aisladas del resto. **HU-W1.1-01:** `Rater` versión `v1` (tabla mínima: prima mensual = monto × tasa base × factores de edad, riesgo del perfil y plazo), detrás del puerto `ports.Rater` para que HU-W1.2-03 lo amplíe sin cambiar a los llamadores |
 | `underwriting` | Suscripción automática: acepta, rechaza o ajusta el riesgo; enruta a decisión humana (bandeja del asesor) cuando aplica |
-| `issuance` | Aceptación de la oferta, documento contractual (firma) y activación de la cobertura. **HU-W1.3-01:** `AcceptanceService` registra la aceptación (oferta, fecha y hora, canal) antes de cualquier paso posterior, rechaza la oferta vencida y es idempotente por oferta; `Processor` ejecuta la suscripción en segundo plano, inicia la emisión o enruta a la bandeja del asesor, y reanuda con espera creciente la aceptación cuyo paso posterior falló |
+| `issuance` | **HU-W1.3-03:** `ContractService` recibe la activación de la cobertura (`CoverageActivated`, idempotente por póliza), genera el PDF, lo guarda y lo asocia a la póliza, envía el correo con un enlace firmado y registra cada paso en la auditoría; un trabajador en segundo plano reintenta lo que falle con espera creciente sin repetir lo ya hecho. `ContractReader` sirve el estado y el documento (dueño, `advisor`, `operations` o enlace firmado). Aceptación de la oferta, documento contractual (firma) y activación de la cobertura. **HU-W1.3-01:** `AcceptanceService` registra la aceptación (oferta, fecha y hora, canal) antes de cualquier paso posterior, rechaza la oferta vencida y es idempotente por oferta; `Processor` ejecuta la suscripción en segundo plano, inicia la emisión o enruta a la bandeja del asesor, y reanuda con espera creciente la aceptación cuyo paso posterior falló |
 | `billing` | Cobro de la prima y reembolsos contra la pasarela: `Intento_Cobro` con `idempotency_key` única por aceptación, reintentos con backoff (HA-D02) |
 | `endorsements` | Modificaciones y endosos con trazabilidad |
 | `renewal` / `cancellation` | Renovación y cancelación con prorrateo de reembolso |
@@ -24,7 +24,11 @@ Las llamadas entre orquestador, perfilamiento y rating son **en proceso** (sin s
 | Adaptador | Qué hace |
 |---|---|
 | `http` | Router `chi`: `GET /health` (superficial), `POST /v1/risk-profiles/resolve` y `GET /v1/risk-profiles/{customer_id}?consent_active=…` (misma respuesta, lectura cacheable por el API Gateway por socio; HA-L01). Rutas humanas de aceptación (HU-W1.3-01) con `security.Authenticate` + `RequireRole`, montadas solo si `AUTH_ISSUER` está definido |
-| `memory` | **Pendiente de reemplazo (HU-W1.3-01, HU-W1.1-01).** `CustomerStore` y `QuoteStore` (clientes por documento y cotizaciones asistidas, en lugar de PostgreSQL). `AcceptanceStore` (en lugar de PostgreSQL: la aceptación resiste fallas de las dependencias pero no un reinicio del servicio), `OfferStub` (ofertas de demostración `demo-<escenario>-<sufijo>` en lugar de HU-W1.2-03), `UnderwriterStub` (reglas provisionales en lugar del motor de suscripción), `ReviewQueueStub` (en lugar de la bandeja de HU-W1.1-02) e `IssuanceStub` (en lugar del cobro y la emisión de HU-W1.3-02 / HA-D02) |
+| `pdf` | Genera el documento contractual (`go-pdf/fpdf`): datos de la póliza, asegurado, coberturas, prima, vigencia y condiciones generales; es determinista, así que su *checksum* prueba lo que recibió el asegurado (HU-W1.3-03) |
+| `filestore` | Repositorio documental sobre un directorio (`DOCUMENTS_DIR`): una clave por versión, sin sobrescribir con contenido distinto y sin salir del directorio. Se reemplaza por S3 cuando exista el módulo de infraestructura (HU-W1.3-03) |
+| `links` | Enlaces al documento firmados con HMAC-SHA256 y con vencimiento (`DOCUMENT_LINK_SECRET`, `DOCUMENT_LINK_TTL_HOURS`) (HU-W1.3-03) |
+| `email` | Puente entre `pkg/adapters/email` (timeout, circuit breaker, envío idempotente) y el puerto `Notifier`; redacta el correo de emisión (HU-W1.3-03) |
+| `memory` | **Pendiente de reemplazo (HU-W1.3-01, HU-W1.1-01, HU-W1.3-03).** `ContractStore`, `IssuanceAuditLog` (emisión contractual y su auditoría, en lugar de PostgreSQL y del servicio `audit`) y `ActivationStub` (publica en proceso la activación de la cobertura que HU-W1.3-02 / HA-D02 publicarán tras el cobro). `CustomerStore` y `QuoteStore` (clientes por documento y cotizaciones asistidas, en lugar de PostgreSQL). `AcceptanceStore` (en lugar de PostgreSQL: la aceptación resiste fallas de las dependencias pero no un reinicio del servicio), `OfferStub` (ofertas de demostración `demo-<escenario>-<sufijo>` en lugar de HU-W1.2-03), `UnderwriterStub` (reglas provisionales en lugar del motor de suscripción), `ReviewQueueStub` (en lugar de la bandeja de HU-W1.1-02) e `IssuanceStub` (en lugar del cobro y la emisión de HU-W1.3-02 / HA-D02) |
 | `openfinance` | Puente entre el cliente compartido `pkg/adapters/openfinance` (timeout 700 ms + circuit breaker) y el puerto `RiskProfileSource`; el circuito abierto se informa como `circuit_open` (HA-L01) |
 | `opendata` | Puente entre `pkg/adapters/opendata` y el puerto `RiskProfileSource` (HA-L01) |
 | `kyc` | Puente entre `pkg/adapters/kyc` y el puerto `RiskProfileSource` (HA-L01) |
@@ -129,6 +133,15 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `HTTP_MAX_CONNS_PER_HOST` | `200` | Pool de conexiones por host del cliente HTTP compartido (EXP-L01) |
 | `OPEN_FINANCE_REQUIRED` | `true` | Sin Open Finance no se calcula el perfil en línea y la oferta sale provisional (D-2). `false`: fuentes equivalentes |
 | `AUTH_ISSUER`, `AUTH_CLIENT_IDS`, `AUTH_JWKS_URL`, `AUTH_TOKEN_USE`, `AUTH_LEEWAY_SECONDS` | vacío | Verificación del JWT de Cognito (HA-S01, ver [docs/api](../../docs/api/README.md#autenticación-y-autorización-ha-s01)). Con `AUTH_ISSUER` vacío las rutas de aceptación (HU-W1.3-01) **no se montan**; si está definido, `AUTH_CLIENT_IDS` es obligatoria |
+| `EMAIL_URL` | vacío | URL del proveedor de correo (`stubs/email` en local). Con valor vacío **no se cablea** el documento contractual (HU-W1.3-03); si está definida, `DOCUMENTS_DIR` y `DOCUMENT_LINK_SECRET` son obligatorias |
+| `DOCUMENTS_DIR` | — | Directorio del repositorio documental (se crea si no existe; permisos de solo el propietario) |
+| `DOCUMENT_LINK_SECRET` | — | Secreto (≥ 32 caracteres) con el que se firman los enlaces; viene del entorno o de Secrets Manager, nunca del código |
+| `DOCUMENT_LINK_TTL_HOURS` | `168` | Vigencia del enlace seguro del correo |
+| `DOCUMENTS_PUBLIC_BASE_URL` | `http://localhost:$PORT` | Base pública de los enlaces (el API Gateway en AWS) |
+| `EMAIL_TIMEOUT_MS` | `2000` | Corte duro de cada envío de correo |
+| `CONTRACT_POLL_INTERVAL_MS`, `CONTRACT_ATTEMPT_TIMEOUT_MS` | `500`, `10000` | Cada cuánto el trabajador busca emisiones pendientes (una activación nueva lo despierta enseguida) y el tope de un intento |
+| `CONTRACT_RETRY_BASE_MS`, `CONTRACT_RETRY_MAX_MS` | `1000`, `15000` | Espera tras el primer fallo (se duplica) y su tope; caben varios intentos dentro de los 60 s |
+| `CONTRACT_MAX_ATTEMPTS` | `12` | Intentos fallidos antes de marcar la emisión `failed` (el documento sigue disponible) |
 | `LOG_LEVEL` | `info` | Nivel de los logs JSON (`debug`, `info`, `warn`, `error`). Cada línea lleva `service`, `correlation_id` y, dentro de una petición, `trace_id`/`span_id` |
 | `ENVIRONMENT` | `local` | Etiqueta `deployment.environment` de la telemetría |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | vacío | URL base del colector OTLP/HTTP (p. ej. `http://localhost:4318`; en AWS, el sidecar ADOT hacia CloudWatch y X-Ray). Vacío: las trazas y métricas se generan pero no se exportan |
@@ -169,6 +182,28 @@ oferta ya aceptada ─────────────────▶ 200 la
   la bandeja de HU-W1.1-02 y el cobro y la emisión de HU-W1.3-02 / HA-D02. Generar una oferta nueva tras `offer_expired` es de
   HU-W1.2-03. No publica eventos todavía.
 - Contrato para el front: [`docs/contratos/HU-W1.3-01-api.md`](../../docs/contratos/HU-W1.3-01-api.md).
+
+## Documento contractual y notificación (HU-W1.3-03)
+
+Cuando se activa la cobertura, el servicio genera **sin intervención manual** el documento contractual (condiciones, coberturas, prima y
+vigencia) en máximo 60 s, lo guarda en el repositorio documental asociado de forma permanente a la póliza, avisa al asegurado por correo con un
+enlace seguro y registra la fecha y hora, la versión del documento y el resultado de la entrega. El contrato para el front (pantalla E5) está en
+[`docs/contratos/HU-W1.3-03-api.md`](../../docs/contratos/HU-W1.3-03-api.md).
+
+```
+CoverageActivated ─▶ Receive (persiste y despierta al trabajador; idempotente por póliza)
+                      └▶ genera PDF ─▶ guarda y asocia (document_ready) ─▶ firma el enlace ─▶ correo (completed) ─▶ auditoría
+                          cada paso se persiste antes del siguiente: tras una falla solo se repite el paso que falló
+                          falla del correo ─▶ reintento con espera creciente (el documento ya está disponible) ─▶ tras N intentos: failed
+```
+
+- El evento hoy lo publica `memory.ActivationStub` al aprobar la suscripción de HU-W1.3-01 (monto asegurado y plazo de demostración); en
+  `docs/events/README.md` están su payload y la asignación pendiente del nombre `PolicyIssued`.
+- El envío es idempotente por `policy-issued:{policy}:v{version}`; el documento nunca se sobrescribe con contenido distinto.
+- Observabilidad: spans `contract.advance`, `.generate` y `.notify`; el histograma `contract.activation_to_available` (SLO de 60 s) y los
+  contadores `contract.slo.breached`, `contract.attempt.failed` (por paso) y `contract.issuance.completed`; los logs llevan `policy_id` y
+  `correlation_id`.
+- Pendiente: PostgreSQL y el servicio `audit` para la emisión y su auditoría, S3 para los documentos y la publicación real del evento (HU-W1.3-02, HA-D02).
 
 ## Observabilidad
 

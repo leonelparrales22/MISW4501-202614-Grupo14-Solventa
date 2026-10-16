@@ -144,3 +144,69 @@ type RatingInput struct {
 type Rater interface {
 	Rate(ctx context.Context, in RatingInput) (domain.Rating, error)
 }
+
+// ErrContractNotFound is returned by a ContractRepository that has no
+// contractual issuance for the requested policy.
+var ErrContractNotFound = errors.New("contract issuance not found")
+
+// ErrDocumentNotFound is returned by a DocumentStore that has no document
+// under the requested key.
+var ErrDocumentNotFound = errors.New("contract document not found")
+
+// ErrInvalidLink is returned by a LinkSigner for a link that is malformed,
+// forged or expired.
+var ErrInvalidLink = errors.New("invalid or expired document link")
+
+// CoverageActivationHandler receives the coverage activations (HU-W1.3-03).
+// Receive persists the work and returns; it is idempotent by policy, so a
+// redelivered event does nothing.
+type CoverageActivationHandler interface {
+	Receive(ctx context.Context, event domain.CoverageActivated) error
+}
+
+// ContractRepository persists the contractual issuance of each policy. A
+// policy has at most one.
+type ContractRepository interface {
+	// Create stores the issuance unless the policy already has one; then it
+	// returns the existing issuance and created=false.
+	Create(ctx context.Context, c domain.ContractIssuance) (stored domain.ContractIssuance, created bool, err error)
+	// Get returns ErrContractNotFound when the policy has no issuance.
+	Get(ctx context.Context, policyID string) (domain.ContractIssuance, error)
+	Update(ctx context.Context, c domain.ContractIssuance) error
+	// ListDue returns up to limit issuances still in progress whose next
+	// attempt is due at now, oldest first.
+	ListDue(ctx context.Context, now time.Time, limit int) ([]domain.ContractIssuance, error)
+}
+
+// DocumentGenerator renders the contractual document (PDF).
+type DocumentGenerator interface {
+	Generate(ctx context.Context, data domain.ContractData) ([]byte, error)
+}
+
+// DocumentStore is the secure document repository. Documents are never
+// overwritten with different content: each version has its own key.
+type DocumentStore interface {
+	Put(ctx context.Context, key string, content []byte, contentType string) error
+	// Get returns ErrDocumentNotFound when the key is unknown.
+	Get(ctx context.Context, key string) ([]byte, error)
+}
+
+// LinkSigner issues and checks the expiring links to a document.
+type LinkSigner interface {
+	Sign(policyID string, version int, expiresAt time.Time) string
+	// Verify returns ErrInvalidLink unless the token is authentic and not expired.
+	Verify(token string, now time.Time) (policyID string, version int, err error)
+}
+
+// Notifier tells the insured, through their configured contact channel, that
+// the policy was issued.
+type Notifier interface {
+	Notify(ctx context.Context, n domain.IssuedNotification) error
+}
+
+// IssuanceAudit is the append-only record of the contractual issuance.
+type IssuanceAudit interface {
+	Record(ctx context.Context, e domain.IssuanceAuditEntry) error
+	// List returns the entries of the policy, oldest first.
+	List(ctx context.Context, policyID string) ([]domain.IssuanceAuditEntry, error)
+}

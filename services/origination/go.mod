@@ -5,6 +5,7 @@ go 1.23
 require (
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/go-chi/chi/v5 v5.1.0
+	github.com/go-pdf/fpdf v0.9.0
 	github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg v0.0.0
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/stretchr/testify v1.10.0
