@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.4.0
+  version: 0.5.0
 paths:
   /health:
     get:
@@ -258,6 +258,169 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/AcceptanceUnavailable"
+  /v1/assisted-quotes:
+    post:
+      summary: Generate an assisted quote (HU-W1.1-01)
+      description: >
+        An advisor registers the customer data and gets the premium and
+        coverages of a mortgage life quote, priced with the same profiling and
+        rating engine as the embedded channels. The customer is created, or
+        updated when the document id is already known. The quote is persisted
+        with its id and a validity of 24 hours. When the external sources are
+        down the quote is still generated in degraded mode (mode provisional,
+        with the cached profile or the base actuarial profile) and says so in
+        mode, source and notice. Every invalid field is reported at once and no
+        quote is generated. consent_active is affirmed by the caller while the
+        audit service does not expose the consent query. Customers and quotes
+        are in-memory for now (PENDING: PostgreSQL).
+      security:
+        - cognitoJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAssistedQuoteRequest"
+      responses:
+        "201":
+          description: Quote generated
+          headers:
+            Location:
+              description: Path of the quote.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistedQuote"
+        "400":
+          description: Malformed body (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >
+            A field is missing or invalid (validation_failed, with the specific
+            error of each field), or the customer has no active consent
+            (consent_required).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "503":
+          description: The quote could not be generated (quote_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/assisted-quotes/{quote_id}:
+    get:
+      summary: Read an assisted quote (HU-W1.1-01)
+      description: >
+        Returns the quote with its status. After expires_at the status is
+        expired and can_formalize is false with blocked_reason quote_expired:
+        the quote cannot be formalized and the advisor must generate a new one.
+        The quote stays readable after it expires.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: quote_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The quote in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistedQuote"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The quote does not exist (quote_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The quote could not be read (quote_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/customers:
+    get:
+      summary: Recover a customer by document id (HU-W1.1-01)
+      description: >
+        Returns the customer registered with the document id, so the advisor
+        does not type the data again. Advisors only.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: document_id
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9]{5,20}$"
+      responses:
+        "200":
+          description: The customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No customer has that document (customer_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The document id has an invalid format (validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "503":
+          description: The customer could not be read (customer_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   securitySchemes:
     cognitoJwt:
@@ -300,6 +463,165 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    CreateAssistedQuoteRequest:
+      type: object
+      required: [document_id, full_name, email, birth_date, insured_amount, term_months, consent_active]
+      properties:
+        document_id:
+          type: string
+          pattern: "^[A-Za-z0-9]{5,20}$"
+        full_name:
+          type: string
+          minLength: 3
+          maxLength: 120
+        email:
+          type: string
+          format: email
+        birth_date:
+          type: string
+          format: date
+          description: The customer must be between 18 and 70 years old.
+        insured_amount:
+          type: number
+          minimum: 10000000
+          maximum: 2000000000
+          description: Outstanding mortgage balance to insure, in COP.
+        term_months:
+          type: integer
+          minimum: 12
+          maximum: 360
+        consent_active:
+          type: boolean
+          description: The customer consented to be profiled.
+    FieldError:
+      type: object
+      required: [field, code]
+      properties:
+        field:
+          type: string
+          description: JSON name of the invalid field.
+        code:
+          type: string
+          enum: [required, invalid_format, out_of_range]
+    ValidationError:
+      type: object
+      required: [error, message, fields]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed]
+        message:
+          type: string
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldError"
+    Customer:
+      type: object
+      required: [customer_id, document_id, full_name, email, birth_date]
+      properties:
+        customer_id:
+          type: string
+        document_id:
+          type: string
+        full_name:
+          type: string
+        email:
+          type: string
+        birth_date:
+          type: string
+          format: date
+    Coverage:
+      type: object
+      required: [code, insured_amount]
+      properties:
+        code:
+          type: string
+          enum: [death, total_permanent_disability]
+        insured_amount:
+          type: number
+    AssistedQuote:
+      type: object
+      required: [quote_id, customer_id, customer, insured_amount, term_months, premium, currency, coverages, rating_version,
+                 mode, source, profile, profile_date, unavailable_source, notice, created_at, expires_at, status, can_formalize, blocked_reason]
+      properties:
+        quote_id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+        customer:
+          type: object
+          required: [document_id, full_name, email]
+          properties:
+            document_id:
+              type: string
+            full_name:
+              type: string
+            email:
+              type: string
+        insured_amount:
+          type: number
+        term_months:
+          type: integer
+        premium:
+          type: number
+          description: Monthly premium, rounded to 100 pesos.
+        currency:
+          type: string
+          example: COP
+        coverages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Coverage"
+        rating_version:
+          type: string
+          description: Version of the rating table that priced the quote.
+        mode:
+          type: string
+          enum: [normal, provisional]
+          description: provisional when the quote was priced in degraded mode.
+        source:
+          type: string
+          enum: [open_finance, external_sources, cache, base_actuarial]
+          description: Where the risk profile came from.
+        profile:
+          type: object
+          required: [score, category]
+          properties:
+            score:
+              type: number
+            category:
+              type: string
+        profile_date:
+          type: string
+          format: date-time
+          nullable: true
+        unavailable_source:
+          type: string
+          nullable: true
+          description: Set only in provisional mode.
+        notice:
+          type: string
+          nullable: true
+          enum: [last_profile_in_use, personalization_unavailable]
+          description: Message code for the degraded-mode screen; the text is translated by each client.
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: created_at plus 24 hours.
+        status:
+          type: string
+          enum: [valid, expired]
+        can_formalize:
+          type: boolean
+        blocked_reason:
+          type: string
+          nullable: true
+          enum: [quote_expired]
     AcceptOfferRequest:
       type: object
       required: [channel]

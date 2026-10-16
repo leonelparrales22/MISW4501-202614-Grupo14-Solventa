@@ -106,3 +106,41 @@ type ReviewQueue interface {
 type IssuanceStarter interface {
 	Start(ctx context.Context, acceptance domain.Acceptance, offer domain.Offer) error
 }
+
+// ErrQuoteNotFound is returned by a QuoteRepository that has no quote with the
+// requested id.
+var ErrQuoteNotFound = errors.New("quote not found")
+
+// ErrCustomerNotFound is returned by a CustomerRepository that has no customer
+// with the requested document id.
+var ErrCustomerNotFound = errors.New("customer not found")
+
+// CustomerRepository stores the customers an advisor quotes for (HU-W1.1-01).
+type CustomerRepository interface {
+	// GetByDocument returns ErrCustomerNotFound when the document is unknown.
+	GetByDocument(ctx context.Context, documentID string) (domain.Customer, error)
+	// Save creates the customer, or updates the one with the same document id
+	// keeping its ID, and returns the stored customer.
+	Save(ctx context.Context, c domain.Customer) (domain.Customer, error)
+}
+
+// QuoteRepository persists the assisted quotes (HU-W1.1-01).
+type QuoteRepository interface {
+	Create(ctx context.Context, q domain.Quote) error
+	// Get returns ErrQuoteNotFound when the id is unknown.
+	Get(ctx context.Context, quoteID string) (domain.Quote, error)
+}
+
+// RatingInput is what the rating engine needs to price a quote.
+type RatingInput struct {
+	Age           int
+	InsuredAmount float64
+	TermMonths    int
+	Profile       domain.RiskProfile
+}
+
+// Rater is the rating engine: it prices a quote from the risk profile. The
+// embedded channel and the advisor share it, so both get the same price.
+type Rater interface {
+	Rate(ctx context.Context, in RatingInput) (domain.Rating, error)
+}

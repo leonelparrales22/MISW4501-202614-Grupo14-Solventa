@@ -2,15 +2,15 @@
 
 Camino crítico del negocio: cotiza, perfila, emite y cobra. Es la fachada (*Facade*) del ciclo de vida de la póliza.
 
-**Estado:** `GET /health`, `POST /v1/risk-profiles/resolve` (HA-D01: oferta continua ante caída de la fuente externa) y `GET /v1/risk-profiles/{customer_id}` con las fuentes externas consultadas en paralelo (HA-L01: cotización embebida rápida bajo tráfico pico). **HU-W1.3-01:** `POST /v1/offers/{offer_id}/acceptance`, `GET /v1/offers/{offer_id}/acceptance` y `GET /v1/acceptances/{acceptance_id}` (aceptación de la oferta y disparo asíncrono de la suscripción), con autenticación Cognito (`pkg/security`) y **adaptadores en memoria pendientes de reemplazo** (ofertas, suscripción, bandeja del asesor, emisión y persistencia; ver «Aceptación de la oferta»). El resto de módulos sigue reservado.
+**Estado:** `GET /health`, `POST /v1/risk-profiles/resolve` (HA-D01: oferta continua ante caída de la fuente externa) y `GET /v1/risk-profiles/{customer_id}` con las fuentes externas consultadas en paralelo (HA-L01: cotización embebida rápida bajo tráfico pico). **HU-W1.3-01:** `POST /v1/offers/{offer_id}/acceptance`, `GET /v1/offers/{offer_id}/acceptance` y `GET /v1/acceptances/{acceptance_id}` (aceptación de la oferta y disparo asíncrono de la suscripción), con autenticación Cognito (`pkg/security`) y **adaptadores en memoria pendientes de reemplazo** (ofertas, suscripción, bandeja del asesor, emisión y persistencia; ver «Aceptación de la oferta»). **HU-W1.1-01:** `POST /v1/assisted-quotes`, `GET /v1/assisted-quotes/{quote_id}` y `GET /v1/customers?document_id=` (cotización asistida por asesor con el mismo perfilamiento y un motor de rating `v1`), con clientes y cotizaciones **en memoria** pendientes de PostgreSQL (ver «Cotización asistida»). El resto de módulos sigue reservado.
 
 ## Responsabilidades
 
 | Módulo (`internal/`) | Qué hace |
 |---|---|
-| `orchestrator` | Orquestador de cotización: coordina perfilamiento y rating. Consulta primero la caché y luego las fuentes externas en paralelo |
+| `orchestrator` | Orquestador de cotización: coordina perfilamiento y rating. Consulta primero la caché y luego las fuentes externas en paralelo. **HU-W1.1-01:** `AssistedQuoteService` valida la solicitud del asesor (errores por campo), registra o actualiza al cliente por documento, perfila con el `Resolver` (misma cadena de degradación), califica con el `Rater` y guarda la cotización con vigencia de 24 h |
 | `profiling` | Perfil de riesgo con Open Finance / Open Data (con consentimiento). **HA-D01:** `Resolver` con la cadena de degradación Open Finance → `Perfil_Riesgo_Cache` (Redis, TTL 30 días) → perfil actuarial base; la oferta degradada sale marcada como provisional. **HU-W1.2-02:** el `Resolver` (con la opción `WithCachedProfileReuse`, activa por defecto en `main`) reutiliza un perfil **completo** de ≤ 30 días sin consultar el ecosistema, comparte una sola consulta entre solicitudes simultáneas del mismo cliente (`singleflight`) y expone `Invalidate` para la recotización. **HA-L01:** `ParallelSource` consulta Open Finance, Open Data y KYC en paralelo (120 ms por fuente, corte total de 700 ms), cancela la fuente lenta y arma el perfil parcial con las señales que llegaron; `CombineProvisional` es la regla de combinación por defecto; con `Weights` se usa `CombineWeighted` (HU-W1.2-02) |
-| `rating` | Motor de rating: prima y coberturas. Reglas actuariales aisladas del resto |
+| `rating` | Motor de rating: prima y coberturas. Reglas actuariales aisladas del resto. **HU-W1.1-01:** `Rater` versión `v1` (tabla mínima: prima mensual = monto × tasa base × factores de edad, riesgo del perfil y plazo), detrás del puerto `ports.Rater` para que HU-W1.2-03 lo amplíe sin cambiar a los llamadores |
 | `underwriting` | Suscripción automática: acepta, rechaza o ajusta el riesgo; enruta a decisión humana (bandeja del asesor) cuando aplica |
 | `issuance` | Aceptación de la oferta, documento contractual (firma) y activación de la cobertura. **HU-W1.3-01:** `AcceptanceService` registra la aceptación (oferta, fecha y hora, canal) antes de cualquier paso posterior, rechaza la oferta vencida y es idempotente por oferta; `Processor` ejecuta la suscripción en segundo plano, inicia la emisión o enruta a la bandeja del asesor, y reanuda con espera creciente la aceptación cuyo paso posterior falló |
 | `billing` | Cobro de la prima y reembolsos contra la pasarela: `Intento_Cobro` con `idempotency_key` única por aceptación, reintentos con backoff (HA-D02) |
@@ -24,7 +24,7 @@ Las llamadas entre orquestador, perfilamiento y rating son **en proceso** (sin s
 | Adaptador | Qué hace |
 |---|---|
 | `http` | Router `chi`: `GET /health` (superficial), `POST /v1/risk-profiles/resolve` y `GET /v1/risk-profiles/{customer_id}?consent_active=…` (misma respuesta, lectura cacheable por el API Gateway por socio; HA-L01). Rutas humanas de aceptación (HU-W1.3-01) con `security.Authenticate` + `RequireRole`, montadas solo si `AUTH_ISSUER` está definido |
-| `memory` | **Pendiente de reemplazo (HU-W1.3-01).** `AcceptanceStore` (en lugar de PostgreSQL: la aceptación resiste fallas de las dependencias pero no un reinicio del servicio), `OfferStub` (ofertas de demostración `demo-<escenario>-<sufijo>` en lugar de HU-W1.2-03), `UnderwriterStub` (reglas provisionales en lugar del motor de suscripción), `ReviewQueueStub` (en lugar de la bandeja de HU-W1.1-02) e `IssuanceStub` (en lugar del cobro y la emisión de HU-W1.3-02 / HA-D02) |
+| `memory` | **Pendiente de reemplazo (HU-W1.3-01, HU-W1.1-01).** `CustomerStore` y `QuoteStore` (clientes por documento y cotizaciones asistidas, en lugar de PostgreSQL). `AcceptanceStore` (en lugar de PostgreSQL: la aceptación resiste fallas de las dependencias pero no un reinicio del servicio), `OfferStub` (ofertas de demostración `demo-<escenario>-<sufijo>` en lugar de HU-W1.2-03), `UnderwriterStub` (reglas provisionales en lugar del motor de suscripción), `ReviewQueueStub` (en lugar de la bandeja de HU-W1.1-02) e `IssuanceStub` (en lugar del cobro y la emisión de HU-W1.3-02 / HA-D02) |
 | `openfinance` | Puente entre el cliente compartido `pkg/adapters/openfinance` (timeout 700 ms + circuit breaker) y el puerto `RiskProfileSource`; el circuito abierto se informa como `circuit_open` (HA-L01) |
 | `opendata` | Puente entre `pkg/adapters/opendata` y el puerto `RiskProfileSource` (HA-L01) |
 | `kyc` | Puente entre `pkg/adapters/kyc` y el puerto `RiskProfileSource` (HA-L01) |
@@ -173,6 +173,28 @@ oferta ya aceptada ─────────────────▶ 200 la
 ## Observabilidad
 
 `cmd/origination` instala `pkg/observability` al arrancar: logs JSON (también los de `log`), una traza por petición (`GET /v1/...`, nombrada por la ruta de chi, no por la URL) y las métricas `http.server.requests` y `http.server.duration`. `X-Correlation-Id` entra, se propaga por el contexto y vuelve en la respuesta; si falta o no es válido se genera uno. Las rutas nuevas heredan todo esto: basta registrar `httpadapter.WithObservability` como **primera** opción del router. Para instrumentar un caso de uso, `observability.Tracer(...)` y `observability.Meter(...)`, y registrar con `slog.*Context(ctx, ...)` para que el log lleve los identificadores.
+
+## Cotización asistida (HU-W1.1-01)
+
+Un asesor registra o recupera al cliente y obtiene prima y coberturas con el **mismo** perfilamiento que el canal embebido
+(`profiling.Resolver`, con su cadena de degradación) y el motor `rating`. Solo el rol `advisor` usa estas rutas (`pkg/security`); se
+montan junto con las de aceptación cuando `AUTH_ISSUER` está definido. El contrato para el front está en
+[`docs/contratos/HU-W1.1-01-api.md`](../../docs/contratos/HU-W1.1-01-api.md).
+
+```
+solicitud inválida ────────────────▶ 422 validation_failed (todos los campos con su error; no se perfila ni se guarda nada)
+sin consentimiento ────────────────▶ 422 consent_required
+fuentes externas caídas ───────────▶ 201, mode=provisional (perfil en caché o perfil actuarial base) + notice
+cotización generada ───────────────▶ 201, vigencia de 24 h (expires_at)
+pasadas 24 h ──────────────────────▶ GET: status=expired, can_formalize=false, blocked_reason=quote_expired
+```
+
+- El cliente existente se recupera por documento (`GET /v1/customers`); cotizar con un documento conocido conserva su `customer_id` (de él
+  depende la caché de perfil) y actualiza sus datos de contacto.
+- La prima es **mensual** y la registra `rating_version`. La tabla `v1` es provisional: HU-W1.2-03 puede reemplazar el `Rater`.
+- `consent_active` lo afirma el asesor en la solicitud mientras `audit` no exponga la consulta de consentimientos (HU-W1.2-01).
+- Pendiente: PostgreSQL para clientes y cotizaciones y la formalización de la compra (HU-W1.1-03).
+- Observabilidad: spans `assisted_quote.create`, `.profile` y `.rate`, la métrica `assisted_quotes.created` por `mode` y `profile_source`, y logs con `quote_id`, `customer_id` y `correlation_id` (nunca el documento ni el correo).
 
 ## Requisitos de calidad que gobiernan el servicio
 
