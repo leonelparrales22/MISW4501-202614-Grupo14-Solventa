@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/observability"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/profiling"
 )
@@ -36,6 +37,20 @@ type ProfileResolver interface {
 
 // Option mounts optional routes on the service router.
 type Option func(chi.Router)
+
+// WithObservability adds the correlation id, the server span, the request
+// metrics and the access log to every route. Pass it before any other option:
+// chi only accepts middlewares before the routes are registered.
+func WithObservability(service string) Option {
+	return func(r chi.Router) {
+		r.Use(observability.Middleware(service, func(req *http.Request) string {
+			if rc := chi.RouteContext(req.Context()); rc != nil {
+				return rc.RoutePattern()
+			}
+			return ""
+		}))
+	}
+}
 
 // NewRouter builds the service router.
 func NewRouter(resolver ProfileResolver, opts ...Option) http.Handler {

@@ -129,6 +129,9 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `HTTP_MAX_CONNS_PER_HOST` | `200` | Pool de conexiones por host del cliente HTTP compartido (EXP-L01) |
 | `OPEN_FINANCE_REQUIRED` | `true` | Sin Open Finance no se calcula el perfil en línea y la oferta sale provisional (D-2). `false`: fuentes equivalentes |
 | `AUTH_ISSUER`, `AUTH_CLIENT_IDS`, `AUTH_JWKS_URL`, `AUTH_TOKEN_USE`, `AUTH_LEEWAY_SECONDS` | vacío | Verificación del JWT de Cognito (HA-S01, ver [docs/api](../../docs/api/README.md#autenticación-y-autorización-ha-s01)). Con `AUTH_ISSUER` vacío las rutas de aceptación (HU-W1.3-01) **no se montan**; si está definido, `AUTH_CLIENT_IDS` es obligatoria |
+| `LOG_LEVEL` | `info` | Nivel de los logs JSON (`debug`, `info`, `warn`, `error`). Cada línea lleva `service`, `correlation_id` y, dentro de una petición, `trace_id`/`span_id` |
+| `ENVIRONMENT` | `local` | Etiqueta `deployment.environment` de la telemetría |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | vacío | URL base del colector OTLP/HTTP (p. ej. `http://localhost:4318`; en AWS, el sidecar ADOT hacia CloudWatch y X-Ray). Vacío: las trazas y métricas se generan pero no se exportan |
 | `ACCEPTANCE_POLL_INTERVAL_MS` | `1000` | Cada cuánto el procesador busca aceptaciones pendientes (además, cada aceptación nueva lo despierta enseguida) |
 | `ACCEPTANCE_ATTEMPT_TIMEOUT_MS` | `5000` | Tope de un intento de procesamiento de una aceptación |
 | `ACCEPTANCE_RETRY_BASE_MS` | `2000` | Espera tras el primer intento fallido; se duplica en cada falla |
@@ -166,6 +169,10 @@ oferta ya aceptada ─────────────────▶ 200 la
   la bandeja de HU-W1.1-02 y el cobro y la emisión de HU-W1.3-02 / HA-D02. Generar una oferta nueva tras `offer_expired` es de
   HU-W1.2-03. No publica eventos todavía.
 - Contrato para el front: [`docs/contratos/HU-W1.3-01-api.md`](../../docs/contratos/HU-W1.3-01-api.md).
+
+## Observabilidad
+
+`cmd/origination` instala `pkg/observability` al arrancar: logs JSON (también los de `log`), una traza por petición (`GET /v1/...`, nombrada por la ruta de chi, no por la URL) y las métricas `http.server.requests` y `http.server.duration`. `X-Correlation-Id` entra, se propaga por el contexto y vuelve en la respuesta; si falta o no es válido se genera uno. Las rutas nuevas heredan todo esto: basta registrar `httpadapter.WithObservability` como **primera** opción del router. Para instrumentar un caso de uso, `observability.Tracer(...)` y `observability.Meter(...)`, y registrar con `slog.*Context(ctx, ...)` para que el log lleve los identificadores.
 
 ## Requisitos de calidad que gobiernan el servicio
 
