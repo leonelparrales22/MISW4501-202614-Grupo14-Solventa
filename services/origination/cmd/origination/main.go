@@ -28,7 +28,9 @@ import (
 	redisadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/redis"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/issuance"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/orchestrator"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/profiling"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/rating"
 )
 
 const serviceName = "origination"
@@ -64,9 +66,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("could not load the user pool keys: %v", err)
 		}
-		opts = append(opts, httpadapter.WithAcceptances(newAcceptanceService(context.Background(), cfg.acceptances), verifier))
+		opts = append(opts,
+			httpadapter.WithAcceptances(newAcceptanceService(context.Background(), cfg.acceptances), verifier),
+			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver), verifier))
 	} else {
-		log.Printf("%s is not set: the offer acceptance routes (HU-W1.3-01) are not mounted", security.EnvIssuer)
+		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01) are not mounted", security.EnvIssuer)
 	}
 
 	srv := &http.Server{
@@ -151,6 +155,14 @@ func newAcceptanceService(ctx context.Context, cfg acceptanceConfig) *issuance.A
 	log.Printf("offer acceptance: in-memory adapters (pending PostgreSQL and the real dependencies), poll every %s, retry from %s up to %s",
 		cfg.processor.PollInterval, cfg.processor.RetryBase, cfg.processor.RetryMax)
 	return issuance.NewAcceptanceService(offers, acceptances, clock, processor.Notify)
+}
+
+// newAssistedQuoteService wires the advisor quote (HU-W1.1-01) over the
+// in-memory customer and quote stores (PENDING: PostgreSQL), the shared
+// profiling Resolver and the rating engine.
+func newAssistedQuoteService(resolver *profiling.Resolver) *orchestrator.AssistedQuoteService {
+	log.Printf("assisted quote: in-memory customer and quote stores (pending PostgreSQL), rating %s", rating.Version)
+	return orchestrator.NewAssistedQuoteService(memory.NewCustomerStore(), memory.NewQuoteStore(), resolver, rating.New(), systemClock{})
 }
 
 // newHTTPClient builds the client shared by the external-source adapters: one
