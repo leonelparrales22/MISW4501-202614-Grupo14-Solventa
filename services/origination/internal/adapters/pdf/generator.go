@@ -35,7 +35,7 @@ var coverageNames = map[string]string{
 
 // Generate renders the document: policy data, holder, coverages, premium,
 // validity and the general conditions. The output is deterministic for the
-// same data (creation date and compression are fixed), so its checksum proves
+// same data (creation date, compression and catalog order are fixed), so its checksum proves
 // what the insured received.
 func (Generator) Generate(ctx context.Context, d domain.ContractData) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
@@ -47,6 +47,8 @@ func (Generator) Generate(ctx context.Context, d domain.ContractData) ([]byte, e
 
 	p := fpdf.New("P", "mm", "A4", "")
 	p.SetCompression(false)
+	// Without this fpdf writes the catalog from a map, so the bytes (and the checksum) vary between runs.
+	p.SetCatalogSort(true)
 	p.SetCreationDate(d.GeneratedAt)
 	p.SetTitle("Documento contractual · Póliza "+d.PolicyID, true)
 	p.SetAuthor("Solventa", true)
