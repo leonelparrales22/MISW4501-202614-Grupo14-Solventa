@@ -10,6 +10,7 @@ use (
 	./stubs/openfinance
 	./stubs/opendata
 	./stubs/kyc
+	./stubs/email
 	./stubs/payment-gateway
 	./stubs/esignature
 	./stubs/iot

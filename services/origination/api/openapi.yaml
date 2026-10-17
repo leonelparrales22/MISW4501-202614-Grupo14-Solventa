@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.5.0
+  version: 0.6.0
 paths:
   /health:
     get:
@@ -421,6 +421,118 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/policies/{policy_id}/issuance-status:
+    get:
+      summary: Read the state of the contractual issuance of a policy (HU-W1.3-03)
+      description: >
+        When the coverage is activated the service generates the contractual
+        document, stores it, ties it to the policy and e-mails the insured a
+        secure link, without manual intervention and within 60 seconds of the
+        activation. This endpoint shows how far that went: the document
+        (version, checksum), the notification (channel, status, attempts) and
+        the audit trail (date and time, document version and delivery result of
+        each step). A failed notification is retried with a growing wait
+        while the document stays available. Readable by the insured who owns
+        the policy, advisors and operations analysts. The repository, the audit
+        log and the document directory are in-memory or local for now
+        (PENDING: PostgreSQL, the audit service and S3).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The issuance in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuanceStatus"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No contractual issuance exists for the policy (policy_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The state could not be read (document_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/policies/{policy_id}/contract-document:
+    get:
+      summary: Download the contractual document of a policy (HU-W1.3-03)
+      description: >
+        Returns the PDF with the conditions, coverages, premium and validity
+        of the policy. Readable by the insured who owns the policy, advisors
+        and operations analysts. While the document is not ready the answer is
+        404 document_not_available.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          $ref: "#/components/responses/ContractPDF"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The policy has no issuance (policy_not_found) or its document is not ready (document_not_available)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The document could not be read (document_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/documents/{token}:
+    get:
+      summary: Download a contractual document through its secure link (HU-W1.3-03)
+      description: >
+        The link of the issuance notification. It needs no session: the signed,
+        expiring token is the authorization. A forged, altered or expired token
+        is 403 invalid_link.
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/ContractPDF"
+        "403":
+          description: The link is invalid or expired (invalid_link)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The document is not available (document_not_available)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The document could not be read (document_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   securitySchemes:
     cognitoJwt:
@@ -429,6 +541,14 @@ components:
       bearerFormat: JWT
       description: ID token of the Cognito user pool (HA-S01).
   parameters:
+    PolicyID:
+      name: policy_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
     OfferID:
       name: offer_id
       in: path
@@ -438,6 +558,22 @@ components:
         minLength: 1
         maxLength: 128
   responses:
+    ContractPDF:
+      description: The contractual document
+      headers:
+        Content-Disposition:
+          schema:
+            type: string
+          description: attachment; filename="poliza-{policy_id}-v{version}.pdf"
+        X-Document-Checksum-SHA256:
+          schema:
+            type: string
+          description: SHA-256 of the document, in hexadecimal.
+      content:
+        application/pdf:
+          schema:
+            type: string
+            format: binary
     InvalidRequest:
       description: Invalid path parameter (invalid_request)
       content:
@@ -463,6 +599,101 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    IssuanceStatus:
+      type: object
+      required: [policy_id, status, activated_at, available_at, within_slo, document, notification, audit]
+      properties:
+        policy_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, document_ready, completed, failed]
+          description: >
+            pending: activation received, document not ready; document_ready:
+            document available, notification pending or retrying; completed:
+            document available and insured notified; failed: the notification
+            could not be delivered after every attempt (the document remains
+            available).
+        activated_at:
+          type: string
+          format: date-time
+        available_at:
+          type: string
+          format: date-time
+          nullable: true
+        within_slo:
+          type: boolean
+          nullable: true
+          description: The document was available within 60 seconds of the activation.
+        document:
+          type: object
+          nullable: true
+          required: [document_id, version, content_type, size_bytes, checksum_sha256, generated_at]
+          properties:
+            document_id:
+              type: string
+              format: uuid
+            version:
+              type: integer
+            content_type:
+              type: string
+            size_bytes:
+              type: integer
+            checksum_sha256:
+              type: string
+            generated_at:
+              type: string
+              format: date-time
+        notification:
+          type: object
+          required: [channel, status, attempts, sent_at, last_failure_at]
+          properties:
+            channel:
+              type: string
+              enum: [email]
+            status:
+              type: string
+              enum: [pending, sent, failed]
+            attempts:
+              type: integer
+              description: Failed attempts so far.
+            sent_at:
+              type: string
+              format: date-time
+              nullable: true
+            last_failure_at:
+              type: string
+              format: date-time
+              nullable: true
+        audit:
+          type: array
+          description: Append-only record of the issuance, oldest first.
+          items:
+            type: object
+            required: [event, at]
+            properties:
+              event:
+                type: string
+                enum: [document_generated, notification_sent, notification_failed]
+              at:
+                type: string
+                format: date-time
+              document_version:
+                type: integer
+                nullable: true
+              delivery_result:
+                type: string
+                nullable: true
+                enum: [sent, failed]
+              channel:
+                type: string
+                nullable: true
+              attempt:
+                type: integer
+                nullable: true
+              detail:
+                type: string
+                nullable: true
     CreateAssistedQuoteRequest:
       type: object
       required: [document_id, full_name, email, birth_date, insured_amount, term_months, consent_active]
