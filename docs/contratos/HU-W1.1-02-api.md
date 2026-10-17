@@ -33,6 +33,10 @@ GET /v1/acceptances/{id} (E6b/E6c) ◀── objeto review con el resultado y la
 | CA-4 Registro auditable con asesor, fecha y hora, tipo y observaciones | Sí, salvo reinicio | `decision` con `advisor` (`sub` y `email` del token), `decided_at`, `type`, `observations`, `premium_adjustment_pct` y `adjusted_offer`; *append-only*. **Se pierde si el servicio se reinicia** (memoria, §8) |
 | CA-5 Filtro por estado y orden por llegada | Sí | `?status=pending\|decided&order=asc\|desc` (y `reason` opcional) |
 
+**Dos asesores a la vez (corrección del 2026-10-17):** la decisión se registra primero con un *claim* atómico y solo quien lo gana
+produce efectos. La oferta ajustada se crea después, con las condiciones de la decisión guardada; el otro asesor recibe `409`. Así la
+oferta que el cliente acepta (y por la que se le cobra), la decisión, `review.adjusted_offer` (E6b) y el correo coinciden siempre.
+
 ---
 
 ## 2. Endpoints
@@ -180,7 +184,7 @@ En `rejected`: `"review": {"outcome": "reject", "decided_at": "…", "adjusted_o
 | 404 | `review_request_not_found` | La aceptación no tiene solicitud en la bandeja (o el servicio se reinició, §8) | `{"error":"review_request_not_found","message":"the review request does not exist"}` | «La solicitud no existe» + volver a la bandeja |
 | 409 | `review_request_already_decided` | El caso ya tiene decisión (otro asesor se adelantó o se repitió el `POST`) | `{"error":"review_request_already_decided","message":"the review request is already decided"}` | Recargar el detalle y mostrar la vista decidida |
 | 503 | `decision_not_registered` | No se pudo registrar la decisión; nada cambió | `{"error":"decision_not_registered","message":"the decision could not be registered; retrying is safe"}` | «No pudimos registrar la decisión» + Reintentar |
-| 503 | `decision_continuation_pending` | La decisión quedó registrada pero el flujo no continuó aún | `{"error":"decision_continuation_pending","message":"the decision is registered but the origination flow did not continue yet; retrying is safe"}` | Reintentar el **mismo** `POST`: completa la continuación y responde `409` con el caso ya decidido |
+| 503 | `decision_continuation_pending` | La decisión quedó registrada pero el flujo no continuó aún (p. ej. no se pudo crear la oferta ajustada o mover la aceptación) | `{"error":"decision_continuation_pending","message":"the decision is registered but the origination flow did not continue yet; retrying is safe"}` | Reintentar el **mismo** `POST`: completa la continuación **con la decisión guardada** y responde `409` con el caso ya decidido |
 | 503 | `review_unavailable` | No se pudo leer la bandeja | `{"error":"review_unavailable","message":"the review requests could not be read; retry later"}` | Error con Reintentar |
 
 ---

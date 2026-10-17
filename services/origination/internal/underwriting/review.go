@@ -102,11 +102,14 @@ func (s *ReviewService) Get(ctx context.Context, acceptanceID string) (ReviewDet
 }
 
 // Decide records the advisor decision on a pending case and continues the
-// origination flow (CA-2, CA-3, CA-4). The decision is persisted before
-// acting on it: if the flow cannot continue, ErrContinuationPending is
-// returned and retrying the same request completes it. A case that is already
-// decided returns ports.ErrReviewAlreadyDecided after completing its
-// continuation, if it was still pending.
+// origination flow (CA-2, CA-3, CA-4). The decision is recorded first, with the
+// atomic claim of RecordDecision: no effect of a decision (the adjusted offer,
+// the acceptance, the notice) happens before it wins, so of two advisors who
+// decide the same case at once only the winner's terms reach the customer
+// (EC-D02). If the flow cannot continue, ErrContinuationPending is returned and
+// retrying the same request completes it from the recorded decision. A case
+// that is already decided returns ports.ErrReviewAlreadyDecided after
+// completing its continuation, if it was still pending.
 func (s *ReviewService) Decide(ctx context.Context, acceptanceID string, in domain.DecisionInput) (domain.ReviewCase, error) {
 	if err := security.RequireAnyRole(ctx, security.RoleAdvisor); err != nil {
 		return domain.ReviewCase{}, err
@@ -147,7 +150,9 @@ func (s *ReviewService) Decide(ctx context.Context, acceptanceID string, in doma
 	if in.Type == domain.DecisionAdjust {
 		pct := *in.PremiumAdjustmentPct
 		d.PremiumAdjustmentPct = &pct
-		if d.AdjustedOffer, err = s.createAdjustedOffer(ctx, a, pct, now); err != nil {
+		// Only the terms are computed here; the offer is created after the
+		// claim is won, from the recorded decision (continueFlow).
+		if d.AdjustedOffer, err = s.adjustedTerms(ctx, a, pct, now); err != nil {
 			return domain.ReviewCase{}, fmt.Errorf("%w: %w", ErrDecisionNotRegistered, err)
 		}
 	}
@@ -174,29 +179,45 @@ func (s *ReviewService) Decide(ctx context.Context, acceptanceID string, in doma
 	return s.refreshed(ctx, stored), nil
 }
 
-// createAdjustedOffer stores the new offer of an adjust decision: same owner,
-// applicant, currency, mode and score as the routed offer, the premium with the
-// advisor surcharge and a 24-hour validity. Its id is deterministic, so a retry
-// never creates a second offer.
-func (s *ReviewService) createAdjustedOffer(ctx context.Context, a domain.Acceptance, pct float64, now time.Time) (*domain.AdjustedOffer, error) {
+// adjustedTerms computes, without storing anything, the new offer of an
+// adjust decision: the premium of the routed offer with the advisor surcharge,
+// its currency and a 24-hour validity, under a deterministic id.
+func (s *ReviewService) adjustedTerms(ctx context.Context, a domain.Acceptance, pct float64, now time.Time) (*domain.AdjustedOffer, error) {
 	offer, err := s.d.Offers.Get(ctx, a.OfferID)
 	if err != nil {
 		return nil, fmt.Errorf("could not read the routed offer: %w", err)
 	}
-	adjusted := domain.Offer{
-		ID:           domain.AdjustedOfferID(a.ID),
-		CustomerID:   offer.CustomerID,
-		Applicant:    offer.Applicant,
-		Premium:      domain.AdjustPremium(offer.Premium, pct),
-		Currency:     offer.Currency,
-		Mode:         offer.Mode,
-		ProfileScore: offer.ProfileScore,
-		ExpiresAt:    now.Add(AdjustedOfferValidity),
+	return &domain.AdjustedOffer{
+		ID:        domain.AdjustedOfferID(a.ID),
+		Premium:   domain.AdjustPremium(offer.Premium, pct),
+		Currency:  offer.Currency,
+		ExpiresAt: now.Add(AdjustedOfferValidity),
+	}, nil
+}
+
+// createAdjustedOffer stores the offer of a recorded adjust decision with
+// exactly its terms, and the owner, applicant, mode and score of the routed
+// offer. Create is idempotent by id, so a retry or the losing advisor's request
+// completes it without creating a second offer.
+func (s *ReviewService) createAdjustedOffer(ctx context.Context, c domain.ReviewCase) error {
+	terms := c.Decision.AdjustedOffer
+	routed, err := s.d.Offers.Get(ctx, c.Request.OfferID)
+	if err != nil {
+		return fmt.Errorf("could not read the routed offer: %w", err)
 	}
-	if err := s.d.OfferWriter.Create(ctx, adjusted); err != nil {
-		return nil, fmt.Errorf("could not create the adjusted offer: %w", err)
+	if err := s.d.OfferWriter.Create(ctx, domain.Offer{
+		ID:           terms.ID,
+		CustomerID:   routed.CustomerID,
+		Applicant:    routed.Applicant,
+		Premium:      terms.Premium,
+		Currency:     terms.Currency,
+		Mode:         routed.Mode,
+		ProfileScore: routed.ProfileScore,
+		ExpiresAt:    terms.ExpiresAt,
+	}); err != nil {
+		return fmt.Errorf("could not create the adjusted offer: %w", err)
 	}
-	return &domain.AdjustedOffer{ID: adjusted.ID, Premium: adjusted.Premium, Currency: adjusted.Currency, ExpiresAt: adjusted.ExpiresAt}, nil
+	return nil
 }
 
 // alreadyDecided completes the continuation of a decided case, if it was
@@ -208,9 +229,14 @@ func (s *ReviewService) alreadyDecided(ctx context.Context, c domain.ReviewCase)
 	return s.refreshed(ctx, c), ports.ErrReviewAlreadyDecided
 }
 
-// continueFlow moves the acceptance according to the decision (CA-3) and
-// schedules the customer notice. Each step is idempotent: the acceptance is
-// only moved while it is in review and the notice only scheduled once.
+// continueFlow carries out the recorded decision (CA-3): it creates the
+// adjusted offer of an adjust, moves the acceptance and schedules the customer
+// notice. It only reads the recorded decision, never the request of the
+// caller, so a retry, or the advisor who lost the claim, completes the
+// winner's decision. Each step is idempotent: the offer is created by id, the
+// acceptance is only moved while it is in review and the notice only scheduled
+// once. The offer is created before the acceptance moves, so an adjusted
+// acceptance always has its offer.
 //   - accept: back to registered with an approved underwriting decision, so
 //     the acceptance processor starts the issuance with its own retries
 //     (decision D-6 a);
@@ -221,6 +247,11 @@ func (s *ReviewService) continueFlow(ctx context.Context, c domain.ReviewCase) e
 	d := c.Decision
 	if d == nil {
 		return errors.New("the case has no decision")
+	}
+	if d.Type == domain.DecisionAdjust && d.AdjustedOffer != nil {
+		if err := s.createAdjustedOffer(ctx, c); err != nil {
+			return err
+		}
 	}
 	a, err := s.d.Acceptances.Get(ctx, d.AcceptanceID)
 	if err != nil {

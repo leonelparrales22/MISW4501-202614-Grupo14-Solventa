@@ -273,9 +273,12 @@ asesor rechaza ──────▶ aceptación rejected; el caso se cierra sin
   más de 0 y hasta 100 % con dos decimales. Se guarda *append-only* con el asesor (`sub` y `email` del token), la fecha y hora, el
   tipo, las observaciones, el porcentaje y la oferta ajustada; no hay operación para modificarla ni borrarla. Un caso se decide una
   sola vez: el registro es un *claim* atómico (como EC-D02) y el segundo asesor recibe 409.
-- **Persistir antes de actuar (CA-3):** primero se crea la oferta ajustada (id determinístico) y se registra la decisión; después se
-  mueve la aceptación y se programa el aviso. Si ese segundo paso falla, la respuesta es 503 `decision_continuation_pending` y
-  reintentar la misma decisión lo completa. Aceptar no cambia el procesador de HU-W1.3-01: la aceptación vuelve a `registered`
+- **Registrar antes de actuar (CA-3, EC-D02):** primero se registra la decisión con el *claim* atómico; ningún efecto ocurre antes de
+  ganarlo. Solo después, y a partir de la decisión **guardada**, se crea la oferta ajustada (id determinístico, idempotente), se mueve
+  la aceptación y se programa el aviso. Así, si dos asesores ajustan el mismo caso a la vez, la oferta que el cliente acepta y paga, la
+  decisión registrada, E6b y el correo tienen siempre las condiciones del que ganó; el otro recibe 409 y no crea nada. Si un paso
+  posterior al registro falla, la respuesta es 503 `decision_continuation_pending` y reintentar la misma petición lo completa desde la
+  decisión guardada (aunque el reintento traiga otro porcentaje). Aceptar no cambia el procesador de HU-W1.3-01: la aceptación vuelve a `registered`
   aprobada y el procesador inicia la emisión con sus reintentos.
 - **Aviso al cliente (decisión D-3 c):** con `EMAIL_URL`, el ajuste y el rechazo se avisan por correo con el cliente de HU-W1.3-03
   (un solo circuit breaker para el proveedor). Un trabajador lo envía fuera de la petición del asesor, con espera de 1 s que se

@@ -46,6 +46,11 @@ type reviews struct {
 	updateErrs []error
 	// lostClaim makes RecordDecision report that another advisor won.
 	lostClaim bool
+	// hold, when set, stops the RecordDecision of the decision it matches:
+	// it closes entered and waits for release (a deterministic interleaving).
+	hold    func(domain.HumanDecision) bool
+	entered chan struct{}
+	release chan struct{}
 }
 
 func (r *reviews) Get(ctx context.Context, id string) (domain.ReviewCase, error) {
@@ -58,6 +63,10 @@ func (r *reviews) Get(ctx context.Context, id string) (domain.ReviewCase, error)
 func (r *reviews) RecordDecision(ctx context.Context, d domain.HumanDecision) (domain.ReviewCase, error) {
 	if r.recordErr != nil {
 		return domain.ReviewCase{}, r.recordErr
+	}
+	if r.hold != nil && r.hold(d) {
+		close(r.entered)
+		<-r.release
 	}
 	if r.lostClaim {
 		other := d

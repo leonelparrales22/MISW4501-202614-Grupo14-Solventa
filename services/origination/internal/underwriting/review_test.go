@@ -3,6 +3,8 @@ package underwriting_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -303,26 +305,166 @@ func TestAFailedRecordLeavesTheCasePending(t *testing.T) {
 	_, err := e.svc.Decide(advisor, "acc-1", adjust(10, "x"))
 	assert.ErrorIs(t, err, underwriting.ErrDecisionNotRegistered)
 	assert.Equal(t, domain.AcceptanceInReview, e.acceptance(t, "acc-1").Status)
+	_, err = e.offers.OfferStub.Get(context.Background(), "adj-acc-1")
+	assert.ErrorIs(t, err, ports.ErrOfferNotFound, "no offer exists without a recorded decision")
 
-	// Retrying is safe: the adjusted offer has the same id.
 	e.reviews.recordErr = nil
 	c, err := e.svc.Decide(advisor, "acc-1", adjust(10, "x"))
 	require.NoError(t, err)
 	assert.Equal(t, "adj-acc-1", c.Decision.AdjustedOffer.ID)
 }
 
-func TestTheAdjustedOfferMustBeCreatedBeforeTheDecision(t *testing.T) {
+// To adjust, the routed offer must be readable before the claim: nothing is
+// recorded otherwise.
+func TestTheRoutedOfferMustBeReadableToAdjust(t *testing.T) {
 	e := newEnv(t, true)
 	e.route(t, "acc-1", "demo-review-1", domain.ReviewReasonProvisionalOffer)
+	e.offers.getErr = errors.New("offers down")
 
-	e.offers.createErr = errors.New("offers down")
 	_, err := e.svc.Decide(advisor, "acc-1", adjust(10, "x"))
 	assert.ErrorIs(t, err, underwriting.ErrDecisionNotRegistered)
-
-	e.offers.createErr, e.offers.getErr = nil, errors.New("offers down")
-	_, err = e.svc.Decide(advisor, "acc-1", adjust(10, "x"))
-	assert.ErrorIs(t, err, underwriting.ErrDecisionNotRegistered)
 	assert.Len(t, e.reviews.Pending(), 1, "nothing was recorded")
+}
+
+// B-1: the offer is created after the claim. If creating it fails, the
+// decision stays recorded and a retry creates it from the recorded decision.
+func TestARetryCreatesTheAdjustedOfferOfTheRecordedDecision(t *testing.T) {
+	e := newEnv(t, true)
+	e.route(t, "acc-1", "demo-review-1", domain.ReviewReasonProvisionalOffer)
+	e.offers.createErr = errors.New("offers down")
+
+	c, err := e.svc.Decide(advisor, "acc-1", adjust(10, "Recargo"))
+	assert.ErrorIs(t, err, underwriting.ErrContinuationPending)
+	assert.Equal(t, domain.ReviewDecided, c.Status, "the decision is recorded")
+	_, err = e.offers.OfferStub.Get(context.Background(), "adj-acc-1")
+	assert.ErrorIs(t, err, ports.ErrOfferNotFound)
+	assert.Equal(t, domain.AcceptanceInReview, e.acceptance(t, "acc-1").Status, "never adjusted without its offer")
+	assert.Zero(t, e.scheduled.count())
+
+	// The retry carries other terms (50 %): the recorded decision (10 %) wins.
+	e.offers.createErr = nil
+	again, err := e.svc.Decide(advisor, "acc-1", adjust(50, "Otro recargo"))
+	assert.ErrorIs(t, err, ports.ErrReviewAlreadyDecided)
+	stored, err := e.offers.OfferStub.Get(context.Background(), "adj-acc-1")
+	require.NoError(t, err)
+	assert.InDelta(t, 98450.0, stored.Premium, 1e-9)
+	assert.Equal(t, again.Decision.AdjustedOffer.ExpiresAt, stored.ExpiresAt)
+	assert.InDelta(t, 98450.0, again.Decision.AdjustedOffer.Premium, 1e-9)
+	assert.Equal(t, domain.AcceptanceAdjusted, e.acceptance(t, "acc-1").Status)
+	assert.InDelta(t, 98450.0, e.acceptance(t, "acc-1").Review.AdjustedOffer.Premium, 1e-9)
+	assert.Equal(t, 1, e.scheduled.count())
+}
+
+// adjustedState reads the stored offer, the recorded decision and the
+// acceptance of a case: the three must show the same premium.
+func adjustedState(t *testing.T, e *env, id string) (offer, decision, acceptance float64) {
+	t.Helper()
+	o, err := e.offers.OfferStub.Get(context.Background(), domain.AdjustedOfferID(id))
+	require.NoError(t, err)
+	c, err := e.reviews.ReviewQueueStub.Get(context.Background(), id)
+	require.NoError(t, err)
+	a := e.acceptance(t, id)
+	require.NotNil(t, a.Review)
+	require.NotNil(t, a.Review.AdjustedOffer)
+	return o.Premium, c.Decision.AdjustedOffer.Premium, a.Review.AdjustedOffer.Premium
+}
+
+// B-1, deterministic interleaving (the validator's case): advisor A (10 %)
+// computes its terms and stops just before the claim; advisor B (50 %) decides
+// meanwhile; then A goes on and loses. The offer has B's terms.
+func TestTheLosingAdvisorNeverCreatesTheAdjustedOffer(t *testing.T) {
+	e := newEnv(t, true)
+	e.route(t, "acc-1", "demo-review-1", domain.ReviewReasonProvisionalOffer)
+	e.reviews.hold = func(d domain.HumanDecision) bool {
+		return d.PremiumAdjustmentPct != nil && *d.PremiumAdjustmentPct == 10
+	}
+	e.reviews.entered, e.reviews.release = make(chan struct{}), make(chan struct{})
+
+	errA := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Decide(as(security.RoleAdvisor, "adv-a"), "acc-1", adjust(10, "A"))
+		errA <- err
+	}()
+	<-e.reviews.entered
+	_, err := e.offers.OfferStub.Get(context.Background(), "adj-acc-1")
+	require.ErrorIs(t, err, ports.ErrOfferNotFound, "A reached the claim without creating the offer")
+
+	_, errB := e.svc.Decide(as(security.RoleAdvisor, "adv-b"), "acc-1", adjust(50, "B"))
+	require.NoError(t, errB)
+	close(e.reviews.release)
+	require.ErrorIs(t, <-errA, ports.ErrReviewAlreadyDecided)
+
+	offer, decision, acceptance := adjustedState(t, e, "acc-1")
+	assert.InDelta(t, 134250.0, offer, 1e-9, "the offer the customer accepts and pays")
+	assert.InDelta(t, 134250.0, decision, 1e-9, "the recorded decision (CA-4)")
+	assert.InDelta(t, 134250.0, acceptance, 1e-9, "what E6b shows")
+}
+
+// B-1, free race: two advisors adjust the same case at once with different
+// surcharges (goroutines and a barrier). In every run one wins, the other gets
+// 409 and the offer, the decision and the acceptance show the winner's premium.
+func TestConcurrentAdjustsKeepTheWinnersTerms(t *testing.T) {
+	for run := 0; run < 300; run++ {
+		e := newEnv(t, true)
+		e.route(t, "acc-1", "demo-review-1", domain.ReviewReasonProvisionalOffer)
+		start := make(chan struct{})
+		errs := make([]error, 2)
+		var wg sync.WaitGroup
+		for i, p := range []float64{10, 50} {
+			wg.Add(1)
+			go func(i int, p float64) {
+				defer wg.Done()
+				<-start
+				_, errs[i] = e.svc.Decide(as(security.RoleAdvisor, fmt.Sprintf("adv-%d", i)), "acc-1", adjust(p, "x"))
+			}(i, p)
+		}
+		close(start)
+		wg.Wait()
+
+		wins := 0
+		for _, err := range errs {
+			if err == nil {
+				wins++
+			} else {
+				require.ErrorIs(t, err, ports.ErrReviewAlreadyDecided, "run %d", run)
+			}
+		}
+		require.Equal(t, 1, wins, "run %d", run)
+		offer, decision, acceptance := adjustedState(t, e, "acc-1")
+		require.InDelta(t, decision, offer, 1e-9, "run %d: offer vs decision", run)
+		require.InDelta(t, decision, acceptance, 1e-9, "run %d: acceptance vs decision", run)
+	}
+}
+
+// B-1 variant: an adjust that loses against a reject leaves no orphan offer.
+func TestAnAdjustThatLosesAgainstARejectLeavesNoOffer(t *testing.T) {
+	for run := 0; run < 300; run++ {
+		e := newEnv(t, true)
+		e.route(t, "acc-1", "demo-review-1", domain.ReviewReasonProvisionalOffer)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for _, in := range []domain.DecisionInput{adjust(10, "x"), reject} {
+			wg.Add(1)
+			go func(in domain.DecisionInput) {
+				defer wg.Done()
+				<-start
+				_, _ = e.svc.Decide(advisor, "acc-1", in)
+			}(in)
+		}
+		close(start)
+		wg.Wait()
+
+		c, err := e.reviews.ReviewQueueStub.Get(context.Background(), "acc-1")
+		require.NoError(t, err)
+		_, offerErr := e.offers.OfferStub.Get(context.Background(), "adj-acc-1")
+		if c.Decision.Type == domain.DecisionReject {
+			require.ErrorIs(t, offerErr, ports.ErrOfferNotFound, "run %d: orphan adjusted offer", run)
+			require.Equal(t, domain.AcceptanceRejected, e.acceptance(t, "acc-1").Status, "run %d", run)
+		} else {
+			require.NoError(t, offerErr, "run %d", run)
+			require.Equal(t, domain.AcceptanceAdjusted, e.acceptance(t, "acc-1").Status, "run %d", run)
+		}
+	}
 }
 
 // A recorded decision whose acceptance update failed is completed by a retry.
