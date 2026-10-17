@@ -1,5 +1,5 @@
 // This file wires HU-W1.3-03 end to end: accepting an offer (HU-W1.3-01) makes
-// the activation stub publish the coverage activation, and the contractual
+// the activation fixture publish the coverage activation, and the contractual
 // document is generated (real PDF), stored in a directory, tied to the policy,
 // the insured is e-mailed a secure link (through the shared e-mail client,
 // against a controllable provider) and the issuance is audited. It checks each
@@ -115,7 +115,7 @@ func newContractEnvIT(t *testing.T) *contractEnvIT {
 
 	offers, acceptances := memory.NewOfferStub(clock), memory.NewAcceptanceStore()
 	processor := issuance.NewProcessor(offers, acceptances, memory.NewUnderwriterStub(clock, 0, memory.DefaultReviewScoreThreshold), memory.NewReviewQueueStub(),
-		memory.NewActivationStub(contracts, clock), clock,
+		newActivationFixture(contracts, clock), clock,
 		issuance.ProcessorConfig{PollInterval: 10 * time.Millisecond, RetryBase: 20 * time.Millisecond, RetryMax: 40 * time.Millisecond})
 	go processor.Run(ctx)
 

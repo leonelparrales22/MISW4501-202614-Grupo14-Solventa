@@ -2,7 +2,7 @@
 
 Camino crítico del negocio: cotiza, perfila, emite y cobra. Es la fachada (*Facade*) del ciclo de vida de la póliza.
 
-**Estado:** `GET /health`, `POST /v1/risk-profiles/resolve` (HA-D01: oferta continua ante caída de la fuente externa) y `GET /v1/risk-profiles/{customer_id}` con las fuentes externas consultadas en paralelo (HA-L01: cotización embebida rápida bajo tráfico pico). **HU-W1.3-01:** `POST /v1/offers/{offer_id}/acceptance`, `GET /v1/offers/{offer_id}/acceptance` y `GET /v1/acceptances/{acceptance_id}` (aceptación de la oferta y disparo asíncrono de la suscripción), con autenticación Cognito (`pkg/security`) y **adaptadores en memoria pendientes de reemplazo** (ofertas, suscripción, bandeja del asesor, emisión y persistencia; ver «Aceptación de la oferta»). **HU-W1.1-01:** `POST /v1/assisted-quotes`, `GET /v1/assisted-quotes/{quote_id}` y `GET /v1/customers?document_id=` (cotización asistida por asesor con el mismo perfilamiento y un motor de rating `v1`), con clientes y cotizaciones **en memoria** pendientes de PostgreSQL (ver «Cotización asistida»). **HU-W1.3-03:** `GET /v1/policies/{policy_id}/issuance-status`, `GET /v1/policies/{policy_id}/contract-document` y `GET /v1/documents/{token}` (documento contractual en PDF y notificación de emisión tras la activación de la cobertura), con el repositorio, la auditoría y los documentos **locales o en memoria** pendientes de PostgreSQL, del servicio `audit` y de S3 (ver «Documento contractual»). El resto de módulos sigue reservado.
+**Estado:** `GET /health`, `POST /v1/risk-profiles/resolve` (HA-D01: oferta continua ante caída de la fuente externa) y `GET /v1/risk-profiles/{customer_id}` con las fuentes externas consultadas en paralelo (HA-L01: cotización embebida rápida bajo tráfico pico). **HU-W1.3-01:** `POST /v1/offers/{offer_id}/acceptance`, `GET /v1/offers/{offer_id}/acceptance` y `GET /v1/acceptances/{acceptance_id}` (aceptación de la oferta y disparo asíncrono de la suscripción), con autenticación Cognito (`pkg/security`) y **adaptadores en memoria pendientes de reemplazo** (ofertas, suscripción, bandeja del asesor, emisión y persistencia; ver «Aceptación de la oferta»). **HU-W1.1-01:** `POST /v1/assisted-quotes`, `GET /v1/assisted-quotes/{quote_id}` y `GET /v1/customers?document_id=` (cotización asistida por asesor con el mismo perfilamiento y un motor de rating `v1`), con clientes y cotizaciones **en memoria** pendientes de PostgreSQL (ver «Cotización asistida»). **HU-W1.3-03:** `GET /v1/policies/{policy_id}/issuance-status`, `GET /v1/policies/{policy_id}/contract-document` y `GET /v1/documents/{token}` (documento contractual en PDF y notificación de emisión tras la activación de la cobertura), con el repositorio, la auditoría y los documentos **locales o en memoria** pendientes de PostgreSQL, del servicio `audit` y de S3 (ver «Documento contractual»). **HA-D02:** `GET /v1/acceptances/{acceptance_id}/charge`, `GET /v1/issuance-exceptions` y `POST /v1/acceptances/{acceptance_id}/charge/resume` (cobro de la prima sin pérdida ni duplicados ante la caída de la pasarela, con reintentos idempotentes persistidos en **PostgreSQL**; la cobertura se activa solo con el pago confirmado; ver «Cobro de la prima»). El resto de módulos sigue reservado.
 
 ## Responsabilidades
 
@@ -13,7 +13,7 @@ Camino crítico del negocio: cotiza, perfila, emite y cobra. Es la fachada (*Fac
 | `rating` | Motor de rating: prima y coberturas. Reglas actuariales aisladas del resto. **HU-W1.1-01:** `Rater` versión `v1` (tabla mínima: prima mensual = monto × tasa base × factores de edad, riesgo del perfil y plazo), detrás del puerto `ports.Rater` para que HU-W1.2-03 lo amplíe sin cambiar a los llamadores |
 | `underwriting` | Suscripción automática: acepta, rechaza o ajusta el riesgo; enruta a decisión humana (bandeja del asesor) cuando aplica |
 | `issuance` | **HU-W1.3-03:** `ContractService` recibe la activación de la cobertura (`CoverageActivated`, idempotente por póliza), genera el PDF, lo guarda y lo asocia a la póliza, envía el correo con un enlace firmado y registra cada paso en la auditoría; un trabajador en segundo plano reintenta lo que falle con espera creciente sin repetir lo ya hecho. `ContractReader` sirve el estado y el documento (dueño, `advisor`, `operations` o enlace firmado). Aceptación de la oferta, documento contractual (firma) y activación de la cobertura. **HU-W1.3-01:** `AcceptanceService` registra la aceptación (oferta, fecha y hora, canal) antes de cualquier paso posterior, rechaza la oferta vencida y es idempotente por oferta; `Processor` ejecuta la suscripción en segundo plano, inicia la emisión o enruta a la bandeja del asesor, y reanuda con espera creciente la aceptación cuyo paso posterior falló |
-| `billing` | Cobro de la prima y reembolsos contra la pasarela: `Intento_Cobro` con `idempotency_key` única por aceptación, reintentos con backoff (HA-D02) |
+| `billing` | Cobro de la prima y reembolsos contra la pasarela: `Intento_Cobro` con `idempotency_key` única por aceptación, reintentos con backoff (HA-D02). **HA-D02:** `Starter` (el `ports.IssuanceStarter` de las aceptaciones aprobadas: guarda el cobro pendiente con la foto de la aceptación, la oferta y las condiciones, sin llamar a la pasarela, y no cobra lo que no se podría activar), `Worker` (cobra con `pkg/idempotency`: clave `cobro-<aceptación>`, claim atómico en PostgreSQL, esperas crecientes en una ventana de 24 h; solo con el cobro confirmado publica `CoverageActivated` al documento contractual y reintenta la publicación si el consumidor falla) y `Service` (estado del cobro, excepciones de emisión y reanudación) |
 | `endorsements` | Modificaciones y endosos con trazabilidad |
 | `renewal` / `cancellation` | Renovación y cancelación con prorrateo de reembolso |
 
@@ -24,11 +24,13 @@ Las llamadas entre orquestador, perfilamiento y rating son **en proceso** (sin s
 | Adaptador | Qué hace |
 |---|---|
 | `http` | Router `chi`: `GET /health` (superficial), `POST /v1/risk-profiles/resolve` y `GET /v1/risk-profiles/{customer_id}?consent_active=…` (misma respuesta, lectura cacheable por el API Gateway por socio; HA-L01). Rutas humanas de aceptación (HU-W1.3-01) con `security.Authenticate` + `RequireRole`, montadas solo si `AUTH_ISSUER` está definido |
+| `postgres` | Base de datos propia de originación (`database/sql` + `pgx` v5 por defecto, EXP-D03). `Migrate` aplica al arrancar las migraciones embebidas de `migrations/` con `pg_advisory_lock` y `schema_migrations` (decisión D-3 de HA-D02). `ChargeStore`: tabla `charge_attempt`, cada transición en una sola sentencia condicional (HA-D02) |
+| `payments` | Puente entre `pkg/adapters/payments` (cabecera `Idempotency-Key`, corte de 700 ms, circuit breaker) y el puerto `PaymentGateway` (HA-D02) |
 | `pdf` | Genera el documento contractual (`go-pdf/fpdf`): datos de la póliza, asegurado, coberturas, prima, vigencia y condiciones generales; es determinista, así que su *checksum* prueba lo que recibió el asegurado (HU-W1.3-03) |
 | `filestore` | Repositorio documental sobre un directorio (`DOCUMENTS_DIR`): una clave por versión, sin sobrescribir con contenido distinto y sin salir del directorio. Se reemplaza por S3 cuando exista el módulo de infraestructura (HU-W1.3-03) |
 | `links` | Enlaces al documento firmados con HMAC-SHA256 y con vencimiento (`DOCUMENT_LINK_SECRET`, `DOCUMENT_LINK_TTL_HOURS`) (HU-W1.3-03) |
 | `email` | Puente entre `pkg/adapters/email` (timeout, circuit breaker, envío idempotente) y el puerto `Notifier`; redacta el correo de emisión (HU-W1.3-03) |
-| `memory` | **Pendiente de reemplazo (HU-W1.3-01, HU-W1.1-01, HU-W1.3-03).** `ContractStore`, `IssuanceAuditLog` (emisión contractual y su auditoría, en lugar de PostgreSQL y del servicio `audit`) y `ActivationStub` (publica en proceso la activación de la cobertura que HU-W1.3-02 / HA-D02 publicarán tras el cobro). `CustomerStore` y `QuoteStore` (clientes por documento y cotizaciones asistidas, en lugar de PostgreSQL). `AcceptanceStore` (en lugar de PostgreSQL: la aceptación resiste fallas de las dependencias pero no un reinicio del servicio), `OfferStub` (ofertas de demostración `demo-<escenario>-<sufijo>` en lugar de HU-W1.2-03), `UnderwriterStub` (reglas provisionales en lugar del motor de suscripción), `ReviewQueueStub` (en lugar de la bandeja de HU-W1.1-02) e `IssuanceStub` (en lugar del cobro y la emisión de HU-W1.3-02 / HA-D02) |
+| `memory` | **Pendiente de reemplazo (HU-W1.3-01, HU-W1.1-01, HU-W1.3-03).** `ContractStore` e `IssuanceAuditLog` (emisión contractual y su auditoría, en lugar de PostgreSQL y del servicio `audit`). `CustomerStore` y `QuoteStore` (clientes por documento y cotizaciones asistidas, en lugar de PostgreSQL). `AcceptanceStore` (en lugar de PostgreSQL: la aceptación resiste fallas de las dependencias pero no un reinicio del servicio), `OfferStub` (ofertas de demostración `demo-<escenario>-<sufijo>` en lugar de HU-W1.2-03), `UnderwriterStub` (reglas provisionales en lugar del motor de suscripción), `ReviewQueueStub` (en lugar de la bandeja de HU-W1.1-02) e `IssuanceStub` (solo cuando no hay pasarela configurada: registra el inicio de la emisión sin cobrar ni activar; con `PAYMENT_GATEWAY_URL` el cobro es el de HA-D02) |
 | `openfinance` | Puente entre el cliente compartido `pkg/adapters/openfinance` (timeout 700 ms + circuit breaker) y el puerto `RiskProfileSource`; el circuito abierto se informa como `circuit_open` (HA-L01) |
 | `opendata` | Puente entre `pkg/adapters/opendata` y el puerto `RiskProfileSource` (HA-L01) |
 | `kyc` | Puente entre `pkg/adapters/kyc` y el puerto `RiskProfileSource` (HA-L01) |
@@ -133,7 +135,7 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `HTTP_MAX_CONNS_PER_HOST` | `200` | Pool de conexiones por host del cliente HTTP compartido (EXP-L01) |
 | `OPEN_FINANCE_REQUIRED` | `true` | Sin Open Finance no se calcula el perfil en línea y la oferta sale provisional (D-2). `false`: fuentes equivalentes |
 | `AUTH_ISSUER`, `AUTH_CLIENT_IDS`, `AUTH_JWKS_URL`, `AUTH_TOKEN_USE`, `AUTH_LEEWAY_SECONDS` | vacío | Verificación del JWT de Cognito (HA-S01, ver [docs/api](../../docs/api/README.md#autenticación-y-autorización-ha-s01)). Con `AUTH_ISSUER` vacío las rutas de aceptación (HU-W1.3-01) **no se montan**; si está definido, `AUTH_CLIENT_IDS` es obligatoria |
-| `EMAIL_URL` | vacío | URL del proveedor de correo (`stubs/email` en local). Con valor vacío **no se cablea** el documento contractual (HU-W1.3-03); si está definida, `DOCUMENTS_DIR` y `DOCUMENT_LINK_SECRET` son obligatorias |
+| `EMAIL_URL` | vacío | URL del proveedor de correo (`stubs/email` en local). Con valor vacío **no se cablea** el documento contractual (HU-W1.3-03); si está definida, `DOCUMENTS_DIR` y `DOCUMENT_LINK_SECRET` son obligatorias. **Obligatoria si `PAYMENT_GATEWAY_URL` está definida** (decisión D-16 b de HA-D02): todo cobro confirmado produce su documento y su correo; si falta, originación no arranca y el error lo dice |
 | `DOCUMENTS_DIR` | — | Directorio del repositorio documental (se crea si no existe; permisos de solo el propietario) |
 | `DOCUMENT_LINK_SECRET` | — | Secreto (≥ 32 caracteres) con el que se firman los enlaces; viene del entorno o de Secrets Manager, nunca del código |
 | `DOCUMENT_LINK_TTL_HOURS` | `168` | Vigencia del enlace seguro del correo |
@@ -151,6 +153,13 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `ACCEPTANCE_RETRY_MAX_MS` | `60000` | Tope de la espera entre intentos (≥ `ACCEPTANCE_RETRY_BASE_MS`) |
 | `UNDERWRITING_STUB_FLAKY_FAILURES` | `2` | Intentos que falla la suscripción simulada para las ofertas `demo-flaky-*` (escenario de reanudación) |
 | `UNDERWRITING_REVIEW_SCORE_THRESHOLD` | `0.8` | Puntaje del perfil por encima del cual la suscripción simulada envía una oferta normal al asesor (motivo `high_risk_score`); 0 es el menor riesgo. Mayor que 0 y hasta 1. Es una regla propia de la revisión, independiente de las categorías de precio |
+| `PAYMENT_GATEWAY_URL` | vacío | URL de la pasarela de pagos (en local, `stubs/payment-gateway` en el puerto 9040, detrás de Toxiproxy). Vacía: la aceptación aprobada solo registra el inicio de la emisión (`IssuanceStub`), sin cobro ni activación de la cobertura, con aviso en el log; si además hay `EMAIL_URL`, el log avisa que no se emitirán documentos contractuales. Definida: el cobro de HA-D02 se monta con las rutas humanas y son obligatorias `DATABASE_URL`, `EMAIL_URL` y `AUTH_ISSUER`; si falta alguna, originación no arranca y el error dice cuál |
+| `DATABASE_URL` | vacío | PostgreSQL de originación (secreto: viene del entorno o de Secrets Manager, nunca se registra). **Obligatoria si `PAYMENT_GATEWAY_URL` está definida** (decisión D-2b): el cobro siempre es durable |
+| `PAYMENT_GATEWAY_TIMEOUT_MS` | `700` | Corte duro de cada intento de cobro (decisión D-9); un corte solo vuelve ambigua la respuesta, que se reintenta con la misma clave |
+| `RETRY_WINDOW_SECONDS` | `86400` | Ventana de reintentos del cobro (24 h, ADR-01); al vencer, el cobro queda como excepción de emisión |
+| `CHARGE_RETRY_BASE_MS`, `CHARGE_RETRY_MAX_MS` | `500`, `60000` | Espera tras el primer intento fallido (se duplica) y su tope (decisión D-4 A, valores de EC-D02) |
+| `CHARGE_POLL_INTERVAL_MS` | `1000` | Cada cuánto el trabajador busca cobros y activaciones vencidos (un cobro nuevo o reanudado lo despierta enseguida) |
+| `CHARGE_CLAIM_LEASE_MS` | `30000` | Vigencia del reclamo de un cobro o de la publicación de su activación (decisión D-8); debe ser mayor que `PAYMENT_GATEWAY_TIMEOUT_MS` |
 
 `OPEN_FINANCE_TIMEOUT_MS` queda como tope del adaptador de Open Finance (Open Data y KYC usan 700 ms); en el recorrido el corte
 efectivo de cada fuente es el menor entre ese tope y `SOURCE_BUDGET_MS`. Los `BREAKER_*` se aplican a cada fuente por separado.
@@ -199,13 +208,51 @@ CoverageActivated ─▶ Receive (persiste y despierta al trabajador; idempotent
                           falla del correo ─▶ reintento con espera creciente (el documento ya está disponible) ─▶ tras N intentos: failed
 ```
 
-- El evento hoy lo publica `memory.ActivationStub` al aprobar la suscripción de HU-W1.3-01 (monto asegurado y plazo de demostración); en
-  `docs/events/README.md` están su payload y la asignación pendiente del nombre `PolicyIssued`.
+- El evento lo publica el cobro de HA-D02 tras confirmarse el pago (ver «Cobro de la prima»; monto asegurado y plazo de demostración hasta
+  HU-W1.2-03); en `docs/events/README.md` están su payload y la asignación pendiente del nombre `PolicyIssued`.
 - El envío es idempotente por `policy-issued:{policy}:v{version}`; el documento nunca se sobrescribe con contenido distinto.
 - Observabilidad: spans `contract.advance`, `.generate` y `.notify`; el histograma `contract.activation_to_available` (SLO de 60 s) y los
   contadores `contract.slo.breached`, `contract.attempt.failed` (por paso) y `contract.issuance.completed`; los logs llevan `policy_id` y
   `correlation_id`.
-- Pendiente: PostgreSQL y el servicio `audit` para la emisión y su auditoría, S3 para los documentos y la publicación real del evento (HU-W1.3-02, HA-D02).
+- Pendiente: PostgreSQL y el servicio `audit` para la emisión y su auditoría, S3 para los documentos y el evento en SNS con *outbox* (HU-W1.3-02).
+
+## Cobro de la prima (HA-D02)
+
+Cuando la suscripción aprueba una aceptación, originación cobra la prima **sin perderla ni duplicarla** aunque la pasarela esté caída o
+responda de forma ambigua (ADR-01, experimento EC-D02), y activa la cobertura **solo** con el pago confirmado (CA-4). El contrato para el
+front (pantalla E4b) y para operaciones está en [`docs/contratos/HA-D02-api.md`](../../docs/contratos/HA-D02-api.md).
+
+```
+suscripción aprueba ─▶ billing.Starter: INSERT charge_attempt (pending, clave cobro-<aceptación>, foto) ─▶ issuance_pending
+billing.Worker (cada tarea) ─▶ claim atómico (UPDATE condicional con lease) ─▶ solo el ganador llama a la pasarela
+   ├─ 2xx ──────────────▶ confirmed + pol-<aceptación> + vigencia (misma sentencia) ─▶ CoverageActivated ─▶ documento contractual
+   ├─ rechazo explícito ─▶ failed (payment_rejected) ─▶ excepción de emisión
+   └─ ambiguo / caída ──▶ pending, attempts+1, espera 500 ms ×2 hasta 60 s, misma clave
+                          └─ al vencer la ventana de 24 h ─▶ failed (retry_window_expired) ─▶ excepción ─▶ operaciones reanuda
+```
+
+- **Clave determinística** `cobro-` + `acceptance_id`, nunca aleatoria: cada reintento la envía en `Idempotency-Key` y la pasarela no cobra
+  dos veces la misma clave (requisito de cualquier proveedor, decisión D-10). El `UNIQUE` no basta: el **claim** de una sola sentencia hace
+  que solo un trabajador llame a la pasarela; con *lease* de 30 s, un cobro cuyo trabajador murió se vuelve a reclamar (D-8).
+- **Activación:** al confirmarse, la misma sentencia fija `policy_id`, `activated_at` y la vigencia; el trabajador publica en proceso
+  `domain.CoverageActivated` al `ports.CoverageActivationHandler` de HU-W1.3-03. Si el consumidor falla, se reintenta el mismo evento con
+  espera creciente y **sin ventana** (el pago ya está hecho). Un claim de publicación evita que dos tareas publiquen a la vez.
+- **No se cobra lo que no se puede activar** (D-17): si la foto no alcanza para el evento (por ejemplo, sin correo del titular), no se crea
+  el cobro y la aceptación sigue `registered`, reintentándose.
+- **Configuración:** con `PAYMENT_GATEWAY_URL` son obligatorias `DATABASE_URL`, `EMAIL_URL` y `AUTH_ISSUER` (D-2b, D-16 b y la
+  decisión de Nicolás sobre m-3: sin las rutas humanas, los cobros guardados y las activaciones pagadas quedarían sin procesar); si falta
+  alguna, originación no arranca. Sin pasarela no hay cobro
+  ni activación: el stub que simulaba la activación se retiró (D-14).
+- **Datos:** la foto (titular, prima, monto asegurado, plazo y coberturas) se guarda en `charge_attempt`, así que el evento sale igual
+  aunque las ofertas sigan en memoria. Monto asegurado, plazo y coberturas son de demostración (`demoCoverageTerms` en `cmd`) hasta
+  HU-W1.2-03. Una aceptación aún sin cobro se pierde con un reinicio (limitación heredada de HU-W1.3-01); un cobro ya creado no.
+- **Observabilidad:** spans `charge.attempt` y `charge.activation.publish`; métricas `charge.attempt.completed` (por `outcome`:
+  `confirmed`, `rejected`, `ambiguous`, `not_sent`), `charge.failed` (por `reason`), `charge.activation.published`,
+  `charge.activation.publish_failed` y el histograma `charge.acceptance_to_confirmed`; logs con `acceptance_id`, `policy_id` y
+  `correlation_id`, **sin datos personales**.
+- Fuera de esta historia: el medio de pago y la pantalla de rechazo (HU-W1.3-02), la pantalla de monitoreo O1/O1b (HU-W1.3-04) y los
+  eventos `ChargeCompleted`/`PolicyIssued` en SNS con *outbox* (HU-W1.3-02).
+- Escenario con fallas inyectadas: [`tests/resilience/ha-d02`](../../tests/resilience/ha-d02/README.md).
 
 ## Observabilidad
 
@@ -242,8 +289,8 @@ pasadas 24 h ──────────────────────�
 
 ## Datos y eventos
 
-- **BD propia:** PostgreSQL (originación). Caché: ElastiCache Redis (`internal/adapters/redis`, patrón cache-aside).
-- **Publica:** `PolicyIssued`, `ChargeCompleted` (con outbox). Ver [catálogo de eventos](../../docs/events/README.md). La aceptación (HU-W1.3-01) no publica eventos: la suscripción, la bandeja y el inicio de la emisión ocurren en proceso.
+- **BD propia:** PostgreSQL (originación); hoy la tabla `charge_attempt` del cobro (HA-D02), con migraciones en `migrations/`. Caché: ElastiCache Redis (`internal/adapters/redis`, patrón cache-aside).
+- **Publica:** `PolicyIssued`, `ChargeCompleted` (con outbox). Ver [catálogo de eventos](../../docs/events/README.md). La aceptación (HU-W1.3-01) no publica eventos: la suscripción, la bandeja y el inicio de la emisión ocurren en proceso. El cobro (HA-D02) publica **en proceso** `CoverageActivated` al documento contractual solo con el pago confirmado; `ChargeCompleted` y `PolicyIssued` en SNS siguen pendientes de HU-W1.3-02.
 - **Consume:** ninguno por ahora.
 - **Depende de:** `pkg/adapters` (Open Finance, Open Data, KYC, pagos, firma), `pkg/outbox`, `pkg/idempotency`, `pkg/resilience`.
 
@@ -268,3 +315,18 @@ Toxiproxy, k6 y Schemathesis está en [`tests/load-k6/ha-l01`](../../tests/load-
 Aceptación de la oferta (HU-W1.3-01): agregar las variables `AUTH_*` del pool de Cognito; en local, el de Moto que siembra
 [`tests/security/ha-s01/local`](../../tests/security/ha-s01/local/README.md) (`AUTH_ISSUER`, `AUTH_JWKS_URL` y `AUTH_CLIENT_IDS`
 que imprime `seed.sh`). `tests/integration/acceptance_test.go` ejercita cada criterio de aceptación de punta a punta por HTTP.
+
+Cobro de la prima (HA-D02) y pantalla E5 en local: el cobro necesita PostgreSQL, la pasarela y el correo. Se pueden levantar solo esos
+servicios del escenario de HA-D02 y apuntar originación a ellos. El compose publica en `127.0.0.1` PostgreSQL en el 5440
+(`POSTGRES_PORT`), la pasarela en el 9140 y el correo en el 9130; la contraseña de PostgreSQL la elige cada quien en `PG_PASSWORD`:
+
+```
+export PG_PASSWORD='<contraseña local>'
+docker compose -f tests/resilience/ha-d02/docker-compose.yml up -d --wait postgres payment-gateway email
+PAYMENT_GATEWAY_URL=http://localhost:9140 DATABASE_URL="postgres://origination:$PG_PASSWORD@localhost:5440/origination?sslmode=disable" \
+  EMAIL_URL=http://localhost:9130 DOCUMENTS_DIR=/tmp/solventa-docs DOCUMENT_LINK_SECRET=... <variables AUTH_* de Moto> \
+  go run ./services/origination/cmd/origination
+```
+
+Al terminar, `docker compose -f tests/resilience/ha-d02/docker-compose.yml down -v`. `tests/integration/charge_test.go` (PostgreSQL de
+Testcontainers; se salta sin Docker) ejercita cada criterio de HA-D02 con la emisión contractual real.

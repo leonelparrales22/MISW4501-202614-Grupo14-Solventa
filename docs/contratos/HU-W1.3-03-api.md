@@ -19,8 +19,9 @@ Pantalla E5 ──GET /v1/policies/{policy_id}/issuance-status (polling cada 2 s
 Enlace del correo ──GET /v1/documents/{token} (sin sesión)────────────────────▶ PDF
 ```
 
-En el recorrido actual la activación la simula `memory.ActivationStub` cuando la suscripción aprueba el riesgo (HU-W1.3-01), por lo que
-el `policy_id` es **`pol-` + el `acceptance_id`** de la aceptación. HU-W1.3-02 / HA-D02 publicarán la activación real tras el cobro.
+La activación la publica el cobro de la prima de HA-D02 **solo cuando el pago queda confirmado** (ver
+[`HA-D02-api.md`](HA-D02-api.md)); el `policy_id` sigue siendo **`pol-` + el `acceptance_id`** de la aceptación. Mientras el cobro está
+pendiente o en excepción no hay activación y estas rutas responden `404 policy_not_found`.
 
 ## 2. Endpoints
 
@@ -73,7 +74,8 @@ al correo registrado del asegurado. El envío es idempotente (`policy-issued:{po
 
 ## 4. Lo que todavía es provisional
 
-- La activación de la cobertura la simula `ActivationStub` (monto asegurado y plazo de demostración) hasta HU-W1.3-02 / HA-D02.
+- La activación de la cobertura la publica el cobro de HA-D02 tras confirmarse el pago; el monto asegurado, el plazo y las coberturas
+  siguen siendo de demostración hasta HU-W1.2-03, y el número de póliza definitivo es de HU-W1.3-02.
 - La emisión, el registro de auditoría y los documentos viven en memoria y en un directorio local (`DOCUMENTS_DIR`): pendientes PostgreSQL,
   el servicio `audit` y S3.
 - El nombre del evento (`PolicyIssued`) está por confirmar con el equipo; no hay frame de Figma dedicado para este estado de E5.

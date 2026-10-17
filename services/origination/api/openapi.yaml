@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.6.0
+  version: 0.7.0
 paths:
   /health:
     get:
@@ -258,6 +258,127 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/AcceptanceUnavailable"
+  /v1/acceptances/{acceptance_id}/charge:
+    get:
+      summary: Read the premium charge of an acceptance (HA-D02)
+      description: >
+        Once underwriting approves the acceptance, the service charges the
+        premium in the background with a deterministic idempotency key
+        ("cobro-" + acceptance id). When the payment gateway does not answer,
+        the charge is retried with growing waits (500 ms doubling up to 60 s)
+        and the same key during a 24-hour retry window, so the customer sees
+        "payment pending" with the acceptance saved (screen E4b). When the
+        window ends without a charge, or the gateway declines it, the charge
+        fails and becomes an issuance exception. The coverage is activated
+        only when the charge is confirmed: then policy_id and
+        coverage_activated_at are set and the contractual document of
+        HU-W1.3-03 is issued. Readable by the insured who owns the acceptance,
+        advisors and operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      responses:
+        "200":
+          description: The premium charge in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Charge"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ChargeNotFound"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
+  /v1/acceptances/{acceptance_id}/charge/resume:
+    post:
+      summary: Resume a failed premium charge (HA-D02)
+      description: >
+        An operations analyst resumes a charge that ended in an issuance
+        exception, from the registered acceptance: the charge goes back to
+        pending with the same idempotency key and a new 24-hour retry window.
+        The note is required and the author is the subject of the token. Only
+        a failed charge can be resumed; of two resumptions at once, one wins
+        and the other gets 409.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResumeChargeRequest"
+      responses:
+        "202":
+          description: Resumed; the charge is pending again
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Charge"
+        "400":
+          description: Invalid path parameter, body or note (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ChargeNotFound"
+        "409":
+          description: The charge is not failed (charge_not_resumable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
+  /v1/issuance-exceptions:
+    get:
+      summary: List the issuance exceptions (HA-D02)
+      description: >
+        The premium charges that failed (retry window expired or payment
+        rejected), the latest failure first, for the issuance monitoring of
+        operations (the screen O1/O1b is HU-W1.3-04). Only operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: The issuance exceptions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuanceExceptionList"
+        "400":
+          description: Invalid limit (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
   /v1/assisted-quotes:
     post:
       summary: Generate an assisted quote (HU-W1.1-01)
@@ -549,6 +670,14 @@ components:
         type: string
         minLength: 1
         maxLength: 128
+    AcceptanceID:
+      name: acceptance_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
     OfferID:
       name: offer_id
       in: path
@@ -588,6 +717,20 @@ components:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: Role not allowed or acceptance of another customer (forbidden)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ChargeNotFound:
+      description: >
+        The acceptance has no premium charge (charge_not_found): underwriting
+        has not approved it yet, it is in review or it does not exist
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ChargeUnavailable:
+      description: The premium charge could not be read (charge_unavailable); retry later
       content:
         application/json:
           schema:
@@ -1036,6 +1179,152 @@ components:
           type: integer
           minimum: 0
           description: Time from the start of the consultation until the source ended or was canceled.
+    Charge:
+      type: object
+      required: [acceptance_id, offer_id, customer_id, accepted_at, status, idempotency_key, amount, currency, attempts,
+        last_attempt_at, last_failure_at, next_attempt_at, retry_window, failure_reason, confirmed_at, policy_id,
+        coverage_activated_at, activation_published_at, resume_count, updated_at]
+      properties:
+        acceptance_id:
+          type: string
+        offer_id:
+          type: string
+        customer_id:
+          type: string
+        accepted_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, in_progress, confirmed, failed]
+          description: >
+            pending: waiting for its next attempt (the first, or a retry after
+            the gateway did not answer); in_progress: one worker is calling the
+            gateway; confirmed: charged, the coverage is active; failed: an
+            issuance exception (see failure_reason) until operations resume it.
+        idempotency_key:
+          type: string
+          description: Deterministic key sent to the gateway on every attempt ("cobro-" + acceptance id).
+        amount:
+          type: number
+          description: Premium in units of the currency.
+        currency:
+          type: string
+        attempts:
+          type: integer
+          minimum: 0
+          description: Failed attempts in the current retry window.
+        last_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_failure_at:
+          type: string
+          format: date-time
+          nullable: true
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When a pending charge is retried; null once it finished.
+        retry_window:
+          type: object
+          required: [started_at, ends_at]
+          properties:
+            started_at:
+              type: string
+              format: date-time
+            ends_at:
+              type: string
+              format: date-time
+              nullable: true
+        failure_reason:
+          type: string
+          nullable: true
+          enum: [retry_window_expired, payment_rejected, null]
+        confirmed_at:
+          type: string
+          format: date-time
+          nullable: true
+        policy_id:
+          type: string
+          nullable: true
+          description: Set when the charge is confirmed; the client opens the issued policy (screen E5) with it.
+        coverage_activated_at:
+          type: string
+          format: date-time
+          nullable: true
+        activation_published_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            When the coverage activation reached the contractual document; null
+            while it is being retried (operations see a late publication).
+        resume_count:
+          type: integer
+          minimum: 0
+        updated_at:
+          type: string
+          format: date-time
+    IssuanceException:
+      type: object
+      required: [acceptance_id, offer_id, customer_id, step, reason, attempts, idempotency_key, amount, currency, accepted_at,
+        failed_at, resume_count, last_resumed_at, last_resumed_by]
+      properties:
+        acceptance_id:
+          type: string
+        offer_id:
+          type: string
+        customer_id:
+          type: string
+        step:
+          type: string
+          enum: [premium_charge]
+        reason:
+          type: string
+          enum: [retry_window_expired, payment_rejected]
+        attempts:
+          type: integer
+          minimum: 0
+        idempotency_key:
+          type: string
+        amount:
+          type: number
+        currency:
+          type: string
+        accepted_at:
+          type: string
+          format: date-time
+        failed_at:
+          type: string
+          format: date-time
+        resume_count:
+          type: integer
+          minimum: 0
+        last_resumed_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_resumed_by:
+          type: string
+          nullable: true
+    IssuanceExceptionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssuanceException"
+    ResumeChargeRequest:
+      type: object
+      required: [note]
+      properties:
+        note:
+          type: string
+          minLength: 1
+          maxLength: 500
     Error:
       type: object
       required: [error, message]
@@ -1052,5 +1341,8 @@ components:
             - acceptance_not_found
             - acceptance_not_registered
             - acceptance_unavailable
+            - charge_not_found
+            - charge_not_resumable
+            - charge_unavailable
         message:
           type: string

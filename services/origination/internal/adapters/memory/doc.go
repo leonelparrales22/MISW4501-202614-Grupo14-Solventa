@@ -7,8 +7,6 @@
 //   - UnderwriterStub: the real automatic underwriting engine.
 //   - ReviewQueueStub: the advisor inbox of HU-W1.1-02.
 //   - IssuanceStub: the charge and issuance flow of HU-W1.3-02 and HA-D02.
-//   - ActivationStub: the same flow plus the in-process CoverageActivated
-//     event that feeds the contractual document (HU-W1.3-03).
 //   - CustomerStore, QuoteStore: the PostgreSQL repositories of the advisor
 //     quote (HU-W1.1-01).
 //   - ContractStore, IssuanceAuditLog: the PostgreSQL repository and the audit
