@@ -39,7 +39,7 @@ Cada fase pasa solo si todos los *checks* de k6 se cumplen (`checks == 1`).
 | 1 | Línea base | 10 aceptaciones → cobro confirmado, emisión contractual completada, 1 cobro real por clave |
 | 2 | Caída total (proxy deshabilitado) | 50 aceptaciones → todas `202` y consultables (CA-1); cobro `pending` con intentos, clave `cobro-<id>` y ventana de 24 h (CA-2); sin emisión (`404`, CA-4) |
 | 3 | Reinicio de originación durante la caída | Los 50 cobros siguen `pending` desde PostgreSQL |
-| 4 | Respuesta ambigua (*toxic* `timeout` en la respuesta) | 20 aceptaciones → la pasarela cobra, originación no se entera: `pending` y sin emisión |
+| 4 | Respuesta ambigua (*toxic* `timeout` en la respuesta) | 20 aceptaciones → registradas, `pending` y sin emisión; además, entre las 70 pendientes, al menos una **cobrada por la pasarela mientras originación sigue esperando** (la respuesta se perdió), con un solo cobro real |
 | 5 | Restablecimiento | Las 70 confirmadas con su emisión completada; en la pasarela, 1 cobro real por clave y 80 en total (0 perdidas, 0 duplicadas); 1 correo por póliza (CA-5) |
 | 6 | Ventana vencida (`RETRY_WINDOW_SECONDS=10`, pasarela caída) | 5 aceptaciones → `failed` (`retry_window_expired`), visibles en `GET /v1/issuance-exceptions` para operaciones y prohibidas al asegurado, sin emisión; con la pasarela de vuelta, operaciones las reanuda con nota (misma clave) → confirmadas con 1 cobro real y su emisión (CA-3) |
 | 7 | Contrato | Schemathesis (`--checks=all`) sobre `GET /v1/acceptances/{id}/charge`, `POST …/charge/resume` y `GET /v1/issuance-exceptions`, con token de asegurado y de operaciones |
@@ -49,7 +49,10 @@ Notas:
 - Las emisiones contractuales de HU-W1.3-03 viven en memoria: cada verificación de emisión se hace antes del siguiente reinicio o
   relanzamiento de originación. Los cobros, en cambio, están en PostgreSQL y sobreviven al reinicio (fase 3).
 - El cliente de la pasarela tiene el circuit breaker por defecto (3 fallas, 5 s abierto): durante la caída muchos intentos no
-  llegan a enviarse (`not_sent`) y se reprograman igual que los ambiguos.
+  llegan a enviarse (`not_sent`) y se reprograman igual que los ambiguos; solo la sonda llega a la pasarela. Por eso la fase 4
+  exige al menos una aceptación cobrada durante la falla y no las 20.
+- Los reintentos de una caída se sincronizan (todos llegan al tope de 60 s y se intentan en el mismo lote): tras restablecer,
+  la convergencia toma a lo sumo un ciclo (9–21 s en las corridas locales). Detalle en `resultados/`.
 - La ventana real es de 24 h; aquí se acorta a 10 s solo en la fase 6, como EC-D02 («se validó el mecanismo con una ventana
   acortada»).
 - **Contrafáctico** (`counterfactual`): con `SUPPORTS_IDEMPOTENCY=false` la pasarela cobra cada reintento. `verify.js` informa
