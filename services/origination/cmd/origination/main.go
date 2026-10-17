@@ -73,21 +73,39 @@ func main() {
 			log.Fatalf("could not load the user pool keys: %v", err)
 		}
 		var starter ports.IssuanceStarter = memory.NewIssuanceStub()
+		var activations []ports.CoverageActivationHandler
 		if cfg.contracts.enabled {
 			contract, err := newContractWiring(context.Background(), cfg.contracts)
 			if err != nil {
 				log.Fatalf("could not set up the contractual document: %v", err)
 			}
-			starter = memory.NewActivationStub(contract.service, systemClock{})
+			activations = append(activations, contract.service)
 			opts = append(opts, httpadapter.WithContractDocuments(contract.reader, verifier))
 		} else {
 			log.Printf("%s is not set: the contractual document and its notification (HU-W1.3-03) are not wired", envEmailURL)
+		}
+		// HA-D02: with a payment gateway, an approved acceptance is charged and
+		// only a confirmed charge activates the coverage (CA-4); without it,
+		// the issuance start is only recorded.
+		if cfg.billing.enabled {
+			charges, err := newBilling(context.Background(), cfg.billing, activations...)
+			if err != nil {
+				log.Fatalf("could not set up the premium charge: %v", err)
+			}
+			starter = charges.starter
+			opts = append(opts, httpadapter.WithCharges(charges.service, verifier))
+		} else {
+			logWithoutBilling(cfg.contracts.enabled)
 		}
 		opts = append(opts,
 			httpadapter.WithAcceptances(newAcceptanceService(context.Background(), cfg.acceptances, starter), verifier),
 			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver), verifier))
 	} else {
 		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01, contract documents HU-W1.3-03) are not mounted", security.EnvIssuer)
+		if cfg.billing.enabled {
+			log.Printf("%s is set but %s is not: without accepted offers nothing is charged, so the premium charge (HA-D02) is not wired",
+				envPaymentGatewayURL, security.EnvIssuer)
+		}
 	}
 
 	srv := &http.Server{
@@ -148,6 +166,9 @@ type config struct {
 
 	// Contractual document and notification (HU-W1.3-03).
 	contracts contractConfig
+
+	// Premium charge (HA-D02).
+	billing billingConfig
 }
 
 // acceptanceConfig configures the offer acceptance (HU-W1.3-01). Its routes
@@ -344,6 +365,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadContractConfig(getenv, cfg.port, &cfg.contracts); err != nil {
+		return config{}, err
+	}
+	if err := loadBillingConfig(getenv, &cfg.billing); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
