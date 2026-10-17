@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.7.0
+  version: 0.8.0
 paths:
   /health:
     get:
@@ -654,6 +654,156 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/review-requests:
+    get:
+      summary: List the advisor inbox (HU-W1.1-02)
+      description: >
+        The requests that the automatic underwriting routed to a human
+        decision, with the applicant, the offer, the routing reason, the
+        arrival date and the status (CA-1), filtered by status and optionally
+        by reason and ordered by arrival (CA-5). The counts follow the reason
+        filter and ignore the status, so the client can show both tabs. Only
+        advisors. No pagination yet.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, decided]
+            default: pending
+        - name: reason
+          in: query
+          required: false
+          description: One of the routing reasons of the underwriting (Acceptance.underwriting.reason).
+          schema:
+            type: string
+            enum: [provisional_offer, high_risk_score]
+        - name: order
+          in: query
+          required: false
+          description: By arrival; asc lists the oldest request first.
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+      responses:
+        "200":
+          description: The matching requests and the counts per status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewRequestList"
+        "400":
+          description: Invalid status, reason or order (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ReviewUnavailable"
+  /v1/review-requests/{acceptance_id}:
+    get:
+      summary: Open a request of the advisor inbox (HU-W1.1-02)
+      description: >
+        The request with the mode and the validity of its offer and, once
+        decided, the whole decision record (CA-4). Only advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      responses:
+        "200":
+          description: The request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewRequest"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ReviewRequestNotFound"
+        "503":
+          $ref: "#/components/responses/ReviewUnavailable"
+  /v1/review-requests/{acceptance_id}/decision:
+    post:
+      summary: Decide a request of the advisor inbox (HU-W1.1-02)
+      description: >
+        The advisor accepts, adjusts the premium or rejects the risk (CA-2);
+        observations are required to adjust or reject. The decision is
+        recorded append-only with the advisor (sub and email of the token),
+        the date and time, the type and the observations (CA-4), and the
+        origination flow goes on by itself (CA-3): accept moves the acceptance
+        back to registered with an approved underwriting, so the issuance
+        starts; adjust creates a new offer (adj-{acceptance_id}, the premium
+        with the surcharge, valid 24 hours) that the customer accepts with
+        POST /v1/offers/{offer_id}/acceptance, and leaves the acceptance
+        adjusted; reject leaves it rejected and closes the case. With EMAIL_URL
+        set, the adjust and reject decisions are e-mailed to the customer in
+        the background (no link, no observations; idempotency key
+        review-outcome:{acceptance_id}). Only one decision per request: of two
+        advisors deciding at once, one wins and the other gets 409. Only
+        advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideRequest"
+      responses:
+        "201":
+          description: Decided; the request with its decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewRequest"
+        "400":
+          description: >
+            Invalid path parameter, body or decision type (invalid_request),
+            observations missing to adjust or reject (observations_required)
+            or premium adjustment missing, not allowed or out of range
+            (premium_adjustment_invalid)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ReviewRequestNotFound"
+        "409":
+          description: The request is already decided (review_request_already_decided)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The decision could not be registered (decision_not_registered),
+            the decision is registered but the flow did not continue yet
+            (decision_continuation_pending: retrying the same request
+            completes it) or the request could not be read
+            (review_unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   securitySchemes:
     cognitoJwt:
@@ -737,6 +887,18 @@ components:
             $ref: "#/components/schemas/Error"
     AcceptanceUnavailable:
       description: The acceptance could not be read (acceptance_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReviewRequestNotFound:
+      description: The acceptance has no request in the advisor inbox (review_request_not_found)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReviewUnavailable:
+      description: The advisor inbox could not be read (review_unavailable); retry later
       content:
         application/json:
           schema:
@@ -1006,7 +1168,7 @@ components:
           description: Channel where the customer accepted the offer.
     Acceptance:
       type: object
-      required: [acceptance_id, offer_id, customer_id, channel, accepted_at, status, underwriting, processing, updated_at]
+      required: [acceptance_id, offer_id, customer_id, channel, accepted_at, status, underwriting, review, processing, updated_at]
       properties:
         acceptance_id:
           type: string
@@ -1024,11 +1186,16 @@ components:
           format: date-time
         status:
           type: string
-          enum: [registered, issuance_pending, in_review]
+          enum: [registered, issuance_pending, in_review, adjusted, rejected]
           description: >
-            registered - persisted, underwriting pending or being retried;
-            issuance_pending - automatic underwriting approved and issuance
-            started; in_review - routed to a human decision in the advisor inbox.
+            registered - persisted, underwriting pending or being retried (also
+            after an advisor accepted it, until the issuance starts);
+            issuance_pending - underwriting approved and issuance started;
+            in_review - routed to a human decision in the advisor inbox;
+            adjusted - an advisor adjusted the premium: the customer accepts
+            the new offer in review.adjusted_offer through the same flow;
+            rejected - an advisor did not accept the risk, the case is closed
+            and nothing is charged (HU-W1.1-02).
         underwriting:
           type: object
           nullable: true
@@ -1052,6 +1219,26 @@ components:
             decided_at:
               type: string
               format: date-time
+        review:
+          type: object
+          nullable: true
+          description: >
+            The advisor decision on a request routed to a human decision
+            (HU-W1.1-02). Null until an advisor decides. After an accept, the
+            underwriting outcome is approved.
+          required: [outcome, decided_at, adjusted_offer]
+          properties:
+            outcome:
+              type: string
+              enum: [accept, adjust, reject]
+            decided_at:
+              type: string
+              format: date-time
+            adjusted_offer:
+              allOf:
+                - $ref: "#/components/schemas/AdjustedOffer"
+              nullable: true
+              description: The new offer of an adjust; null otherwise.
         processing:
           type: object
           required: [attempts, last_failure_at, next_attempt_at]
@@ -1317,6 +1504,180 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/IssuanceException"
+    ReviewRequestList:
+      type: object
+      required: [items, counts]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReviewRequest"
+        counts:
+          type: object
+          description: Requests per status for the reason filter (the status filter is ignored).
+          required: [pending, decided]
+          properties:
+            pending:
+              type: integer
+              minimum: 0
+            decided:
+              type: integer
+              minimum: 0
+    ReviewRequest:
+      type: object
+      description: A request of the advisor inbox (HU-W1.1-02).
+      required: [acceptance_id, offer_id, customer_id, applicant, offer, reason, received_at, status, decision]
+      properties:
+        acceptance_id:
+          type: string
+          description: The acceptance routed to a human decision; it is also the request number.
+        offer_id:
+          type: string
+        customer_id:
+          type: string
+          description: Owner of the offer (the sub claim of their token).
+        applicant:
+          type: object
+          required: [full_name, document_id, email]
+          properties:
+            full_name:
+              type: string
+            document_id:
+              type: string
+            email:
+              type: string
+        offer:
+          type: object
+          required: [premium, currency]
+          properties:
+            premium:
+              type: number
+            currency:
+              type: string
+            mode:
+              type: string
+              nullable: true
+              enum: [normal, provisional]
+              description: Only in the detail; null when the offer could not be read.
+            expires_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: Only in the detail; null when the offer could not be read.
+        reason:
+          type: string
+          description: The routing reason of the underwriting (provisional_offer, high_risk_score).
+        received_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, decided]
+        decision:
+          allOf:
+            - $ref: "#/components/schemas/HumanDecision"
+          nullable: true
+          description: Null while pending.
+    HumanDecision:
+      type: object
+      description: The append-only record of an advisor decision (CA-4).
+      required: [decision_id, type, advisor, decided_at, observations, premium_adjustment_pct, adjusted_offer, notification]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [accept, adjust, reject]
+        advisor:
+          type: object
+          required: [id, email]
+          properties:
+            id:
+              type: string
+              description: The sub claim of the advisor token.
+            email:
+              type: string
+        decided_at:
+          type: string
+          format: date-time
+        observations:
+          type: string
+          maxLength: 1000
+          description: Required to adjust or reject; may be empty for an accept.
+        premium_adjustment_pct:
+          type: number
+          nullable: true
+          description: The surcharge of an adjust, in percent; null otherwise.
+        adjusted_offer:
+          allOf:
+            - $ref: "#/components/schemas/AdjustedOffer"
+          nullable: true
+          description: The new offer of an adjust; null otherwise.
+        notification:
+          allOf:
+            - $ref: "#/components/schemas/ReviewNotification"
+          nullable: true
+          description: >
+            The e-mail that tells the customer about an adjust or a reject.
+            Null for an accept (the issuance e-mail of HU-W1.3-03 tells the
+            customer) or when EMAIL_URL is not set.
+    AdjustedOffer:
+      type: object
+      required: [offer_id, premium, currency, expires_at]
+      properties:
+        offer_id:
+          type: string
+          description: adj-{acceptance_id}; the customer accepts it with POST /v1/offers/{offer_id}/acceptance.
+        premium:
+          type: number
+          description: The premium of the routed offer with the advisor surcharge, rounded to two decimals.
+        currency:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          description: 24 hours after the decision.
+    ReviewNotification:
+      type: object
+      required: [channel, status, attempts, sent_at]
+      properties:
+        channel:
+          type: string
+          enum: [email]
+        status:
+          type: string
+          enum: [pending, sent, failed]
+          description: >
+            pending - scheduled or being retried with a growing wait (1 s
+            doubling up to 15 s); sent; failed - not delivered after 12 attempts
+            (the decision does not change).
+        attempts:
+          type: integer
+          minimum: 0
+          description: Failed sends so far.
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+    DecideRequest:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [accept, adjust, reject]
+        observations:
+          type: string
+          maxLength: 1000
+          description: Required (not blank) to adjust or reject; optional to accept.
+        premium_adjustment_pct:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 100
+          multipleOf: 0.01
+          description: The surcharge in percent, with up to two decimals. Required to adjust; not allowed otherwise.
     ResumeChargeRequest:
       type: object
       required: [note]
@@ -1344,5 +1705,12 @@ components:
             - charge_not_found
             - charge_not_resumable
             - charge_unavailable
+            - observations_required
+            - premium_adjustment_invalid
+            - review_request_not_found
+            - review_request_already_decided
+            - decision_not_registered
+            - decision_continuation_pending
+            - review_unavailable
         message:
           type: string
