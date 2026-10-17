@@ -86,11 +86,17 @@ func (s *AcceptanceStore) ListDue(_ context.Context, now time.Time, limit int) (
 	return due, nil
 }
 
-// clone copies the acceptance so callers never share its decision.
+// clone copies the acceptance so callers never share its decision or the
+// advisor review.
 func clone(a domain.Acceptance) domain.Acceptance {
 	if a.Decision != nil {
 		d := *a.Decision
 		a.Decision = &d
+	}
+	if a.Review != nil {
+		r := *a.Review
+		r.AdjustedOffer = cloneAdjustedOffer(a.Review.AdjustedOffer)
+		a.Review = &r
 	}
 	return a
 }
