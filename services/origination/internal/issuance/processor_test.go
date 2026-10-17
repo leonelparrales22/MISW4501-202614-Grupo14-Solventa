@@ -49,7 +49,7 @@ type processorFixture struct {
 
 func newProcessorFixture(offers offerRepo, issuanceFailures int32) *processorFixture {
 	f := &processorFixture{serviceFixture: newServiceFixture(offers), reviews: memory.NewReviewQueueStub()}
-	f.underwriter = &countingUnderwriter{UnderwriterStub: memory.NewUnderwriterStub(f.clock, memory.DefaultFlakyFailures)}
+	f.underwriter = &countingUnderwriter{UnderwriterStub: memory.NewUnderwriterStub(f.clock, memory.DefaultFlakyFailures, memory.DefaultReviewScoreThreshold)}
 	f.issuance = &flakyIssuance{IssuanceStub: memory.NewIssuanceStub()}
 	f.issuance.failures.Store(issuanceFailures)
 	f.processor = issuance.NewProcessor(offers, f.acceptances, f.underwriter, f.reviews, f.issuance, f.clock,
@@ -92,11 +92,14 @@ func TestHumanReviewGoesToTheAdvisorInboxWithTheRequestData(t *testing.T) {
 	provisional := validOffer("o-1", "cust-1")
 	provisional.Mode = domain.ModeProvisional
 	provisional.Applicant = domain.Applicant{FullName: "Ana", DocumentID: "CC 1", Email: "ana@example.com"}
-	lowScore := validOffer("o-2", "cust-1")
-	lowScore.ProfileScore = 0.2
-	f := newProcessorFixture(offerRepo{"o-1": provisional, "o-2": lowScore}, 0)
+	highRisk := validOffer("o-2", "cust-1")
+	highRisk.ProfileScore = 0.9
+	lowRisk := validOffer("o-3", "cust-1")
+	lowRisk.ProfileScore = 0.2
+	f := newProcessorFixture(offerRepo{"o-1": provisional, "o-2": highRisk, "o-3": lowRisk}, 0)
 	a1 := f.accept(t, "o-1", "cust-1")
 	a2 := f.accept(t, "o-2", "cust-1")
+	a3 := f.accept(t, "o-3", "cust-1")
 
 	f.processor.ProcessDue(context.Background())
 
@@ -112,7 +115,13 @@ func TestHumanReviewGoesToTheAdvisorInboxWithTheRequestData(t *testing.T) {
 		AcceptanceID: a1.ID, OfferID: "o-1", CustomerID: "cust-1", Applicant: provisional.Applicant,
 		Premium: 1000, Currency: "COP", Reason: domain.ReviewReasonProvisionalOffer, ReceivedAt: t0,
 	}, byOffer["o-1"])
-	assert.Equal(t, domain.ReviewReasonLowRiskScore, byOffer["o-2"].Reason)
+	assert.Equal(t, domain.ReviewReasonHighRiskScore, byOffer["o-2"].Reason)
+
+	// A low score is a low risk: it is approved and issuance starts without
+	// going through the inbox.
+	got := f.reload(t, a3.ID)
+	assert.Equal(t, domain.AcceptanceIssuancePending, got.Status)
+	assert.True(t, f.issuance.Started(a3.ID))
 }
 
 func TestAFailedStepKeepsTheAcceptanceAndResumesWithoutDecidingTwice(t *testing.T) {

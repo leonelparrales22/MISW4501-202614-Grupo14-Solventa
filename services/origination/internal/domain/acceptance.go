@@ -74,7 +74,7 @@ const (
 // Reasons why underwriting routes a request to a human decision.
 const (
 	ReviewReasonProvisionalOffer = "provisional_offer"
-	ReviewReasonLowRiskScore     = "low_risk_score"
+	ReviewReasonHighRiskScore    = "high_risk_score"
 )
 
 // UnderwritingDecision is the outcome of the automatic underwriting for one

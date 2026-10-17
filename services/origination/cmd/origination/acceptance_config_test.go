@@ -72,10 +72,31 @@ func TestAcceptanceConfigRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestUnderwritingReviewScoreThreshold(t *testing.T) {
+	cfg, err := loadConfig(env(requiredEnv()))
+	require.NoError(t, err)
+	assert.Equal(t, 0.8, cfg.acceptances.reviewScoreThreshold, "default when the variable is not set")
+
+	for raw, want := range map[string]float64{"0.6": 0.6, "0.05": 0.05, "1": 1} {
+		m := requiredEnv()
+		m["UNDERWRITING_REVIEW_SCORE_THRESHOLD"] = raw
+		cfg, err := loadConfig(env(m))
+		require.NoError(t, err, raw)
+		assert.Equal(t, want, cfg.acceptances.reviewScoreThreshold, raw)
+	}
+
+	for _, raw := range []string{"0", "-0.1", "1.01", "x", "NaN", "Inf"} {
+		m := requiredEnv()
+		m["UNDERWRITING_REVIEW_SCORE_THRESHOLD"] = raw
+		_, err := loadConfig(env(m))
+		assert.Error(t, err, raw)
+	}
+}
+
 func TestNewAcceptanceServiceProcessesInTheBackground(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	svc := newAcceptanceService(ctx, acceptanceConfig{flakyFailures: 0}, memory.NewIssuanceStub())
+	svc := newAcceptanceService(ctx, acceptanceConfig{flakyFailures: 0, reviewScoreThreshold: memory.DefaultReviewScoreThreshold}, memory.NewIssuanceStub())
 	caller := security.WithClaims(ctx, security.Claims{Subject: "cust-1", Roles: []security.Role{security.RoleInsured}})
 
 	a, created, err := svc.Accept(caller, "demo-active-1", domain.ChannelWeb)
@@ -85,6 +106,24 @@ func TestNewAcceptanceServiceProcessesInTheBackground(t *testing.T) {
 	require.Eventually(t, func() bool {
 		got, err := svc.Get(caller, a.ID)
 		return err == nil && got.Status == domain.AcceptanceIssuancePending
+	}, 3*time.Second, 20*time.Millisecond)
+}
+
+func TestNewAcceptanceServiceUsesTheReviewScoreThreshold(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// demo-active offers have a score of 0.72: above a threshold of 0.6 they
+	// go to the advisor.
+	svc := newAcceptanceService(ctx, acceptanceConfig{reviewScoreThreshold: 0.6}, memory.NewIssuanceStub())
+	caller := security.WithClaims(ctx, security.Claims{Subject: "cust-1", Roles: []security.Role{security.RoleInsured}})
+
+	a, _, err := svc.Accept(caller, "demo-active-1", domain.ChannelWeb)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		got, err := svc.Get(caller, a.ID)
+		return err == nil && got.Status == domain.AcceptanceInReview &&
+			got.Decision != nil && got.Decision.Reason == domain.ReviewReasonHighRiskScore
 	}, 3*time.Second, 20*time.Millisecond)
 }
 

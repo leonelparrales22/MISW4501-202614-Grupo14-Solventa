@@ -52,7 +52,7 @@ func newAcceptanceEnv(t *testing.T) *acceptanceEnv {
 	offers := memory.NewOfferStub(clock)
 	acceptances := memory.NewAcceptanceStore()
 	e := &acceptanceEnv{reviews: memory.NewReviewQueueStub(), issued: memory.NewIssuanceStub()}
-	processor := issuance.NewProcessor(offers, acceptances, memory.NewUnderwriterStub(clock, 2), e.reviews, e.issued, clock,
+	processor := issuance.NewProcessor(offers, acceptances, memory.NewUnderwriterStub(clock, 2, memory.DefaultReviewScoreThreshold), e.reviews, e.issued, clock,
 		issuance.ProcessorConfig{PollInterval: 20 * time.Millisecond, RetryBase: 30 * time.Millisecond, RetryMax: 60 * time.Millisecond})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

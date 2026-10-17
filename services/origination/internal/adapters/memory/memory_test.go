@@ -108,9 +108,10 @@ func TestOfferStubServesTheDemoScenariosToTheirFirstCaller(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, domain.ModeProvisional, review.Mode)
 
-	low, err := s.Get(caller("cust-1"), "demo-lowscore-x")
+	high, err := s.Get(caller("cust-1"), "demo-highrisk-x")
 	require.NoError(t, err)
-	assert.Less(t, low.ProfileScore, memory.LowRiskScoreThreshold)
+	assert.Equal(t, domain.ModeNormal, high.Mode)
+	assert.Greater(t, high.ProfileScore, memory.DefaultReviewScoreThreshold)
 
 	expired, err := s.Get(caller("cust-1"), "demo-expired-x")
 	require.NoError(t, err)
@@ -120,7 +121,7 @@ func TestOfferStubServesTheDemoScenariosToTheirFirstCaller(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, flaky.IsExpired(t0))
 
-	for _, id := range []string{"offer-1", "demo-unknown-1", "demo-active-", "demo-active-a/b"} {
+	for _, id := range []string{"offer-1", "demo-unknown-1", "demo-active-", "demo-active-a/b", "demo-lowscore-1"} {
 		_, err := s.Get(caller("cust-1"), id)
 		assert.ErrorIs(t, err, ports.ErrOfferNotFound, id)
 	}
@@ -137,31 +138,60 @@ func TestOfferStubFallsBackToTheEmailAsName(t *testing.T) {
 }
 
 func TestUnderwriterStubRules(t *testing.T) {
-	u := memory.NewUnderwriterStub(&fixedClock{now: t0}, 1)
+	u := memory.NewUnderwriterStub(&fixedClock{now: t0}, 1, memory.DefaultReviewScoreThreshold)
 	ctx := context.Background()
 	a := domain.Acceptance{ID: "a-1"}
 
-	d, err := u.Decide(ctx, domain.Offer{ID: "o", Mode: domain.ModeNormal, ProfileScore: 0.7}, a)
-	require.NoError(t, err)
-	assert.Equal(t, domain.UnderwritingDecision{Outcome: domain.UnderwritingApproved, DecidedAt: t0}, d)
+	// 0 is the lowest risk: a normal offer up to the threshold (0.8 by
+	// default, included) is approved, also the low scores that went to the
+	// advisor before the fix.
+	for _, score := range []float64{0, 0.3, 0.39, 0.7, 0.8} {
+		d, err := u.Decide(ctx, domain.Offer{ID: "o", Mode: domain.ModeNormal, ProfileScore: score}, a)
+		require.NoError(t, err)
+		assert.Equal(t, domain.UnderwritingDecision{Outcome: domain.UnderwritingApproved, DecidedAt: t0}, d, "score %v", score)
+	}
 
-	d, err = u.Decide(ctx, domain.Offer{ID: "o", Mode: domain.ModeProvisional, ProfileScore: 0.9}, a)
-	require.NoError(t, err)
-	assert.Equal(t, domain.UnderwritingHumanReview, d.Outcome)
-	assert.Equal(t, domain.ReviewReasonProvisionalOffer, d.Reason)
+	// Above the threshold the risk is high and goes to the advisor.
+	for _, score := range []float64{0.801, 0.9, 1} {
+		d, err := u.Decide(ctx, domain.Offer{ID: "o", Mode: domain.ModeNormal, ProfileScore: score}, a)
+		require.NoError(t, err)
+		assert.Equal(t, domain.UnderwritingHumanReview, d.Outcome, "score %v", score)
+		assert.Equal(t, domain.ReviewReasonHighRiskScore, d.Reason, "score %v", score)
+	}
 
-	d, err = u.Decide(ctx, domain.Offer{ID: "o", Mode: domain.ModeNormal, ProfileScore: 0.39}, a)
-	require.NoError(t, err)
-	assert.Equal(t, domain.ReviewReasonLowRiskScore, d.Reason)
+	// A provisional offer goes to the advisor whatever its score.
+	for _, score := range []float64{0.2, 0.9} {
+		d, err := u.Decide(ctx, domain.Offer{ID: "o", Mode: domain.ModeProvisional, ProfileScore: score}, a)
+		require.NoError(t, err)
+		assert.Equal(t, domain.UnderwritingHumanReview, d.Outcome, "score %v", score)
+		assert.Equal(t, domain.ReviewReasonProvisionalOffer, d.Reason, "score %v", score)
+	}
 
 	flaky := domain.Offer{ID: "demo-flaky-1", Mode: domain.ModeNormal, ProfileScore: 0.7}
-	_, err = u.Decide(ctx, flaky, a)
+	_, err := u.Decide(ctx, flaky, a)
 	assert.ErrorIs(t, err, memory.ErrUnderwritingUnavailable)
-	d, err = u.Decide(ctx, flaky, a)
+	d, err := u.Decide(ctx, flaky, a)
 	require.NoError(t, err)
 	assert.Equal(t, domain.UnderwritingApproved, d.Outcome)
 	_, err = u.Decide(ctx, flaky, domain.Acceptance{ID: "a-2"})
 	assert.ErrorIs(t, err, memory.ErrUnderwritingUnavailable, "counted per acceptance")
+}
+
+func TestUnderwriterStubUsesTheConfiguredReviewScoreThreshold(t *testing.T) {
+	u := memory.NewUnderwriterStub(&fixedClock{now: t0}, 0, 0.6)
+	ctx := context.Background()
+	a := domain.Acceptance{ID: "a-1"}
+
+	d, err := u.Decide(ctx, domain.Offer{ID: "o", Mode: domain.ModeNormal, ProfileScore: 0.6}, a)
+	require.NoError(t, err)
+	assert.Equal(t, domain.UnderwritingApproved, d.Outcome, "the threshold itself is approved")
+
+	for _, score := range []float64{0.601, 0.72} {
+		d, err = u.Decide(ctx, domain.Offer{ID: "o", Mode: domain.ModeNormal, ProfileScore: score}, a)
+		require.NoError(t, err)
+		assert.Equal(t, domain.UnderwritingHumanReview, d.Outcome, "score %v", score)
+		assert.Equal(t, domain.ReviewReasonHighRiskScore, d.Reason, "score %v", score)
+	}
 }
 
 func TestReviewQueueAndIssuanceStubsAreIdempotent(t *testing.T) {
