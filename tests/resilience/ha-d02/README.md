@@ -28,7 +28,8 @@ PostgreSQL y de los usuarios de Moto y el secreto de los enlaces; nunca los impr
 borra todo con `docker compose down -v`.
 
 Puertos publicados solo en `127.0.0.1` (cambiables con variables): originación `8190` (`ORIGINATION_PORT`), API de Toxiproxy
-`8484` (`TOXIPROXY_PORT`), pasarela `9140` (`GATEWAY_PORT`), correo `9130` (`EMAIL_PORT`) y Moto `5110` (`MOTO_PORT`).
+`8484` (`TOXIPROXY_PORT`), pasarela `9140` (`GATEWAY_PORT`), correo `9130` (`EMAIL_PORT`), Moto `5110` (`MOTO_PORT`) y PostgreSQL
+`5440` (`POSTGRES_PORT`, para correr originación desde la máquina contra estos servicios, como explica el README del servicio).
 
 ## Fases
 

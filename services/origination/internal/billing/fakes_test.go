@@ -18,7 +18,7 @@ type memRepo struct {
 	mu   sync.Mutex
 	rows map[string]domain.Charge
 
-	createErr, getErr, listErr, writeErr error
+	createErr, getErr, listErr, writeErr, claimErr error
 }
 
 var _ ports.ChargeRepository = (*memRepo)(nil)
@@ -121,6 +121,9 @@ func (r *memRepo) ListExceptions(_ context.Context, limit int) ([]domain.Charge,
 func (r *memRepo) Claim(_ context.Context, id string, now time.Time, lease time.Duration) (domain.Charge, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.claimErr != nil {
+		return domain.Charge{}, false, r.claimErr
+	}
 	c, ok := r.rows[id]
 	if !ok || !chargeDue(c, now) {
 		return domain.Charge{}, false, nil

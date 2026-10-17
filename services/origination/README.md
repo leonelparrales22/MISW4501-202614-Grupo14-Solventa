@@ -313,14 +313,16 @@ Aceptación de la oferta (HU-W1.3-01): agregar las variables `AUTH_*` del pool d
 que imprime `seed.sh`). `tests/integration/acceptance_test.go` ejercita cada criterio de aceptación de punta a punta por HTTP.
 
 Cobro de la prima (HA-D02) y pantalla E5 en local: el cobro necesita PostgreSQL, la pasarela y el correo. Se pueden levantar solo esos
-servicios del escenario de HA-D02 y apuntar originación a ellos (la contraseña de PostgreSQL la elige cada quien en `PG_PASSWORD`):
+servicios del escenario de HA-D02 y apuntar originación a ellos. El compose publica en `127.0.0.1` PostgreSQL en el 5440
+(`POSTGRES_PORT`), la pasarela en el 9140 y el correo en el 9130; la contraseña de PostgreSQL la elige cada quien en `PG_PASSWORD`:
 
 ```
+export PG_PASSWORD='<contraseña local>'
 docker compose -f tests/resilience/ha-d02/docker-compose.yml up -d --wait postgres payment-gateway email
-PAYMENT_GATEWAY_URL=http://localhost:9140 DATABASE_URL="postgres://origination:$PG_PASSWORD@localhost:5432/origination?sslmode=disable" \
+PAYMENT_GATEWAY_URL=http://localhost:9140 DATABASE_URL="postgres://origination:$PG_PASSWORD@localhost:5440/origination?sslmode=disable" \
   EMAIL_URL=http://localhost:9130 DOCUMENTS_DIR=/tmp/solventa-docs DOCUMENT_LINK_SECRET=... <variables AUTH_* de Moto> \
   go run ./services/origination/cmd/origination
 ```
 
-(para eso, publicar el puerto 5432 de `postgres` en el compose o usar un PostgreSQL local). `tests/integration/charge_test.go` (PostgreSQL de
+Al terminar, `docker compose -f tests/resilience/ha-d02/docker-compose.yml down -v`. `tests/integration/charge_test.go` (PostgreSQL de
 Testcontainers; se salta sin Docker) ejercita cada criterio de HA-D02 con la emisión contractual real.

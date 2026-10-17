@@ -181,6 +181,13 @@ func (w *Worker) charge(ctx context.Context, acceptanceID string) {
 	}
 	if err != nil {
 		span.RecordError(err)
+		if !rep.Claimed {
+			// Nothing was called and nothing changed: the charge is still due.
+			span.SetStatus(codes.Error, "could not claim the charge")
+			slog.ErrorContext(ctx, "could not claim the premium charge; it is retried on the next poll",
+				"acceptance_id", acceptanceID, "error", err)
+			return
+		}
 		span.SetStatus(codes.Error, "could not record the charge attempt")
 		slog.ErrorContext(ctx, "could not record the premium charge attempt; it is retried when its claim expires",
 			"acceptance_id", acceptanceID, "outcome", rep.Outcome, "error", err)

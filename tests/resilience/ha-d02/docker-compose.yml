@@ -9,7 +9,8 @@
 #
 # Published ports (127.0.0.1 only, configurable): origination 8190, Toxiproxy
 # API 8484, payment gateway 9140 and e-mail 9130 (to look at their counters),
-# Moto 5110 (seed.sh runs on the host).
+# Moto 5110 (seed.sh runs on the host) and PostgreSQL 5440 (to run origination
+# from the host against these services, see services/origination/README.md).
 name: ha-d02-resilience
 
 services:
@@ -19,6 +20,8 @@ services:
       - POSTGRES_DB=origination
       - POSTGRES_USER=origination
       - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5440}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U origination -d origination"]
       interval: 2s

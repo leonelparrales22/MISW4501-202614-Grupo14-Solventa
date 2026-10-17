@@ -264,6 +264,24 @@ func TestStoreFailuresAreLoggedAndRetriedLater(t *testing.T) {
 	assert.Len(t, e.h.received(), 1)
 }
 
+func TestAClaimThatFailsIsLoggedAsSuchAndRetriedOnTheNextPoll(t *testing.T) {
+	logs := captureLogs(t)
+	e := newEnv(t)
+	e.start(t, "acc-1")
+
+	e.repo.claimErr = errors.New("database down")
+	e.worker.ProcessDue(context.Background())
+
+	assert.Contains(t, logs.String(), "could not claim the premium charge")
+	assert.NotContains(t, logs.String(), "could not record the premium charge attempt")
+	assert.Zero(t, e.gw.count(), "nothing is called without the claim")
+	assert.Equal(t, domain.ChargePending, e.repo.get("acc-1").Status)
+
+	e.repo.claimErr = nil
+	e.worker.ProcessDue(context.Background())
+	assert.Equal(t, domain.ChargeConfirmed, e.repo.get("acc-1").Status)
+}
+
 func TestAPublicationThatCannotBeRecordedIsRetriedWithTheSameEvent(t *testing.T) {
 	logs := captureLogs(t)
 	e := newEnv(t)
