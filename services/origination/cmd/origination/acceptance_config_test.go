@@ -187,10 +187,17 @@ func TestNewContractWiringStartsTheWorkerAndServesTheDocument(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC()
-	require.NoError(t, memory.NewActivationStub(wiring.service, systemClock{}).Start(ctx,
-		domain.Acceptance{ID: "acc-1"},
-		domain.Offer{CustomerID: "cust-1", Premium: 89_500, Currency: "COP",
-			Applicant: domain.Applicant{FullName: "Ana", DocumentID: "123", Email: "a@x.co"}}))
+	// The activation the premium charge publishes once it is confirmed (HA-D02).
+	require.NoError(t, wiring.service.Receive(ctx, domain.CoverageActivated{
+		EventID: "evt-coverage-activated-acc-1", PolicyID: "pol-acc-1", AcceptanceID: "acc-1", CustomerID: "cust-1",
+		Holder:  domain.Applicant{FullName: "Ana", DocumentID: "123", Email: "a@x.co"},
+		Premium: 89_500, Currency: "COP", InsuredAmount: demoInsuredAmount,
+		Coverages: []domain.Coverage{
+			{Code: domain.CoverageDeath, InsuredAmount: demoInsuredAmount},
+			{Code: domain.CoverageDisability, InsuredAmount: demoInsuredAmount},
+		},
+		ActivatedAt: now, CoverageStart: now, CoverageEnd: now.AddDate(0, demoTermMonths, 0),
+	}))
 	caller := security.WithClaims(ctx, security.Claims{Subject: "cust-1", Roles: []security.Role{security.RoleInsured}})
 	require.Eventually(t, func() bool {
 		v, err := wiring.reader.Status(caller, "pol-acc-1")
