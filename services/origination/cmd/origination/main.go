@@ -37,6 +37,7 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/profiling"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/rating"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/underwriting"
 )
 
 const serviceName = "origination"
@@ -74,12 +75,17 @@ func main() {
 		}
 		var starter ports.IssuanceStarter = memory.NewIssuanceStub()
 		var activations []ports.CoverageActivationHandler
+		// HU-W1.1-02: the adjust and reject decisions are e-mailed to the
+		// customer through the same provider client, so it keeps a single
+		// circuit breaker.
+		var reviewNotifier ports.ReviewOutcomeNotifier
 		if cfg.contracts.enabled {
 			contract, err := newContractWiring(context.Background(), cfg.contracts)
 			if err != nil {
 				log.Fatalf("could not set up the contractual document: %v", err)
 			}
 			activations = append(activations, contract.service)
+			reviewNotifier = emailadapter.NewReviewNotifier(contract.emailClient)
 			opts = append(opts, httpadapter.WithContractDocuments(contract.reader, verifier))
 		} else {
 			log.Printf("%s is not set: the contractual document and its notification (HU-W1.3-03) are not wired", envEmailURL)
@@ -97,11 +103,13 @@ func main() {
 		} else {
 			logWithoutBilling(cfg.contracts.enabled)
 		}
+		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
-			httpadapter.WithAcceptances(newAcceptanceService(context.Background(), cfg.acceptances, starter), verifier),
-			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver), verifier))
+			httpadapter.WithAcceptances(acceptances, verifier),
+			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver), verifier),
+			httpadapter.WithReviews(reviews, verifier))
 	} else {
-		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01, contract documents HU-W1.3-03) are not mounted", security.EnvIssuer)
+		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01, contract documents HU-W1.3-03, advisor inbox HU-W1.1-02) are not mounted", security.EnvIssuer)
 	}
 
 	srv := &http.Server{
@@ -180,27 +188,48 @@ type acceptanceConfig struct {
 	reviewScoreThreshold float64
 }
 
-// newAcceptanceService wires the offer acceptance over the in-memory adapters
-// (PENDING: PostgreSQL, HU-W1.2-03 offers, the underwriting engine, the
-// HU-W1.1-02 inbox and the HU-W1.3-02 issuance) and starts the processor that
-// runs underwriting asynchronously and resumes failed acceptances.
-func newAcceptanceService(ctx context.Context, cfg acceptanceConfig, starter ports.IssuanceStarter) *issuance.AcceptanceService {
+// newAcceptanceService wires the offer acceptance (HU-W1.3-01) and the advisor
+// inbox (HU-W1.1-02) over one set of in-memory adapters (PENDING: PostgreSQL,
+// HU-W1.2-03 offers and the underwriting engine) and starts the processor that
+// runs underwriting asynchronously and resumes failed acceptances. The
+// underwriting approves the offers an advisor adjusted (decision D-5 a). When
+// notifier is not nil, a worker e-mails the adjust and reject decisions to the
+// customer (decision D-3 c); otherwise no notice is sent.
+func newAcceptanceService(ctx context.Context, cfg acceptanceConfig, starter ports.IssuanceStarter,
+	notifier ports.ReviewOutcomeNotifier) (*issuance.AcceptanceService, *underwriting.ReviewService) {
 	clock := systemClock{}
 	offers := memory.NewOfferStub(clock)
 	acceptances := memory.NewAcceptanceStore()
-	processor := issuance.NewProcessor(offers, acceptances,
-		memory.NewUnderwriterStub(clock, cfg.flakyFailures, cfg.reviewScoreThreshold), memory.NewReviewQueueStub(), starter,
-		clock, cfg.processor)
+	reviews := memory.NewReviewQueueStub()
+	underwriter := underwriting.NewHumanAdjustedUnderwriter(reviews,
+		memory.NewUnderwriterStub(clock, cfg.flakyFailures, cfg.reviewScoreThreshold), clock)
+	processor := issuance.NewProcessor(offers, acceptances, underwriter, reviews, starter, clock, cfg.processor)
 	go processor.Run(ctx)
 	log.Printf("offer acceptance: in-memory adapters (pending PostgreSQL and the real dependencies), poll every %s, retry from %s up to %s, profile scores above %g go to the advisor",
 		cfg.processor.PollInterval, cfg.processor.RetryBase, cfg.processor.RetryMax, cfg.reviewScoreThreshold)
-	return issuance.NewAcceptanceService(offers, acceptances, clock, processor.Notify)
+
+	deps := underwriting.ReviewDeps{
+		Reviews: reviews, Acceptances: acceptances, Offers: offers, OfferWriter: offers, Clock: clock,
+		AcceptanceResumed: processor.Notify,
+	}
+	if notifier != nil {
+		worker := underwriting.NewReviewNotificationWorker(reviews, notifier, clock, underwriting.NotificationConfig{})
+		go worker.Run(ctx)
+		deps.NotificationScheduled = worker.Notify
+		log.Printf("advisor inbox: in-memory requests and decisions (pending PostgreSQL); the adjust and reject decisions are e-mailed to the customer")
+	} else {
+		log.Printf("%s is not set: the review outcome e-mails (HU-W1.1-02) are not sent", envEmailURL)
+	}
+	return issuance.NewAcceptanceService(offers, acceptances, clock, processor.Notify), underwriting.NewReviewService(deps)
 }
 
 // contractWiring is the contractual document of HU-W1.3-03, ready to serve.
 type contractWiring struct {
 	service *issuance.ContractService
 	reader  *issuance.ContractReader
+	// emailClient is the e-mail provider client, shared with the review
+	// outcome notices of HU-W1.1-02 so the provider has a single circuit breaker.
+	emailClient *email.Client
 }
 
 // newContractWiring wires the contractual issuance (HU-W1.3-03): the PDF
@@ -218,9 +247,10 @@ func newContractWiring(ctx context.Context, cfg contractConfig) (contractWiring,
 	}
 	clock := systemClock{}
 	repo, audit := memory.NewContractStore(), memory.NewIssuanceAuditLog()
-	notifier := emailadapter.NewNotifier(email.NewClient(email.Config{
+	emailClient := email.NewClient(email.Config{
 		BaseURL: cfg.emailURL, Timeout: cfg.emailTimeout, Breaker: resilience.DefaultConfig(),
-	}))
+	})
+	notifier := emailadapter.NewNotifier(emailClient)
 	service := issuance.NewContractService(issuance.ContractDeps{
 		Repo: repo, Generator: pdf.New(), Store: store, Signer: signer, Notifier: notifier, Audit: audit, Clock: clock,
 	}, cfg.service)
@@ -228,8 +258,9 @@ func newContractWiring(ctx context.Context, cfg contractConfig) (contractWiring,
 	log.Printf("contractual document: PDF in %s, e-mail via %s, links valid %s, in-memory repository and audit log (pending PostgreSQL and the audit service)",
 		store.Dir(), cfg.emailURL, cfg.service.LinkTTL)
 	return contractWiring{
-		service: service,
-		reader:  issuance.NewContractReader(repo, store, audit, signer, clock),
+		service:     service,
+		reader:      issuance.NewContractReader(repo, store, audit, signer, clock),
+		emailClient: emailClient,
 	}, nil
 }
 
