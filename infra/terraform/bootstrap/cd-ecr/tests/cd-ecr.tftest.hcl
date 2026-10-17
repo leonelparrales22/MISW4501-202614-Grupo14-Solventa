@@ -11,37 +11,19 @@ mock_provider "aws" {
   }
 }
 
-run "one_immutable_scanned_repository_per_image" {
+# Immutability, scanning, force_delete and the lifecycle policy are asserted by
+# the tests of modules/ecr; the bootstrap keeps the module defaults.
+run "one_repository_per_image" {
   command = plan
 
   assert {
-    condition     = length(aws_ecr_repository.this) == 8
+    condition     = length(module.ecr.repository_names) == 8
     error_message = "There must be one repository for each of the 5 services and 3 stubs with a Dockerfile."
   }
 
   assert {
-    condition     = alltrue([for r in aws_ecr_repository.this : r.image_tag_mutability == "IMMUTABLE"])
-    error_message = "Tags must be immutable so a commit SHA always points to the same image."
-  }
-
-  assert {
-    condition     = alltrue([for r in aws_ecr_repository.this : r.image_scanning_configuration[0].scan_on_push])
-    error_message = "Every repository must scan images on push."
-  }
-
-  assert {
-    condition     = alltrue([for r in aws_ecr_repository.this : r.force_delete == false])
-    error_message = "Permanent repositories must not be force-deletable."
-  }
-
-  assert {
-    condition     = aws_ecr_repository.this["origination"].name == "solventa/origination"
+    condition     = module.ecr.repository_names["origination"] == "solventa/origination"
     error_message = "Repositories are named solventa/<image>."
-  }
-
-  assert {
-    condition     = length(aws_ecr_lifecycle_policy.this) == 8
-    error_message = "Every repository needs a lifecycle policy."
   }
 }
 

@@ -10,5 +10,5 @@ output "oidc_provider_arn" {
 
 output "repository_urls" {
   description = "ECR repository URL of each image, by image name."
-  value       = { for name, r in aws_ecr_repository.this : name => r.repository_url }
+  value       = module.ecr.repository_urls
 }
