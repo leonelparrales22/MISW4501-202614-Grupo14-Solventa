@@ -1,0 +1,138 @@
+# HA-D02 resilience scenario: origination charges the premium of every
+# approved acceptance through the payment gateway stub behind Toxiproxy, with
+# its charges in PostgreSQL, and issues the contractual document of HU-W1.3-03
+# (e-mail stub) only for a confirmed charge. Moto stands in for Cognito (the
+# acceptance routes are human routes). Toxiproxy injects the total outage and
+# the ambiguous answer. Run it with ./run.sh, which generates the local secrets
+# (never printed), seeds Moto and drives the phases. Build context is the
+# repository root.
+#
+# Published ports (127.0.0.1 only, configurable): origination 8190, Toxiproxy
+# API 8484, payment gateway 9140 and e-mail 9130 (to look at their counters),
+# Moto 5110 (seed.sh runs on the host).
+name: ha-d02-resilience
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=origination
+      - POSTGRES_USER=origination
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U origination -d origination"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  payment-gateway:
+    build:
+      context: ../../..
+      dockerfile: stubs/payment-gateway/Dockerfile
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-9140}:9040"
+    environment:
+      - PORT=9040
+      # false only in the counterfactual run (./run.sh counterfactual).
+      - SUPPORTS_IDEMPOTENCY=${SUPPORTS_IDEMPOTENCY:-true}
+
+  email:
+    build:
+      context: ../../..
+      dockerfile: stubs/email/Dockerfile
+    ports:
+      - "127.0.0.1:${EMAIL_PORT:-9130}:9030"
+    environment:
+      - PORT=9030
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "127.0.0.1:${TOXIPROXY_PORT:-8484}:8474" # Toxiproxy API, used by toxiproxy.sh
+    depends_on:
+      - payment-gateway
+
+  # The Toxiproxy image is distroless (no shell, no CLI), so the proxy is
+  # created through its HTTP API.
+  toxiproxy-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - toxiproxy
+    entrypoint:
+      - sh
+      - -c
+      - >
+        until curl -sf http://toxiproxy:8474/version; do sleep 1; done;
+        curl -sf -X POST http://toxiproxy:8474/proxies
+        -H 'Content-Type: application/json'
+        -d '{"name":"payment-gateway","listen":"0.0.0.0:9041","upstream":"payment-gateway:9040","enabled":true}'
+
+  moto:
+    image: motoserver/moto:5.2.3
+    ports:
+      - "127.0.0.1:${MOTO_PORT:-5110}:5000"
+    environment:
+      - MOTO_COGNITO_IDP_USER_POOL_ID_STRATEGY=HASH
+      - MOTO_COGNITO_IDP_USER_POOL_CLIENT_ID_STRATEGY=HASH
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/moto-api/')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  origination:
+    build:
+      context: ../../..
+      dockerfile: services/origination/Dockerfile
+    ports:
+      - "127.0.0.1:${ORIGINATION_PORT:-8190}:8080"
+    environment:
+      - PORT=8080
+      # Required by the configuration, never called here: the acceptance
+      # journey does not profile the customer.
+      - REDIS_ADDR=unused-redis:6379
+      - OPEN_FINANCE_URL=http://unused-open-finance:9000
+      # Cognito of Moto, written by run.sh after seeding it.
+      - AUTH_ISSUER=${AUTH_ISSUER:-}
+      - AUTH_JWKS_URL=${AUTH_JWKS_URL:-}
+      - AUTH_CLIENT_IDS=${AUTH_CLIENT_IDS:-}
+      # HA-D02: the gateway behind Toxiproxy and origination's own database.
+      - PAYMENT_GATEWAY_URL=http://toxiproxy:9041
+      - DATABASE_URL=postgres://origination:${PG_PASSWORD:-}@postgres:5432/origination?sslmode=disable
+      - RETRY_WINDOW_SECONDS=${RETRY_WINDOW_SECONDS:-86400}
+      - CHARGE_POLL_INTERVAL_MS=200
+      - ACCEPTANCE_POLL_INTERVAL_MS=200
+      # HU-W1.3-03: required with a gateway (decision D-16 b).
+      - EMAIL_URL=http://email:9030
+      - DOCUMENTS_DIR=/tmp/documents
+      - DOCUMENT_LINK_SECRET=${DOCUMENT_LINK_SECRET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      moto:
+        condition: service_healthy
+      email:
+        condition: service_started
+      toxiproxy-init:
+        condition: service_completed_successfully
+
+  # Started on demand by run.sh (docker compose run --rm k6 ...).
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["tools"]
+    entrypoint: ["k6"]
+    environment:
+      - BASE_URL=http://origination:8080
+      - MOTO_URL=http://moto:5000
+      - GATEWAY_URL=http://payment-gateway:9040
+      - EMAIL_URL=http://email:9030
+      - AUTH_CLIENT_ID=${WEB_CLIENT_ID:-}
+      - MOTO_USER_PASSWORD=${MOTO_USER_PASSWORD:-}
+    volumes:
+      - ./k6:/scripts:ro
+
+  schemathesis:
+    image: schemathesis/schemathesis:v3.39.16
+    profiles: ["tools"]
+    volumes:
+      - ../../../services/origination/api:/api:ro
