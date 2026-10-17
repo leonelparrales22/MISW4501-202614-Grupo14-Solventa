@@ -20,9 +20,9 @@ const (
 	// ScenarioReview is a valid provisional offer that underwriting routes to
 	// a human decision (reason provisional_offer).
 	ScenarioReview = "review"
-	// ScenarioLowScore is a valid normal offer with a low risk score that
-	// underwriting routes to a human decision (reason low_risk_score).
-	ScenarioLowScore = "lowscore"
+	// ScenarioHighRisk is a valid normal offer with a high risk score (0.9)
+	// that underwriting routes to a human decision (reason high_risk_score).
+	ScenarioHighRisk = "highrisk"
 	// ScenarioExpired is an offer whose validity ended an hour before its
 	// first lookup.
 	ScenarioExpired = "expired"
@@ -34,7 +34,7 @@ const (
 // OfferValidity is the validity of an offer (HU-W1.2-03: 24 hours).
 const OfferValidity = 24 * time.Hour
 
-var demoOfferID = regexp.MustCompile(`^demo-(active|review|lowscore|expired|flaky)-[A-Za-z0-9_-]{1,64}$`)
+var demoOfferID = regexp.MustCompile(`^demo-(active|review|highrisk|expired|flaky)-[A-Za-z0-9_-]{1,64}$`)
 
 // OfferStub is an in-memory ports.OfferRepository that serves the demo
 // scenarios. PENDING: the offers generated and persisted by HU-W1.2-03.
@@ -85,8 +85,8 @@ func (s *OfferStub) Get(ctx context.Context, offerID string) (domain.Offer, erro
 	case ScenarioReview:
 		o.Mode = domain.ModeProvisional
 		o.ProfileScore = domain.BaseActuarialProfile(caller.Subject).Score
-	case ScenarioLowScore:
-		o.ProfileScore = 0.3
+	case ScenarioHighRisk:
+		o.ProfileScore = 0.9
 	case ScenarioExpired:
 		o.ExpiresAt = now.Add(-time.Hour)
 	}

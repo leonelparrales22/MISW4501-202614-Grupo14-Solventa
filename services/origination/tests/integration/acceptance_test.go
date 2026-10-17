@@ -52,7 +52,7 @@ func newAcceptanceEnv(t *testing.T) *acceptanceEnv {
 	offers := memory.NewOfferStub(clock)
 	acceptances := memory.NewAcceptanceStore()
 	e := &acceptanceEnv{reviews: memory.NewReviewQueueStub(), issued: memory.NewIssuanceStub()}
-	processor := issuance.NewProcessor(offers, acceptances, memory.NewUnderwriterStub(clock, 2), e.reviews, e.issued, clock,
+	processor := issuance.NewProcessor(offers, acceptances, memory.NewUnderwriterStub(clock, 2, memory.DefaultReviewScoreThreshold), e.reviews, e.issued, clock,
 		issuance.ProcessorConfig{PollInterval: 20 * time.Millisecond, RetryBase: 30 * time.Millisecond, RetryMax: 60 * time.Millisecond})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -142,6 +142,27 @@ func TestCA3HumanReviewReachesTheInboxAndTheCustomerSeesIt(t *testing.T) {
 
 	status, _ := e.do(t, http.MethodGet, "/v1/acceptances/"+id, "advisor:adv-1", "")
 	assert.Equal(t, http.StatusOK, status, "the advisor can read it too")
+}
+
+// A normal offer whose profile score is above the review threshold (0.8 by
+// default; 0 is the lowest risk) is a high risk: it goes to the advisor and
+// issuance does not start (decision #40).
+func TestCA3HighRiskScoreReachesTheInbox(t *testing.T) {
+	e := newAcceptanceEnv(t)
+	_, body := e.accept(t, "demo-highrisk-ca3", customer)
+	id := body["acceptance_id"].(string)
+
+	got := e.waitStatus(t, id, customer, "in_review")
+
+	assert.Equal(t, map[string]any{"outcome": "human_review", "reason": "high_risk_score",
+		"decided_at": got["underwriting"].(map[string]any)["decided_at"]}, got["underwriting"])
+	pending := e.reviews.Pending()
+	require.Len(t, pending, 1)
+	assert.Equal(t, id, pending[0].AcceptanceID)
+	assert.Equal(t, "demo-highrisk-ca3", pending[0].OfferID)
+	assert.Equal(t, "cust-1", pending[0].CustomerID)
+	assert.Equal(t, domain.ReviewReasonHighRiskScore, pending[0].Reason)
+	assert.False(t, e.issued.Started(id))
 }
 
 func TestCA4ExpiredOfferIsRejectedWithItsReason(t *testing.T) {
