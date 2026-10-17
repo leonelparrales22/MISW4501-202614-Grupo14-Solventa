@@ -102,7 +102,7 @@ func TestAcceptingAgainReturns200(t *testing.T) {
 	a.NextAttemptAt = time.Time{}
 	a.Attempts = 1
 	a.LastFailureAt = accepted.Add(time.Second)
-	a.Decision = &domain.UnderwritingDecision{Outcome: domain.UnderwritingHumanReview, Reason: domain.ReviewReasonLowRiskScore, DecidedAt: accepted}
+	a.Decision = &domain.UnderwritingDecision{Outcome: domain.UnderwritingHumanReview, Reason: domain.ReviewReasonHighRiskScore, DecidedAt: accepted}
 	svc := &fakeAcceptances{acceptance: a}
 
 	rec := call(t, svc, http.MethodPost, "/v1/offers/demo-active-1/acceptance", "insured:cust-1", `{"channel":"mobile"}`)
@@ -110,7 +110,7 @@ func TestAcceptingAgainReturns200(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	m := decode(t, rec)
 	assert.Equal(t, "in_review", m["status"])
-	assert.Equal(t, map[string]any{"outcome": "human_review", "reason": "low_risk_score", "decided_at": "2026-10-11T15:00:00Z"}, m["underwriting"])
+	assert.Equal(t, map[string]any{"outcome": "human_review", "reason": "high_risk_score", "decided_at": "2026-10-11T15:00:00Z"}, m["underwriting"])
 	assert.Equal(t, map[string]any{"attempts": float64(1), "last_failure_at": "2026-10-11T15:00:01Z", "next_attempt_at": nil}, m["processing"])
 }
 

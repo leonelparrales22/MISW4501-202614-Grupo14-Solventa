@@ -10,9 +10,12 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 )
 
-// LowRiskScoreThreshold is the profile score under which UnderwriterStub
-// routes a request to a human decision.
-const LowRiskScoreThreshold = 0.4
+// DefaultReviewScoreThreshold is the default profile score above which
+// UnderwriterStub routes a normal offer to a human decision
+// (UNDERWRITING_REVIEW_SCORE_THRESHOLD). A score of 0 is the lowest risk. It
+// is a review rule of its own, independent of the pricing categories of
+// domain.CategoryForScore.
+const DefaultReviewScoreThreshold = 0.8
 
 // DefaultFlakyFailures is how many attempts UnderwriterStub fails for a
 // demo-flaky offer before it decides.
@@ -25,22 +28,29 @@ var ErrUnderwritingUnavailable = errors.New("underwriting unavailable (simulated
 // UnderwriterStub is an in-memory ports.Underwriter with provisional rules.
 // PENDING: the real automatic underwriting engine. Rules:
 //   - a provisional offer goes to human review (provisional_offer);
-//   - a profile score under LowRiskScoreThreshold goes to human review
-//     (low_risk_score);
+//   - a profile score above reviewScoreThreshold goes to human review
+//     (high_risk_score);
 //   - otherwise the risk is approved.
 //
 // For demo-flaky offers it fails the first flakyFailures attempts of each
 // acceptance, to show how the journey resumes (HU-W1.3-01 CA-5).
 type UnderwriterStub struct {
-	clock         ports.Clock
-	flakyFailures int
-	mu            sync.Mutex
-	failures      map[string]int
+	clock                ports.Clock
+	flakyFailures        int
+	reviewScoreThreshold float64
+	mu                   sync.Mutex
+	failures             map[string]int
 }
 
-// NewUnderwriterStub builds an UnderwriterStub.
-func NewUnderwriterStub(clock ports.Clock, flakyFailures int) *UnderwriterStub {
-	return &UnderwriterStub{clock: clock, flakyFailures: flakyFailures, failures: map[string]int{}}
+// NewUnderwriterStub builds an UnderwriterStub that routes the normal offers
+// with a profile score above reviewScoreThreshold to a human decision.
+func NewUnderwriterStub(clock ports.Clock, flakyFailures int, reviewScoreThreshold float64) *UnderwriterStub {
+	return &UnderwriterStub{
+		clock:                clock,
+		flakyFailures:        flakyFailures,
+		reviewScoreThreshold: reviewScoreThreshold,
+		failures:             map[string]int{},
+	}
 }
 
 // Decide applies the provisional rules.
@@ -53,8 +63,8 @@ func (u *UnderwriterStub) Decide(_ context.Context, offer domain.Offer, a domain
 	switch {
 	case offer.Mode == domain.ModeProvisional:
 		d.Outcome, d.Reason = domain.UnderwritingHumanReview, domain.ReviewReasonProvisionalOffer
-	case offer.ProfileScore < LowRiskScoreThreshold:
-		d.Outcome, d.Reason = domain.UnderwritingHumanReview, domain.ReviewReasonLowRiskScore
+	case offer.ProfileScore > u.reviewScoreThreshold:
+		d.Outcome, d.Reason = domain.UnderwritingHumanReview, domain.ReviewReasonHighRiskScore
 	}
 	return d, nil
 }

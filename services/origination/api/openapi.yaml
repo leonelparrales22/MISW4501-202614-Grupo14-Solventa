@@ -1041,8 +1041,14 @@ components:
             reason:
               type: string
               nullable: true
-              enum: [provisional_offer, low_risk_score]
-              description: Why it went to human review. Null when approved.
+              enum: [provisional_offer, high_risk_score]
+              description: >
+                Why it went to human review. Null when approved. Provisional
+                rules (pending the real underwriting engine): provisional_offer
+                for every provisional offer, whatever its score; high_risk_score
+                for a normal offer whose profile score is above the review
+                threshold (UNDERWRITING_REVIEW_SCORE_THRESHOLD, 0.8 by default;
+                a score of 0 is the lowest risk).
             decided_at:
               type: string
               format: date-time

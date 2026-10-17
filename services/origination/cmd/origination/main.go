@@ -175,6 +175,9 @@ type acceptanceConfig struct {
 	auth          security.Config
 	processor     issuance.ProcessorConfig
 	flakyFailures int
+	// reviewScoreThreshold is the profile score above which the provisional
+	// underwriting routes a normal offer to the advisor (decision #40).
+	reviewScoreThreshold float64
 }
 
 // newAcceptanceService wires the offer acceptance over the in-memory adapters
@@ -186,11 +189,11 @@ func newAcceptanceService(ctx context.Context, cfg acceptanceConfig, starter por
 	offers := memory.NewOfferStub(clock)
 	acceptances := memory.NewAcceptanceStore()
 	processor := issuance.NewProcessor(offers, acceptances,
-		memory.NewUnderwriterStub(clock, cfg.flakyFailures), memory.NewReviewQueueStub(), starter,
+		memory.NewUnderwriterStub(clock, cfg.flakyFailures, cfg.reviewScoreThreshold), memory.NewReviewQueueStub(), starter,
 		clock, cfg.processor)
 	go processor.Run(ctx)
-	log.Printf("offer acceptance: in-memory adapters (pending PostgreSQL and the real dependencies), poll every %s, retry from %s up to %s",
-		cfg.processor.PollInterval, cfg.processor.RetryBase, cfg.processor.RetryMax)
+	log.Printf("offer acceptance: in-memory adapters (pending PostgreSQL and the real dependencies), poll every %s, retry from %s up to %s, profile scores above %g go to the advisor",
+		cfg.processor.PollInterval, cfg.processor.RetryBase, cfg.processor.RetryMax, cfg.reviewScoreThreshold)
 	return issuance.NewAcceptanceService(offers, acceptances, clock, processor.Notify)
 }
 
@@ -401,6 +404,9 @@ func loadAcceptanceConfig(getenv func(string) string, cfg *acceptanceConfig) err
 	if cfg.flakyFailures, err = nonNegativeIntVar(getenv, "UNDERWRITING_STUB_FLAKY_FAILURES", memory.DefaultFlakyFailures); err != nil {
 		return err
 	}
+	if cfg.reviewScoreThreshold, err = floatVar(getenv, "UNDERWRITING_REVIEW_SCORE_THRESHOLD", memory.DefaultReviewScoreThreshold); err != nil {
+		return err
+	}
 	cfg.processor = issuance.ProcessorConfig{
 		PollInterval:   time.Duration(pollMs) * time.Millisecond,
 		AttemptTimeout: time.Duration(attemptMs) * time.Millisecond,
@@ -584,6 +590,20 @@ func ratioVar(getenv func(string) string, name string, def float64) (float64, er
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil || math.IsNaN(v) || v < 0 || v > 1 {
 		return 0, fmt.Errorf("%s must be a number between 0 and 1, got %q", name, raw)
+	}
+	return v, nil
+}
+
+// floatVar reads a number greater than 0 and at most 1, such as a profile
+// score threshold.
+func floatVar(getenv func(string) string, name string, def float64) (float64, error) {
+	raw := getenv(name)
+	if raw == "" {
+		return def, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(v) || v <= 0 || v > 1 {
+		return 0, fmt.Errorf("%s must be a number greater than 0 and at most 1, got %q", name, raw)
 	}
 	return v, nil
 }

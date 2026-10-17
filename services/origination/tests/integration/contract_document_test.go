@@ -114,7 +114,7 @@ func newContractEnvIT(t *testing.T) *contractEnvIT {
 	go contracts.Run(ctx)
 
 	offers, acceptances := memory.NewOfferStub(clock), memory.NewAcceptanceStore()
-	processor := issuance.NewProcessor(offers, acceptances, memory.NewUnderwriterStub(clock, 0), memory.NewReviewQueueStub(),
+	processor := issuance.NewProcessor(offers, acceptances, memory.NewUnderwriterStub(clock, 0, memory.DefaultReviewScoreThreshold), memory.NewReviewQueueStub(),
 		newActivationFixture(contracts, clock), clock,
 		issuance.ProcessorConfig{PollInterval: 10 * time.Millisecond, RetryBase: 20 * time.Millisecond, RetryMax: 40 * time.Millisecond})
 	go processor.Run(ctx)
