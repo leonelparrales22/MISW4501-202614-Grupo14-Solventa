@@ -97,6 +97,9 @@ type Acceptance struct {
 	// Decision is set once underwriting decided, so a resumed acceptance
 	// never runs underwriting twice.
 	Decision *UnderwritingDecision
+	// Review is set once an advisor decided a request routed to a human
+	// decision (HU-W1.1-02); nil otherwise.
+	Review *AcceptanceReview
 	// Attempts counts the failed processing attempts.
 	Attempts      int
 	LastFailureAt time.Time

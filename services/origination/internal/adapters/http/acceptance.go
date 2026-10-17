@@ -56,8 +56,17 @@ type acceptanceResponse struct {
 	AcceptedAt   time.Time         `json:"accepted_at"`
 	Status       string            `json:"status"`
 	Underwriting *underwritingBody `json:"underwriting"`
-	Processing   processingBody    `json:"processing"`
-	UpdatedAt    time.Time         `json:"updated_at"`
+	// Review is the advisor decision on a request routed to a human decision
+	// (HU-W1.1-02); null until an advisor decides.
+	Review     *acceptanceReviewBody `json:"review"`
+	Processing processingBody        `json:"processing"`
+	UpdatedAt  time.Time             `json:"updated_at"`
+}
+
+type acceptanceReviewBody struct {
+	Outcome       string             `json:"outcome"`
+	DecidedAt     time.Time          `json:"decided_at"`
+	AdjustedOffer *adjustedOfferBody `json:"adjusted_offer"`
 }
 
 type underwritingBody struct {
@@ -209,6 +218,9 @@ func toAcceptanceResponse(a domain.Acceptance) acceptanceResponse {
 			reason := d.Reason
 			out.Underwriting.Reason = &reason
 		}
+	}
+	if r := a.Review; r != nil {
+		out.Review = &acceptanceReviewBody{Outcome: string(r.Outcome), DecidedAt: r.DecidedAt.UTC(), AdjustedOffer: toAdjustedOfferBody(r.AdjustedOffer)}
 	}
 	if !a.LastFailureAt.IsZero() {
 		t := a.LastFailureAt.UTC()

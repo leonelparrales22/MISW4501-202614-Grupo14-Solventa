@@ -96,7 +96,7 @@ func TestUnderwritingReviewScoreThreshold(t *testing.T) {
 func TestNewAcceptanceServiceProcessesInTheBackground(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	svc := newAcceptanceService(ctx, acceptanceConfig{flakyFailures: 0, reviewScoreThreshold: memory.DefaultReviewScoreThreshold}, memory.NewIssuanceStub())
+	svc, _ := newAcceptanceService(ctx, acceptanceConfig{flakyFailures: 0, reviewScoreThreshold: memory.DefaultReviewScoreThreshold}, memory.NewIssuanceStub(), nil)
 	caller := security.WithClaims(ctx, security.Claims{Subject: "cust-1", Roles: []security.Role{security.RoleInsured}})
 
 	a, created, err := svc.Accept(caller, "demo-active-1", domain.ChannelWeb)
@@ -114,7 +114,7 @@ func TestNewAcceptanceServiceUsesTheReviewScoreThreshold(t *testing.T) {
 	defer cancel()
 	// demo-active offers have a score of 0.72: above a threshold of 0.6 they
 	// go to the advisor.
-	svc := newAcceptanceService(ctx, acceptanceConfig{reviewScoreThreshold: 0.6}, memory.NewIssuanceStub())
+	svc, _ := newAcceptanceService(ctx, acceptanceConfig{reviewScoreThreshold: 0.6}, memory.NewIssuanceStub(), nil)
 	caller := security.WithClaims(ctx, security.Claims{Subject: "cust-1", Roles: []security.Role{security.RoleInsured}})
 
 	a, _, err := svc.Accept(caller, "demo-active-1", domain.ChannelWeb)
@@ -242,6 +242,7 @@ func TestNewContractWiringStartsTheWorkerAndServesTheDocument(t *testing.T) {
 		v, err := wiring.reader.Status(caller, "pol-acc-1")
 		return err == nil && v.Issuance.Status == domain.ContractCompleted
 	}, 5*time.Second, 20*time.Millisecond)
+	assert.NotNil(t, wiring.emailClient, "shared with the review outcome notices (HU-W1.1-02)")
 	doc, content, err := wiring.reader.Document(caller, "pol-acc-1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, doc.Version)

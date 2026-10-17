@@ -37,11 +37,13 @@ const OfferValidity = 24 * time.Hour
 var demoOfferID = regexp.MustCompile(`^demo-(active|review|highrisk|expired|flaky)-[A-Za-z0-9_-]{1,64}$`)
 
 // OfferStub is an in-memory ports.OfferRepository that serves the demo
-// scenarios. PENDING: the offers generated and persisted by HU-W1.2-03.
+// scenarios, and the ports.OfferWriter of the offers an advisor adjusts
+// (HU-W1.1-02). PENDING: the offers generated and persisted by HU-W1.2-03.
 //
 // A demo offer is created on its first lookup and belongs to the
 // authenticated caller of that lookup (the subject of its token), with its
-// validity counted from that moment. Ids outside the demo form are not found.
+// validity counted from that moment. Ids outside the demo form are not found
+// unless they were stored with Create.
 type OfferStub struct {
 	clock  ports.Clock
 	mu     sync.Mutex
@@ -92,6 +94,17 @@ func (s *OfferStub) Get(ctx context.Context, offerID string) (domain.Offer, erro
 	}
 	s.offers[offerID] = o
 	return o, nil
+}
+
+// Create stores the offer as it is. It is idempotent by id: an offer that
+// already exists is kept unchanged.
+func (s *OfferStub) Create(_ context.Context, offer domain.Offer) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.offers[offer.ID]; !ok {
+		s.offers[offer.ID] = offer
+	}
+	return nil
 }
 
 func orDefault(v, d string) string {

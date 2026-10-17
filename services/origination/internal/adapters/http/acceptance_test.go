@@ -90,7 +90,7 @@ func TestAcceptReturns202WithTheRegisteredAcceptance(t *testing.T) {
 	assert.Equal(t, domain.ChannelWeb, svc.gotChannel)
 	assert.JSONEq(t, `{
 		"acceptance_id": "acc-1", "offer_id": "demo-active-1", "customer_id": "cust-1", "channel": "web",
-		"accepted_at": "2026-10-11T15:00:00Z", "status": "registered", "underwriting": null,
+		"accepted_at": "2026-10-11T15:00:00Z", "status": "registered", "underwriting": null, "review": null,
 		"processing": {"attempts": 0, "last_failure_at": null, "next_attempt_at": "2026-10-11T15:00:00Z"},
 		"updated_at": "2026-10-11T15:00:00Z"
 	}`, rec.Body.String())
@@ -122,6 +122,40 @@ func TestApprovedDecisionHasNoReason(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, map[string]any{"outcome": "approved", "reason": nil, "decided_at": "2026-10-11T15:00:00Z"}, decode(t, rec)["underwriting"])
+}
+
+// HU-W1.1-02: the customer sees the advisor decision and the new offer (E6b).
+func TestAdjustedAcceptanceShowsTheNewOffer(t *testing.T) {
+	a := registered()
+	a.Status = domain.AcceptanceAdjusted
+	a.NextAttemptAt = time.Time{}
+	a.Decision = &domain.UnderwritingDecision{Outcome: domain.UnderwritingHumanReview, Reason: domain.ReviewReasonProvisionalOffer, DecidedAt: accepted}
+	a.Review = &domain.AcceptanceReview{Outcome: domain.DecisionAdjust, DecidedAt: accepted.Add(time.Hour),
+		AdjustedOffer: &domain.AdjustedOffer{ID: "adj-acc-1", Premium: 98450, Currency: "COP", ExpiresAt: accepted.Add(25 * time.Hour)}}
+
+	rec := call(t, &fakeAcceptances{acceptance: a}, http.MethodGet, "/v1/acceptances/acc-1", "insured:cust-1", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	m := decode(t, rec)
+	assert.Equal(t, "adjusted", m["status"])
+	assert.Equal(t, map[string]any{
+		"outcome": "adjust", "decided_at": "2026-10-11T16:00:00Z",
+		"adjusted_offer": map[string]any{"offer_id": "adj-acc-1", "premium": 98450.0, "currency": "COP", "expires_at": "2026-10-12T16:00:00Z"},
+	}, m["review"])
+}
+
+// HU-W1.1-02: the customer sees that the risk was not accepted (E6c).
+func TestRejectedAcceptanceShowsTheDecision(t *testing.T) {
+	a := registered()
+	a.Status = domain.AcceptanceRejected
+	a.Review = &domain.AcceptanceReview{Outcome: domain.DecisionReject, DecidedAt: accepted.Add(time.Hour)}
+
+	rec := call(t, &fakeAcceptances{acceptance: a}, http.MethodGet, "/v1/acceptances/acc-1", "insured:cust-1", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	m := decode(t, rec)
+	assert.Equal(t, "rejected", m["status"])
+	assert.Equal(t, map[string]any{"outcome": "reject", "decided_at": "2026-10-11T16:00:00Z", "adjusted_offer": nil}, m["review"])
 }
 
 func TestAcceptErrors(t *testing.T) {
