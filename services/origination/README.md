@@ -150,6 +150,7 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `ACCEPTANCE_RETRY_BASE_MS` | `2000` | Espera tras el primer intento fallido; se duplica en cada falla |
 | `ACCEPTANCE_RETRY_MAX_MS` | `60000` | Tope de la espera entre intentos (≥ `ACCEPTANCE_RETRY_BASE_MS`) |
 | `UNDERWRITING_STUB_FLAKY_FAILURES` | `2` | Intentos que falla la suscripción simulada para las ofertas `demo-flaky-*` (escenario de reanudación) |
+| `UNDERWRITING_REVIEW_SCORE_THRESHOLD` | `0.8` | Puntaje del perfil por encima del cual la suscripción simulada envía una oferta normal al asesor (motivo `high_risk_score`); 0 es el menor riesgo. Mayor que 0 y hasta 1. Es una regla propia de la revisión, independiente de las categorías de precio |
 
 `OPEN_FINANCE_TIMEOUT_MS` queda como tope del adaptador de Open Finance (Open Data y KYC usan 700 ms); en el recorrido el corte
 efectivo de cada fuente es el menor entre ese tope y `SOURCE_BUDGET_MS`. Los `BREAKER_*` se aplican a cada fuente por separado.
@@ -177,8 +178,9 @@ oferta ya aceptada ─────────────────▶ 200 la
   idempotente que falló (encolar en la bandeja o iniciar la emisión). Espera de 2 s duplicándose hasta 60 s, sin límite de intentos.
 - **Pendiente (adaptadores en memoria de `internal/adapters/memory`):** persistencia en PostgreSQL (hoy una aceptación no sobrevive a
   un reinicio del servicio), ofertas reales de HU-W1.2-03 (hoy `OfferStub` con ofertas `demo-<escenario>-<sufijo>`: `active`,
-  `review`, `lowscore`, `expired`, `flaky`; la oferta se crea en la primera consulta y pertenece a quien la consulta), el motor de
-  suscripción (hoy reglas provisionales: oferta provisional → `provisional_offer`; score < 0,4 → `low_risk_score`; si no, aprueba),
+  `review`, `highrisk`, `expired`, `flaky`; la oferta se crea en la primera consulta y pertenece a quien la consulta), el motor de
+  suscripción (hoy reglas provisionales: oferta provisional → `provisional_offer`; puntaje > `UNDERWRITING_REVIEW_SCORE_THRESHOLD`
+  (0,8 por defecto) → `high_risk_score`; si no, aprueba),
   la bandeja de HU-W1.1-02 y el cobro y la emisión de HU-W1.3-02 / HA-D02. Generar una oferta nueva tras `offer_expired` es de
   HU-W1.2-03. No publica eventos todavía.
 - Contrato para el front: [`docs/contratos/HU-W1.3-01-api.md`](../../docs/contratos/HU-W1.3-01-api.md).
