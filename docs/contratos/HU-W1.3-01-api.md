@@ -11,6 +11,10 @@
 > Ahora van al asesor los puntajes **mayores al umbral de revisión** (`UNDERWRITING_REVIEW_SCORE_THRESHOLD`, 0,8 por defecto), con
 > el motivo `high_risk_score` y el escenario `demo-highrisk-*` (§2.4, §4, §5 y §8). Los ejemplos JSON capturados el 2026-10-11 no
 > cambian.
+>
+> **Ampliación del 2026-10-17 (HU-W1.1-02, contrato 0.8.0):** la bandeja del asesor ya decide. La aceptación suma los estados
+> `adjusted` y `rejected` y el objeto `review` (§2.4 y §4); el detalle de la bandeja está en
+> [`HU-W1.1-02-api.md`](HU-W1.1-02-api.md). Es un cambio aditivo: los campos anteriores no cambian.
 
 ---
 
@@ -134,11 +138,15 @@ Base URL: ver §7. Todas las rutas usan JSON (`Content-Type: application/json`) 
 | `customer_id` | string | No | Dueño de la oferta = claim `sub` del token |
 | `channel` | `web` \| `mobile` | No | Canal donde se aceptó |
 | `accepted_at` | string (fecha-hora) | No | Momento en que quedó registrada la aceptación (punto de no pérdida) |
-| `status` | `registered` \| `issuance_pending` \| `in_review` | No | Ver §4 |
+| `status` | `registered` \| `issuance_pending` \| `in_review` \| `adjusted` \| `rejected` | No | Ver §4 (`adjusted` y `rejected` los pone el asesor, HU-W1.1-02) |
 | `underwriting` | objeto | **Sí** | `null` hasta que la suscripción decide |
 | `underwriting.outcome` | `approved` \| `human_review` | No | Decisión de la suscripción automática |
 | `underwriting.reason` | `provisional_offer` \| `high_risk_score` | **Sí** | Motivo del enrutamiento a revisión; `null` si `approved` |
 | `underwriting.decided_at` | string (fecha-hora) | No | Momento de la decisión |
+| `review` | objeto | **Sí** | Decisión del asesor sobre una solicitud enrutada (HU-W1.1-02); `null` hasta que decide |
+| `review.outcome` | `accept` \| `adjust` \| `reject` | No | Tras `accept`, `underwriting.outcome` pasa a `approved` |
+| `review.decided_at` | string (fecha-hora) | No | Momento de la decisión del asesor |
+| `review.adjusted_offer` | `{offer_id, premium, currency, expires_at}` | **Sí** | Solo en `adjust`: la nueva oferta (`adj-{acceptance_id}`, vigencia de 24 h) que el cliente acepta con el mismo `POST /v1/offers/{offer_id}/acceptance` |
 | `processing.attempts` | entero ≥ 0 | No | Intentos fallidos de procesamiento. **> 0 con `status=registered` = trámite reanudándose tras una falla** |
 | `processing.last_failure_at` | string (fecha-hora) | **Sí** | Última falla; `null` si nunca falló |
 | `processing.next_attempt_at` | string (fecha-hora) | **Sí** | Próximo intento automático; `null` cuando el estado ya no es `registered` |
@@ -189,7 +197,11 @@ texto a mostrar por `error`**, nunca por `message` (puede cambiar). `offer_expir
 (POST 202) ─▶ registered ──────────────────────────────────────────────────────────────────────────┘
                 │
                 ├── suscripción aprueba ──────────▶ issuance_pending   (final en esta HU)
-                └── suscripción enruta a humano ──▶ in_review          (final en esta HU)
+                └── suscripción enruta a humano ──▶ in_review
+                                                      ├─ asesor acepta ──▶ registered (aprobada) ─▶ issuance_pending
+                                                      ├─ asesor ajusta ──▶ adjusted  (final; nueva oferta en review.adjusted_offer)
+                                                      └─ asesor rechaza ─▶ rejected  (final; sin cobro)
+                                                      (HU-W1.1-02)
 
 (POST 422 offer_expired) ─▶ no se crea ninguna aceptación
 ```
@@ -198,11 +210,14 @@ texto a mostrar por `error`**, nunca por `message` (puede cambiar). `offer_expir
 |---|---|---|---|
 | `registered` y `processing.attempts == 0` | Aceptación guardada; suscripción en curso | «Aceptación de la oferta»: confirmación de que la aceptación quedó registrada (fecha/hora de `accepted_at`) y un indicador «Estamos validando tu solicitud…» | Sí |
 | `registered` y `processing.attempts > 0` | Un paso posterior falló; el sistema reintenta solo | «Aceptación conservada ante falla posterior»: «Tu aceptación del {accepted_at} está guardada. Tuvimos un inconveniente y estamos retomando el trámite automáticamente; no necesitas repetirlo». Opcional: «Próximo intento: {next_attempt_at}» | Sí |
-| `in_review` | La suscripción enrutó el caso a un asesor | «Solicitud en revisión»: «Tu solicitud está siendo revisada por un asesor». Para el cliente basta un texto genérico; `underwriting.reason` puede usarse solo para variar el texto: `provisional_offer` → «tu oferta se calculó con información provisional», `high_risk_score` → «tu perfil requiere una revisión adicional» | No (en esta HU no cambia; la decisión del asesor llega con HU-W1.1-02) |
+| `in_review` | La suscripción enrutó el caso a un asesor | «Solicitud en revisión»: «Tu solicitud está siendo revisada por un asesor». Para el cliente basta un texto genérico; `underwriting.reason` puede usarse solo para variar el texto: `provisional_offer` → «tu oferta se calculó con información provisional», `high_risk_score` → «tu perfil requiere una revisión adicional» | No: la decisión del asesor (HU-W1.1-02) se ve al volver a consultar la aceptación y llega también por correo |
 | `issuance_pending` | Riesgo aprobado; la emisión ya inició | «Suscripción aprobada, estamos emitiendo tu póliza». El paso siguiente (pago de la prima, HU-W1.3-02) aún no existe | No |
+| `adjusted` | Un asesor ajustó la prima (HU-W1.1-02) | E6b «Solicitud ajustada»: nueva prima y vigencia de `review.adjusted_offer`, «Ver la nueva oferta» → la oferta `review.adjusted_offer.offer_id`; también se avisa por correo | No |
+| `rejected` | Un asesor no aceptó el riesgo (HU-W1.1-02) | E6c «Solicitud rechazada»: no se cobró nada, «Continuar con mi crédito»; también se avisa por correo | No |
 
-Transiciones posibles: `registered → registered` (reintento), `registered → issuance_pending`, `registered → in_review`. No hay
-otras en esta HU; `issuance_pending` e `in_review` no retroceden.
+Transiciones posibles: `registered → registered` (reintento), `registered → issuance_pending`, `registered → in_review` y, por la
+decisión del asesor (HU-W1.1-02), `in_review → registered` (aceptar), `in_review → adjusted` e `in_review → rejected`.
+`issuance_pending`, `adjusted` y `rejected` no retroceden.
 
 ---
 
@@ -415,7 +430,7 @@ Variables que el front necesita en su `environment`: URL base de la API (o el pr
 | Ofertas | **Simuladas** (`demo-<escenario>-<sufijo>`): prima 89 500 COP, vigencia de 24 h desde la **primera consulta**; la oferta pertenece al **primer usuario que la usa**; otros ids → `404 offer_not_found` | No hay endpoint para leer el detalle de la oferta (prima, coberturas, vigencia): la pantalla de oferta debe usar datos de prueba hasta HU-W1.2-03 | HU-W1.2-03 |
 | Generar nueva oferta | **No existe** | El botón de §5.3 queda sin endpoint | HU-W1.2-03 |
 | Suscripción automática | **Reglas provisionales**: oferta provisional → `in_review` (`provisional_offer`); puntaje mayor al umbral de revisión (`UNDERWRITING_REVIEW_SCORE_THRESHOLD`, 0,8 por defecto; 0 es el menor riesgo) → `in_review` (`high_risk_score`); si no, `approved`. `demo-flaky-*` falla los primeros intentos | Los motivos y las proporciones de revisión cambiarán con el motor real | Motor de suscripción |
-| Bandeja del asesor | **En memoria**: recibe solicitante, oferta, prima y motivo, pero no hay endpoints para listarla ni decidir | El asesor no puede actuar todavía; `in_review` no avanza | HU-W1.1-02 |
+| Bandeja del asesor | **En memoria**; HU-W1.1-02 expone `GET /v1/review-requests`, `GET /v1/review-requests/{acceptance_id}` y `POST …/decision` (solo `advisor`) | `in_review` avanza a `registered`/`issuance_pending`, `adjusted` o `rejected` según el asesor ([`HU-W1.1-02-api.md`](HU-W1.1-02-api.md)) | PostgreSQL de origination |
 | Inicio de la emisión | **Simulado**: solo registra que inició | Tras `issuance_pending` no hay cobro ni póliza | HU-W1.3-02, HA-D02 |
 | Eventos | Ninguno publicado | — | HU-W1.3-02 (`PolicyIssued`, `ChargeCompleted`) |
 | Rutas en el API Gateway (AWS) | No registradas | Solo se puede probar en local | Infraestructura |
