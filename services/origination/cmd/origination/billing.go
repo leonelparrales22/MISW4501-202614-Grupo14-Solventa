@@ -9,6 +9,7 @@ import (
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/payments"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/resilience"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
 	paymentsadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/payments"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/billing"
@@ -33,8 +34,10 @@ const (
 
 // billingConfig configures the premium charge (HA-D02). It is enabled when
 // PAYMENT_GATEWAY_URL is set; then DATABASE_URL (the charge is always durable,
-// decision D-2b) and EMAIL_URL (every confirmed charge issues its contractual
-// document, decision D-16 b) are required too.
+// decision D-2b), EMAIL_URL (every confirmed charge issues its contractual
+// document, decision D-16 b) and AUTH_ISSUER (the charge hangs from the human
+// routes, so without them saved charges and paid activations would wait
+// unprocessed) are required too.
 type billingConfig struct {
 	enabled        bool
 	gatewayURL     string
@@ -60,6 +63,10 @@ func loadBillingConfig(getenv func(string) string, cfg *billingConfig) error {
 	if getenv(envEmailURL) == "" {
 		return fmt.Errorf("%s is required when %s is set: every confirmed charge must issue its contractual document and notify the insured (HA-D02, decision D-16)",
 			envEmailURL, envPaymentGatewayURL)
+	}
+	if getenv(security.EnvIssuer) == "" {
+		return fmt.Errorf("%s is required when %s is set: without the human routes the saved charges and the confirmed activations would not be processed (HA-D02)",
+			security.EnvIssuer, envPaymentGatewayURL)
 	}
 
 	var err error

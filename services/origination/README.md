@@ -152,7 +152,7 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `ACCEPTANCE_RETRY_BASE_MS` | `2000` | Espera tras el primer intento fallido; se duplica en cada falla |
 | `ACCEPTANCE_RETRY_MAX_MS` | `60000` | Tope de la espera entre intentos (≥ `ACCEPTANCE_RETRY_BASE_MS`) |
 | `UNDERWRITING_STUB_FLAKY_FAILURES` | `2` | Intentos que falla la suscripción simulada para las ofertas `demo-flaky-*` (escenario de reanudación) |
-| `PAYMENT_GATEWAY_URL` | vacío | URL de la pasarela de pagos (en local, `stubs/payment-gateway` en el puerto 9040, detrás de Toxiproxy). Vacía: la aceptación aprobada solo registra el inicio de la emisión (`IssuanceStub`), sin cobro ni activación de la cobertura, con aviso en el log; si además hay `EMAIL_URL`, el log avisa que no se emitirán documentos contractuales. Definida: el cobro de HA-D02 se monta con las rutas humanas (requiere `AUTH_ISSUER`) |
+| `PAYMENT_GATEWAY_URL` | vacío | URL de la pasarela de pagos (en local, `stubs/payment-gateway` en el puerto 9040, detrás de Toxiproxy). Vacía: la aceptación aprobada solo registra el inicio de la emisión (`IssuanceStub`), sin cobro ni activación de la cobertura, con aviso en el log; si además hay `EMAIL_URL`, el log avisa que no se emitirán documentos contractuales. Definida: el cobro de HA-D02 se monta con las rutas humanas y son obligatorias `DATABASE_URL`, `EMAIL_URL` y `AUTH_ISSUER`; si falta alguna, originación no arranca y el error dice cuál |
 | `DATABASE_URL` | vacío | PostgreSQL de originación (secreto: viene del entorno o de Secrets Manager, nunca se registra). **Obligatoria si `PAYMENT_GATEWAY_URL` está definida** (decisión D-2b): el cobro siempre es durable |
 | `PAYMENT_GATEWAY_TIMEOUT_MS` | `700` | Corte duro de cada intento de cobro (decisión D-9); un corte solo vuelve ambigua la respuesta, que se reintenta con la misma clave |
 | `RETRY_WINDOW_SECONDS` | `86400` | Ventana de reintentos del cobro (24 h, ADR-01); al vencer, el cobro queda como excepción de emisión |
@@ -237,7 +237,9 @@ billing.Worker (cada tarea) ─▶ claim atómico (UPDATE condicional con lease)
   espera creciente y **sin ventana** (el pago ya está hecho). Un claim de publicación evita que dos tareas publiquen a la vez.
 - **No se cobra lo que no se puede activar** (D-17): si la foto no alcanza para el evento (por ejemplo, sin correo del titular), no se crea
   el cobro y la aceptación sigue `registered`, reintentándose.
-- **Configuración:** con `PAYMENT_GATEWAY_URL` son obligatorias `DATABASE_URL` y `EMAIL_URL` (D-2b, D-16 b). Sin pasarela no hay cobro
+- **Configuración:** con `PAYMENT_GATEWAY_URL` son obligatorias `DATABASE_URL`, `EMAIL_URL` y `AUTH_ISSUER` (D-2b, D-16 b y la
+  decisión de Nicolás sobre m-3: sin las rutas humanas, los cobros guardados y las activaciones pagadas quedarían sin procesar); si falta
+  alguna, originación no arranca. Sin pasarela no hay cobro
   ni activación: el stub que simulaba la activación se retiró (D-14).
 - **Datos:** la foto (titular, prima, monto asegurado, plazo y coberturas) se guarda en `charge_attempt`, así que el evento sale igual
   aunque las ofertas sigan en memoria. Monto asegurado, plazo y coberturas son de demostración (`demoCoverageTerms` en `cmd`) hasta

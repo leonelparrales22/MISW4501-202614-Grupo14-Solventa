@@ -24,6 +24,8 @@ func billingEnv() map[string]string {
 	m := contractEnv()
 	m["PAYMENT_GATEWAY_URL"] = "http://payment-gateway:9040"
 	m["DATABASE_URL"] = "postgres://origination@postgres:5432/origination"
+	m["AUTH_ISSUER"] = "https://cognito-idp.us-east-2.amazonaws.com/pool"
+	m["AUTH_CLIENT_IDS"] = "web,mobile"
 	return m
 }
 
@@ -78,12 +80,28 @@ func TestBillingConfigRejectsAMissingDatabaseOrEmail(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "DATABASE_URL is required", "decision D-2b: the charge is always durable")
 
-	noEmail := requiredEnv()
-	noEmail["PAYMENT_GATEWAY_URL"] = "http://payment-gateway:9040"
-	noEmail["DATABASE_URL"] = "postgres://origination@postgres:5432/origination"
+	noEmail := billingEnv()
+	delete(noEmail, "EMAIL_URL")
 	_, err = loadConfig(env(noEmail))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "EMAIL_URL is required", "decision D-16 b: a paid policy always gets its document")
+}
+
+func TestBillingConfigRejectsAGatewayWithoutAuth(t *testing.T) {
+	noAuth := billingEnv()
+	delete(noAuth, "AUTH_ISSUER")
+	delete(noAuth, "AUTH_CLIENT_IDS")
+
+	_, err := loadConfig(env(noAuth))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AUTH_ISSUER is required when PAYMENT_GATEWAY_URL is set",
+		"m-3 (a): saved charges and paid activations are never left unprocessed")
+
+	cfg, err := loadConfig(env(requiredEnv()))
+	require.NoError(t, err, "without a gateway nothing changes: no AUTH_ISSUER needed")
+	assert.False(t, cfg.billing.enabled)
+	assert.False(t, cfg.acceptances.enabled)
 }
 
 func TestBillingConfigRejectsInvalidValues(t *testing.T) {

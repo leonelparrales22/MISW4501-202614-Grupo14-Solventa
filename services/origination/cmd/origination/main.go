@@ -102,10 +102,6 @@ func main() {
 			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver), verifier))
 	} else {
 		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01, contract documents HU-W1.3-03) are not mounted", security.EnvIssuer)
-		if cfg.billing.enabled {
-			log.Printf("%s is set but %s is not: without accepted offers nothing is charged, so the premium charge (HA-D02) is not wired",
-				envPaymentGatewayURL, security.EnvIssuer)
-		}
 	}
 
 	srv := &http.Server{
