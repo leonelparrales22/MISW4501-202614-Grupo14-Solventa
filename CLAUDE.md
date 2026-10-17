@@ -31,7 +31,13 @@ REDIS_ADDR=localhost:6379 OPEN_FINANCE_URL=http://localhost:9000 go run ./servic
 ```
 
 - `golangci-lint` must be **v2.x** (`.golangci.yml` uses `version: "2"`; CI pins v2.1.6). gofmt and goimports run as formatters.
-- If `make` is not installed (e.g. on Windows), run the commands from the `Makefile` directly with the same package lists.
+- If `make` is not installed (e.g. on Windows), run the `Makefile` commands directly with the same package lists:
+  ```bash
+  S="origination claims partners audit notifications"
+  golangci-lint run ./pkg/... $(for s in $S; do printf './services/%s/... ' $s; done)
+  go test -cover ./pkg/... $(for s in $S; do printf './services/%s/... ' $s; done)
+  for s in $S; do go build -o bin/$s ./services/$s/cmd/$s; done
+  ```
 - The `Makefile` and CI skip `stubs/`. Lint and test a stub on its own: `golangci-lint run ./stubs/<stub>/...` and `go test -cover ./stubs/<stub>/...`.
 - `services/<svc>/tests/integration` has no build tags, so `make test` runs it. `pkg/security/cognito_staging_integration_test.go` skips unless `AUTH_STAGING_ISSUER` (and related vars) are set.
 - Cross-service load, resilience and security scenarios (k6, Toxiproxy, Schemathesis, ZAP) live in `tests/<kind>/<story-id>/`, each with its own README. Local Toxiproxy and LocalStack configs live in `infra/local/`.

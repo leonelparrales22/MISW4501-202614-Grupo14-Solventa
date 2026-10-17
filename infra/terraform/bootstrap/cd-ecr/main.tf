@@ -5,8 +5,8 @@
 # token for short-lived credentials, and the trust policy only accepts runs of
 # the configured branches of this repository (never pull requests).
 #
-# Applied once and permanent, like bootstrap/remote-state. Deploying the images
-# to ECS is a later step: it needs the persistent cluster, which does not exist yet.
+# Applied once and permanent, like bootstrap/remote-state. The environments
+# (environments/*/platform) read these repositories and deploy the images to ECS.
 
 locals {
   account_id = "368083581678"
@@ -40,55 +40,27 @@ locals {
 
 # --- Registries -------------------------------------------------------------------------
 
-resource "aws_ecr_repository" "this" {
-  for_each = local.images
+# Immutable, scanned repositories with their lifecycle policy (modules/ecr, T4).
+# The environments (environments/*/platform) only read them.
+module "ecr" {
+  source = "../../modules/ecr"
 
-  name = "solventa/${each.key}"
-
-  # Images are tagged with the commit SHA and never overwritten, so a deployed
-  # tag always means the same bytes and a rollback is a redeploy of an old tag.
-  image_tag_mutability = "IMMUTABLE"
-  force_delete         = false
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  encryption_configuration {
-    encryption_type = "AES256"
-  }
+  images               = local.images
+  untagged_expiry_days = var.untagged_expiry_days
+  images_to_keep       = var.images_to_keep
 }
 
-resource "aws_ecr_lifecycle_policy" "this" {
-  for_each = aws_ecr_repository.this
+# The repositories were created here before modules/ecr existed (2026-10-11).
+# These blocks move them in the state, so the plan neither destroys nor
+# recreates them (an immutable repository full of images).
+moved {
+  from = aws_ecr_repository.this
+  to   = module.ecr.aws_ecr_repository.this
+}
 
-  repository = each.value.name
-
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
-        description  = "Expire untagged images after ${var.untagged_expiry_days} days"
-        selection = {
-          tagStatus   = "untagged"
-          countType   = "sinceImagePushed"
-          countUnit   = "days"
-          countNumber = var.untagged_expiry_days
-        }
-        action = { type = "expire" }
-      },
-      {
-        rulePriority = 2
-        description  = "Keep only the ${var.images_to_keep} most recent images"
-        selection = {
-          tagStatus   = "any"
-          countType   = "imageCountMoreThan"
-          countNumber = var.images_to_keep
-        }
-        action = { type = "expire" }
-      },
-    ]
-  })
+moved {
+  from = aws_ecr_lifecycle_policy.this
+  to   = module.ecr.aws_ecr_lifecycle_policy.this
 }
 
 # --- GitHub Actions identity -------------------------------------------------------------
@@ -156,7 +128,7 @@ data "aws_iam_policy_document" "push" {
       "ecr:PutImage",
       "ecr:UploadLayerPart",
     ]
-    resources = [for r in aws_ecr_repository.this : r.arn]
+    resources = values(module.ecr.repository_arns)
   }
 }
 

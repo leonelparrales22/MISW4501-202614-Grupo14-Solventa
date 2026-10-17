@@ -1,14 +1,18 @@
 # `bootstrap/cd-ecr` — base del despliegue continuo (publicación de imágenes)
 
 Repositorios **ECR permanentes** y el **rol de IAM** que el workflow [`backend-cd`](../../../../.github/workflows/backend-cd.yml)
-asume mediante OIDC para publicar en ellos. Es la primera mitad del CD: construir y publicar imágenes. Desplegarlas en ECS
-queda para cuando exista el clúster persistente (los módulos `ecs`, `alb`, `network`, etc. siguen reservados).
+asume mediante OIDC para publicar en ellos. Es la primera mitad del CD: construir y publicar imágenes. Las composiciones
+`environments/*/platform` (T4) leen estos repositorios y despliegan las imágenes en ECS con `terraform apply`.
+
+Los repositorios se declaran con el módulo [`ecr`](../../modules/ecr/README.md). Antes de que existiera el módulo vivían
+directamente aquí; los bloques `moved` de `main.tf` los trasladan en el estado, así que el `plan` siguiente al cambio solo debe
+mostrar los traslados (`has moved to module.ecr...`), **sin destruir ni crear repositorios**. Revíselo antes de aplicar.
 
 Se aplica una vez, a mano, por alguien con permisos de IAM y ECR en la cuenta `368083581678` (los del grupo `solventa-devs`
 bastan; no hace falta ser administrador). **Aplicada el 2026-10-11**: 19 recursos creados y `terraform plan` sin diferencias.
 Es permanente, como [`remote-state`](../remote-state/README.md): no es de una ventana de staging.
 
-**Alcance:** solo publica imágenes. Todavía no despliega nada: para eso falta el clúster ECS persistente.
+**Alcance:** solo publica imágenes. El despliegue lo hacen las composiciones `environments/*/platform`.
 
 | Elemento | Configuración | Por qué |
 |---|---|---|
@@ -56,8 +60,9 @@ cambiar sin actualizar ese archivo. No hay secretos ni variables que configurar 
 3. Cada imagen se construye con el contexto en la raíz y se publica como `solventa/<imagen>:<sha de 12 caracteres>`.
 4. Si esa etiqueta ya existe (reejecución del mismo commit), no se vuelve a publicar.
 
-`develop` y `main` publican en los mismos repositorios, con el SHA como única etiqueta: no hay etiquetas por ambiente porque aún
-no hay ambientes a los que desplegar.
+`develop` y `main` publican en los mismos repositorios, con el SHA como única etiqueta: no hay etiquetas por ambiente. Cada
+composición `environments/*/platform` elige qué desplegar con `image_tag` / `image_tag_overrides` (o la imagen más reciente,
+fijada por *digest*).
 
 ## Pruebas (locales, sin AWS)
 
