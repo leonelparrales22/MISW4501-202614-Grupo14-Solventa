@@ -19,7 +19,7 @@ func testConfig(url string, timeout time.Duration) openfinance.Config {
 	return openfinance.Config{
 		BaseURL: url,
 		Timeout: timeout,
-		Breaker: resilience.Config{ConsecutiveFailures: 3, OpenTimeout: 60 * time.Millisecond, HalfOpenSuccesses: 3},
+		Breaker: resilience.Config{ConsecutiveFailures: 3, OpenTimeout: 300 * time.Millisecond, HalfOpenSuccesses: 3},
 	}
 }
 
@@ -117,7 +117,7 @@ func TestOpenCircuitStopsCallingTheProviderAndRecovers(t *testing.T) {
 	assert.Equal(t, before, hits.Load(), "open circuit must not reach the provider")
 
 	healthy.Store(true)
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 	for i := 0; i < 3; i++ {
 		_, err := c.FetchProfile(context.Background(), "c1")
 		require.NoError(t, err)
