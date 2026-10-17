@@ -4,8 +4,9 @@ Plataforma completa del módulo [`platform`](../../../modules/platform/README.md
 stubs de proveedores y toda la infraestructura que necesitan. Esta carpeta solo fija los valores del ambiente; la topología está
 en el README del módulo.
 
-> **Estado:** código validado con `terraform validate` y `terraform test` (proveedor simulado). **No se ha aplicado en AWS.**
-> Aplicarla exige la autorización del equipo (estimación de costo escrita y aprobada).
+> **Estado:** código validado con `terraform validate` y `terraform test` (proveedor simulado). **No se ha aplicado en AWS**; el
+> mismo módulo `platform` se aplicó y destruyó en [`staging/platform`](../../staging/platform/README.md#ventana-del-2026-10-17) el
+> 2026-10-17 sin errores. Aplicarla exige la autorización del equipo (estimación de costo escrita y aprobada).
 
 ## Valores del ambiente
 
