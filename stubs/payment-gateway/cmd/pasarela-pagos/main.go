@@ -19,6 +19,15 @@
 // 51), so the explicit rejection can be shown with a regular demo offer.
 // Faults and latency are injected from outside with Toxiproxy;
 // ARTIFICIAL_DELAY_MS delays every answer after the charge is recorded.
+//
+// POST /tokens tokenises a card the way a real gateway does (HU-W1.3-02): the
+// browser sends the card straight here and gets back a token, so the number
+// never reaches Solventa and the platform stays out of PCI-DSS scope. The
+// stub keeps the brand and the last four digits of the token, never the
+// number. A charge that carries a payment_token is decided by the card behind
+// it: the conventional test card 4111 1111 1111 1111 is approved and anything
+// ending in 0002 is declined for insufficient funds, which is what makes
+// screen E4c reachable in a demo. A charge without a token behaves as before.
 package main
 
 import (
@@ -40,6 +49,14 @@ const (
 	defaultPort    = "9040"
 	maxKeyLength   = 255
 	maxFieldLength = 256
+
+	// Conventional test cards. Approving one number and declining another is
+	// what lets a demo walk both branches of screen E4 without touching code.
+	approvedTestCard   = "4111111111111111"
+	declinedCardSuffix = "0002"
+	insufficientFunds  = "insufficient_funds"
+	tokenPrefix        = "tok_"
+	maxTokenLength     = 128
 )
 
 type chargeRequest struct {
@@ -47,6 +64,31 @@ type chargeRequest struct {
 	CustomerID  string `json:"customer_id"`
 	AmountMinor int64  `json:"amount_minor"`
 	Currency    string `json:"currency"`
+	// PaymentToken is the token of POST /tokens. Empty keeps the behaviour
+	// the charge had before HU-W1.3-02, so nothing that already calls this
+	// stub breaks.
+	PaymentToken string `json:"payment_token,omitempty"`
+}
+
+// tokenRequest is a card on its way to being tokenised. It only lives inside
+// this handler: nothing of it is stored but the brand and the last four.
+type tokenRequest struct {
+	Number string `json:"number"`
+	Holder string `json:"holder"`
+}
+
+type tokenResponse struct {
+	Token string `json:"token"`
+	Brand string `json:"brand"`
+	Last4 string `json:"last4"`
+}
+
+// tokenInfo is what the gateway remembers of a token: enough to show it and
+// to decide the charge, never the number.
+type tokenInfo struct {
+	Brand    string
+	Last4    string
+	Declines bool
 }
 
 type charge struct {
@@ -79,10 +121,12 @@ type gateway struct {
 
 	mu          sync.Mutex
 	byKey       map[string]result
+	byToken     map[string]tokenInfo
 	requests    map[string]int
 	realCharges map[string]int
 	total       int
 	seq         int
+	tokenSeq    int
 }
 
 func main() {
@@ -99,6 +143,7 @@ func newHandler(delay time.Duration, supportsIdempotency bool) http.Handler {
 	g.reset()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("POST /tokens", g.tokenise)
 	mux.HandleFunc("POST /charges", g.charge)
 	mux.HandleFunc("GET /debug/charges", g.debug)
 	mux.HandleFunc("POST /debug/reset", func(w http.ResponseWriter, _ *http.Request) {
@@ -112,7 +157,84 @@ func (g *gateway) reset() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.byKey, g.requests, g.realCharges = map[string]result{}, map[string]int{}, map[string]int{}
-	g.total, g.seq = 0, 0
+	g.byToken = map[string]tokenInfo{}
+	g.total, g.seq, g.tokenSeq = 0, 0, 0
+}
+
+// tokenise turns a card into a token. This is the endpoint the browser calls
+// directly, so the number never travels through Solventa: only the token, the
+// brand and the last four digits come back, and only those are kept here.
+func (g *gateway) tokenise(w http.ResponseWriter, r *http.Request) {
+	var in tokenRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_request", Message: "the body is not valid JSON"})
+		return
+	}
+	number := onlyDigits(in.Number)
+	if len(number) < 13 || len(number) > 19 || !luhn(number) {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_card",
+			Message: "the card number is not valid"})
+		return
+	}
+
+	last4 := number[len(number)-4:]
+	info := tokenInfo{
+		Brand: brandOf(number),
+		Last4: last4,
+		// The decision is fixed when the card is tokenised, not when it is
+		// charged: the number is gone by then, which is the whole point.
+		Declines: number != approvedTestCard && strings.HasSuffix(number, declinedCardSuffix),
+	}
+
+	g.mu.Lock()
+	g.tokenSeq++
+	token := tokenPrefix + strconv.Itoa(g.tokenSeq) + last4
+	g.byToken[token] = info
+	g.mu.Unlock()
+
+	log.Printf("card tokenised token=%s brand=%s last4=%s declines=%t", token, info.Brand, info.Last4, info.Declines)
+	writeJSON(w, http.StatusCreated, tokenResponse{Token: token, Brand: info.Brand, Last4: info.Last4})
+}
+
+// luhn is the checksum every card number satisfies. Rejecting a number that
+// fails it is what a real gateway does, and it keeps a typo from becoming a
+// charge that is declined for the wrong reason.
+func luhn(number string) bool {
+	sum, double := 0, false
+	for i := len(number) - 1; i >= 0; i-- {
+		d := int(number[i] - '0')
+		if double {
+			if d *= 2; d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+		double = !double
+	}
+	return sum%10 == 0
+}
+
+func brandOf(number string) string {
+	switch {
+	case strings.HasPrefix(number, "4"):
+		return "visa"
+	case strings.HasPrefix(number, "34"), strings.HasPrefix(number, "37"):
+		return "amex"
+	case strings.HasPrefix(number, "5"), strings.HasPrefix(number, "2"):
+		return "mastercard"
+	default:
+		return "unknown"
+	}
+}
+
+func onlyDigits(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func (g *gateway) charge(w http.ResponseWriter, r *http.Request) {
@@ -160,10 +282,12 @@ func (g *gateway) process(key string, in chargeRequest) (status int, body any, n
 		return replay, prev.body, false
 	}
 
+	declined, reason := g.decide(in)
+
 	var res result
-	if strings.Contains(in.Reference, declineMarker) {
+	if declined {
 		res = result{req: in, status: http.StatusPaymentRequired, body: errorBody{
-			Error: "payment_declined", Message: "the issuer declined the charge", DeclineCode: declineCode}}
+			Error: "payment_declined", Message: reason, DeclineCode: declineCode}}
 	} else {
 		g.seq++
 		g.realCharges[key]++
@@ -177,9 +301,39 @@ func (g *gateway) process(key string, in chargeRequest) (status int, body any, n
 	return res.status, res.body, newCharge
 }
 
+// decide tells whether a charge is declined and why. A charge that carries a
+// token is decided by the card behind it; one without a token keeps the old
+// behaviour, so whatever already calls this stub is unaffected. The caller
+// holds the lock.
+func (g *gateway) decide(in chargeRequest) (declined bool, reason string) {
+	if in.PaymentToken != "" {
+		info, known := g.byToken[in.PaymentToken]
+		if !known {
+			return true, "the payment token is unknown or expired"
+		}
+		if info.Declines {
+			return true, "the issuer declined the charge: " + insufficientFunds
+		}
+		return false, ""
+	}
+	if strings.Contains(in.Reference, declineMarker) {
+		return true, "the issuer declined the charge"
+	}
+	return false, ""
+}
+
 func valid(in chargeRequest) bool {
-	return in.Reference != "" && in.CustomerID != "" && in.AmountMinor > 0 && in.Currency != "" &&
-		len(in.Reference) <= maxFieldLength && len(in.CustomerID) <= maxFieldLength && len(in.Currency) <= 8
+	if in.Reference == "" || in.CustomerID == "" || in.AmountMinor <= 0 || in.Currency == "" ||
+		len(in.Reference) > maxFieldLength || len(in.CustomerID) > maxFieldLength || len(in.Currency) > 8 {
+		return false
+	}
+	// A caller that sends a card number where the token goes is a bug worth
+	// failing loudly: the number must never arrive here through the charge.
+	digits := onlyDigits(in.PaymentToken)
+	if len(in.PaymentToken) > maxTokenLength || (len(digits) >= 13 && digits == in.PaymentToken) {
+		return false
+	}
+	return true
 }
 
 // debug lists, per key, the requests received and the real charges made.

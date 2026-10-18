@@ -135,8 +135,12 @@ variable "human_routes" {
     methods = list(string)
   }))
   default = {
-    offers          = { methods = ["GET", "POST"] }
-    acceptances     = { methods = ["GET"] }
+    offers = { methods = ["GET", "POST"] }
+    # POST carries the payment method of screen E4 (HU-W1.3-02) and the
+    # resumption of a failed charge by operations (HA-D02); both hang from
+    # /v1/acceptances/{id}/charge and the gateway only lets through the
+    # methods listed here.
+    acceptances     = { methods = ["GET", "POST"] }
     assisted-quotes = { methods = ["GET", "POST"] }
     customers       = { methods = ["GET"] }
     policies        = { methods = ["GET"] }

@@ -59,6 +59,11 @@ type ChargeRequest struct {
 	CustomerID  string `json:"customer_id"`
 	AmountMinor int64  `json:"amount_minor"`
 	Currency    string `json:"currency"`
+	// PaymentToken identifies the card at the gateway (HU-W1.3-02). The card
+	// number is never here: the browser tokenises it against the gateway and
+	// only the token reaches us. Empty is omitted, so a caller that does not
+	// use a payment method sends exactly what it sent before.
+	PaymentToken string `json:"payment_token,omitempty"`
 }
 
 // Charge is the gateway's record of a successful charge.

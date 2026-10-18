@@ -40,7 +40,10 @@ func TestNewChargeKeepsTheSnapshotAndTheDeterministicKey(t *testing.T) {
 	assert.Equal(t, "COP", c.Currency)
 	assert.Equal(t, "ana@example.com", c.Holder.Email)
 	assert.Equal(t, domain.ChargePending, c.Status)
-	assert.Equal(t, chargeT0, c.NextAttemptAt, "due at once")
+	// HU-W1.3-02: it is not due until the customer hands over a payment
+	// method. The charge is still persisted the moment the acceptance is
+	// approved, so the no-loss point of HA-D02 does not move.
+	assert.True(t, c.NextAttemptAt.IsZero(), "not due until there is a payment method")
 	assert.Equal(t, chargeT0, c.WindowStartedAt)
 	assert.Equal(t, chargeT0.Add(24*time.Hour), c.WindowEndsAt)
 	assert.Empty(t, c.PolicyID, "no policy before the payment")
@@ -137,4 +140,130 @@ func TestAttemptStateAndFailureReasons(t *testing.T) {
 	assert.Equal(t, domain.ChargeRetryWindowExpired, domain.ChargeFailureReasonFor(idempotency.ReasonWindowExpired))
 	assert.Equal(t, "pol-x", domain.PolicyIDFor("x"))
 	assert.Equal(t, "evt-coverage-activated-x", domain.ActivationEventIDFor("x"))
+}
+
+// --- Payment method (HU-W1.3-02) -------------------------------------------
+
+func chargeAwaitingCard(t *testing.T) domain.Charge {
+	t.Helper()
+	return domain.Charge{
+		AcceptanceID:   "acc-1",
+		IdempotencyKey: "cobro-acc-1",
+		Status:         domain.ChargePending,
+	}
+}
+
+func card() domain.PaymentMethod {
+	return domain.PaymentMethod{
+		Kind: domain.PaymentCard, Token: "tok_7b3c1f9a",
+		Brand: "visa", Last4: "1111", Installments: 1,
+	}
+}
+
+// The charge is stored the moment the acceptance is approved -the no-loss
+// point does not move- but it waits for the card before it is charged.
+func TestANewChargeIsNotDueUntilThereIsAPaymentMethod(t *testing.T) {
+	now := time.Date(2026, 10, 17, 14, 0, 0, 0, time.UTC)
+
+	c := domain.NewCharge(
+		domain.Acceptance{ID: "acc-1", AcceptedAt: now},
+		domain.Offer{ID: "offer-1", CustomerID: "cust-1", Premium: 89500, Currency: "COP"},
+		domain.CoverageTerms{}, now, now.Add(24*time.Hour))
+
+	assert.Equal(t, domain.ChargePending, c.Status)
+	assert.True(t, c.NextAttemptAt.IsZero(), "it is not due: ListDue skips a charge with no due date")
+	assert.False(t, c.PaymentMethod.Captured())
+	assert.Zero(t, c.PaymentAttempt)
+	assert.Equal(t, now, c.WindowStartedAt, "the 24-hour window runs from the acceptance")
+}
+
+func TestThePaymentMethodMakesTheChargeDue(t *testing.T) {
+	now := time.Date(2026, 10, 17, 14, 5, 0, 0, time.UTC)
+
+	c := chargeAwaitingCard(t).WithPaymentMethod(card(), now)
+
+	assert.Equal(t, now, c.NextAttemptAt)
+	assert.Equal(t, domain.ChargePending, c.Status)
+	assert.Equal(t, 1, c.PaymentAttempt)
+	assert.Equal(t, "1111", c.PaymentMethod.Last4)
+	assert.Equal(t, now, c.PaymentMethod.CapturedAt)
+	assert.Equal(t, "cobro-acc-1", c.IdempotencyKey, "the first attempt keeps the key of HA-D02")
+}
+
+// This is screen E4c: a decline the customer can fix without waiting on an
+// operations analyst.
+func TestADeclinedChargeTakesAnotherCardWithANewKey(t *testing.T) {
+	now := time.Date(2026, 10, 17, 14, 10, 0, 0, time.UTC)
+	declined := chargeAwaitingCard(t)
+	declined.Status = domain.ChargeFailed
+	declined.FailureReason = domain.ChargePaymentRejected
+	declined.PaymentAttempt, declined.Attempts = 1, 1
+	declined.LastError = "the issuer declined the charge"
+
+	c := declined.WithPaymentMethod(card(), now)
+
+	assert.True(t, declined.TakesPaymentMethod(), "a declined charge does take another card")
+	assert.Equal(t, domain.ChargePending, c.Status)
+	assert.Equal(t, "cobro-acc-1-2", c.IdempotencyKey, "a new card needs a new key or the gateway replays the decline")
+	assert.Equal(t, 2, c.PaymentAttempt)
+	assert.Zero(t, c.Attempts)
+	assert.Empty(t, c.FailureReason)
+	assert.Empty(t, c.LastError)
+}
+
+// The retry window is not reopened by a decline: it has been running since
+// the acceptance, which is what the team decided.
+func TestADeclineDoesNotBuyMoreTime(t *testing.T) {
+	started := time.Date(2026, 10, 17, 14, 0, 0, 0, time.UTC)
+	declined := chargeAwaitingCard(t)
+	declined.Status, declined.FailureReason = domain.ChargeFailed, domain.ChargePaymentRejected
+	declined.WindowStartedAt, declined.WindowEndsAt = started, started.Add(24*time.Hour)
+
+	c := declined.WithPaymentMethod(card(), started.Add(time.Hour))
+
+	assert.Equal(t, started, c.WindowStartedAt)
+	assert.Equal(t, started.Add(24*time.Hour), c.WindowEndsAt)
+}
+
+// A charge whose window ran out never got an answer from the gateway, so
+// another card could end up charging twice. Only operations may resume it.
+func TestAChargeThatRanOutOfWindowTakesNoOtherCard(t *testing.T) {
+	c := chargeAwaitingCard(t)
+	c.Status, c.FailureReason = domain.ChargeFailed, domain.ChargeRetryWindowExpired
+
+	assert.False(t, c.TakesPaymentMethod())
+}
+
+func TestAConfirmedOrRunningChargeTakesNoPaymentMethod(t *testing.T) {
+	for _, status := range []domain.ChargeStatus{domain.ChargeConfirmed, domain.ChargeInProgress} {
+		c := chargeAwaitingCard(t)
+		c.Status = status
+		assert.False(t, c.TakesPaymentMethod(), "status %s", status)
+	}
+}
+
+// Telling the two apart is what keeps the operations tray honest: nobody
+// should go looking for a gateway problem that never happened.
+func TestTheWindowFailureSaysWhetherThereWasEverACard(t *testing.T) {
+	withoutCard := chargeAwaitingCard(t)
+	withCard := chargeAwaitingCard(t).WithPaymentMethod(card(), time.Now())
+
+	assert.Equal(t, domain.ChargePaymentMethodMissing, withoutCard.FailureReasonForWindow())
+	assert.Equal(t, domain.ChargeRetryWindowExpired, withCard.FailureReasonForWindow())
+}
+
+// A charge the gateway may already have taken is ambiguous: another card
+// would need another key, and another key on an ambiguous result is how a
+// customer gets charged twice.
+func TestAPendingChargeWithAttemptsTakesNoOtherCard(t *testing.T) {
+	c := chargeAwaitingCard(t).WithPaymentMethod(card(), time.Now())
+	c.Attempts = 1
+
+	assert.False(t, c.TakesPaymentMethod())
+}
+
+func TestAPendingChargeWithNoAttemptTakesAnotherCard(t *testing.T) {
+	c := chargeAwaitingCard(t).WithPaymentMethod(card(), time.Now())
+
+	assert.True(t, c.TakesPaymentMethod(), "nothing was sent yet, so the card can still change")
 }

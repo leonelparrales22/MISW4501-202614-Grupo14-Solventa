@@ -25,6 +25,7 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/migrations"
 )
 
 // One PostgreSQL container for the package, started by the first test that
@@ -97,7 +98,28 @@ func charge(id string) domain.Charge {
 	return domain.NewCharge(acc, offer, terms, t0, t0.Add(24*time.Hour))
 }
 
+// testCard is the payment method these tests hand over. The card number is
+// never part of it: only the token the gateway gave the browser.
+func testCard() domain.PaymentMethod {
+	return domain.PaymentMethod{
+		Kind: domain.PaymentCard, Token: "tok_7b3c1f9a", Brand: "visa", Last4: "1111", Installments: 1,
+	}
+}
+
+// create stores the charge and hands over its payment method, which is what
+// makes it due: a charge with none is pending but never reaches the worker
+// (HU-W1.3-02). Tests about the charge mechanism start from here.
 func create(t *testing.T, s *postgres.ChargeStore, id string) domain.Charge {
+	t.Helper()
+	c := createWaitingForCard(t, s, id)
+	c, err := s.AttachPaymentMethod(context.Background(), c.AcceptanceID, testCard(), t0)
+	require.NoError(t, err)
+	return c
+}
+
+// createWaitingForCard stores the charge as the acceptance does: pending,
+// with no payment method and no due date.
+func createWaitingForCard(t *testing.T, s *postgres.ChargeStore, id string) domain.Charge {
 	t.Helper()
 	c, created, err := s.CreatePending(context.Background(), charge(id))
 	require.NoError(t, err)
@@ -435,7 +457,10 @@ func TestMigrateIsRepeatableAndSerializedAcrossTasks(t *testing.T) {
 	wg.Wait()
 	var n int
 	require.NoError(t, db.QueryRowContext(context.Background(), `SELECT count(*) FROM schema_migrations`).Scan(&n))
-	assert.Equal(t, 1, n)
+	// One row per migration file, however many tasks raced to apply them.
+	files, err := migrations.FS.ReadDir(".")
+	require.NoError(t, err)
+	assert.Equal(t, len(files), n)
 }
 
 func TestABrokenMigrationIsNotRecorded(t *testing.T) {

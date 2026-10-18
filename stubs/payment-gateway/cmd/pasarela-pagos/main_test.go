@@ -203,3 +203,157 @@ func decodeCharge(t *testing.T, rec *httptest.ResponseRecorder) charge {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ch))
 	return ch
 }
+
+// --- Tokenisation and card-driven decisions (HU-W1.3-02) --------------------
+
+const (
+	approvedCard = "4111111111111111"
+	// Passes Luhn and ends in 0002, the conventional declined test card.
+	declinedCard = "4000000000000002"
+)
+
+func tokenise(t *testing.T, h http.Handler, number string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/tokens",
+		strings.NewReader(`{"number":"`+number+`","holder":"CAROLINA PEREZ"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func tokenOf(t *testing.T, h http.Handler, number string) tokenResponse {
+	t.Helper()
+	rec := tokenise(t, h, number)
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var out tokenResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	return out
+}
+
+func chargeWith(t *testing.T, h http.Handler, key, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	return post(t, h, key, `{"reference":"demo-active-001","customer_id":"cust-1",`+
+		`"amount_minor":8950000,"currency":"COP","payment_token":"`+token+`"}`)
+}
+
+func TestTokeniseReturnsTheBrandAndTheLastFour(t *testing.T) {
+	h := newHandler(0, true)
+
+	out := tokenOf(t, h, approvedCard)
+
+	assert.True(t, strings.HasPrefix(out.Token, "tok_"), "the token is recognisable: %s", out.Token)
+	assert.Equal(t, "visa", out.Brand)
+	assert.Equal(t, "1111", out.Last4)
+}
+
+// The number must not survive anywhere: that is the whole reason the browser
+// talks to the gateway instead of to Solventa.
+func TestTokeniseKeepsNoCardNumber(t *testing.T) {
+	h := newHandler(0, true)
+
+	out := tokenOf(t, h, approvedCard)
+
+	assert.NotContains(t, out.Token, approvedCard)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/charges", nil))
+	assert.NotContains(t, rec.Body.String(), approvedCard)
+}
+
+func TestTokeniseRejectsACardThatFailsLuhn(t *testing.T) {
+	h := newHandler(0, true)
+
+	rec := tokenise(t, h, "4111111111111112")
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid_card")
+}
+
+func TestTokeniseAcceptsACardWithSpaces(t *testing.T) {
+	h := newHandler(0, true)
+
+	rec := tokenise(t, h, "4111 1111 1111 1111")
+
+	assert.Equal(t, http.StatusCreated, rec.Code)
+}
+
+func TestTheApprovedTestCardIsCharged(t *testing.T) {
+	h := newHandler(0, true)
+	tok := tokenOf(t, h, approvedCard)
+
+	rec := chargeWith(t, h, "cobro-acc-1", tok.Token)
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+	assert.Equal(t, 1, debug(t, h).RealCharges["cobro-acc-1"])
+}
+
+// Without this, screen E4c is unreachable in a demo.
+func TestTheDeclinedTestCardIsDeclined(t *testing.T) {
+	h := newHandler(0, true)
+	tok := tokenOf(t, h, declinedCard)
+
+	rec := chargeWith(t, h, "cobro-acc-1", tok.Token)
+
+	require.Equal(t, http.StatusPaymentRequired, rec.Code)
+	assert.Contains(t, rec.Body.String(), "insufficient_funds")
+	assert.Zero(t, debug(t, h).RealCharges["cobro-acc-1"], "a declined card is not charged")
+}
+
+func TestAnUnknownTokenIsDeclined(t *testing.T) {
+	h := newHandler(0, true)
+
+	rec := chargeWith(t, h, "cobro-acc-1", "tok_nunca_emitido")
+
+	require.Equal(t, http.StatusPaymentRequired, rec.Code)
+	assert.Contains(t, rec.Body.String(), "unknown or expired")
+}
+
+// This is why HU-W1.3-02 charges another card with a new key: the gateway
+// replays what it already answered for the old one.
+func TestAnotherCardNeedsANewKey(t *testing.T) {
+	h := newHandler(0, true)
+	bad := tokenOf(t, h, declinedCard)
+	good := tokenOf(t, h, approvedCard)
+	require.Equal(t, http.StatusPaymentRequired, chargeWith(t, h, "cobro-acc-1", bad.Token).Code)
+
+	reused := chargeWith(t, h, "cobro-acc-1", good.Token)
+	withNewKey := chargeWith(t, h, "cobro-acc-1-2", good.Token)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, reused.Code, "the same key with another card is rejected")
+	assert.Contains(t, reused.Body.String(), "idempotency_key_reused")
+	assert.Equal(t, http.StatusCreated, withNewKey.Code, "a new key does charge the new card")
+}
+
+// A charge without a token keeps working, so nothing that already calls this
+// stub breaks.
+func TestAChargeWithoutATokenKeepsTheOldBehaviour(t *testing.T) {
+	h := newHandler(0, true)
+
+	ok := post(t, h, "cobro-acc-1", body)
+	declined := post(t, h, "cobro-acc-2",
+		`{"reference":"demo-declined-001","customer_id":"cust-1","amount_minor":100,"currency":"COP"}`)
+
+	assert.Equal(t, http.StatusCreated, ok.Code)
+	assert.Equal(t, http.StatusPaymentRequired, declined.Code)
+}
+
+// A card number where the token goes is a bug in the caller, and it must fail
+// loudly instead of being charged.
+func TestACardNumberInsteadOfATokenIsRejected(t *testing.T) {
+	h := newHandler(0, true)
+
+	rec := chargeWith(t, h, "cobro-acc-1", approvedCard)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid_request")
+}
+
+func TestResetForgetsTheTokens(t *testing.T) {
+	h := newHandler(0, true)
+	tok := tokenOf(t, h, approvedCard)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/debug/reset", nil))
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	assert.Equal(t, http.StatusPaymentRequired, chargeWith(t, h, "cobro-acc-1", tok.Token).Code)
+}

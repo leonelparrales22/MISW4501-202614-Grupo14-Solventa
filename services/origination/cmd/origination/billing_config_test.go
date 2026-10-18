@@ -217,17 +217,28 @@ func TestNewBillingMigratesChargesAndActivatesTheCoverage(t *testing.T) {
 		domain.Acceptance{ID: "acc-1", OfferID: "demo-active-1", CustomerID: "cust-1", AcceptedAt: time.Now()},
 		domain.Offer{ID: "demo-active-1", CustomerID: "cust-1", Premium: 89_500, Currency: "COP",
 			Applicant: domain.Applicant{FullName: "Ana", DocumentID: "123", Email: "a@x.co"}}))
+
+	// The charge waits: nothing is charged until the customer hands over a
+	// payment method in screen E4 (HU-W1.3-02).
+	insured := security.WithClaims(ctx, security.Claims{Subject: "cust-1", Roles: []security.Role{security.RoleInsured}})
+	require.Never(t, func() bool { return len(sink.received()) > 0 }, 300*time.Millisecond, 50*time.Millisecond,
+		"no coverage is activated before there is a payment method")
+
+	_, err = wiring.service.AttachPaymentMethod(insured, "acc-1", domain.PaymentMethod{
+		Kind: domain.PaymentCard, Token: "tok_7b3c1f9a", Brand: "visa", Last4: "1111", Installments: 1,
+	})
+	require.NoError(t, err)
+
 	require.Eventually(t, func() bool { return len(sink.received()) == 1 }, 10*time.Second, 20*time.Millisecond)
 	ev := sink.received()[0]
 	assert.Equal(t, "pol-acc-1", ev.PolicyID)
 	assert.NoError(t, ev.Validate())
 
-	caller := security.WithClaims(ctx, security.Claims{Subject: "cust-1", Roles: []security.Role{security.RoleInsured}})
-	c, err := wiring.service.Get(caller, "acc-1")
+	c, err := wiring.service.Get(insured, "acc-1")
 	require.NoError(t, err)
 	assert.Equal(t, domain.ChargeConfirmed, c.Status)
 	assert.Eventually(t, func() bool {
-		c, err := wiring.service.Get(caller, "acc-1")
+		c, err := wiring.service.Get(insured, "acc-1")
 		return err == nil && c.ActivationPublished()
 	}, 5*time.Second, 20*time.Millisecond)
 }

@@ -35,7 +35,9 @@ const chargeColumns = `acceptance_id, idempotency_key, offer_id, customer_id, ch
 	failure_reason, last_error, provider_reference, confirmed_at,
 	policy_id, activation_event_id, activated_at, coverage_start, coverage_end, activation_published_at,
 	activation_attempts, activation_next_attempt_at, activation_last_error,
-	resume_count, last_resumed_by, last_resumed_at, resume_note, created_at, updated_at`
+	resume_count, last_resumed_by, last_resumed_at, resume_note,
+	payment_method_kind, payment_token, payment_brand, payment_last4, payment_installments,
+	payment_bank_code, payment_method_captured_at, payment_attempt, created_at, updated_at`
 
 // coverageJSON is how a coverage is kept in the coverages column.
 type coverageJSON struct {
@@ -81,6 +83,9 @@ func scanCharge(s scanner) (domain.Charge, error) {
 		activated, covStart, covEnd, published, activationNext, lastResumedAt sql.NullTime
 		failureReason, lastError, providerRef, policyID, eventID, actErr      sql.NullString
 		resumedBy, resumeNote                                                 sql.NullString
+		payKind, payToken, payBrand, payLast4, payBank                        sql.NullString
+		payInstallments                                                       sql.NullInt64
+		payCapturedAt                                                         sql.NullTime
 	)
 	err := s.Scan(&c.AcceptanceID, &c.IdempotencyKey, &c.OfferID, &c.CustomerID, &channel, &c.AcceptedAt,
 		&c.Holder.FullName, &c.Holder.DocumentID, &c.Holder.Email, &c.AmountMinor, &c.Currency, &insuredMinor, &c.Terms.TermMonths, &coverages,
@@ -88,7 +93,9 @@ func scanCharge(s scanner) (domain.Charge, error) {
 		&failureReason, &lastError, &providerRef, &confirmed,
 		&policyID, &eventID, &activated, &covStart, &covEnd, &published,
 		&c.ActivationAttempts, &activationNext, &actErr,
-		&c.ResumeCount, &resumedBy, &lastResumedAt, &resumeNote, &c.CreatedAt, &c.UpdatedAt)
+		&c.ResumeCount, &resumedBy, &lastResumedAt, &resumeNote,
+		&payKind, &payToken, &payBrand, &payLast4, &payInstallments, &payBank, &payCapturedAt, &c.PaymentAttempt,
+		&c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return domain.Charge{}, err
 	}
@@ -105,11 +112,16 @@ func scanCharge(s scanner) (domain.Charge, error) {
 	c.ActivatedAt, c.CoverageStart, c.CoverageEnd = activated.Time, covStart.Time, covEnd.Time
 	c.ActivationPublishedAt, c.ActivationNextAttemptAt, c.ActivationLastError = published.Time, activationNext.Time, actErr.String
 	c.LastResumedBy, c.LastResumedAt, c.ResumeNote = resumedBy.String, lastResumedAt.Time, resumeNote.String
+	c.PaymentMethod = domain.PaymentMethod{
+		Kind: domain.PaymentMethodKind(payKind.String), Token: payToken.String,
+		Brand: payBrand.String, Last4: payLast4.String, Installments: int(payInstallments.Int64),
+		BankCode: payBank.String, CapturedAt: payCapturedAt.Time,
+	}
 	c.AcceptedAt, c.WindowStartedAt = c.AcceptedAt.UTC(), c.WindowStartedAt.UTC()
 	c.CreatedAt, c.UpdatedAt = c.CreatedAt.UTC(), c.UpdatedAt.UTC()
 	for _, t := range []*time.Time{&c.NextAttemptAt, &c.ClaimedUntil, &c.WindowEndsAt, &c.LastAttemptAt, &c.LastFailureAt,
 		&c.ConfirmedAt, &c.ActivatedAt, &c.CoverageStart, &c.CoverageEnd, &c.ActivationPublishedAt,
-		&c.ActivationNextAttemptAt, &c.LastResumedAt} {
+		&c.ActivationNextAttemptAt, &c.LastResumedAt, &c.PaymentMethod.CapturedAt} {
 		if !t.IsZero() {
 			*t = t.UTC()
 		}
@@ -335,4 +347,68 @@ func (s *ChargeStore) RescheduleActivation(ctx context.Context, c domain.Charge,
 		    claimed_until = NULL, updated_at = $3
 		WHERE acceptance_id = $1 AND status = 'confirmed' AND activation_published_at IS NULL AND claimed_until = $2
 		RETURNING `+chargeColumns, c.AcceptanceID, c.ClaimedUntil.UTC(), now.UTC(), next.UTC(), cause)
+}
+
+// AttachPaymentMethod stores the payment method and makes the charge due.
+//
+// It is one statement on purpose. The WHERE carries the rule of
+// domain.TakesPaymentMethod, so two requests racing to pay the same
+// acceptance cannot both win, and the new key is computed from the counter
+// the database itself increments, so it can never be stale.
+func (s *ChargeStore) AttachPaymentMethod(ctx context.Context, acceptanceID string,
+	m domain.PaymentMethod, now time.Time) (domain.Charge, error) {
+	at := now.UTC()
+	// The key of a retry after a decline: "cobro-<acceptance>-<nth payment>".
+	// The first payment keeps the key HA-D02 already uses.
+	keyBase, _ := idempotency.Key(domain.ChargeKeyPrefix, acceptanceID)
+
+	c, found, err := s.one(ctx, `UPDATE charge_attempt SET
+			payment_method_kind = $2, payment_token = $3, payment_brand = $4, payment_last4 = $5,
+			payment_installments = $6, payment_bank_code = $7, payment_method_captured_at = $8,
+			payment_attempt = payment_attempt + 1,
+			status = 'pending', next_attempt_at = $8, claimed_until = NULL,
+			attempts = CASE WHEN status = 'failed' THEN 0 ELSE attempts END,
+			idempotency_key = CASE WHEN status = 'failed'
+				THEN $9 || '-' || (payment_attempt + 1)::text ELSE idempotency_key END,
+			failure_reason = NULL, last_error = NULL, updated_at = $8
+		WHERE acceptance_id = $1
+		  AND ((status = 'pending' AND attempts = 0)
+		       OR (status = 'failed' AND failure_reason = 'payment_rejected'))
+		RETURNING `+chargeColumns,
+		acceptanceID, string(m.Kind), nullString(m.Token), nullString(m.Brand), nullString(m.Last4),
+		m.Installments, nullString(m.BankCode), at, keyBase)
+	if err != nil {
+		return domain.Charge{}, fmt.Errorf("attach the payment method of %s: %w", acceptanceID, err)
+	}
+	if found {
+		return c, nil
+	}
+	// It matched nothing: either there is no charge, or it does not take one.
+	if _, err := s.Get(ctx, acceptanceID); err != nil {
+		return domain.Charge{}, err
+	}
+	return domain.Charge{}, ports.ErrChargeNotPayable
+}
+
+// ExpireWithoutPaymentMethod fails the charges that ran out of window while
+// waiting for a payment method. The reason is not retry_window_expired: no
+// retry ever happened, and saying so would send operations looking for a
+// gateway problem that never existed.
+func (s *ChargeStore) ExpireWithoutPaymentMethod(ctx context.Context, now time.Time) (int, error) {
+	at := now.UTC()
+	res, err := s.db.ExecContext(ctx, `UPDATE charge_attempt
+		SET status = 'failed', failure_reason = $2, last_failure_at = $1, next_attempt_at = NULL,
+		    last_error = 'the customer did not hand over a payment method before the retry window ended',
+		    updated_at = $1
+		WHERE status = 'pending' AND next_attempt_at IS NULL
+		  AND window_ends_at IS NOT NULL AND window_ends_at <= $1`,
+		at, string(domain.ChargePaymentMethodMissing))
+	if err != nil {
+		return 0, fmt.Errorf("expire the charges with no payment method: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count the expired charges: %w", err)
+	}
+	return int(n), nil
 }

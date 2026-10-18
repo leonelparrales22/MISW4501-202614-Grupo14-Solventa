@@ -27,6 +27,7 @@ type fakeCharges struct {
 	gotID      string
 	gotNote    string
 	gotLimit   int
+	gotMethod  domain.PaymentMethod
 	calls      int
 }
 
@@ -45,6 +46,13 @@ func (f *fakeCharges) ListExceptions(_ context.Context, limit int) ([]domain.Cha
 func (f *fakeCharges) Resume(_ context.Context, id, note string) (domain.Charge, error) {
 	f.calls++
 	f.gotID, f.gotNote = id, note
+	return f.charge, f.err
+}
+
+func (f *fakeCharges) AttachPaymentMethod(_ context.Context, id string,
+	m domain.PaymentMethod) (domain.Charge, error) {
+	f.calls++
+	f.gotID, f.gotMethod = id, m
 	return f.charge, f.err
 }
 

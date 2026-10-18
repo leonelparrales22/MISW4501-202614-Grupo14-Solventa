@@ -138,6 +138,14 @@ func (w *Worker) Run(ctx context.Context) {
 // every due activation, and returns how many it looked at.
 func (w *Worker) ProcessDue(ctx context.Context) int {
 	now := w.clock.Now().UTC()
+	// A charge still waiting for its payment method has no due date, so it
+	// never reaches the list below: without this sweep it would wait for
+	// ever instead of becoming an issuance exception (HU-W1.3-02).
+	if expired, err := w.repo.ExpireWithoutPaymentMethod(ctx, now); err != nil {
+		slog.ErrorContext(ctx, "could not expire the charges with no payment method", "error", err)
+	} else if expired > 0 {
+		slog.InfoContext(ctx, "charges expired with no payment method", "count", expired)
+	}
 	ids, err := w.repo.ListDue(ctx, now, batchSize)
 	if err != nil {
 		slog.ErrorContext(ctx, "could not list the due premium charges", "error", err)

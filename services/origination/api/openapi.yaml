@@ -311,6 +311,60 @@ paths:
           $ref: "#/components/responses/ChargeNotFound"
         "503":
           $ref: "#/components/responses/ChargeUnavailable"
+  /v1/acceptances/{acceptance_id}/charge/payment-method:
+    post:
+      summary: Hand over the payment method of a pending premium charge (HU-W1.3-02)
+      description: >
+        Screen E4 calls this after the browser tokenised the card against the
+        payment gateway: the card number never reaches this service, only the
+        token with its brand and last four digits. Storing the method makes the
+        first attempt of the charge due at once, so the worker of HA-D02 picks
+        it up with the mechanism unchanged. Calling it again replaces the method
+        and makes the attempt due again, which is what "try another payment
+        method" of E4c does: after the gateway declined a card, the new one is
+        charged with a new idempotency key ("cobro-<id>-2"), because the gateway
+        replays the stored decline for the old one. A new key is only ever
+        issued after a definitive decline, never after a timeout or an ambiguous
+        result, which is what keeps the no-duplicate guarantee of HA-D02. Only
+        the insured who owns the acceptance.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentMethodRequest"
+      responses:
+        "202":
+          description: The payment method was stored and the first attempt is due
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Charge"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ChargeNotFound"
+        "409":
+          description: >
+            The charge does not take a payment method (charge_not_payable): it
+            is in_progress or confirmed, or it failed with retry_window_expired
+            or payment_method_missing, which only operations resume. A charge
+            that failed with payment_rejected does take another method: that is
+            screen E4c, charged with a new idempotency key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
   /v1/acceptances/{acceptance_id}/charge/resume:
     post:
       summary: Resume a failed premium charge (HA-D02)
@@ -1383,11 +1437,76 @@ components:
           type: integer
           minimum: 0
           description: Time from the start of the consultation until the source ended or was canceled.
+    PaymentMethod:
+      type: object
+      required: [method, brand, last4, installments, bank_code, captured_at]
+      description: >
+        The payment method of a charge. The card number never reaches this
+        service: the browser tokenises it against the gateway and only the
+        token, the brand and the last four digits travel here (HU-W1.3-02).
+      properties:
+        method:
+          type: string
+          enum: [card, pse]
+        brand:
+          type: string
+          nullable: true
+          description: Card brand (visa, mastercard, amex); null for pse.
+          example: visa
+        last4:
+          type: string
+          nullable: true
+          pattern: "^[0-9]{4}$"
+          description: Last four digits of the card, to show "Visa ...1111"; null for pse.
+          example: "1111"
+        installments:
+          type: integer
+          minimum: 1
+          maximum: 36
+        bank_code:
+          type: string
+          nullable: true
+          description: Bank chosen for pse; null for card.
+        captured_at:
+          type: string
+          format: date-time
+    PaymentMethodRequest:
+      type: object
+      required: [method]
+      properties:
+        method:
+          type: string
+          enum: [card, pse]
+        payment_token:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{8,128}$"
+          description: >
+            Required with card. The token the gateway returned to the browser.
+            A value that looks like a card number (13 to 19 digits) is rejected
+            with invalid_request, so a mistake in the client never drags a PAN
+            into this service.
+          example: tok_7b3c1f9a
+        brand:
+          type: string
+          example: visa
+        last4:
+          type: string
+          pattern: "^[0-9]{4}$"
+          example: "1111"
+        installments:
+          type: integer
+          minimum: 1
+          maximum: 36
+          default: 1
+        bank_code:
+          type: string
+          description: Required with pse.
+          example: "1007"
     Charge:
       type: object
       required: [acceptance_id, offer_id, customer_id, accepted_at, status, idempotency_key, amount, currency, attempts,
         last_attempt_at, last_failure_at, next_attempt_at, retry_window, failure_reason, confirmed_at, policy_id,
-        coverage_activated_at, activation_published_at, resume_count, updated_at]
+        coverage_activated_at, activation_published_at, resume_count, updated_at, payment_method, payment_attempt]
       properties:
         acceptance_id:
           type: string
@@ -1445,7 +1564,30 @@ components:
         failure_reason:
           type: string
           nullable: true
-          enum: [retry_window_expired, payment_rejected, null]
+          enum: [retry_window_expired, payment_rejected, payment_method_missing, null]
+          description: >
+            retry_window_expired: the 24-hour window ended with the gateway
+            still failing; payment_rejected: the gateway declined the charge;
+            payment_method_missing: the window ended without the customer
+            handing over a payment method, so nothing was ever charged.
+        payment_method:
+          allOf:
+            - $ref: "#/components/schemas/PaymentMethod"
+          nullable: true
+          description: >
+            The payment method of screen E4, null while the customer has not
+            handed one over. This is the field a client reads to tell "waiting
+            for the card" (E4) from "the gateway is failing" (E4b); both are
+            status pending.
+        payment_attempt:
+          type: integer
+          minimum: 0
+          description: >
+            How many payment methods the customer has handed over: 0 before the
+            first one, 2 after a decline and another card. Not to be confused
+            with attempts, which counts the failed gateway attempts of the
+            current window. It also tells which idempotency key is charging:
+            "cobro-<id>" with 1, "cobro-<id>-2" with 2.
         confirmed_at:
           type: string
           format: date-time
