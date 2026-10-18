@@ -124,10 +124,26 @@ Duración total: unos 21 minutos con recursos encendidos; costo estimado ≈ US$
 No se probó en esta ventana: el *rate limiting* bajo carga (medido en [`ha-l01`](../ha-l01/README.md)), el inicio de sesión con un
 usuario real de Cognito (medido en [`ha-s01`](../ha-s01/README.md)) ni los modos `single` / `per_az` del NAT y Multi-AZ.
 
-## Ventana de HA-D02 (AAAA-MM-DD)
+## Ventana de HA-D02 (2026-10-18)
 
-Pendiente: se llena al cerrar la ventana de HA-D02 (paso C1 de su plan) con las horas, los recursos, el humo de
-[`tests/resilience/ha-d02/staging`](../../../../../tests/resilience/ha-d02/README.md) y la verificación del `destroy`.
+Prueba de punta a punta del cobro de la prima (HA-D02) con el medio de pago de HU-W1.3-02 (PSE), la bandeja del asesor
+(HU-W1.1-02) y el documento contractual en S3 (HU-W1.3-03), por el API Gateway y con tokens reales de Cognito. Imágenes
+`0d519ea01dba`, salvo `origination` y `email` en `prueba-ha-d02` (construidas desde la rama). Variables de
+[`ha-d02.example.tfvars`](ha-d02.example.tfvars). Detalle completo en
+[`tests/resilience/ha-d02/resultados/2026-10-18-staging.md`](../../../../../tests/resilience/ha-d02/resultados/2026-10-18-staging.md).
+
+| Paso | Resultado |
+|---|---|
+| P1 (`services_enabled=false`) | `plan` 299 por crear, 0 cambios, 0 destrucciones, 0 NAT, 0 EIP; `apply` 293 creados y 3 usuarios semilla fallidos (la contraseña no tenía minúsculas); se recrearon en P2 con una contraseña que cumple la política |
+| `db-init` | Código 0: cinco bases y cinco roles `<servicio>_app` |
+| P2 | 15 creados, 11 cambiados, 4 reemplazados (los 3 usuarios y el *deployment* del API por sus `triggers`); 10 servicios estables, originación con 1 tarea y sin autoescalado |
+| Humo S-0…S-10 | 52 OK y 1 FAIL (búsqueda del correo en Windows, corregida en el guion); repetición de S-0…S-5: 24/24 |
+| Caída de la pasarela (S-11…S-14) | A vence como `retry_window_expired` y C como `payment_method_missing`, los dos en las excepciones; B1…B5 confirmados al volver la pasarela con **un solo cobro real cada uno**; operaciones reanuda A y se cobra una vez |
+| Lecturas y regresión (S-15, S-16) | 10/10 (más 1 omitida por diseño); ruta de socio sin API key → `403` |
+| Validación independiente (V2) | APROBADA; 15 cobros reales para 15 PDF; `plan` con las variables de la ventana: «No changes» |
+| `terraform destroy` | **307 destruidos** (17:03–17:12), `state list` vacío; sin RDS, snapshots, backups automáticos ni secretos; clúster ECS `INACTIVE` |
+
+Duración: de 15:59 a 17:12 (servicios encendidos de 16:13 a 17:05); costo estimado ≈ US$ 0,43.
 
 ## Costos (aproximados, `us-east-2`; verificar antes de aplicar)
 
