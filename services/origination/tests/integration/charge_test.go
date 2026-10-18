@@ -222,15 +222,25 @@ type chargeEnvOptions struct {
 	window        time.Duration
 	consumerFails int
 	workers       int
+	// personalized are personalized offers (HU-W1.2-03) stored and claimed by
+	// their owner before the test, next to the demo offers.
+	personalized []ownedOffer
+}
+
+// ownedOffer is a personalized offer and the insured who claimed it.
+type ownedOffer struct {
+	offer domain.PersonalizedOffer
+	owner string
 }
 
 type chargeEnv struct {
-	srv      *httptest.Server
-	gw       *payGateway
-	mail     *mailProvider
-	acc      *acceptanceEnv
-	contract *contractEnvIT
-	consumer *flakyConsumer
+	srv       *httptest.Server
+	gw        *payGateway
+	mail      *mailProvider
+	acc       *acceptanceEnv
+	contract  *contractEnvIT
+	consumer  *flakyConsumer
+	contracts *memory.ContractStore
 }
 
 func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
@@ -247,6 +257,7 @@ func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
 	signer, err := links.NewSigner("0123456789abcdef0123456789abcdef")
 	require.NoError(t, err)
 	repo, audit := memory.NewContractStore(), memory.NewIssuanceAuditLog()
+	e.contracts = repo
 	contracts := issuance.NewContractService(issuance.ContractDeps{
 		Repo: repo, Generator: pdf.New(), Store: store, Signer: signer, Audit: audit, Clock: clock,
 		Notifier: emailadapter.NewNotifier(email.NewClient(email.Config{BaseURL: e.mail.server.URL, Timeout: time.Second,
@@ -280,9 +291,18 @@ func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
 		}
 	}
 
-	offers, acceptances := memory.NewOfferStub(clock), memory.NewAcceptanceStore()
+	// The demo offers come from the stub and the personalized ones from their
+	// store, through the router the service uses (HU-W1.2-03).
+	personal := memory.NewPersonalizedOfferStore()
+	for _, p := range o.personalized {
+		_, _, err := personal.Create(ctx, p.offer)
+		require.NoError(t, err)
+		_, err = personal.Claim(ctx, p.offer.ID, p.owner)
+		require.NoError(t, err)
+	}
+	offers, acceptances := memory.NewOfferRouter(memory.NewOfferStub(clock), personal), memory.NewAcceptanceStore()
 	processor := issuance.NewProcessor(offers, acceptances, memory.NewUnderwriterStub(clock, 0, memory.DefaultReviewScoreThreshold), memory.NewReviewQueueStub(),
-		billing.NewStarter(charges, chargeTerms, clock, policy, notify), clock,
+		billing.NewStarter(charges, billing.OfferTerms(fixtureCoverageTerms()), clock, policy, notify), clock,
 		issuance.ProcessorConfig{PollInterval: 10 * time.Millisecond, RetryBase: 20 * time.Millisecond, RetryMax: 40 * time.Millisecond})
 	go processor.Run(ctx)
 
@@ -297,11 +317,13 @@ func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
 	return e
 }
 
-func chargeTerms(domain.Offer) (domain.CoverageTerms, error) {
+// fixtureCoverageTerms are the demonstration terms the demo offers activate,
+// as in the service (billing.OfferTerms, decision D-16).
+func fixtureCoverageTerms() domain.CoverageTerms {
 	return domain.CoverageTerms{InsuredAmount: fixtureInsuredAmount, TermMonths: fixtureTermMonths, Coverages: []domain.Coverage{
 		{Code: domain.CoverageDeath, InsuredAmount: fixtureInsuredAmount},
 		{Code: domain.CoverageDisability, InsuredAmount: fixtureInsuredAmount},
-	}}, nil
+	}}
 }
 
 // accept accepts a demo offer and returns the acceptance id.
@@ -502,6 +524,74 @@ func TestChargeCA4TheCoverageIsActivatedOnlyWithAConfirmedPayment(t *testing.T) 
 	assert.GreaterOrEqual(t, e.consumer.deliveries(), 3)
 	_, charged = e.gw.chargesOf("cobro-" + id)
 	assert.Equal(t, 1, charged)
+}
+
+// personalizedOffer is an offer priced by the rating engine of HU-W1.2-03,
+// with its own insured amount, term and coverages.
+func personalizedOffer(id string, terms domain.CoverageTerms) domain.PersonalizedOffer {
+	now := time.Now().UTC()
+	return domain.PersonalizedOffer{
+		ID: id, CustomerID: "partner-cust-1", Channel: domain.OfferChannelEmbedded, ConsentID: "cns-1",
+		PartnerID: "partner-1", ApplicationID: "app-1",
+		Applicant: domain.Applicant{FullName: "Ana Perez", DocumentID: "1020304050", Email: "ana@example.com"},
+		Terms:     terms, Premium: 98_400, Currency: "COP", Mode: domain.ModeNormal,
+		Profile: domain.ProfileSnapshot{Score: 0.5}, CreatedAt: now, ExpiresAt: now.Add(domain.OfferValidity),
+	}
+}
+
+// TestChargeOfAPersonalizedOfferActivatesItsOwnTerms covers decision D-16 of
+// HA-D02: the coverage of a personalized offer is activated, and its
+// contractual document issued, with the insured amount, the term and the
+// coverages it was priced with, not with the demonstration terms.
+func TestChargeOfAPersonalizedOfferActivatesItsOwnTerms(t *testing.T) {
+	terms := domain.CoverageTerms{InsuredAmount: 180_000_000, TermMonths: 60, Coverages: []domain.Coverage{
+		{Code: domain.CoverageDeath, InsuredAmount: 180_000_000},
+		{Code: domain.CoverageDisability, InsuredAmount: 90_000_000},
+	}}
+	e := newChargeEnv(t, chargeEnvOptions{personalized: []ownedOffer{
+		{offer: personalizedOffer("off-d16-own-terms", terms), owner: "cust-1"},
+	}})
+
+	id := e.accept(t, "cust-1", "off-d16-own-terms")
+	c := e.waitCharge(t, id, "insured:cust-1", func(m map[string]any) bool { return m["activation_published_at"] != nil })
+	assert.Equal(t, "confirmed", c["status"])
+	assert.InDelta(t, 98_400, c["amount"].(float64), 0.001, "the premium of the offer")
+	e.contract.waitFor(t, "pol-"+id, "insured:cust-1", func(m map[string]any) bool { return m["status"] == "completed" })
+
+	issued, err := e.contracts.Get(context.Background(), "pol-"+id)
+	require.NoError(t, err)
+	ev := issued.Event
+	assert.InDelta(t, 180_000_000, ev.InsuredAmount, 0.001)
+	assert.Equal(t, terms.Coverages, ev.Coverages)
+	assert.Equal(t, ev.CoverageStart.AddDate(0, 60, 0), ev.CoverageEnd, "the 60 months of the offer, not the 120 demonstration months")
+
+	code, pdf, _ := e.contract.get(t, "/v1/policies/pol-"+id+"/contract-document", "insured:cust-1")
+	require.Equal(t, http.StatusOK, code)
+	text := string(pdf)
+	assert.Contains(t, text, "COP 180.000.000", "insured amount of the offer")
+	assert.Contains(t, text, "COP 90.000.000", "coverage of the offer")
+	assert.Contains(t, text, ev.CoverageEnd.UTC().Format("02/01/2006"), "validity from the term of the offer")
+	assert.NotContains(t, text, "COP 250.000.000", "no demonstration amount")
+}
+
+// TestChargeOfAPersonalizedOfferWithoutTermsIsNeverCharged: decision D-16
+// never invents the terms of a personalized offer; its acceptance stays
+// registered and nothing is charged or issued.
+func TestChargeOfAPersonalizedOfferWithoutTermsIsNeverCharged(t *testing.T) {
+	e := newChargeEnv(t, chargeEnvOptions{personalized: []ownedOffer{
+		{offer: personalizedOffer("off-d16-no-terms", domain.CoverageTerms{}), owner: "cust-1"},
+	}})
+
+	id := e.acceptWithoutPaying(t, "cust-1", "off-d16-no-terms")
+
+	assert.Never(t, func() bool {
+		code, _ := e.charge(t, id, "insured:cust-1")
+		return code != http.StatusNotFound
+	}, 600*time.Millisecond, 50*time.Millisecond, "no charge is stored without the real terms")
+	assert.Zero(t, e.gw.totalCharged())
+	assert.Equal(t, http.StatusNotFound, e.issuanceStatus(t, id, "insured:cust-1"))
+	_, acc := e.acc.do(t, http.MethodGet, "/v1/acceptances/"+id, "insured:cust-1", "")
+	assert.Equal(t, id, acc["acceptance_id"], "the acceptance stays registered")
 }
 
 func TestChargeCA5EveryAcceptanceDuringTheOutageEndsInExactlyOneCharge(t *testing.T) {

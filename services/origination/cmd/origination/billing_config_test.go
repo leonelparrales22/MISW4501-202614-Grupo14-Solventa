@@ -17,6 +17,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/billing"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 )
 
@@ -157,8 +158,7 @@ func TestBillingConfigRejectsInvalidValues(t *testing.T) {
 }
 
 func TestDemoCoverageTermsActivateAValidCoverage(t *testing.T) {
-	terms, err := demoCoverageTerms(domain.Offer{})
-	require.NoError(t, err)
+	terms := demoCoverageTerms()
 	assert.InDelta(t, 250_000_000, terms.InsuredAmount, 0.001)
 	assert.Equal(t, 120, terms.TermMonths)
 	require.Len(t, terms.Coverages, 2)
@@ -271,4 +271,12 @@ func TestNewBillingMigratesChargesAndActivatesTheCoverage(t *testing.T) {
 		c, err := wiring.service.Get(insured, "acc-1")
 		return err == nil && c.ActivationPublished()
 	}, 5*time.Second, 20*time.Millisecond)
+
+	// Decision D-16: a personalized offer activates its own terms, so one
+	// without them is refused instead of falling back to the demonstration ones.
+	err = wiring.starter.Start(ctx,
+		domain.Acceptance{ID: "acc-2", OfferID: "off-0123456789abcdef", CustomerID: "cust-1", AcceptedAt: time.Now()},
+		domain.Offer{ID: "off-0123456789abcdef", CustomerID: "cust-1", Premium: 98_400, Currency: "COP",
+			Applicant: domain.Applicant{FullName: "Ana", DocumentID: "123", Email: "a@x.co"}})
+	assert.ErrorIs(t, err, billing.ErrIncompleteTerms)
 }

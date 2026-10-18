@@ -23,8 +23,9 @@ import (
 )
 
 // TermsFunc returns the coverage terms an offer activates once it is paid
-// (insured amount, term and coverages). PENDING: HU-W1.2-03 persists them with
-// the offer; until then the composition root passes demonstration terms.
+// (insured amount, term and coverages). OfferTerms is the one the service uses:
+// the terms of a personalized offer (HU-W1.2-03) or, for the demo and adjusted
+// offers, demonstration terms (decision D-16).
 type TermsFunc func(offer domain.Offer) (domain.CoverageTerms, error)
 
 // Starter starts the issuance of an approved acceptance by storing its

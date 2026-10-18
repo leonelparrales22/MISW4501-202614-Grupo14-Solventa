@@ -168,6 +168,19 @@ func TestAsOfferCarriesWhatTheAcceptanceNeeds(t *testing.T) {
 	assert.True(t, got.IsExpired(offerNow))
 }
 
+func TestAsOfferCarriesTheCoverageTermsTheOfferWasPricedWith(t *testing.T) {
+	o := offerExpiringAt(offerNow)
+	o.Terms = domain.CoverageTerms{InsuredAmount: 180_000_000, TermMonths: 60, Coverages: []domain.Coverage{
+		{Code: domain.CoverageDeath, InsuredAmount: 180_000_000},
+	}}
+
+	got := o.AsOffer()
+
+	assert.Equal(t, o.Terms, got.Terms, "the charge activates them (HA-D02, decision D-16)")
+	got.Terms.Coverages[0].InsuredAmount = 1
+	assert.InDelta(t, 180_000_000, o.Terms.Coverages[0].InsuredAmount, 0.001, "the view never shares the coverages of the offer")
+}
+
 func TestAsOfferOfAnUnclaimedOfferHasNoOwner(t *testing.T) {
 	o := offerExpiringAt(offerNow)
 	o.OwnerID = ""
