@@ -74,8 +74,10 @@ al correo registrado del asegurado. El envío es idempotente (`policy-issued:{po
 
 ## 4. Lo que todavía es provisional
 
-- La activación de la cobertura la publica el cobro de HA-D02 tras confirmarse el pago; el monto asegurado, el plazo y las coberturas
-  siguen siendo de demostración hasta HU-W1.2-03, y el número de póliza definitivo es de HU-W1.3-02.
-- La emisión, el registro de auditoría y los documentos viven en memoria y en un directorio local (`DOCUMENTS_DIR`): pendientes PostgreSQL,
-  el servicio `audit` y S3.
+- La activación de la cobertura la publica el cobro de HA-D02 tras confirmarse el pago. Una oferta personalizada (HU-W1.2-03) activa su
+  propio monto asegurado, plazo y coberturas; las de demostración (`demo-…`) y las ajustadas (`adj-…`) siguen con los de demostración
+  (fase AWS de HA-D02, D-16). El número de póliza definitivo es de HU-W1.3-02.
+- La emisión y el registro de auditoría viven en memoria: pendientes PostgreSQL y el servicio `audit`. El documento se guarda en **S3** en
+  AWS (`DOCUMENTS_BUCKET`, el bucket `documents` de la plataforma) y en un directorio local (`DOCUMENTS_DIR`) en desarrollo; en AWS el
+  enlace del correo abre `GET /v1/documents/{token}` por una ruta pública del API Gateway, sin sesión (fase AWS de HA-D02).
 - El nombre del evento (`PolicyIssued`) está por confirmar con el equipo; no hay frame de Figma dedicado para este estado de E5.

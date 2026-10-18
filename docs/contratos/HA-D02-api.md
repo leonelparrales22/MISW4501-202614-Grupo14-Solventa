@@ -115,7 +115,11 @@ reanudaciones a la vez gana una), `403` para otros roles.
 
 ## 4. Lo que todavía es provisional
 
-- Monto asegurado, plazo y coberturas del evento de activación son de demostración (250 000 000 COP, 120 meses, muerte e incapacidad
-  total y permanente) hasta HU-W1.2-03.
-- Las aceptaciones y ofertas siguen en memoria (HU-W1.3-01): una aceptación aún sin cobro se pierde con un reinicio; un cobro ya creado no.
-- En AWS faltan el RDS de originación, el secreto `DATABASE_URL` y el despliegue del stub `payment-gateway` (infraestructura, T4/T5).
+- Monto asegurado, plazo y coberturas del evento de activación: los de la oferta personalizada (HU-W1.2-03) cuando la oferta lo es;
+  las de demostración (`demo-…`) y las ajustadas (`adj-…`) activan los de demostración (250 000 000 COP, 120 meses, muerte e
+  incapacidad total y permanente). Una personalizada sin términos completos no se cobra (fase AWS, D-16).
+- Las aceptaciones siguen en memoria (HU-W1.3-01): una aceptación aún sin cobro se pierde con un reinicio; un cobro ya creado no. Por
+  eso originación corre con una sola tarea en AWS (C5).
+- En AWS (fase AWS de HA-D02, `infra/terraform/modules/platform`): originación recibe su `DATABASE_URL` de Secrets Manager, los stubs
+  `payment-gateway` y `email` corren detrás de Cloud Map, y `GET /v1/issuance-exceptions` y `POST …/charge/resume` pasan por el API
+  Gateway con el authorizer de Cognito.

@@ -805,9 +805,10 @@ paths:
         the audit trail (date and time, document version and delivery result of
         each step). A failed notification is retried with a growing wait
         while the document stays available. Readable by the insured who owns
-        the policy, advisors and operations analysts. The repository, the audit
-        log and the document directory are in-memory or local for now
-        (PENDING: PostgreSQL, the audit service and S3).
+        the policy, advisors and operations analysts. The repository and the
+        audit log are in-memory for now (PENDING: PostgreSQL and the audit
+        service); the document is stored in S3 in AWS (DOCUMENTS_BUCKET) and
+        in a local directory otherwise (DOCUMENTS_DIR).
       security:
         - cognitoJwt: []
       parameters:

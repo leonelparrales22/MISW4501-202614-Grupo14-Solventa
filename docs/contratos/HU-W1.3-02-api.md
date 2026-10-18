@@ -211,4 +211,5 @@ lo use.
   de HA-D02.
 - **Guardar el medio de pago para cobros futuros** (renovaciones) no es de esta historia: el token se usa una vez y no
   se reutiliza.
-- **El despliegue del *stub* en AWS** depende de infraestructura (T4/T5).
+- **El despliegue del *stub* en AWS:** desplegado en staging y en la plataforma (fase AWS de HA-D02); la tokenización pública
+  (`/pasarela/tokens`) queda pendiente de la fase de CloudFront.

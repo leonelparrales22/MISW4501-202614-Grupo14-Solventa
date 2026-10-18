@@ -462,7 +462,7 @@ Para simular la caída de Open Finance, desactivar su proxy en Toxiproxy (`POST 
 | Persistencia de la oferta | **PostgreSQL** con `DATABASE_URL`; sin ella, memoria (se pierde al reiniciar) | Con `DATABASE_URL` la oferta y su dueño sobreviven a un reinicio | — |
 | Dueño de la oferta (*claim*) | El primer asegurado con sesión que la abre. **Riesgo:** quien conozca el `offer_id` y lo abra antes que el cliente se queda con ella | El id debe viajar solo por canales del cliente | Que el aliado conozca el `sub` del asegurado y lo fije al generarla |
 | Aceptaciones, suscripción, bandeja e emisión | **En memoria** (HU-W1.3-01, HU-W1.1-02) | Una aceptación se pierde al reiniciar | PostgreSQL de esas historias |
-| Documento contractual | Muestra el valor asegurado y el plazo de **demostración** (250 000 000 COP, 120 meses) aunque el cobro ya usa la prima real | El PDF puede no coincidir con la oferta | `billing.go` `demoCoverageTerms` (HA-D02) |
+| Documento contractual | **Resuelto en la fase AWS de HA-D02 (D-16):** una oferta personalizada activa su valor asegurado, su plazo y sus coberturas, y el PDF los muestra; las `demo-…` y `adj-…` siguen con los de demostración | El PDF coincide con la oferta personalizada | — |
 | Oferta ajustada `adj-*` | No usa los datos de la oferta personalizada | `terms`/`conditions` en `null` | HU-W1.1-02 |
 | Correo de recotización | Reintentos en el proceso; si se detiene mientras reintenta, el aviso se pierde | El cliente ve el reemplazo al volver (§5.3) | Cola persistente |
 | Eventos `OfferGenerated`, `OfferRequoted` | Registrados en `docs/events/README.md`; **no se publican** | — | HU-W4.1-01 |
