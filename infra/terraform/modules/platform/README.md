@@ -41,7 +41,28 @@ Una sola instancia RDS (costo) con aislamiento lógico:
 - La clave del administrador la gestiona RDS en Secrets Manager (nunca llega al estado) y solo la lee la tarea `db-init`, que crea
   roles y bases y le quita el `CONNECT` a `PUBLIC`. Se lanza con la salida `db_init_command`.
 
-Hoy ningún servicio usa PostgreSQL todavía (adaptadores en memoria); la variable ya les llega para cuando lo hagan.
+Ya usan su base el cobro de la prima y las ofertas personalizadas de `origination` (HA-D02, HU-W1.2-03) y el consentimiento de
+`audit` (HU-W1.2-01); los dos abren su base y aplican sus migraciones **al arrancar**, así que necesitan que `db-init` haya creado
+su rol antes (ver «Primer `apply` en dos tiempos»). Los demás servicios reciben la variable para cuando la usen.
+
+## Primer `apply` en dos tiempos
+
+Los roles `<servicio>_app` los crea `db-init` **después** del `apply`, pero `origination` (con `PAYMENT_GATEWAY_URL`) y `audit` abren
+PostgreSQL al arrancar: si arrancan antes, caen en bucle y el *circuit breaker* de despliegue de ECS puede dar el despliegue por
+fallido. Por eso un ambiente nuevo se levanta así:
+
+1. `apply` con `services_enabled = false` (todo menos las tareas);
+2. `db-init` con el comando literal de `terraform output -raw db_init_command` (sin `eval`), y esperar a que la tarea termine con
+   código 0;
+3. `apply` con `services_enabled = true` (solo cambian los `desired_count` y el autoescalado).
+
+## Una tarea de originación (C5)
+
+`origination` corre con **una sola tarea** (`desired_count = max_count = 1`, sin autoescalado) en `staging` y en `production-demo`
+mientras las aceptaciones, la bandeja del asesor y la emisión contractual sigan en memoria (C5 de la bitácora, ligado a
+HU-W1.2-03): con dos tareas, una aceptación registrada en una no existiría en la otra y la bandeja o el cobro la perderían. Es una
+**desviación temporal de ADR-02** (3 tareas), decidida en HA-D02 (#54) e informada al equipo; se vuelve a 3 tareas y al autoescalado
+cuando esos datos estén en PostgreSQL. Un reinicio de la tarea borra lo que está en memoria (el cobro no: está en PostgreSQL).
 
 ## Rutas
 
@@ -126,8 +147,8 @@ el estado remoto cifrado del bucket de T4.
 | `ephemeral` | `false` | Sin snapshot final, buckets con `force_destroy`, secretos sin ventana de recuperación |
 
 Salidas: `invoke_url`, `api_key_ids`, `api_key_values` (sensible), `usage_plan_ids`, `cognito`, `alb_dns_name`, `ecs_cluster`,
-`log_group`, `desired_counts`, `database_users`, `images`, `rds_address`, `redis_endpoint`, `database_secret_arns`, `topic_arns`,
-`queue_urls`, `dlq_urls`, `buckets`, `nat_gateway_ids` y `db_init_command`.
+`log_group`, `service_sizing`, `desired_counts`, `database_users`, `images`, `rds_address`, `redis_endpoint`, `database_secret_arns`,
+`topic_arns`, `queue_urls`, `dlq_urls`, `buckets`, `nat_gateway_ids` y `db_init_command`.
 
 ## Pruebas (locales, sin AWS)
 

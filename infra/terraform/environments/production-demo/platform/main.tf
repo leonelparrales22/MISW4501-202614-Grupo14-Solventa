@@ -1,5 +1,6 @@
 # Production-demo platform (T4): the evaluable delivery. Sized as ADR-02 (2
-# tasks per service, 3 in origination, autoscaling on CPU at 60 %), with
+# tasks per service, autoscaling on CPU at 60 %) except origination, which
+# keeps one task for now (see below), with
 # deletion protection, a final RDS snapshot and 7 days of backups. NAT and
 # Multi-AZ stay off by default for cost and are switched on for the final demo
 # (nat_mode = "per_az", rds_multi_az = true, redis_multi_az = true).
@@ -17,7 +18,11 @@ module "platform" {
   services_enabled    = var.services_enabled
 
   service_sizing = {
-    origination   = { cpu = 512, memory = 1024, desired_count = 3, max_count = 6 } # EXP-L01: 0.5 vCPU / 1 GB
+    # EXP-L01: 0.5 vCPU / 1 GB. Temporary deviation from ADR-02 (3 tasks,
+    # decided in HA-D02, #54): one task until acceptances, offers and the
+    # advisor inbox are persisted (C5, HU-W1.2-03); back to 3 tasks with
+    # autoscaling up to 6 afterwards.
+    origination   = { cpu = 512, memory = 1024, desired_count = 1, max_count = 1 }
     claims        = { cpu = 256, memory = 512, desired_count = 2, max_count = 4 }
     partners      = { cpu = 256, memory = 512, desired_count = 2, max_count = 4 }
     audit         = { cpu = 256, memory = 512, desired_count = 2, max_count = 4 }

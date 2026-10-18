@@ -15,7 +15,10 @@ module "platform" {
   services_enabled    = var.services_enabled
 
   service_sizing = {
-    origination   = { cpu = 512, memory = 1024, desired_count = 1, max_count = 2 } # EXP-L01: 0.5 vCPU / 1 GB
+    # EXP-L01: 0.5 vCPU / 1 GB. One task until acceptances, offers and the
+    # advisor inbox are persisted (C5, HU-W1.2-03): with two tasks an
+    # acceptance kept in the memory of one would not exist in the other.
+    origination   = { cpu = 512, memory = 1024, desired_count = 1, max_count = 1 }
     claims        = { cpu = 256, memory = 512, desired_count = 1, max_count = 2 }
     partners      = { cpu = 256, memory = 512, desired_count = 1, max_count = 2 }
     audit         = { cpu = 256, memory = 512, desired_count = 1, max_count = 2 }

@@ -47,8 +47,12 @@ run "adr02_sizing_without_nat_or_multi_az_by_default" {
   command = plan
 
   assert {
-    condition     = module.platform.desired_counts["origination"] == 3 && module.platform.desired_counts["claims"] == 2
-    error_message = "ADR-02: 3 tasks in origination and 2 in every other service."
+    condition = (
+      module.platform.desired_counts["origination"] == 1 &&
+      module.platform.service_sizing["origination"].max_count == 1 &&
+      module.platform.desired_counts["claims"] == 2
+    )
+    error_message = "ADR-02: 2 tasks in every service; origination keeps 1 task without autoscaling until acceptances and the advisor inbox are persisted (C5, HA-D02 #54), then goes back to 3."
   }
 
   assert {

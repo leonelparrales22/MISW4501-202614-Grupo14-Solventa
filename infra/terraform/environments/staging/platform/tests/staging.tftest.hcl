@@ -66,6 +66,21 @@ run "staging_is_ephemeral_and_small" {
   }
 }
 
+# HA-D02 (C5): origination keeps one task, without autoscaling, while
+# acceptances and the advisor inbox live in memory.
+run "origination_runs_a_single_task" {
+  command = plan
+
+  assert {
+    condition = (
+      module.platform.desired_counts["origination"] == 1 &&
+      module.platform.service_sizing["origination"].desired_count == 1 &&
+      module.platform.service_sizing["origination"].max_count == 1
+    )
+    error_message = "Origination runs exactly one task and never scales out (C5): desired_count = max_count = 1."
+  }
+}
+
 run "ttl_is_required_and_validated" {
   command = plan
 

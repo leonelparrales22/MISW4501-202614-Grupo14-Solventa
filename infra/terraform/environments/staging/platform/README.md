@@ -13,7 +13,7 @@ destruye en la misma sesión**. La topología está en el README del módulo; aq
 | Parámetro | Valor | Por qué |
 |---|---|---|
 | Nombre / VPC | `solventa-stg`, `10.50.0.0/16` | No se cruza con `ha-l01` (`10.40.0.0/16`) |
-| Tareas | 1 por servicio y por stub (`origination` 0,5 vCPU / 1 GB, el resto 0,25 vCPU / 0,5 GB); autoescalado por CPU al 60 % hasta 2 | Tamaño de experimento |
+| Tareas | 1 por servicio y por stub (`origination` 0,5 vCPU / 1 GB, el resto 0,25 vCPU / 0,5 GB); autoescalado por CPU al 60 % hasta 2, salvo `origination`, fija en 1 | Tamaño de experimento; `origination` en una tarea mientras aceptaciones y bandeja estén en memoria ([C5](../../../modules/platform/README.md#una-tarea-de-originación-c5)) |
 | NAT | `nat_mode = "none"` por defecto | Costo |
 | RDS / Redis | Single-AZ, backup de 1 día | Costo |
 | Ciclo de vida | `ephemeral = true`: sin snapshot final, buckets con `force_destroy`, secretos sin ventana de recuperación (se pueden recrear con el mismo nombre); sin `deletion_protection` | Se destruye tras cada ventana |
