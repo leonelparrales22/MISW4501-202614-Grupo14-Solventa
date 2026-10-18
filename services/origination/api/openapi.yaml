@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.8.0
+  version: 0.9.0
 paths:
   /health:
     get:
@@ -28,7 +28,14 @@ paths:
         last cached profile (at most 30 days old, a partial one since a complete
         one would have been reused) or, for a customer without one, the base
         actuarial profile. No external source and no cached
-        profile is used without an active consent.
+        profile is used without an active consent. With AUDIT_URL set, the
+        consent is verified with the audit service before anything else
+        (HU-W1.2-01): consent_active is still required by the contract but its
+        value is ignored, 422 consent_required means audit has no active consent
+        for the customer, and an audit that does not answer in time (or an open
+        circuit) is 503 request_aborted, because a consent that cannot be
+        verified is never assumed. Without AUDIT_URL the caller still asserts
+        consent_active.
       requestBody:
         required: true
         content:
@@ -55,7 +62,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          description: The request was aborted (for example, the client disconnected)
+          description: >
+            The request was aborted (for example, the client disconnected) or,
+            with AUDIT_URL set, the consent could not be verified because the
+            audit service did not answer in time (HU-W1.2-01). Nothing was
+            queried.
           content:
             application/json:
               schema:
@@ -81,7 +92,8 @@ paths:
           required: true
           description: >
             Whether the customer has an active consent. Asserted by the caller
-            until the audit service exposes the consent check (HU-W1.2-01).
+            only when the service runs without AUDIT_URL; with it, the audit
+            service decides (HU-W1.2-01) and this value is ignored.
           schema:
             type: boolean
       responses:
@@ -104,7 +116,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          description: The request was aborted (for example, the client disconnected)
+          description: >
+            The request was aborted (for example, the client disconnected) or,
+            with AUDIT_URL set, the consent could not be verified because the
+            audit service did not answer in time (HU-W1.2-01). Nothing was
+            queried.
           content:
             application/json:
               schema:
@@ -1287,7 +1303,8 @@ components:
           type: boolean
           description: >
             Whether the customer has an active consent. Asserted by the caller
-            until the audit service exposes the consent check (HU-W1.2-01).
+            only when the service runs without AUDIT_URL; with it, the audit
+            service decides (HU-W1.2-01) and this value is ignored.
     ResolveRiskProfileResponse:
       type: object
       required: [customer_id, mode, source, profile, profile_date, unavailable_source, notice, partial, sources]

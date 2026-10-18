@@ -1,0 +1,57 @@
+# Contract test of the audit service (OBJ 05): the real service over its own
+# PostgreSQL and Moto as Cognito (the evidence lookup is a human route),
+# checked against api/openapi.yaml by Schemathesis. Run it with ./run.sh.
+# Build context is the repository root. Published ports (127.0.0.1 only):
+# audit 8292 and Moto 5121.
+name: audit-contract
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=audit
+      - POSTGRES_USER=audit
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit -d audit"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  moto:
+    image: motoserver/moto:5.2.3
+    ports:
+      - "127.0.0.1:${MOTO_PORT:-5121}:5000"
+    environment:
+      - MOTO_COGNITO_IDP_USER_POOL_ID_STRATEGY=HASH
+      - MOTO_COGNITO_IDP_USER_POOL_CLIENT_ID_STRATEGY=HASH
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/moto-api/')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  audit:
+    build:
+      context: ../../../..
+      dockerfile: services/audit/Dockerfile
+    ports:
+      - "127.0.0.1:${AUDIT_PORT:-8292}:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://audit:${PG_PASSWORD:-}@postgres:5432/audit?sslmode=disable
+      - AUTH_ISSUER=${AUTH_ISSUER:-}
+      - AUTH_JWKS_URL=${AUTH_JWKS_URL:-}
+      - AUTH_CLIENT_IDS=${AUTH_CLIENT_IDS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      moto:
+        condition: service_healthy
+
+  # Started on demand by run.sh (docker compose run --rm schemathesis ...).
+  schemathesis:
+    image: schemathesis/schemathesis:v3.39.16
+    profiles: ["tools"]
+    volumes:
+      - ../../api:/api:ro
