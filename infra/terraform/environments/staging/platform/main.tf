@@ -38,7 +38,27 @@ module "platform" {
   redis_multi_az            = var.redis_multi_az
 
   cors_allow_origin = var.cors_allow_origin
+  portal_base_url   = local.portal_base_url
 
   deletion_protection = false
   ephemeral           = true
+}
+
+# --- Web portal (T5) ----------------------------------------------------------------
+
+# The portal composition (environments/staging/web) publishes its URL in SSM. The
+# platform reads it when it exists, so the e-mail links of origination point to
+# the portal (decision D-11 of T5).
+# Without the site the lists are empty and nothing changes. The values are
+# plain String parameters (bucket, distribution id and URL), never secrets.
+data "aws_ssm_parameters_by_path" "portal" {
+  path = "/solventa/staging/web"
+}
+
+locals {
+  portal_parameters = zipmap(
+    data.aws_ssm_parameters_by_path.portal.names,
+    nonsensitive(data.aws_ssm_parameters_by_path.portal.values),
+  )
+  portal_base_url = var.portal_base_url != null ? var.portal_base_url : lookup(local.portal_parameters, "/solventa/staging/web/url", null)
 }

@@ -16,9 +16,10 @@ en el README del módulo.
 | Tareas | ADR-02: 2 en cada servicio (0,25 vCPU / 0,5 GB) con autoescalado por CPU al 60 % hasta 4; `origination` (0,5 vCPU / 1 GB, EXP-L01) **en 1 tarea sin autoescalado** por ahora; 1 por stub | ADR-02 / EXP-D03. `origination` se desvía temporalmente de las 3 tareas de ADR-02 mientras aceptaciones, bandeja y emisión estén en memoria ([C5](../../../modules/platform/README.md#una-tarea-de-originación-c5), HA-D02); vuelve a 3 (hasta 6) cuando estén en PostgreSQL |
 | NAT | `nat_mode = "none"` por defecto | Costo; `per_az` para la demo |
 | RDS / Redis | Single-AZ por defecto, backups de 7 días | Multi-AZ en `db.t4g.micro` supera el presupuesto de US$ 20/mes si queda encendido; se activa para la demo |
-| Protección | `deletion_protection = true` (RDS, ALB, user pool), snapshot final de RDS, secretos con 7 días de recuperación, buckets sin `force_destroy` | Entrega evaluable |
+| Protección | `deletion_protection = true` (RDS, ALB, user pool), snapshot final de RDS, secretos con 7 días de recuperación, buckets sin `force_destroy`. Desde T5 son las variables `deletion_protection` y `ephemeral`, con esos mismos valores por defecto: solo el comando de apagado las invierte (D-18) | Entrega evaluable |
 | Logs | 14 días | — |
-| Usage plans | D-7: 100 req/s, ráfaga 200, sin cuota, por socio (`socio-a`, `socio-b`) | Decisión D-7 vigente |
+| Usage plans | D-7: 100 req/s, ráfaga 200, sin cuota, por socio (`socio-a`, `socio-b`); `portal-embebido` (10 req/s, ráfaga 20), el socio de demostración cuya key agrega CloudFront (T5, D-3) | Decisión D-7 vigente |
+| Portal web (T5) | La URL del portal sale del parámetro SSM `/solventa/production-demo/web/url` que publica [`production-demo/web`](../web/README.md); con ella, los enlaces de los correos apuntan al portal (D-11) y CORS se fija a su origen (D-12 b) | Mismo origen para el portal; sin el sitio, todo queda como antes |
 | Estado remoto | `production-demo/platform/terraform.tfstate` en `solventa-tfstate-368083581678`, bloqueo nativo de S3 | Convención de T4 |
 
 Etiquetas por defecto: `Project=solventa`, `Env=production-demo`, `Task=T4`. El proveedor rechaza cualquier cuenta distinta de
@@ -34,18 +35,58 @@ Etiquetas por defecto: `Project=solventa`, `Env=production-demo`, `Task=T4`. El 
 | `nat_mode` | `"none"` | `none`, `single` o `per_az` |
 | `rds_multi_az` | `false` | Réplica en espera de PostgreSQL en la segunda zona |
 | `redis_multi_az` | `false` | Réplica de Redis en la segunda zona con *failover* automático |
-| `cors_allow_origin` | `"*"` | Origen permitido de las rutas humanas; fijarlo al origen del portal |
+| `cors_allow_origin` | `null` | Origen permitido de las rutas humanas. `null` lo fija al origen del portal cuando existe y, si no, `*` (T5, D-12 b) |
+| `portal_base_url` | `null` | Origen del portal; `null` lo lee del parámetro SSM `/solventa/production-demo/web/url` (T5) |
+| `deletion_protection` | `true` | Candado de RDS y del ALB; solo `down.sh` lo pone en `false` (T5, D-18) |
+| `ephemeral` | `false` | Sin snapshot final, buckets con `force_destroy` y secretos sin ventana de recuperación; solo `down.sh` lo pone en `true` (T5, D-18) |
 
-Las etiquetas disponibles de una imagen salen de
-`aws ecr describe-images --repository-name solventa/<imagen> --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags'`.
+**Aplique siempre con `image_tag` explícito.** La etiqueta de production-demo es el SHA del *merge* a `main`: el CD de `main` (pipeline
+de Maycol) construye todas las imágenes con ese SHA y lo publica en el parámetro SSM **`/solventa/production-demo/image-tag`**. Ese
+parámetro es de ese pipeline: T5 solo lo lee (decisión #69 de Nicolás, acordada con Maycol). Con `image_tag = null` cada servicio
+tomaría la imagen más reciente de su repositorio, y en ECR pueden convivir imágenes de prueba de una ventana de staging (por ejemplo
+`solventa/origination:prueba-ha-d02`), así que nunca se aplica production-demo sin etiqueta.
 
-**Aplique siempre con `image_tag` explícito** (el SHA de 12 caracteres que publicó `backend-cd` desde `main`). Con `image_tag = null`
-cada servicio toma la imagen más reciente de su repositorio, y en ECR pueden convivir imágenes de prueba de una ventana de staging
-(por ejemplo `solventa/origination:prueba-ha-d02` y `solventa/email:prueba-ha-d02`, HA-D02) hasta que se borren.
+```bash
+MSYS_NO_PATHCONV=1 aws ssm get-parameter --name /solventa/production-demo/image-tag --query Parameter.Value --output text
+```
 
-## Procedimiento
+## Encender y apagar con un comando (T5)
 
-El **primer** `apply` va en dos tiempos (ver «Primer `apply` en dos tiempos» en el README del módulo): `origination` (con el cobro
+`scripts/environment/up.sh` y `down.sh` (documentados en [`scripts/README.md`](../../../../../scripts/README.md)) encienden y
+apagan el ambiente completo en el orden correcto (D-16). **El harness de agentes nunca los corre con production-demo** (R8): los
+corre una persona desde su terminal, con credenciales de la cuenta `368083581678`, unas dos horas antes de la demo (D-17).
+
+```
+Prerrequisitos (una vez): bootstrap/identity aplicado (pool permanente) · develop → main integrado en backend y front ·
+  el CD de main publicó las imágenes y el parámetro /solventa/production-demo/image-tag · un checkout limpio del front
+  en origin/main (FRONT_DIR), con Node 24 y npm, si se va a publicar el front con el comando
+Encender:
+  FRONT_DIR=<checkout del front> scripts/environment/up.sh production-demo --confirm-production-demo          (planifica y se detiene)
+  FRONT_DIR=<checkout del front> scripts/environment/up.sh production-demo --confirm-production-demo --yes    (aplica)
+      etiqueta del parámetro SSM → plataforma sin tareas → db-init → sitio (production-demo/web) →
+      plataforma con tareas y la URL del portal → build local de main + publicar-portal.sh → humo
+  (con --skip-front, el front lo publica el pipeline de main; el humo se corre después de que publique)
+Apagar (al terminar la demo, el mismo día):
+  scripts/environment/down.sh production-demo --confirm-production-demo --yes
+      deletion_protection=false + ephemeral=true → destroy de la plataforma; quedan el sitio y el pool (≈ US$ 0/h)
+```
+
+- **Variables que pasan los comandos:** en production-demo solo `image_tag` (del parámetro SSM) y `services_enabled` por fase, y en
+  `down.sh` además `deletion_protection=false` y `ephemeral=true`. **Nunca** `nat_mode`, `rds_multi_az` ni `redis_multi_az`: quedan los
+  valores por defecto de esta composición, los mismos que usa el CD de `main` (#69).
+- **Sin etiqueta no se enciende:** si el parámetro no existe o está vacío, `up.sh` se detiene con «falta que el CD de `main` publique la
+  etiqueta en /solventa/production-demo/image-tag». No busca «la más reciente».
+- **Coordinación con el CD de `main` (pipeline de Maycol, #68 y #69):** ese pipeline construye y publica las imágenes y la etiqueta
+  **siempre**; solo aplica Terraform si el ambiente está encendido; y su aprobación **no se da mientras corre `up.sh` o `down.sh`** (los
+  dos aplicarían el mismo estado; el bloqueo nativo del estado remoto impide dos `apply` a la vez, pero el segundo fallaría a medias).
+- Las tareas de `origination` arrancan una sola vez, ya con la URL del portal (la fase `site` va antes de `platform`). Con una sola tarea
+  (C5), ningún `apply` que la redespliegue durante la demo.
+- **Volver a encender antes de 7 días no choca:** `down.sh` borra los secretos sin ventana de recuperación (`ephemeral = true`). Puede
+  haber unos segundos de consistencia eventual; si `up.sh` falla en `platform-base` por eso, se repite la fase.
+
+## Procedimiento manual (referencia)
+
+Es lo que hacen por dentro las fases `platform-base`, `db-init` y `platform` de `up.sh`. El **primer** `apply` va en dos tiempos (ver «Primer `apply` en dos tiempos» en el README del módulo): `origination` (con el cobro
 de la prima) y `audit` abren PostgreSQL al arrancar y necesitan que `db-init` haya creado su rol.
 
 ```bash
@@ -86,8 +127,17 @@ terraform apply                       # vuelve a los valores por defecto
 
 ### Destruir
 
-`deletion_protection` está activo: hay que desactivarlo en `main.tf` (`deletion_protection = false`), aplicar y luego
-`terraform destroy`. RDS deja el snapshot `solventa-demo-final`; bórrelo a mano si no se necesita (cobra almacenamiento).
+Lo hace `down.sh production-demo` (ver «Encender y apagar con un comando»). A mano, con las variables de D-18:
+
+```bash
+terraform plan -out off.tfplan -var image_tag=<sha de 12> -var services_enabled=false -var deletion_protection=false -var ephemeral=true
+terraform apply off.tfplan            # baja los candados y pone el modo efímero (sin llamadas de borrado)
+terraform destroy -var image_tag=<sha de 12> -var services_enabled=false -var deletion_protection=false -var ephemeral=true
+```
+
+Con `ephemeral = true` RDS no deja snapshot final, los buckets se borran con sus objetos y los secretos se borran sin ventana de
+recuperación. Sin esas variables, RDS deja el snapshot `solventa-demo-final` (cobra almacenamiento) y los secretos quedan 7 días en
+borrado programado.
 
 ## Costos (aproximados, precios de lista en `us-east-2`; verificar antes de aplicar)
 

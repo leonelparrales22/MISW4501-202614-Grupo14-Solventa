@@ -56,9 +56,15 @@ variable "redis_multi_az" {
 }
 
 variable "cors_allow_origin" {
-  description = "Allowed origin of the human routes."
+  description = "Allowed origin of the human routes (* in staging, decision D-12 b of T5)."
   type        = string
   default     = "*"
+}
+
+variable "portal_base_url" {
+  description = "Origin of the web portal (https://<distribution>.cloudfront.net). Null (default) reads it from the SSM parameter /solventa/staging/web/url that the web composition publishes (T5)."
+  type        = string
+  default     = null
 }
 
 # --- Levers of a test window (HA-D02) ------------------------------------------------

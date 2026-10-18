@@ -39,6 +39,14 @@ mock_provider "aws" {
       image_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     }
   }
+
+  # No web portal unless a run overrides it (T5).
+  mock_data "aws_ssm_parameters_by_path" {
+    defaults = {
+      names  = []
+      values = []
+    }
+  }
 }
 
 mock_provider "random" {}
@@ -142,4 +150,64 @@ run "ttl_is_required_and_validated" {
   }
 
   expect_failures = [var.ttl]
+}
+
+# --- Web portal (T5) -------------------------------------------------------------------
+
+# Decision D-6 of T5: the web composition publishes its URL in SSM and the
+# platform reads it; a variable can still pin it.
+run "portal_url_comes_from_ssm_or_variable" {
+  command = plan
+
+  override_data {
+    target = data.aws_ssm_parameters_by_path.portal
+    values = {
+      names  = ["/solventa/staging/web/bucket", "/solventa/staging/web/distribution-id", "/solventa/staging/web/url"]
+      values = ["solventa-test-web-368083581678", "E1234567890ABC", "https://d1234abcd.cloudfront.net"]
+    }
+  }
+
+  assert {
+    condition     = local.portal_base_url == "https://d1234abcd.cloudfront.net"
+    error_message = "The platform reads the portal URL that the web composition publishes in SSM."
+  }
+}
+
+run "portal_url_variable_wins_over_ssm" {
+  command = plan
+
+  variables {
+    portal_base_url = "https://dother.cloudfront.net"
+  }
+
+  override_data {
+    target = data.aws_ssm_parameters_by_path.portal
+    values = {
+      names  = ["/solventa/staging/web/url"]
+      values = ["https://d1234abcd.cloudfront.net"]
+    }
+  }
+
+  assert {
+    condition     = local.portal_base_url == "https://dother.cloudfront.net"
+    error_message = "portal_base_url, when set, wins over the SSM parameter."
+  }
+}
+
+run "without_the_site_there_is_no_portal_url" {
+  command = plan
+
+  assert {
+    condition     = local.portal_base_url == null
+    error_message = "Without the site (no SSM parameters) the platform has no portal URL and keeps the links on the stage."
+  }
+}
+
+run "staging_keeps_cors_open" {
+  command = plan
+
+  assert {
+    condition     = var.cors_allow_origin == "*"
+    error_message = "Staging keeps CORS on * (decision D-12 b of T5)."
+  }
 }

@@ -4,6 +4,10 @@
 # deletion protection, a final RDS snapshot and 7 days of backups. NAT and
 # Multi-AZ stay off by default for cost and are switched on for the final demo
 # (nat_mode = "per_az", rds_multi_az = true, redis_multi_az = true).
+#
+# deletion_protection and ephemeral are variables with the values above as
+# defaults (T5, decision D-18): the switch-off command of scripts/environment
+# turns both around to destroy the whole platform the same day of the demo.
 
 module "platform" {
   source = "../../../modules/platform"
@@ -34,8 +38,31 @@ module "platform" {
   rds_backup_retention_days = 7
   redis_multi_az            = var.redis_multi_az
 
-  cors_allow_origin = var.cors_allow_origin
+  # CORS (D-12 b of T5): the origin of the portal when it exists; the portal
+  # itself is same-origin and never needs it.
+  cors_allow_origin = local.cors_allow_origin
+  portal_base_url   = local.portal_base_url
 
-  deletion_protection = true
-  ephemeral           = false
+  deletion_protection = var.deletion_protection
+  ephemeral           = var.ephemeral
+}
+
+# --- Web portal (T5) ----------------------------------------------------------------
+
+# The portal composition (environments/production-demo/web) publishes its URL in SSM. The
+# platform reads it when it exists, so the e-mail links of origination point to
+# the portal (decision D-11 of T5), and CORS is pinned to it (D-12 b).
+# Without the site the lists are empty and nothing changes. The values are
+# plain String parameters (bucket, distribution id and URL), never secrets.
+data "aws_ssm_parameters_by_path" "portal" {
+  path = "/solventa/production-demo/web"
+}
+
+locals {
+  portal_parameters = zipmap(
+    data.aws_ssm_parameters_by_path.portal.names,
+    nonsensitive(data.aws_ssm_parameters_by_path.portal.values),
+  )
+  portal_base_url   = var.portal_base_url != null ? var.portal_base_url : lookup(local.portal_parameters, "/solventa/production-demo/web/url", null)
+  cors_allow_origin = coalesce(var.cors_allow_origin, local.portal_base_url, "*")
 }
