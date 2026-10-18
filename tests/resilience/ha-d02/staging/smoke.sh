@@ -57,7 +57,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export AWS_PAGER=""
 # The AWS CLI calls go through aws_ro, which keeps Git Bash from rewriting /ecs/...
 # (MSYS_NO_PATHCONV only there: curl needs the conversion of its temporary files).
-aws_ro() { MSYS_NO_PATHCONV=1 aws "$@"; }
+# PYTHONUTF8=1 makes the CLI print UTF-8 on Windows too; otherwise it prints the
+# console code page and accented subjects ("Tu póliza…") never match grep -F.
+aws_ro() { MSYS_NO_PATHCONV=1 PYTHONUTF8=1 aws "$@"; }
 
 if [[ -n "${TF_DIR:-}" ]]; then
   tf_raw() { terraform -chdir="$TF_DIR" output -raw "$1"; }
