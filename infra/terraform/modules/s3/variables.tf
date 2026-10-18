@@ -25,3 +25,14 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "extra_policy_json" {
+  description = "Optional IAM policy JSON whose statements are merged into the bucket policy (for example, read access for a CloudFront distribution). Null keeps the TLS-only policy."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.extra_policy_json == null || can(jsondecode(var.extra_policy_json))
+    error_message = "extra_policy_json must be a valid JSON policy document."
+  }
+}

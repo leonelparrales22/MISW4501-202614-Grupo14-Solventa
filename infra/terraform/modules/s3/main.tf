@@ -65,6 +65,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
 }
 
 data "aws_iam_policy_document" "tls_only" {
+  # Optional statements of the caller (for example, read access for a
+  # CloudFront distribution, T5). Without them the policy is the same as before.
+  source_policy_documents = compact([var.extra_policy_json])
+
   statement {
     sid     = "DenyInsecureTransport"
     effect  = "Deny"

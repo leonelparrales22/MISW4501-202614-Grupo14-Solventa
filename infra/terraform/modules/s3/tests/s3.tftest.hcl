@@ -70,3 +70,60 @@ run "rejects_an_invalid_bucket_name" {
 
   expect_failures = [var.bucket]
 }
+
+run "default_policy_is_unchanged" {
+  command = plan
+
+  assert {
+    condition     = length(data.aws_iam_policy_document.tls_only.source_policy_documents) == 0
+    error_message = "Without extra_policy_json the bucket policy must not merge any other document."
+  }
+
+  assert {
+    condition     = length(data.aws_iam_policy_document.tls_only.statement) == 1
+    error_message = "Without extra_policy_json the bucket policy must keep only the TLS statement."
+  }
+}
+
+run "extra_statements_are_merged" {
+  command = plan
+
+  variables {
+    extra_policy_json = jsonencode({
+      Version = "2012-10-17"
+      Statement = [{
+        Sid       = "AllowCloudFrontRead"
+        Effect    = "Allow"
+        Principal = { Service = "cloudfront.amazonaws.com" }
+        Action    = "s3:GetObject"
+        Resource  = "arn:aws:s3:::solventa-test-documents-123456789012/*"
+      }]
+    })
+  }
+
+  assert {
+    condition = (
+      length(data.aws_iam_policy_document.tls_only.source_policy_documents) == 1 &&
+      data.aws_iam_policy_document.tls_only.source_policy_documents[0] == var.extra_policy_json
+    )
+    error_message = "extra_policy_json must be merged into the bucket policy."
+  }
+
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.tls_only.statement :
+      s.effect == "Deny" && anytrue([for c in s.condition : c.variable == "aws:SecureTransport"])
+    ])
+    error_message = "The TLS-only statement must stay when extra statements are added."
+  }
+}
+
+run "rejects_extra_policy_that_is_not_json" {
+  command = plan
+
+  variables {
+    extra_policy_json = "not a policy"
+  }
+
+  expect_failures = [var.extra_policy_json]
+}
