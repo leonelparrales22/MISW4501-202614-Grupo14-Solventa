@@ -19,6 +19,12 @@
 #   HU-W1.3-03 (GET /v1/documents/{token}); each method can be throttled at the
 #   stage, since no usage plan covers it. binary_media_types lets a PDF through
 #   intact. Without them nothing of this is created and nothing changes.
+# - Public card tokenization (T5, optional): with payment_tokenization,
+#   POST /pasarela/tokens (outside /v1; the name is fixed by the HU-W1.3-02
+#   contract) reaches the simulated payment gateway behind the load balancer
+#   without session or API key, throttled at the stage, so the web client can
+#   tokenize a card without the number going through Solventa. Without it
+#   nothing of this is created and nothing changes.
 
 locals {
   private_integration = var.vpc_link_v2_id != null
@@ -135,8 +141,9 @@ resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.this.id
 
   # The human-channel resources (HA-S01), the public routes and the binary
-  # media types (HA-D02) join the hash only when they exist, so an API without
-  # them keeps the same redeployment hash as before.
+  # media types (HA-D02) and the public card tokenization (T5) join the hash
+  # only when they exist, so an API without them keeps the same redeployment
+  # hash as before.
   triggers = {
     redeployment = sha1(join("", concat(
       [jsonencode([
@@ -163,6 +170,12 @@ resource "aws_api_gateway_deployment" "this" {
         aws_api_gateway_integration.public,
       ])] : [],
       length(var.binary_media_types) > 0 ? [jsonencode(var.binary_media_types)] : [],
+      local.payment_tokenization_enabled ? [jsonencode([
+        aws_api_gateway_resource.payment_gateway,
+        aws_api_gateway_resource.payment_tokens,
+        aws_api_gateway_method.payment_tokens_post,
+        aws_api_gateway_integration.payment_tokens_post,
+      ])] : [],
     )))
   }
 
@@ -538,6 +551,75 @@ resource "aws_api_gateway_method_settings" "public" {
     caching_enabled        = false
     throttling_rate_limit  = coalesce(var.public_routes[each.value.route].rate_limit, -1)
     throttling_burst_limit = coalesce(var.public_routes[each.value.route].burst_limit, -1)
+  }
+
+  depends_on = [aws_api_gateway_method_settings.all]
+}
+
+# --- Public card tokenization of the simulated payment gateway (T5) --------------
+
+locals {
+  payment_tokenization_enabled = var.payment_tokenization != null
+}
+
+# /pasarela hangs from the root, outside /v1: the HU-W1.3-02 contract (section 8)
+# and the local proxy of the web client (proxy.conf.json) use that prefix.
+resource "aws_api_gateway_resource" "payment_gateway" {
+  count = local.payment_tokenization_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "pasarela"
+}
+
+resource "aws_api_gateway_resource" "payment_tokens" {
+  count = local.payment_tokenization_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.payment_gateway[0].id
+  path_part   = "tokens"
+}
+
+# Only POST: the gateway exposes no other route of the simulator (/charges and
+# /debug/* answer 403 Missing Authentication Token).
+resource "aws_api_gateway_method" "payment_tokens_post" {
+  count = local.payment_tokenization_enabled ? 1 : 0
+
+  rest_api_id      = aws_api_gateway_rest_api.this.id
+  resource_id      = aws_api_gateway_resource.payment_tokens[0].id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "payment_tokens_post" {
+  count = local.payment_tokenization_enabled ? 1 : 0
+
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.payment_tokens[0].id
+  http_method             = aws_api_gateway_method.payment_tokens_post[0].http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "POST"
+  uri                     = "${local.backend}${var.payment_tokenization.backend_path}"
+  connection_type         = local.connection_type
+  connection_id           = var.vpc_link_v2_id
+  integration_target      = local.private_integration ? var.integration_target_arn : null
+  timeout_milliseconds    = var.integration_timeout_ms
+}
+
+# No usage plan covers a route without API key: the throttle lives at the stage.
+resource "aws_api_gateway_method_settings" "payment_tokens" {
+  count = local.payment_tokenization_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "pasarela/tokens/POST"
+
+  settings {
+    metrics_enabled        = true
+    caching_enabled        = false
+    throttling_rate_limit  = var.payment_tokenization.rate_limit
+    throttling_burst_limit = var.payment_tokenization.burst_limit
   }
 
   depends_on = [aws_api_gateway_method_settings.all]

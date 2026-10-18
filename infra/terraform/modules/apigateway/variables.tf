@@ -158,3 +158,25 @@ variable "cors_allow_origin" {
   type        = string
   default     = "*"
 }
+
+# --- Public card tokenization (T5) -------------------------------------------------------
+
+variable "payment_tokenization" {
+  description = "Public POST /pasarela/tokens route of the simulated payment gateway (outside /v1; the name is fixed by the HU-W1.3-02 contract, section 8): the web client sends the card straight to the gateway, so the number never goes through Solventa. No session and no API key; rate_limit and burst_limit (requests per second) throttle it at the stage. backend_path is the path of the gateway behind the load balancer. Null: nothing is created."
+  type = object({
+    backend_path = optional(string, "/tokens")
+    rate_limit   = optional(number, 5)
+    burst_limit  = optional(number, 10)
+  })
+  default = null
+
+  validation {
+    condition     = var.payment_tokenization == null || can(regex("^/[A-Za-z0-9/_-]*$", var.payment_tokenization.backend_path))
+    error_message = "payment_tokenization.backend_path must be an absolute path (for example /tokens)."
+  }
+
+  validation {
+    condition     = var.payment_tokenization == null || try(var.payment_tokenization.rate_limit > 0 && var.payment_tokenization.burst_limit > 0, false)
+    error_message = "payment_tokenization.rate_limit and burst_limit must be greater than 0."
+  }
+}

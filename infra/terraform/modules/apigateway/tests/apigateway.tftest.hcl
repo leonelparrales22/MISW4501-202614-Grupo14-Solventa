@@ -358,3 +358,96 @@ run "defaults_change_nothing" {
     error_message = "Without public routes or binary types the redeployment hash is the one of HA-L01 and HA-S01."
   }
 }
+
+# --- Public card tokenization (T5) -------------------------------------------------------
+
+run "payment_tokenization_is_public_post_only" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { offers = { methods = ["GET", "POST"] } }
+    payment_tokenization   = {}
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_resource.payment_gateway[0].parent_id == aws_api_gateway_rest_api.this.root_resource_id &&
+      aws_api_gateway_resource.payment_gateway[0].path_part == "pasarela" &&
+      aws_api_gateway_resource.payment_tokens[0].parent_id == aws_api_gateway_resource.payment_gateway[0].id &&
+      aws_api_gateway_resource.payment_tokens[0].path_part == "tokens"
+    )
+    error_message = "The route is /pasarela/tokens, outside /v1 (HU-W1.3-02 contract, section 8)."
+  }
+
+  assert {
+    condition = (
+      length(aws_api_gateway_method.payment_tokens_post) == 1 &&
+      aws_api_gateway_method.payment_tokens_post[0].http_method == "POST" &&
+      aws_api_gateway_method.payment_tokens_post[0].authorization == "NONE" &&
+      aws_api_gateway_method.payment_tokens_post[0].api_key_required == false &&
+      aws_api_gateway_method.payment_tokens_post[0].authorizer_id == null
+    )
+    error_message = "Tokenization is a single POST without session and without API key."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_integration.payment_tokens_post[0].type == "HTTP_PROXY" &&
+      aws_api_gateway_integration.payment_tokens_post[0].integration_http_method == "POST" &&
+      aws_api_gateway_integration.payment_tokens_post[0].uri == "http://internal-alb.example.com/tokens" &&
+      aws_api_gateway_integration.payment_tokens_post[0].timeout_milliseconds == 5000
+    )
+    error_message = "The route is proxied to /tokens of the payment gateway behind the load balancer."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_method_settings.payment_tokens[0].method_path == "pasarela/tokens/POST" &&
+      aws_api_gateway_method_settings.payment_tokens[0].settings[0].throttling_rate_limit == 5 &&
+      aws_api_gateway_method_settings.payment_tokens[0].settings[0].throttling_burst_limit == 10 &&
+      aws_api_gateway_method_settings.payment_tokens[0].settings[0].caching_enabled == false
+    )
+    error_message = "The route is throttled at the stage (5 req/s, burst 10, decision D-4 of T5) and never cached."
+  }
+
+  assert {
+    condition     = output.payment_tokenization_path == "/pasarela/tokens"
+    error_message = "The module exposes the tokenization path."
+  }
+
+  assert {
+    condition     = alltrue([for m in aws_api_gateway_method.human : m.authorization == "COGNITO_USER_POOLS"])
+    error_message = "The human routes keep the Cognito authorizer next to the public tokenization."
+  }
+}
+
+run "payment_tokenization_defaults_change_nothing" {
+  command = plan
+
+  assert {
+    condition = (
+      length(aws_api_gateway_resource.payment_gateway) == 0 &&
+      length(aws_api_gateway_resource.payment_tokens) == 0 &&
+      length(aws_api_gateway_method.payment_tokens_post) == 0 &&
+      length(aws_api_gateway_integration.payment_tokens_post) == 0 &&
+      length(aws_api_gateway_method_settings.payment_tokens) == 0
+    )
+    error_message = "Without payment_tokenization there is no /pasarela route."
+  }
+
+  assert {
+    condition     = output.payment_tokenization_path == null
+    error_message = "Without payment_tokenization the path output is null."
+  }
+}
+
+run "payment_tokenization_rejects_relative_backend_path" {
+  command = plan
+
+  variables {
+    payment_tokenization = { backend_path = "tokens" }
+  }
+
+  expect_failures = [var.payment_tokenization]
+}
