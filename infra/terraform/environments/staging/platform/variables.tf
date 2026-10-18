@@ -75,23 +75,6 @@ variable "origination_environment" {
   default     = {}
 }
 
-variable "seed_users" {
-  description = "Test users of the user pool (insured, advisor, operations or partner), so the smoke test gets real tokens."
-  type = map(object({
-    email      = string
-    group      = string
-    partner_id = optional(string)
-  }))
-  default = {}
-}
-
-variable "seed_user_password" {
-  description = "Permanent password of the seed users. Only through TF_VAR_seed_user_password; never in a file."
-  type        = string
-  default     = null
-  sensitive   = true
-}
-
 variable "extra_tags" {
   description = "Tags added to the default ones, for example Owner and Story to filter the cost of a window (HA-D02, decision D-7). They cannot replace Project, Env, Task or TTL."
   type        = map(string)
