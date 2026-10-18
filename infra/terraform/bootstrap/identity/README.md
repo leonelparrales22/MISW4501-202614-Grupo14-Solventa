@@ -10,8 +10,11 @@ tendrían que reconfigurarse y recompilarse, la app móvil no tendría un pool e
 desaparecerían con el `destroy`. Con este pool, región, ID del pool y clientes se configuran **una sola vez** y las ventanas de
 staging usan siempre los mismos cuatro usuarios.
 
-> **Estado:** código y pruebas locales listos; **sin aplicar todavía**. Se aplica una vez, con la autorización del equipo y la
-> estimación de costo escrita (ver «Aplicación única»).
+> **Estado:** **aplicado el 2026-10-18** en `us-east-2` (15 recursos; un `plan` posterior da «No changes»). User pool
+> `solventa-users` con ID `us-east-2_EWwg8NL2C` y candado de borrado `ACTIVE`; clientes `solventa-users-web`
+> (`v16a9q5ba8hhh5keo76fjd4e1`) y `solventa-users-mobile` (`6dri40bi3sk74cr0jb5djq43c0`); emisor
+> `https://cognito-idp.us-east-2.amazonaws.com/us-east-2_EWwg8NL2C`. Ninguno de estos valores es secreto. No se vuelve a aplicar
+> salvo para cambiar la contraseña de los usuarios de prueba (ver «Aplicación única» y el runbook).
 
 Se aplica una vez y no se destruye, como [`remote-state`](../remote-state/README.md) y [`cd-ecr`](../cd-ecr/README.md).
 
