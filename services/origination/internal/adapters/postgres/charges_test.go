@@ -414,6 +414,51 @@ func TestResumeIsConditionalOnAFailedCharge(t *testing.T) {
 	assert.ErrorIs(t, err, ports.ErrChargeNotFound)
 }
 
+// Reanudar un cobro que nunca tuvo medio de pago no puede dejarlo vencido:
+// el worker llamaria a la pasarela sin token y, con la pasarela simulada, eso
+// confirma un pago que no existio. Vuelve a esperar la tarjeta.
+func TestResumeWithoutPaymentMethodWaitsForOneInsteadOfCharging(t *testing.T) {
+	s := postgres.NewChargeStore(newDB(t))
+	createWaitingForCard(t, s, "acc-1")
+	_, err := s.ExpireWithoutPaymentMethod(context.Background(), t0.Add(25*time.Hour))
+	require.NoError(t, err)
+	at := t0.Add(26 * time.Hour)
+
+	got, err := s.Resume(context.Background(), "acc-1", domain.ChargeResumption{
+		By: "ops-1", Note: "el cliente pide otra ventana", At: at, WindowEndsAt: at.Add(24 * time.Hour),
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, domain.ChargePending, got.Status)
+	assert.True(t, got.NextAttemptAt.IsZero(), "sin medio de pago no puede estar vencido")
+	pendientes, err := s.ListDue(context.Background(), at.Add(time.Hour), 10)
+	require.NoError(t, err)
+	assert.Empty(t, pendientes, "el worker no lo toma")
+
+	// Y el cliente puede pagar en la ventana nueva, que es el objeto de reanudarlo.
+	conTarjeta, err := s.AttachPaymentMethod(context.Background(), "acc-1", testCard(), at.Add(time.Minute))
+	require.NoError(t, err)
+	assert.Equal(t, at.Add(time.Minute), conTarjeta.NextAttemptAt)
+}
+
+// Con medio de pago sí vuelve vencido: es el caso de HA-D02, la pasarela
+// estuvo caída y hay que reintentar el cobro.
+func TestResumeWithAPaymentMethodBecomesDue(t *testing.T) {
+	s := postgres.NewChargeStore(newDB(t))
+	create(t, s, "acc-1")
+	c := claim(t, s, "acc-1", t0)
+	_, err := s.Fail(context.Background(), c, t0.Add(time.Second), idempotency.ReasonWindowExpired, "expired")
+	require.NoError(t, err)
+	at := t0.Add(time.Hour)
+
+	got, err := s.Resume(context.Background(), "acc-1", domain.ChargeResumption{
+		By: "ops-1", Note: "gateway back", At: at, WindowEndsAt: at.Add(24 * time.Hour),
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, at, got.NextAttemptAt)
+}
+
 func TestListsOfDueChargesAndExceptions(t *testing.T) {
 	s := postgres.NewChargeStore(newDB(t))
 	for _, id := range []string{"acc-a", "acc-b", "acc-c", "acc-d"} {
@@ -457,11 +502,13 @@ func TestAChargeWithoutAPaymentMethodExpiresAsAnIssuanceException(t *testing.T) 
 
 	n, err := s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt.Add(-time.Second))
 	require.NoError(t, err)
-	assert.Zero(t, n, "still within its window")
+	assert.Empty(t, n, "still within its window")
 
 	n, err = s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt)
 	require.NoError(t, err)
-	assert.Equal(t, 1, n)
+	// It returns the acceptance and not a count, so the worker can log it
+	// with its id like every other issuance exception (HU-W1.3-02).
+	assert.Equal(t, []string{"acc-missing"}, n)
 
 	got, err := s.Get(ctx, "acc-missing")
 	require.NoError(t, err)
@@ -482,7 +529,7 @@ func TestAChargeWithoutAPaymentMethodExpiresAsAnIssuanceException(t *testing.T) 
 
 	n, err = s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt.Add(time.Hour))
 	require.NoError(t, err)
-	assert.Zero(t, n, "an expired charge is expired once")
+	assert.Empty(t, n, "an expired charge is expired once")
 	_, err = s.AttachPaymentMethod(ctx, "acc-missing", testCard(), waiting.WindowEndsAt.Add(time.Minute))
 	assert.ErrorIs(t, err, ports.ErrChargeNotPayable, "only operations can resume it")
 }
@@ -510,7 +557,7 @@ func TestMigration0004LetsAnExistingDatabaseStorePaymentMethodMissing(t *testing
 	require.NoError(t, postgres.Migrate(ctx, db))
 	n, err := s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt)
 	require.NoError(t, err)
-	assert.Equal(t, 1, n)
+	assert.Equal(t, []string{"acc-before-0004"}, n)
 	got, err := s.Get(ctx, "acc-before-0004")
 	require.NoError(t, err)
 	assert.Equal(t, domain.ChargePaymentMethodMissing, got.FailureReason)

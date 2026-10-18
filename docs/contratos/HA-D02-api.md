@@ -106,6 +106,11 @@ Cuerpo `{"note": "…"}` (1 a 500 caracteres; obligatoria). Devuelve el cobro (`
 invalid_request` (sin nota o cuerpo inválido), `404 charge_not_found`, `409 charge_not_resumable` (el cobro no está en `failed`; de dos
 reanudaciones a la vez gana una), `403` para otros roles.
 
+**Un cobro que falló por `payment_method_missing` vuelve esperando el medio de pago, no vencido:** `pending` con
+`next_attempt_at: null`, que es el estado con el que nace un cobro en HU-W1.3-02. Nunca tuvo tarjeta, así que dejarlo vencido
+haría que el *worker* llamara a la pasarela sin token. El cliente paga desde E4 dentro de la ventana nueva. Los demás motivos
+se reanudan como siempre, vencidos de inmediato.
+
 ## 3. Para quien tome HU-W1.3-02 (medio de pago, póliza) y HU-W1.3-04 (monitoreo)
 
 - HU-W1.3-02 puede cambiar cuándo vence el primer intento (por ejemplo, tras capturar el medio de pago en E4) sin tocar el mecanismo; el

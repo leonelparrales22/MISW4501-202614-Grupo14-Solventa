@@ -141,10 +141,17 @@ func (w *Worker) ProcessDue(ctx context.Context) int {
 	// A charge still waiting for its payment method has no due date, so it
 	// never reaches the list below: without this sweep it would wait for
 	// ever instead of becoming an issuance exception (HU-W1.3-02).
-	if expired, err := w.repo.ExpireWithoutPaymentMethod(ctx, now); err != nil {
+	expired, err := w.repo.ExpireWithoutPaymentMethod(ctx, now)
+	if err != nil {
 		slog.ErrorContext(ctx, "could not expire the charges with no payment method", "error", err)
-	} else if expired > 0 {
-		slog.InfoContext(ctx, "charges expired with no payment method", "count", expired)
+	}
+	for _, id := range expired {
+		// One line per charge, with its id and at the same level as every
+		// other issuance exception: this is what operations has to find when
+		// one shows up in their tray.
+		w.failed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", string(domain.ChargePaymentMethodMissing))))
+		slog.WarnContext(ctx, "premium charge failed: issuance exception", "acceptance_id", id,
+			"reason", domain.ChargePaymentMethodMissing, "attempts", 0)
 	}
 	ids, err := w.repo.ListDue(ctx, now, batchSize)
 	if err != nil {

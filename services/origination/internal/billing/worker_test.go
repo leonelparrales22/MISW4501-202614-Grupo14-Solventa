@@ -303,6 +303,31 @@ func TestAPublicationThatCannotBeRecordedIsRetriedWithTheSameEvent(t *testing.T)
 	assert.Equal(t, events[0], events[2])
 }
 
+// Un cobro que vence sin medio de pago llega a la bandeja de operaciones
+// como excepcion, asi que tiene que dejar su propia linea en el registro,
+// con el identificador de la aceptacion, igual que cualquier otra falla. El
+// conteo agregado que habia antes decia que algo vencio, pero no cual
+// (observacion de Nicolas en el PR #203).
+func TestAChargeThatExpiresWithoutAPaymentMethodIsLoggedWithItsID(t *testing.T) {
+	logs := captureLogs(t)
+	e := newEnv(t)
+	e.start(t, "acc-1")
+	// El cobro nace esperando la tarjeta: sin fecha, el worker no lo toma.
+	require.True(t, e.repo.get("acc-1").NextAttemptAt.IsZero())
+	e.clock.advance(25 * time.Hour)
+
+	e.worker.ProcessDue(context.Background())
+
+	c := e.repo.get("acc-1")
+	assert.Equal(t, domain.ChargeFailed, c.Status)
+	assert.Equal(t, domain.ChargePaymentMethodMissing, c.FailureReason)
+	out := logs.String()
+	assert.Contains(t, out, `"acceptance_id":"acc-1"`)
+	assert.Contains(t, out, `"reason":"payment_method_missing"`)
+	assert.Contains(t, out, "issuance exception")
+	assert.Zero(t, e.gw.count(), "no se llama a la pasarela sin medio de pago")
+}
+
 func TestTheLogsCarryNoPersonalData(t *testing.T) {
 	logs := captureLogs(t)
 	e := newEnv(t)

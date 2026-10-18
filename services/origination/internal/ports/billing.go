@@ -42,6 +42,11 @@ type ChargeRepository interface {
 	// Resume moves a failed charge back to pending with the same idempotency
 	// key and a new retry window. It returns ErrChargeNotFound or
 	// ErrChargeNotResumable (not failed, or another resumption won).
+	//
+	// A charge that failed with payment_method_missing comes back **waiting
+	// for a payment method**, not due: it never had one, and making it due
+	// would have the worker charge with no token (HU-W1.3-02). The customer
+	// pays from screen E4 within the new window.
 	Resume(ctx context.Context, acceptanceID string, r domain.ChargeResumption) (domain.Charge, error)
 
 	// AttachPaymentMethod stores the payment method of screen E4 and makes
@@ -55,8 +60,9 @@ type ChargeRepository interface {
 	// while they were still waiting for a payment method, with the reason
 	// payment_method_missing. They never reach the worker's due list -they
 	// have no due date- so without this sweep they would wait for ever
-	// (HU-W1.3-02). It returns how many it failed.
-	ExpireWithoutPaymentMethod(ctx context.Context, now time.Time) (int, error)
+	// (HU-W1.3-02). It returns the acceptances it failed, so each one can be
+	// logged with its id like every other failure.
+	ExpireWithoutPaymentMethod(ctx context.Context, now time.Time) ([]string, error)
 
 	// ClaimActivation holds a confirmed charge whose activation is not
 	// published yet and is due at now, with a lease until now+lease, so only
