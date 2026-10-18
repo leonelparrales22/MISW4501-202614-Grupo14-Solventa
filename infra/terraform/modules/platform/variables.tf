@@ -148,15 +148,22 @@ variable "redis_multi_az" {
 # --- Edge -------------------------------------------------------------------------------
 
 variable "partners" {
-  description = "Partners with their own API key and usage plan (decision D-7: 100 req/s, burst 200)."
+  description = "Partners with their own API key and usage plan (decision D-7: 100 req/s, burst 200). portal-embebido is the demonstration partner whose key CloudFront adds to the partner routes of the public screens of the web portal (T5, decision D-3: 10 req/s, burst 20); the browser never sees it."
   type = map(object({
     rate_limit  = number
     burst_limit = number
   }))
   default = {
-    socio-a = { rate_limit = 100, burst_limit = 200 }
-    socio-b = { rate_limit = 100, burst_limit = 200 }
+    socio-a         = { rate_limit = 100, burst_limit = 200 }
+    socio-b         = { rate_limit = 100, burst_limit = 200 }
+    portal-embebido = { rate_limit = 10, burst_limit = 20 }
   }
+}
+
+variable "portal_partner" {
+  description = "Partner of partners whose API key the web portal composition gives to CloudFront (output portal_partner_api_key, T5)."
+  type        = string
+  default     = "portal-embebido"
 }
 
 variable "human_routes" {

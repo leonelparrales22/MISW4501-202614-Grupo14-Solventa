@@ -63,13 +63,15 @@ variables {
 run "usage_plans_follow_decision_d7" {
   command = plan
 
+  # T5 adds the demonstration partner of the web portal (portal-embebido, its
+  # own run below); the partners of D-7 keep 100 req/s with a burst of 200.
   assert {
-    condition     = length(module.apigateway.usage_plan_ids) == 2 && alltrue([for p in values(var.partners) : p.rate_limit == 100 && p.burst_limit == 200])
+    condition     = length(module.apigateway.usage_plan_ids) == 3 && alltrue([for k in ["socio-a", "socio-b"] : var.partners[k].rate_limit == 100 && var.partners[k].burst_limit == 200])
     error_message = "Each partner gets its own usage plan of 100 req/s with a burst of 200 (decision D-7)."
   }
 
   assert {
-    condition     = length(module.apigateway.api_key_ids) == 2
+    condition     = length(module.apigateway.api_key_ids) == 3
     error_message = "Each partner needs its own API key."
   }
 
@@ -358,4 +360,91 @@ run "rejects_incomplete_service_sizing" {
   }
 
   expect_failures = [var.service_sizing]
+}
+
+# --- Web portal (T5) ------------------------------------------------------------------
+
+# Decision D-4 of T5: the browser tokenizes the card through the API Gateway, so
+# the payment gateway stub is also behind the ALB, only on /tokens.
+run "payment_gateway_tokens_behind_the_alb" {
+  command = plan
+
+  assert {
+    condition = (
+      toset(keys(module.alb.target_group_arns)) == toset(["origination", "claims", "partners", "audit", "notifications", "payment-gateway"]) &&
+      local.lb_stubs["payment-gateway"].paths == ["/tokens"] &&
+      local.lb_stubs["payment-gateway"].priority == 6
+    )
+    error_message = "The payment gateway stub gets its own target group, routed only on /tokens."
+  }
+
+  assert {
+    condition     = length(local.lb_stubs) == 1
+    error_message = "No other stub is reachable through the ALB."
+  }
+
+  assert {
+    condition     = module.apigateway.payment_tokenization_path == "/pasarela/tokens"
+    error_message = "The platform publishes the public card tokenization."
+  }
+
+  assert {
+    condition     = local.service_environment.origination.PAYMENT_GATEWAY_URL == "http://payment-gateway.solventa-test.local:9040"
+    error_message = "Origination keeps charging through Cloud Map."
+  }
+}
+
+# Decision D-3 of T5: CloudFront sends the key of a demonstration partner with
+# its own usage plan, never the key of a real partner.
+run "portal_partner_has_its_own_usage_plan" {
+  command = plan
+
+  assert {
+    condition = (
+      contains(keys(module.apigateway.usage_plan_ids), "portal-embebido") &&
+      var.partners["portal-embebido"].rate_limit == 10 &&
+      var.partners["portal-embebido"].burst_limit == 20 &&
+      var.portal_partner == "portal-embebido"
+    )
+    error_message = "portal-embebido has its own API key and usage plan (10 req/s, burst 20)."
+  }
+}
+
+run "portal_partner_must_be_a_partner" {
+  command = plan
+
+  variables {
+    portal_partner = "socio-z"
+  }
+
+  expect_failures = [output.portal_partner_api_key]
+}
+
+run "api_origin_matches_the_stage" {
+  command = plan
+
+  override_resource {
+    target          = module.apigateway.aws_api_gateway_rest_api.this
+    override_during = plan
+    values = {
+      id = "abc123"
+    }
+  }
+
+  override_resource {
+    target          = module.apigateway.aws_api_gateway_stage.this
+    override_during = plan
+    values = {
+      invoke_url = "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    }
+  }
+
+  assert {
+    condition = (
+      output.api_origin.domain == "abc123.execute-api.us-east-2.amazonaws.com" &&
+      output.api_origin.stage == "staging" &&
+      output.api_origin.invoke_url == "https://${output.api_origin.domain}/${output.api_origin.stage}"
+    )
+    error_message = "The API origin of the portal is the REST API domain with the stage as origin path."
+  }
 }

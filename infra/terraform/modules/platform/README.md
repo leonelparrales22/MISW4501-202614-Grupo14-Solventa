@@ -10,7 +10,9 @@ cliente ──HTTPS──▶ API Gateway REST (stage = ambiente; todos los tipos
    │  rutas de socio: API key + usage plan por socio (D-7: 100 req/s, ráfaga 200)
    │  rutas humanas: authorizer de Cognito (valida el JWT)
    │  ruta pública: GET /v1/documents/{token} (enlace firmado del correo; 10 req/s, ráfaga 20, D-5)
+   │  ruta pública: POST /pasarela/tokens (tokenización de la tarjeta en E4; 5 req/s, ráfaga 10, T5)
    └──VPC Link V2──▶ ALB interno (health check EXP-D03, deregistration delay 30 s)
+        ├──/tokens──▶ stub payment-gateway (solo la tokenización, T5)
         └──por ruta──▶ ECS Fargate: origination · claims · partners · audit · notifications
                           ├─▶ RDS PostgreSQL (una base y un usuario por servicio)
                           ├─▶ ElastiCache Redis
@@ -70,6 +72,7 @@ cuando esos datos estén en PostgreSQL. Un reinicio de la tarea borra lo que est
 |---|---|---|
 | `origination` | `/v1/risk-profiles*`, `/v1/offers*`, `/v1/acceptances*`, `/v1/assisted-quotes*`, `/v1/customers*`, `/v1/policies*`, `/v1/documents*`, `/v1/review-requests*`, `/v1/issuance-exceptions*` (9 prefijos, 2 reglas del ALB) | Implementados |
 | `claims`, `partners`, `audit`, `notifications` | `/v1/claims*`, `/v1/partners*`, `/v1/audit*`, `/v1/notifications*` | Reservados (solo `GET /health`); un target group necesita al menos una regla |
+| stub `payment-gateway` | `/tokens` (prioridad 6) | Tokenización de la tarjeta desde el navegador (T5, `local.lb_stubs`); el resto del simulador no se alcanza por el ALB |
 
 En API Gateway las rutas de socio son las de cotización (`/v1/risk-profiles/...`, API key) y las humanas por defecto son `offers`,
 `acceptances` (`GET` y `POST`: medio de pago y reanudación del cobro), `assisted-quotes`, `customers`, `policies`, `review-requests`
@@ -81,6 +84,18 @@ token firmado y con vencimiento lo protege (variable `public_routes`, HA-D02). C
 10 req/s con ráfaga de 20 (D-5). Para que el PDF llegue íntegro a cualquier cliente (navegador, `curl`, la descarga autenticada del
 front con `responseType: 'blob'`), la API declara `*/*` como tipo binario (D-4): las integraciones `HTTP_PROXY` pasan los bytes sin
 tocarlos (también el JSON) y el *preflight* `MOCK` convierte su cuerpo a texto para seguir respondiendo `200`.
+
+## Portal web (T5)
+
+El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/web`, módulo
+[`web-portal`](../web-portal/README.md)) con el API en el **mismo dominio**. Para eso la plataforma aporta:
+
+| Pieza | Qué hace |
+|---|---|
+| Tokenización pública | `POST /pasarela/tokens` en el gateway (sin sesión ni API key, 5 req/s, ráfaga 10) → ALB `/tokens` → stub `payment-gateway`, que sigue también en Cloud Map para el cobro de originación (D-4 de T5). Su *target group* es `<nombre>-payment-gateway` (29 caracteres en `solventa-demo`) y el puerto 9040 se abre solo al ALB |
+| Socio `portal-embebido` | API key y usage plan propios (10 req/s, ráfaga 20). CloudFront agrega su key a las rutas de socio de las pantallas públicas; el navegador nunca la ve (D-3 de T5) |
+| Salida `api_origin` | Dominio del REST API, stage (el *origin path* de CloudFront) e `invoke_url` |
+| Salida `portal_partner_api_key` | Key del socio `portal_partner` (sensible); solo la lee la composición `web` para el encabezado de origen de CloudFront |
 
 ## Imágenes
 
@@ -138,7 +153,8 @@ el estado remoto cifrado del bucket de T4.
 | `log_retention_days` | `7` | Retención de logs |
 | `rds_instance_class` / `rds_multi_az` / `rds_backup_retention_days` | `db.t4g.micro` / `false` / `1` | PostgreSQL |
 | `redis_node_type` / `redis_multi_az` | `cache.t4g.micro` / `false` | Redis |
-| `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) | Usage plans (D-7) |
+| `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) y `portal-embebido` (10 req/s, ráfaga 20, T5) | Usage plans (D-7; el socio de demostración del portal, D-3 de T5) |
+| `portal_partner` | `"portal-embebido"` | Socio cuya key recibe CloudFront (salida `portal_partner_api_key`, T5) |
 | `human_routes` | rutas de `origination` | Rutas detrás de Cognito |
 | `public_routes` | `documents` (`GET`, 10 req/s, ráfaga 20) | Rutas sin sesión ni API key (enlace firmado del documento, HA-D02) |
 | `seed_users` / `seed_user_password` | `{}` / `null` | Usuarios de prueba del user pool para una ventana de staging (contraseña solo por `TF_VAR_seed_user_password`; production-demo no los expone) |
@@ -147,9 +163,10 @@ el estado remoto cifrado del bucket de T4.
 | `deletion_protection` | `true` | RDS, ALB y user pool |
 | `ephemeral` | `false` | Sin snapshot final, buckets con `force_destroy`, secretos sin ventana de recuperación |
 
-Salidas: `invoke_url`, `api_key_ids`, `api_key_values` (sensible), `usage_plan_ids`, `cognito`, `alb_dns_name`, `ecs_cluster`,
-`log_group`, `service_sizing`, `desired_counts`, `database_users`, `images`, `rds_address`, `redis_endpoint`, `database_secret_arns`,
-`topic_arns`, `queue_urls`, `dlq_urls`, `buckets`, `nat_gateway_ids` y `db_init_command`.
+Salidas: `invoke_url`, `api_key_ids`, `api_key_values` (sensible), `usage_plan_ids`, `api_origin` (T5), `portal_partner_api_key`
+(sensible, T5), `cognito`, `alb_dns_name`, `ecs_cluster`, `log_group`, `service_sizing`, `desired_counts`, `database_users`, `images`,
+`rds_address`, `redis_endpoint`, `database_secret_arns`, `topic_arns`, `queue_urls`, `dlq_urls`, `buckets`, `nat_gateway_ids` y
+`db_init_command`.
 
 ## Pruebas (locales, sin AWS)
 
@@ -159,4 +176,6 @@ terraform test
 ```
 
 `tests/platform.tftest.hcl` comprueba de punta a punta los usage plans de D-7, un secreto y un usuario por servicio, el script de
-`db-init`, los tres modos de NAT, la resolución de imágenes y el apagado de los servicios.
+`db-init`, los tres modos de NAT, la resolución de imágenes y el apagado de los servicios. Desde T5 comprueba también que el stub de la
+pasarela queda detrás del ALB solo en `/tokens`, que `portal-embebido` tiene su propio usage plan y que `api_origin` corresponde al
+stage.

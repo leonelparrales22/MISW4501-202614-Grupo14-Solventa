@@ -19,6 +19,26 @@ output "usage_plan_ids" {
   value       = module.apigateway.usage_plan_ids
 }
 
+output "api_origin" {
+  description = "API Gateway as an origin of the web portal distribution (T5): domain of the REST API, stage (the origin path) and invoke URL."
+  value = {
+    domain     = "${module.apigateway.rest_api_id}.execute-api.${data.aws_region.current.region}.amazonaws.com"
+    stage      = module.apigateway.stage_name
+    invoke_url = module.apigateway.invoke_url
+  }
+}
+
+output "portal_partner_api_key" {
+  description = "API key of the portal partner (portal_partner), which only CloudFront sends to the partner routes of the web portal (T5, decision D-3). Demonstration key; never in the browser."
+  value       = lookup(module.apigateway.api_key_values, var.portal_partner, null)
+  sensitive   = true
+
+  precondition {
+    condition     = contains(keys(var.partners), var.portal_partner)
+    error_message = "portal_partner must be one of the partners."
+  }
+}
+
 output "cognito" {
   description = "User pool of the human channels and the AUTH_* values of the services."
   value = {
