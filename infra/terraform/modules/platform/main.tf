@@ -16,6 +16,10 @@
 
 data "aws_caller_identity" "current" {}
 
+# Region of the AWS SDK of the services (AWS_REGION), explicit rather than
+# discovered from the task metadata.
+data "aws_region" "current" {}
+
 locals {
   account_id = data.aws_caller_identity.current.account_id
   namespace  = "${var.name}.local"
@@ -241,25 +245,40 @@ module "buckets" {
   force_destroy = var.ephemeral
 }
 
+# Key that signs the links of the contractual document (HU-W1.3-03): only
+# origination reads it, from Secrets Manager. Like the database passwords, the
+# value also lands in the encrypted remote state of T4.
+resource "random_password" "document_link" {
+  length  = 48
+  special = false
+}
+
 # One secret per service with its own login role, password and DATABASE_URL:
-# a service can only reach its own database.
+# a service can only reach its own database. Origination also gets the key of
+# its document links (HA-D02, AWS phase).
 module "secrets" {
   source = "../secrets"
 
   prefix                  = var.name
   recovery_window_in_days = var.ephemeral ? 0 : 7
-  secrets                 = { for s in keys(local.services) : "${s}/database" => "PostgreSQL credentials and DATABASE_URL of ${s} (only its own database)" }
+  secrets = merge(
+    { for s in keys(local.services) : "${s}/database" => "PostgreSQL credentials and DATABASE_URL of ${s} (only its own database)" },
+    { "origination/document-link" = "DOCUMENT_LINK_SECRET of origination: signs the links of the contractual document (HU-W1.3-03)" },
+  )
 
-  values = {
-    for s, db in module.rds.databases : "${s}/database" => jsonencode({
-      username     = db.username
-      password     = module.rds.passwords[s]
-      dbname       = db.database
-      host         = module.rds.address
-      port         = module.rds.port
-      DATABASE_URL = "postgres://${db.username}:${module.rds.passwords[s]}@${module.rds.address}:${module.rds.port}/${db.database}?sslmode=require"
-    })
-  }
+  values = merge(
+    {
+      for s, db in module.rds.databases : "${s}/database" => jsonencode({
+        username     = db.username
+        password     = module.rds.passwords[s]
+        dbname       = db.database
+        host         = module.rds.address
+        port         = module.rds.port
+        DATABASE_URL = "postgres://${db.username}:${module.rds.passwords[s]}@${module.rds.address}:${module.rds.port}/${db.database}?sslmode=require"
+      })
+    },
+    { "origination/document-link" = jsonencode({ DOCUMENT_LINK_SECRET = random_password.document_link.result }) },
+  )
 }
 
 # --- Compute ------------------------------------------------------------------------------
@@ -314,7 +333,9 @@ locals {
   }
 
   service_environment = {
-    origination = {
+    # The values of the platform win over origination_environment, whose
+    # validation already refuses them.
+    origination = merge(var.origination_environment, {
       PORT             = tostring(local.service_port)
       REDIS_ADDR       = module.redis.primary_endpoint
       OPEN_FINANCE_URL = "http://openfinance.${local.namespace}:${local.stubs.openfinance}"
@@ -326,7 +347,22 @@ locals {
       AUTH_ISSUER         = module.cognito.issuer
       AUTH_JWKS_URL       = module.cognito.jwks_url
       AUTH_CLIENT_IDS     = join(",", values(module.cognito.client_ids))
-    }
+      # Contractual document (HU-W1.3-03) in AWS (HA-D02): the PDF goes to the
+      # documents bucket, and the e-mail links open it through the public
+      # GET /v1/documents/{token} of the API Gateway stage.
+      DOCUMENTS_BUCKET          = module.buckets["documents"].bucket
+      DOCUMENTS_PUBLIC_BASE_URL = module.apigateway.invoke_url
+      AWS_REGION                = data.aws_region.current.region
+    })
+  }
+
+  # Secrets Manager values of each service (the ECS secrets field): its
+  # DATABASE_URL and, for origination, the key of the document links.
+  service_secrets = {
+    for k in keys(local.services) : k => merge(
+      { DATABASE_URL = "${module.secrets.arns["${k}/database"]}:DATABASE_URL::" },
+      k == "origination" ? { DOCUMENT_LINK_SECRET = "${module.secrets.arns["origination/document-link"]}:DOCUMENT_LINK_SECRET::" } : {},
+    )
   }
 }
 
@@ -353,7 +389,7 @@ module "ecs" {
         load_balanced        = true
         target_group_arn     = module.alb.target_group_arns[k]
         environment          = lookup(local.service_environment, k, { PORT = tostring(local.service_port) })
-        secrets              = { DATABASE_URL = "${module.secrets.arns["${k}/database"]}:DATABASE_URL::" }
+        secrets              = local.service_secrets[k]
         task_role_statements = local.task_role_statements[k]
       }
     },

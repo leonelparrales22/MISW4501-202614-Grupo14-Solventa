@@ -27,7 +27,7 @@ cliente ──HTTPS──▶ API Gateway REST (stage = ambiente)
 | Datos | [`rds`](../rds/README.md), [`elasticache`](../elasticache/README.md) | PostgreSQL y Redis en subredes privadas; Multi-AZ por variable |
 | Eventos | [`messaging`](../messaging/README.md) | Tópicos `origination` y `claims`; colas `origination`, `audit`, `notifications` con DLQ ([catálogo](../../../../docs/events/README.md)) |
 | Objetos | [`s3`](../s3/README.md) | `documents` (documento contractual, HU-W1.3-03) y `evidence` (evidencia de siniestros) |
-| Secretos | [`secrets`](../secrets/README.md) | Un secreto por servicio con su `DATABASE_URL` |
+| Secretos | [`secrets`](../secrets/README.md) | Un secreto por servicio con su `DATABASE_URL`, y `origination/document-link` con la clave de los enlaces del documento contractual |
 
 ## Una base por servicio, un usuario por servicio
 
@@ -63,16 +63,33 @@ es un enlace firmado sin sesión y el módulo `apigateway` aún no publica rutas
 
 ## Variables de entorno de `origination`
 
-`PORT`, `REDIS_ADDR` (endpoint de ElastiCache), `OPEN_FINANCE_URL` / `OPEN_DATA_URL` / `KYC_URL` (stubs por Cloud Map, puertos
-9000/9010/9020), `AUTH_ISSUER`, `AUTH_JWKS_URL` y `AUTH_CLIENT_IDS` (user pool del ambiente) y `DATABASE_URL`. Sin `EMAIL_URL`, el
-documento contractual (HU-W1.3-03) queda apagado: necesita el stub de correo y S3 en el servicio.
+| Variable | Valor | Para qué |
+|---|---|---|
+| `PORT` | `8080` | Puerto del contenedor |
+| `REDIS_ADDR` | Endpoint de ElastiCache | Caché del perfil de riesgo |
+| `OPEN_FINANCE_URL`, `OPEN_DATA_URL`, `KYC_URL` | Stubs por Cloud Map (9000, 9010, 9020) | Perfilamiento en paralelo (HA-L01) |
+| `EMAIL_URL` | Stub `email` por Cloud Map (9030) | Correo de emisión y de la bandeja; con él se enciende el documento contractual (HU-W1.3-03) |
+| `PAYMENT_GATEWAY_URL` | Stub `payment-gateway` por Cloud Map (9040) | Enciende el cobro de la prima (HA-D02); exige `DATABASE_URL`, `EMAIL_URL` y `AUTH_ISSUER` |
+| `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_CLIENT_IDS` | User pool del ambiente | Rutas humanas (HA-S01) |
+| `DOCUMENTS_BUCKET` | Bucket `documents` del ambiente | Repositorio del documento contractual en S3 (HA-D02, fase AWS); el servicio comprueba el bucket al arrancar |
+| `DOCUMENTS_PUBLIC_BASE_URL` | `invoke_url` del stage de API Gateway | Base del enlace firmado del correo: `<invoke_url>/v1/documents/<token>` |
+| `AWS_REGION` | Región del proveedor (`us-east-2`) | Región del SDK de AWS (S3) |
+| `DATABASE_URL` (secreto) | `<nombre>/origination/database` | Base propia: cobro de la prima (HA-D02) y ofertas personalizadas (HU-W1.2-03) |
+| `DOCUMENT_LINK_SECRET` (secreto) | `<nombre>/origination/document-link`, 48 caracteres aleatorios (`random_password`) | Firma de los enlaces del documento; nunca va como variable en claro |
+
+`origination_environment` agrega variables para una ventana de prueba (por ejemplo `RETRY_WINDOW_SECONDS` y `CHARGE_RETRY_MAX_MS`,
+D-6 de HA-D02); su validación impide reemplazar las de la tabla (`PORT`, `REDIS_ADDR`, `AWS_REGION`, `DATABASE_URL`, cualquier
+`*_URL`, `AUTH_*`, `DOCUMENTS_*`, `DOCUMENT_LINK_*`). `DOCUMENTS_DIR` nunca llega en AWS: con `EMAIL_URL`, originación exige
+exactamente uno de `DOCUMENTS_BUCKET` o `DOCUMENTS_DIR`. Como las contraseñas de las bases, la clave de los enlaces queda también en
+el estado remoto cifrado del bucket de T4.
 
 ## Pendientes conocidos
 
 - **Redis sin TLS:** el cliente de `origination` no admite TLS ni contraseña; ElastiCache se cifra en reposo y el security group
   solo admite las tareas.
-- **Variables de mensajería y S3:** los permisos IAM ya existen (publicar, consumir, leer y escribir objetos), pero no se inyectan
-  nombres de tópicos, colas ni buckets porque ningún servicio los lee aún; se agregan con HA-D02 / HU-W1.3-02.
+- **Variables de mensajería:** los permisos IAM ya existen (publicar y consumir), pero no se inyectan nombres de tópicos ni colas
+  porque ningún servicio los lee aún (los eventos `ChargeCompleted`/`PolicyIssued` con *outbox* son de HU-W1.3-02). El bucket
+  `documents` sí se inyecta en `origination` desde HA-D02 (`DOCUMENTS_BUCKET`).
 - **Caché del stage:** el módulo `apigateway` la crea siempre (≈ US$ 0,02/h).
 
 ## Variables
@@ -88,6 +105,7 @@ documento contractual (HU-W1.3-03) queda apagado: necesita el stub de correo y S
 | `service_sizing` | — | CPU, memoria, `desired_count` y `max_count` de los cinco servicios |
 | `stub_desired_count` | `1` | Tareas de cada stub (`openfinance`, `opendata`, `kyc`, `email`, `payment-gateway`) |
 | `stub_desired_count_overrides` | `{}` | Tareas por stub que reemplazan a `stub_desired_count`; una ventana de staging pone `payment-gateway = 0` para tumbar la pasarela y `{}` para restaurarla (HA-D02, D-6): solo cambia ese servicio ECS |
+| `origination_environment` | `{}` | Variables extra de `origination` para una ventana de prueba; no puede reemplazar las de la plataforma |
 | `log_retention_days` | `7` | Retención de logs |
 | `rds_instance_class` / `rds_multi_az` / `rds_backup_retention_days` | `db.t4g.micro` / `false` / `1` | PostgreSQL |
 | `redis_node_type` / `redis_multi_az` | `cache.t4g.micro` / `false` | Redis |

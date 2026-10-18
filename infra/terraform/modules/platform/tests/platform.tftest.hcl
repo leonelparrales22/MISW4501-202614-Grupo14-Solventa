@@ -83,8 +83,11 @@ run "every_service_has_its_own_database_secret" {
   command = plan
 
   assert {
-    condition     = toset(keys(module.secrets.names)) == toset(["origination/database", "claims/database", "partners/database", "audit/database", "notifications/database"])
-    error_message = "Each of the five services needs its own database secret."
+    condition = toset(keys(module.secrets.names)) == toset([
+      "origination/database", "claims/database", "partners/database", "audit/database", "notifications/database",
+      "origination/document-link",
+    ])
+    error_message = "Each of the five services needs its own database secret, and origination the key of its document links."
   }
 
   assert {
@@ -197,6 +200,89 @@ run "charge_and_email_stubs_run_behind_cloud_map" {
     condition     = endswith(local.image_uris["email"], ":prueba-ha-d02") && endswith(local.image_uris["payment-gateway"], ":0123456789ab")
     error_message = "The e-mail and payment gateway images accept a tag override like the others."
   }
+}
+
+# HA-D02, AWS phase: origination starts with the contractual document wired to
+# S3 (with EMAIL_URL it needs exactly one document store and the link key).
+run "origination_gets_the_document_configuration" {
+  command = plan
+
+  variables {
+    origination_environment = { RETRY_WINDOW_SECONDS = "300", CHARGE_RETRY_MAX_MS = "15000" }
+  }
+
+  # Known at plan time, so the assertions can read them.
+  override_resource {
+    target          = module.apigateway.aws_api_gateway_stage.this
+    override_during = plan
+    values = {
+      invoke_url = "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    }
+  }
+
+  override_resource {
+    target          = module.secrets.aws_secretsmanager_secret.this
+    override_during = plan
+    values = {
+      arn = "arn:aws:secretsmanager:us-east-2:123456789012:secret:solventa-test/secret-AbCdEf"
+    }
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.DOCUMENTS_BUCKET == "solventa-test-documents-123456789012" &&
+      local.service_environment.origination.AWS_REGION == "us-east-2" &&
+      !contains(keys(local.service_environment.origination), "DOCUMENTS_DIR")
+    )
+    error_message = "Origination gets the documents bucket and the region, and never a local directory."
+  }
+
+  assert {
+    condition     = local.service_environment.origination.DOCUMENTS_PUBLIC_BASE_URL == "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    error_message = "The links of the e-mail point to the API Gateway stage (its invoke URL)."
+  }
+
+  assert {
+    condition = (
+      endswith(local.service_secrets.origination.DOCUMENT_LINK_SECRET, ":DOCUMENT_LINK_SECRET::") &&
+      endswith(local.service_secrets.origination.DATABASE_URL, ":DATABASE_URL::") &&
+      !contains(keys(local.service_environment.origination), "DOCUMENT_LINK_SECRET")
+    )
+    error_message = "The link key reaches origination from Secrets Manager, never as a plain environment variable."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_secrets.claims), "DOCUMENT_LINK_SECRET")
+    error_message = "Only origination reads the key of the document links."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.RETRY_WINDOW_SECONDS == "300" &&
+      local.service_environment.origination.CHARGE_RETRY_MAX_MS == "15000"
+    )
+    error_message = "origination_environment adds the variables of a test window."
+  }
+}
+
+run "origination_environment_cannot_override_platform_values" {
+  command = plan
+
+  variables {
+    origination_environment = { PAYMENT_GATEWAY_URL = "http://elsewhere:9040" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
+
+run "origination_environment_cannot_replace_the_document_store" {
+  command = plan
+
+  variables {
+    origination_environment = { DOCUMENTS_DIR = "/tmp/documents" }
+  }
+
+  expect_failures = [var.origination_environment]
 }
 
 run "stub_overrides_name_real_stubs" {

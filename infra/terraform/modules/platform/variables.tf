@@ -93,6 +93,20 @@ variable "stub_desired_count_overrides" {
   }
 }
 
+variable "origination_environment" {
+  description = "Extra environment variables of origination, for a test window (for example RETRY_WINDOW_SECONDS and CHARGE_RETRY_MAX_MS, decision D-6 of HA-D02). It cannot replace what the platform sets: PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, any *_URL, AUTH_*, DOCUMENTS_* or DOCUMENT_LINK_*."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for k in keys(var.origination_environment) :
+      can(regex("^[A-Z][A-Z0-9_]*$", k)) && !can(regex("^(PORT|REDIS_ADDR|AWS_REGION|DATABASE_URL|.*_URL|AUTH_.*|DOCUMENTS_.*|DOCUMENT_LINK_.*)$", k))
+    ])
+    error_message = "origination_environment keys must be UPPER_SNAKE_CASE and cannot replace a value of the platform (PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, *_URL, AUTH_*, DOCUMENTS_*, DOCUMENT_LINK_*)."
+  }
+}
+
 variable "log_retention_days" {
   description = "Retention of the CloudWatch logs of the tasks."
   type        = number
