@@ -1,0 +1,306 @@
+package consents_test
+
+import (
+	"context"
+	"errors"
+	"sort"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/consents"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/ports"
+)
+
+// memStore is a test double of the append-only store.
+type memStore struct {
+	mu   sync.Mutex
+	rows []domain.Consent
+	err  error
+}
+
+func (m *memStore) Create(_ context.Context, c domain.Consent) (domain.Consent, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return domain.Consent{}, false, m.err
+	}
+	for _, r := range m.rows {
+		if r.CustomerID == c.CustomerID && r.ApplicationID == c.ApplicationID && r.TermsVersion == c.TermsVersion {
+			return r, false, nil
+		}
+	}
+	m.rows = append(m.rows, c)
+	return c, true, nil
+}
+
+func (m *memStore) Get(_ context.Context, id string) (domain.Consent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return domain.Consent{}, m.err
+	}
+	for _, r := range m.rows {
+		if r.ID == id {
+			return r, nil
+		}
+	}
+	return domain.Consent{}, ports.ErrConsentNotFound
+}
+
+func (m *memStore) LatestByCustomer(_ context.Context, customerID string) (domain.Consent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return domain.Consent{}, m.err
+	}
+	var own []domain.Consent
+	for _, r := range m.rows {
+		if r.CustomerID == customerID {
+			own = append(own, r)
+		}
+	}
+	if len(own) == 0 {
+		return domain.Consent{}, ports.ErrConsentNotFound
+	}
+	sort.Slice(own, func(i, j int) bool { return own[i].GrantedAt.After(own[j].GrantedAt) })
+	return own[0], nil
+}
+
+type fakeClock struct{ now time.Time }
+
+func (c *fakeClock) Now() time.Time { return c.now }
+
+func request() domain.GrantRequest {
+	return domain.GrantRequest{
+		CustomerID: "cust-1", DocumentID: "1020304050", FullName: "Ana Pérez", TermsVersion: "v1",
+		AcceptedSources: []string{"open_finance", "open_data", "kyc"}, AcceptedDataPolicy: true,
+		Channel: "embedded", PartnerID: "partner-1", ApplicationID: "app-1", UserAgent: "UA",
+	}
+}
+
+func newService(t *testing.T) (*consents.Service, *memStore, *fakeClock) {
+	t.Helper()
+	store := &memStore{}
+	clock := &fakeClock{now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.FixedZone("x", -5*3600))}
+	return consents.NewService(store, clock), store, clock
+}
+
+func TestGrantRecordsTheConsentWithServerTimeAndACopyOfTheScope(t *testing.T) {
+	svc, _, clock := newService(t)
+
+	c, created, err := svc.Grant(context.Background(), request())
+
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Regexp(t, `^cns-[0-9a-f]{32}$`, c.ID)
+	assert.Equal(t, clock.now.UTC(), c.GrantedAt)
+	assert.Equal(t, time.UTC, c.GrantedAt.Location())
+	assert.Equal(t, "cust-1", c.CustomerID)
+	assert.Equal(t, domain.Holder{DocumentID: "1020304050", FullName: "Ana Pérez"}, c.Holder)
+	assert.Equal(t, domain.TermsVersionV1, c.TermsVersion)
+	assert.Equal(t, domain.TermsV1().Sources, c.Scope)
+	assert.Equal(t, "risk_profiling_mortgage_life_offer", c.Purpose)
+	assert.Equal(t, domain.ChannelEmbedded, c.Channel)
+	assert.Equal(t, "partner-1", c.PartnerID)
+	assert.Equal(t, "app-1", c.ApplicationID)
+	assert.Equal(t, "UA", c.UserAgent)
+}
+
+func TestGrantIdsAreUnique(t *testing.T) {
+	svc, _, _ := newService(t)
+	first, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+	req := request()
+	req.ApplicationID = "app-2"
+
+	second, _, err := svc.Grant(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.NotEqual(t, first.ID, second.ID)
+}
+
+func TestGrantIsIdempotentByCustomerApplicationAndTerms(t *testing.T) {
+	svc, store, clock := newService(t)
+	first, created, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+	require.True(t, created)
+	clock.now = clock.now.Add(time.Hour)
+
+	again, created, err := svc.Grant(context.Background(), request())
+
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, first, again, "the stored consent is returned, with its original granted_at")
+	assert.Len(t, store.rows, 1)
+}
+
+func TestGrantForAnotherApplicationIsANewRecord(t *testing.T) {
+	svc, store, _ := newService(t)
+	_, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+	req := request()
+	req.ApplicationID = "app-2"
+
+	_, created, err := svc.Grant(context.Background(), req)
+
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Len(t, store.rows, 2)
+}
+
+func TestGrantRejectsAnInvalidRequestWithoutWriting(t *testing.T) {
+	svc, store, _ := newService(t)
+	req := request()
+	req.AcceptedSources = []string{"open_finance"}
+
+	_, _, err := svc.Grant(context.Background(), req)
+
+	var ve *domain.ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Empty(t, store.rows)
+}
+
+func TestGrantRejectsOutdatedTerms(t *testing.T) {
+	svc, store, _ := newService(t)
+	req := request()
+	req.TermsVersion = "v0"
+
+	_, _, err := svc.Grant(context.Background(), req)
+
+	assert.ErrorIs(t, err, domain.ErrTermsOutdated)
+	assert.Empty(t, store.rows)
+}
+
+func TestGrantPropagatesAStoreFailure(t *testing.T) {
+	svc, store, _ := newService(t)
+	store.err = errors.New("db down")
+
+	_, _, err := svc.Grant(context.Background(), request())
+
+	assert.ErrorContains(t, err, "db down")
+}
+
+func TestGetReturnsTheEvidenceOrNotFound(t *testing.T) {
+	svc, _, _ := newService(t)
+	c, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+
+	got, err := svc.Get(context.Background(), c.ID)
+	require.NoError(t, err)
+	assert.Equal(t, c, got)
+
+	_, err = svc.Get(context.Background(), "cns-unknown")
+	assert.ErrorIs(t, err, ports.ErrConsentNotFound)
+}
+
+func TestGetPropagatesAStoreFailure(t *testing.T) {
+	svc, store, _ := newService(t)
+	store.err = errors.New("db down")
+
+	_, err := svc.Get(context.Background(), "cns-1")
+
+	assert.ErrorContains(t, err, "db down")
+	assert.NotErrorIs(t, err, ports.ErrConsentNotFound)
+}
+
+func TestVerifyWithoutConsentIsInactiveNotAnError(t *testing.T) {
+	svc, _, _ := newService(t)
+
+	v, err := svc.Verify(context.Background(), "nobody")
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.Verification{}, v)
+}
+
+func TestVerifyReportsTheActiveConsent(t *testing.T) {
+	svc, _, clock := newService(t)
+	c, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+
+	v, err := svc.Verify(context.Background(), "cust-1")
+
+	require.NoError(t, err)
+	assert.True(t, v.Active)
+	assert.Equal(t, c.ID, v.ConsentID)
+	assert.Equal(t, c.GrantedAt, v.GrantedAt)
+	assert.Equal(t, c.GrantedAt.AddDate(0, 12, 0), v.ExpiresAt)
+	assert.Equal(t, []string{"open_finance", "open_data", "kyc"}, v.Sources)
+	assert.Equal(t, clock.now.UTC(), v.GrantedAt)
+}
+
+func TestVerifyExpiresAtTwelveMonths(t *testing.T) {
+	svc, _, clock := newService(t)
+	c, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+
+	tests := []struct {
+		name   string
+		now    time.Time
+		active bool
+	}{
+		{"one nanosecond before", c.ExpiresAt().Add(-time.Nanosecond), true},
+		{"at the expiry", c.ExpiresAt(), false},
+		{"one nanosecond after", c.ExpiresAt().Add(time.Nanosecond), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clock.now = tc.now
+
+			v, err := svc.Verify(context.Background(), "cust-1")
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.active, v.Active)
+			assert.Equal(t, c.ID, v.ConsentID)
+			if !tc.active {
+				assert.Empty(t, v.Sources)
+			}
+		})
+	}
+}
+
+func TestVerifyDoesNotMixCustomers(t *testing.T) {
+	svc, _, _ := newService(t)
+	_, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+
+	v, err := svc.Verify(context.Background(), "cust-2")
+
+	require.NoError(t, err)
+	assert.False(t, v.Active)
+}
+
+func TestVerifyUsesTheLatestConsent(t *testing.T) {
+	svc, _, clock := newService(t)
+	_, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+	clock.now = clock.now.Add(24 * time.Hour)
+	req := request()
+	req.ApplicationID = "app-2"
+	second, _, err := svc.Grant(context.Background(), req)
+	require.NoError(t, err)
+
+	v, err := svc.Verify(context.Background(), "cust-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, second.ID, v.ConsentID)
+}
+
+func TestVerifyPropagatesAStoreFailure(t *testing.T) {
+	svc, store, _ := newService(t)
+	store.err = errors.New("db down")
+
+	_, err := svc.Verify(context.Background(), "cust-1")
+
+	assert.ErrorContains(t, err, "db down")
+}
+
+func TestCurrentTermsAreV1(t *testing.T) {
+	svc, _, _ := newService(t)
+
+	assert.Equal(t, domain.TermsV1(), svc.CurrentTerms())
+}

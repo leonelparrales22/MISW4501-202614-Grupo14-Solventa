@@ -1,0 +1,88 @@
+# Contract test of the risk-profile routes of origination (OBJ 05): two
+# instances of the real service, one that trusts the consent the caller
+# asserts (no AUDIT_URL) and one that verifies it with the real audit service
+# (HU-W1.2-01), checked against api/openapi.yaml by Schemathesis. Run it with
+# ./run.sh. Build context is the repository root. Published ports (127.0.0.1
+# only): origination 8293, origination with audit 8294.
+name: origination-contract
+
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  openfinance:
+    build:
+      context: ../../../..
+      dockerfile: stubs/openfinance/Dockerfile
+    environment:
+      - PORT=9000
+
+  postgres-audit:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=audit
+      - POSTGRES_USER=audit
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit -d audit"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  audit:
+    build:
+      context: ../../../..
+      dockerfile: services/audit/Dockerfile
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://audit:${PG_PASSWORD:-}@postgres-audit:5432/audit?sslmode=disable
+    depends_on:
+      postgres-audit:
+        condition: service_healthy
+
+  origination:
+    build:
+      context: ../../../..
+      dockerfile: services/origination/Dockerfile
+    ports:
+      - "127.0.0.1:${ORIGINATION_PORT:-8293}:8080"
+    environment:
+      - PORT=8080
+      - REDIS_ADDR=redis:6379
+      - OPEN_FINANCE_URL=http://openfinance:9000
+    depends_on:
+      redis:
+        condition: service_healthy
+      openfinance:
+        condition: service_started
+
+  origination-audit:
+    build:
+      context: ../../../..
+      dockerfile: services/origination/Dockerfile
+    ports:
+      - "127.0.0.1:${ORIGINATION_AUDIT_PORT:-8294}:8080"
+    environment:
+      - PORT=8080
+      - REDIS_ADDR=redis:6379
+      - OPEN_FINANCE_URL=http://openfinance:9000
+      - AUDIT_URL=http://audit:8080
+    depends_on:
+      redis:
+        condition: service_healthy
+      openfinance:
+        condition: service_started
+      audit:
+        condition: service_started
+
+  # Started on demand by run.sh (docker compose run --rm schemathesis ...).
+  schemathesis:
+    image: schemathesis/schemathesis:v3.39.16
+    profiles: ["tools"]
+    volumes:
+      - ../../api:/api:ro

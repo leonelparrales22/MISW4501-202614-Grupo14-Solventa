@@ -1,0 +1,130 @@
+# HU-W1.2 end-to-end scenario: the real audit and origination services, the
+# PostgreSQL of audit, Redis, the Open Finance / Open Data / KYC stubs behind
+# Toxiproxy and Moto as the Cognito of the human routes. Run it with
+# ./run.sh, which generates the local secrets (never printed), seeds Moto and
+# drives the scenarios. Build context is the repository root.
+#
+# Published ports (127.0.0.1 only, configurable): audit 8290, origination 8291,
+# Toxiproxy API 8494 and Moto 5120.
+name: hu-w1-2-e2e
+
+services:
+  postgres-audit:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=audit
+      - POSTGRES_USER=audit
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit -d audit"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  openfinance:
+    build:
+      context: ../../..
+      dockerfile: stubs/openfinance/Dockerfile
+    environment:
+      - PORT=9000
+
+  opendata:
+    build:
+      context: ../../..
+      dockerfile: stubs/opendata/Dockerfile
+    environment:
+      - PORT=9010
+
+  kyc:
+    build:
+      context: ../../..
+      dockerfile: stubs/kyc/Dockerfile
+    environment:
+      - PORT=9020
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "127.0.0.1:${TOXIPROXY_PORT:-8494}:8474" # Toxiproxy API, used by run.sh
+    depends_on:
+      - openfinance
+      - opendata
+      - kyc
+
+  # The Toxiproxy image is distroless (no shell, no CLI), so the proxies are
+  # created through its HTTP API.
+  toxiproxy-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - toxiproxy
+    entrypoint:
+      - sh
+      - -c
+      - >
+        until curl -sf http://toxiproxy:8474/version; do sleep 1; done;
+        curl -sf -X POST http://toxiproxy:8474/proxies -H 'Content-Type: application/json'
+        -d '{"name":"openfinance","listen":"0.0.0.0:9001","upstream":"openfinance:9000","enabled":true}' &&
+        curl -sf -X POST http://toxiproxy:8474/proxies -H 'Content-Type: application/json'
+        -d '{"name":"opendata","listen":"0.0.0.0:9011","upstream":"opendata:9010","enabled":true}' &&
+        curl -sf -X POST http://toxiproxy:8474/proxies -H 'Content-Type: application/json'
+        -d '{"name":"kyc","listen":"0.0.0.0:9021","upstream":"kyc:9020","enabled":true}'
+
+  moto:
+    image: motoserver/moto:5.2.3
+    ports:
+      - "127.0.0.1:${MOTO_PORT:-5120}:5000"
+    environment:
+      - MOTO_COGNITO_IDP_USER_POOL_ID_STRATEGY=HASH
+      - MOTO_COGNITO_IDP_USER_POOL_CLIENT_ID_STRATEGY=HASH
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/moto-api/')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  audit:
+    build:
+      context: ../../..
+      dockerfile: services/audit/Dockerfile
+    ports:
+      - "127.0.0.1:${AUDIT_PORT:-8290}:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://audit:${PG_PASSWORD:-}@postgres-audit:5432/audit?sslmode=disable
+      # Cognito of Moto, written by run.sh after seeding it.
+      - AUTH_ISSUER=${AUTH_ISSUER:-}
+      - AUTH_JWKS_URL=${AUTH_JWKS_URL:-}
+      - AUTH_CLIENT_IDS=${AUTH_CLIENT_IDS:-}
+    depends_on:
+      postgres-audit:
+        condition: service_healthy
+      moto:
+        condition: service_healthy
+
+  origination:
+    build:
+      context: ../../..
+      dockerfile: services/origination/Dockerfile
+    ports:
+      - "127.0.0.1:${ORIGINATION_PORT:-8291}:8080"
+    environment:
+      - PORT=8080
+      - REDIS_ADDR=redis:6379
+      - OPEN_FINANCE_URL=http://toxiproxy:9001
+      - OPEN_DATA_URL=http://toxiproxy:9011
+      - KYC_URL=http://toxiproxy:9021
+      # HU-W1.2-01: the consent is verified with the real audit service.
+      - AUDIT_URL=http://audit:8080
+    depends_on:
+      redis:
+        condition: service_healthy
+      toxiproxy-init:
+        condition: service_completed_successfully

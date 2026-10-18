@@ -114,7 +114,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
-		Handler:           httpadapter.NewRouter(resolver, opts...),
+		Handler:           httpadapter.NewRouter(consentCheckedResolver(cfg.audit, resolver), opts...),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -173,6 +173,9 @@ type config struct {
 
 	// Premium charge (HA-D02).
 	billing billingConfig
+
+	// Explicit consent verified with the audit service (HU-W1.2-01).
+	audit auditConfig
 }
 
 // acceptanceConfig configures the offer acceptance (HU-W1.3-01). Its routes
@@ -398,6 +401,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadBillingConfig(getenv, &cfg.billing); err != nil {
+		return config{}, err
+	}
+	if err := loadAuditConfig(getenv, &cfg.audit); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
