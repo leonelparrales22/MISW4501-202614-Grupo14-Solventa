@@ -4,7 +4,7 @@
 # which only set the per-environment values.
 #
 #   client --HTTPS--> API Gateway REST (usage plans + API keys per partner,
-#     Cognito authorizer on the human routes)
+#     Cognito authorizer on the human routes, public signed document link)
 #     --VPC link V2--> internal ALB (EXP-D03 health checks, 30 s drain)
 #     --> ECS Fargate services --> RDS PostgreSQL (one database per service),
 #         ElastiCache Redis, SNS/SQS with DLQs, S3
@@ -188,6 +188,10 @@ module "cognito" {
 # Partner routes need an API key and get the usage plan of their partner
 # (decision D-7: 100 req/s, burst 200). Human routes go through the Cognito
 # authorizer, which validates the JWT before the request reaches the service.
+# The public routes (the signed link of the contractual document, HA-D02) ask
+# for neither and are throttled at the stage. Every media type passes as binary
+# (decision D-4), so the PDF reaches the browser, curl and the web client
+# intact; JSON goes through the HTTP_PROXY integrations unchanged.
 module "apigateway" {
   source = "../apigateway"
 
@@ -200,6 +204,8 @@ module "apigateway" {
   partners               = var.partners
   cognito_user_pool_arns = [module.cognito.user_pool_arn]
   human_routes           = var.human_routes
+  public_routes          = var.public_routes
+  binary_media_types     = ["*/*"]
   cors_allow_origin      = var.cors_allow_origin
 }
 

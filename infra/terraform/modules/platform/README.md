@@ -6,9 +6,10 @@ Compone los módulos vecinos en la plataforma persistente de un ambiente. Lo lla
 ambiente.
 
 ```
-cliente ──HTTPS──▶ API Gateway REST (stage = ambiente)
+cliente ──HTTPS──▶ API Gateway REST (stage = ambiente; todos los tipos de contenido como binarios, D-4)
    │  rutas de socio: API key + usage plan por socio (D-7: 100 req/s, ráfaga 200)
    │  rutas humanas: authorizer de Cognito (valida el JWT)
+   │  ruta pública: GET /v1/documents/{token} (enlace firmado del correo; 10 req/s, ráfaga 20, D-5)
    └──VPC Link V2──▶ ALB interno (health check EXP-D03, deregistration delay 30 s)
         └──por ruta──▶ ECS Fargate: origination · claims · partners · audit · notifications
                           ├─▶ RDS PostgreSQL (una base y un usuario por servicio)
@@ -52,8 +53,13 @@ Hoy ningún servicio usa PostgreSQL todavía (adaptadores en memoria); la variab
 En API Gateway las rutas de socio son las de cotización (`/v1/risk-profiles/...`, API key) y las humanas por defecto son `offers`,
 `acceptances` (`GET` y `POST`: medio de pago y reanudación del cobro), `assisted-quotes`, `customers`, `policies`, `review-requests`
 (bandeja del asesor, HU-W1.1-02: `GET` y `POST`) e `issuance-exceptions` (excepciones de emisión de operaciones, HA-D02: `GET`), con el
-authorizer de Cognito (variable `human_routes`). `GET /v1/documents/{token}`
-es un enlace firmado sin sesión y el módulo `apigateway` aún no publica rutas públicas: queda fuera del gateway hasta entonces.
+authorizer de Cognito (variable `human_routes`).
+
+`GET /v1/documents/{token}` es el enlace firmado del correo de emisión (HU-W1.3-03): se abre **sin sesión y sin API key** porque el
+token firmado y con vencimiento lo protege (variable `public_routes`, HA-D02). Como ningún usage plan lo cubre, el stage lo limita a
+10 req/s con ráfaga de 20 (D-5). Para que el PDF llegue íntegro a cualquier cliente (navegador, `curl`, la descarga autenticada del
+front con `responseType: 'blob'`), la API declara `*/*` como tipo binario (D-4): las integraciones `HTTP_PROXY` pasan los bytes sin
+tocarlos (también el JSON) y el *preflight* `MOCK` convierte su cuerpo a texto para seguir respondiendo `200`.
 
 ## Imágenes
 
@@ -113,6 +119,7 @@ el estado remoto cifrado del bucket de T4.
 | `redis_node_type` / `redis_multi_az` | `cache.t4g.micro` / `false` | Redis |
 | `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) | Usage plans (D-7) |
 | `human_routes` | rutas de `origination` | Rutas detrás de Cognito |
+| `public_routes` | `documents` (`GET`, 10 req/s, ráfaga 20) | Rutas sin sesión ni API key (enlace firmado del documento, HA-D02) |
 | `cors_allow_origin` | `"*"` | Origen de las rutas humanas |
 | `cache_ttl_seconds` | `60` | TTL del `GET` cacheado (D-6) |
 | `deletion_protection` | `true` | RDS, ALB y user pool |

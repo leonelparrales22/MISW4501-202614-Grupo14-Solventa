@@ -14,6 +14,11 @@
 #   mobile app) and the gateway 4XX responses carry CORS headers. Partner
 #   routes never use the authorizer and human routes never require an API key
 #   (CA-5). Without cognito_user_pool_arns nothing of this is created.
+# - Public routes (HA-D02, optional): public_routes are read-only routes without
+#   session or API key, such as the signed link of the contractual document of
+#   HU-W1.3-03 (GET /v1/documents/{token}); each method can be throttled at the
+#   stage, since no usage plan covers it. binary_media_types lets a PDF through
+#   intact. Without them nothing of this is created and nothing changes.
 
 locals {
   private_integration = var.vpc_link_v2_id != null
@@ -26,6 +31,9 @@ resource "aws_api_gateway_rest_api" "this" {
   name        = var.name
   description = "Solventa origination - quoting journey (HA-L01)"
   tags        = var.tags
+
+  # null (not an empty list) keeps an API without binary types exactly as it was.
+  binary_media_types = length(var.binary_media_types) > 0 ? var.binary_media_types : null
 
   endpoint_configuration {
     types = ["REGIONAL"]
@@ -126,8 +134,9 @@ resource "aws_api_gateway_integration" "customer_get" {
 resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.this.id
 
-  # The human-channel resources (HA-S01) join the hash only when they exist,
-  # so an API without them keeps the same redeployment hash as before.
+  # The human-channel resources (HA-S01), the public routes and the binary
+  # media types (HA-D02) join the hash only when they exist, so an API without
+  # them keeps the same redeployment hash as before.
   triggers = {
     redeployment = sha1(join("", concat(
       [jsonencode([
@@ -147,6 +156,13 @@ resource "aws_api_gateway_deployment" "this" {
         aws_api_gateway_integration_response.human_options,
         aws_api_gateway_gateway_response.cors,
       ])] : [],
+      length(var.public_routes) > 0 ? [jsonencode([
+        aws_api_gateway_resource.public,
+        aws_api_gateway_resource.public_proxy,
+        aws_api_gateway_method.public,
+        aws_api_gateway_integration.public,
+      ])] : [],
+      length(var.binary_media_types) > 0 ? [jsonencode(var.binary_media_types)] : [],
     )))
   }
 
@@ -363,6 +379,11 @@ resource "aws_api_gateway_integration" "human_options" {
   http_method = aws_api_gateway_method.human_options[each.key].http_method
   type        = "MOCK"
 
+  # With binary media types (for example */*) the preflight body would be taken
+  # as binary and the mapping template below would not apply; converting it to
+  # text keeps the MOCK answering 200.
+  content_handling = length(var.binary_media_types) > 0 ? "CONVERT_TO_TEXT" : null
+
   request_templates = {
     "application/json" = "{\"statusCode\": 200}"
   }
@@ -417,4 +438,107 @@ resource "aws_api_gateway_gateway_response" "cors" {
   response_templates = {
     "application/json" = "{\"message\":$context.error.messageString}"
   }
+}
+
+# --- Public routes: no session, no API key (HA-D02) ------------------------------
+
+locals {
+  # /v1/<route> and /v1/<route>/{proxy+} for every public route.
+  public_resources = merge(
+    { for r in keys(var.public_routes) : r => { route = r, proxy = false } },
+    { for r in keys(var.public_routes) : "${r}/{proxy+}" => { route = r, proxy = true } },
+  )
+
+  public_resource_ids = merge(
+    { for r, res in aws_api_gateway_resource.public : r => res.id },
+    { for r, res in aws_api_gateway_resource.public_proxy : "${r}/{proxy+}" => res.id },
+  )
+
+  public_methods = merge([
+    for key, res in local.public_resources : {
+      for m in var.public_routes[res.route].methods : "${key} ${m}" => {
+        resource    = key
+        route       = res.route
+        proxy       = res.proxy
+        http_method = m
+      }
+    }
+  ]...)
+
+  # Methods of the public routes with a throttle of their own at the stage.
+  public_throttled = {
+    for key, m in local.public_methods : key => m
+    if var.public_routes[m.route].rate_limit != null || var.public_routes[m.route].burst_limit != null
+  }
+}
+
+resource "aws_api_gateway_resource" "public" {
+  for_each = var.public_routes
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.v1.id
+  path_part   = each.key
+
+  lifecycle {
+    precondition {
+      condition     = !contains(keys(var.human_routes), each.key)
+      error_message = "A route cannot be public and human at the same time: a public route skips the Cognito authorizer."
+    }
+  }
+}
+
+resource "aws_api_gateway_resource" "public_proxy" {
+  for_each = var.public_routes
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.public[each.key].id
+  path_part   = "{proxy+}"
+}
+
+# A public method asks for no token and no API key: the backend protects what it
+# serves (the signed, expiring token of the document link).
+resource "aws_api_gateway_method" "public" {
+  for_each = local.public_methods
+
+  rest_api_id      = aws_api_gateway_rest_api.this.id
+  resource_id      = local.public_resource_ids[each.value.resource]
+  http_method      = each.value.http_method
+  authorization    = "NONE"
+  api_key_required = false
+
+  request_parameters = each.value.proxy ? { "method.request.path.proxy" = true } : null
+}
+
+resource "aws_api_gateway_integration" "public" {
+  for_each = local.public_methods
+
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = local.public_resource_ids[each.value.resource]
+  http_method             = aws_api_gateway_method.public[each.key].http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = each.value.http_method
+  uri                     = each.value.proxy ? "${local.backend}/v1/${each.value.route}/{proxy}" : "${local.backend}/v1/${each.value.route}"
+  connection_type         = local.connection_type
+  connection_id           = var.vpc_link_v2_id
+  integration_target      = local.private_integration ? var.integration_target_arn : null
+  timeout_milliseconds    = var.integration_timeout_ms
+
+  request_parameters = each.value.proxy ? { "integration.request.path.proxy" = "method.request.path.proxy" } : null
+}
+
+resource "aws_api_gateway_method_settings" "public" {
+  for_each = local.public_throttled
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "v1/${each.value.resource}/${each.value.http_method}"
+
+  settings {
+    metrics_enabled        = true
+    caching_enabled        = false
+    throttling_rate_limit  = coalesce(var.public_routes[each.value.route].rate_limit, -1)
+    throttling_burst_limit = coalesce(var.public_routes[each.value.route].burst_limit, -1)
+  }
+
+  depends_on = [aws_api_gateway_method_settings.all]
 }

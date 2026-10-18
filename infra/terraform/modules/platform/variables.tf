@@ -182,6 +182,18 @@ variable "human_routes" {
   }
 }
 
+variable "public_routes" {
+  description = "Read-only routes without session or API key (key: path segment under /v1). Default: the signed link of the contractual document, GET /v1/documents/{token} (HU-W1.3-03, HA-D02), throttled at 10 req/s with a burst of 20 (decision D-5), since no usage plan covers it."
+  type = map(object({
+    methods     = list(string)
+    rate_limit  = optional(number)
+    burst_limit = optional(number)
+  }))
+  default = {
+    documents = { methods = ["GET"], rate_limit = 10, burst_limit = 20 }
+  }
+}
+
 variable "cors_allow_origin" {
   description = "Allowed origin of the human routes (pin it to the portal origin outside test windows)."
   type        = string

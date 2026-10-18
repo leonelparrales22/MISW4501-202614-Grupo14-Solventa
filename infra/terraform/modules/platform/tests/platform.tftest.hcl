@@ -309,6 +309,26 @@ run "inbox_and_exceptions_are_routed" {
   }
 }
 
+# HA-D02: the signed link of the e-mail opens the document without a session.
+run "the_document_link_is_public" {
+  command = plan
+
+  assert {
+    condition     = module.apigateway.public_paths == ["/v1/documents", "/v1/documents/{proxy+}"]
+    error_message = "GET /v1/documents/{token} is public: the signed, expiring token protects it."
+  }
+
+  assert {
+    condition     = var.public_routes["documents"].rate_limit == 10 && var.public_routes["documents"].burst_limit == 20
+    error_message = "The public route is throttled at the stage (decision D-5: 10 req/s, burst 20)."
+  }
+
+  assert {
+    condition     = !contains(keys(var.human_routes), "documents")
+    error_message = "The document link is not a human route."
+  }
+}
+
 run "stub_overrides_name_real_stubs" {
   command = plan
 
