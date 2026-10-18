@@ -169,6 +169,46 @@ run "services_can_be_switched_off" {
   }
 }
 
+# HU-W1.3-02 / HA-D02: the payment gateway and e-mail stubs run next to the
+# other three behind Cloud Map, and a staging window can take the payment
+# gateway down on its own (decision D-6).
+run "charge_and_email_stubs_run_behind_cloud_map" {
+  command = plan
+
+  variables {
+    image_tag_overrides          = { email = "prueba-ha-d02" }
+    stub_desired_count_overrides = { payment-gateway = 0 }
+  }
+
+  assert {
+    condition     = alltrue([for s in ["openfinance", "opendata", "kyc", "email"] : module.ecs.desired_counts[s] == 1]) && module.ecs.desired_counts["payment-gateway"] == 0
+    error_message = "Every stub runs one task, except the payment gateway taken down with its override."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.PAYMENT_GATEWAY_URL == "http://payment-gateway.solventa-test.local:9040" &&
+      local.service_environment.origination.EMAIL_URL == "http://email.solventa-test.local:9030"
+    )
+    error_message = "Origination reaches both stubs by their Cloud Map names."
+  }
+
+  assert {
+    condition     = endswith(local.image_uris["email"], ":prueba-ha-d02") && endswith(local.image_uris["payment-gateway"], ":0123456789ab")
+    error_message = "The e-mail and payment gateway images accept a tag override like the others."
+  }
+}
+
+run "stub_overrides_name_real_stubs" {
+  command = plan
+
+  variables {
+    stub_desired_count_overrides = { pasarela = 0 }
+  }
+
+  expect_failures = [var.stub_desired_count_overrides]
+}
+
 run "rejects_incomplete_service_sizing" {
   command = plan
 

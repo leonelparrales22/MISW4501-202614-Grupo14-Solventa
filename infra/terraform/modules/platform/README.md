@@ -15,7 +15,7 @@ cliente ──HTTPS──▶ API Gateway REST (stage = ambiente)
                           ├─▶ ElastiCache Redis
                           ├─▶ SNS (un tópico por dominio) ─▶ SQS por consumidor + DLQ
                           ├─▶ S3 (documents, evidence)
-                          └─Cloud Map─▶ stubs openfinance · opendata · kyc
+                          └─Cloud Map─▶ stubs openfinance · opendata · kyc · email · payment-gateway
 ```
 
 | Pieza | Módulo | Configuración |
@@ -83,10 +83,11 @@ documento contractual (HU-W1.3-03) queda apagado: necesita el stub de correo y S
 | `environment` | — | `staging` o `production-demo` (también es el stage) |
 | `vpc_cidr` | — | CIDR `/16` |
 | `nat_mode` | `"none"` | `none`, `single`, `per_az` |
-| `image_tag` / `image_tag_overrides` | `null` / `{}` | Ver «Imágenes» |
+| `image_tag` / `image_tag_overrides` | `null` / `{}` | Ver «Imágenes»; las claves de `image_tag_overrides` son las 10 imágenes (5 servicios y 5 stubs) |
 | `services_enabled` | `true` | `false` deja todo en 0 tareas |
 | `service_sizing` | — | CPU, memoria, `desired_count` y `max_count` de los cinco servicios |
-| `stub_desired_count` | `1` | Tareas por stub |
+| `stub_desired_count` | `1` | Tareas de cada stub (`openfinance`, `opendata`, `kyc`, `email`, `payment-gateway`) |
+| `stub_desired_count_overrides` | `{}` | Tareas por stub que reemplazan a `stub_desired_count`; una ventana de staging pone `payment-gateway = 0` para tumbar la pasarela y `{}` para restaurarla (HA-D02, D-6): solo cambia ese servicio ECS |
 | `log_retention_days` | `7` | Retención de logs |
 | `rds_instance_class` / `rds_multi_az` / `rds_backup_retention_days` | `db.t4g.micro` / `false` / `1` | PostgreSQL |
 | `redis_node_type` / `redis_multi_az` | `cache.t4g.micro` / `false` | Redis |

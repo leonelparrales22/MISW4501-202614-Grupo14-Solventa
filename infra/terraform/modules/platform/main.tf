@@ -8,7 +8,8 @@
 #     --VPC link V2--> internal ALB (EXP-D03 health checks, 30 s drain)
 #     --> ECS Fargate services --> RDS PostgreSQL (one database per service),
 #         ElastiCache Redis, SNS/SQS with DLQs, S3
-#     --Cloud Map--> stubs of the external providers (Open Finance, Open Data, KYC)
+#     --Cloud Map--> stubs of the external providers (Open Finance, Open Data, KYC,
+#                    e-mail and payment gateway)
 #
 # The ECR repositories are permanent and shared (bootstrap/cd-ecr): this module
 # only reads them.
@@ -362,8 +363,8 @@ module "ecs" {
         port           = port
         cpu            = 256
         memory         = 512
-        desired_count  = var.services_enabled ? var.stub_desired_count : 0
-        max_count      = var.services_enabled ? var.stub_desired_count : 0
+        desired_count  = var.services_enabled ? lookup(var.stub_desired_count_overrides, k, var.stub_desired_count) : 0
+        max_count      = var.services_enabled ? lookup(var.stub_desired_count_overrides, k, var.stub_desired_count) : 0
         discovery_name = k
         environment    = { PORT = tostring(port) }
       }

@@ -43,8 +43,8 @@ variable "image_tag_overrides" {
   default     = {}
 
   validation {
-    condition     = alltrue([for k in keys(var.image_tag_overrides) : contains(["origination", "claims", "partners", "audit", "notifications", "openfinance", "opendata", "kyc"], k)])
-    error_message = "image_tag_overrides keys must be image names: origination, claims, partners, audit, notifications, openfinance, opendata or kyc."
+    condition     = alltrue([for k in keys(var.image_tag_overrides) : contains(["origination", "claims", "partners", "audit", "notifications", "openfinance", "opendata", "kyc", "email", "payment-gateway"], k)])
+    error_message = "image_tag_overrides keys must be image names: origination, claims, partners, audit, notifications, openfinance, opendata, kyc, email or payment-gateway."
   }
 }
 
@@ -72,9 +72,25 @@ variable "service_sizing" {
 }
 
 variable "stub_desired_count" {
-  description = "Tasks of each provider stub (Open Finance, Open Data, KYC)."
+  description = "Tasks of each provider stub (Open Finance, Open Data, KYC, e-mail and payment gateway)."
   type        = number
   default     = 1
+}
+
+variable "stub_desired_count_overrides" {
+  description = "Tasks per stub that override stub_desired_count. A staging window sets payment-gateway = 0 to take the payment gateway down and an empty map to bring it back (HA-D02, decision D-6); only that ECS service changes."
+  type        = map(number)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for k in keys(var.stub_desired_count_overrides) : contains(["openfinance", "opendata", "kyc", "email", "payment-gateway"], k)])
+    error_message = "stub_desired_count_overrides keys must be stub names: openfinance, opendata, kyc, email or payment-gateway."
+  }
+
+  validation {
+    condition     = alltrue([for n in values(var.stub_desired_count_overrides) : n >= 0 && floor(n) == n])
+    error_message = "stub_desired_count_overrides values must be whole numbers of tasks, 0 or more."
+  }
 }
 
 variable "log_retention_days" {
