@@ -4,6 +4,18 @@
 # deletion protection, a final RDS snapshot and 7 days of backups. NAT and
 # Multi-AZ stay off by default for cost and are switched on for the final demo
 # (nat_mode = "per_az", rds_multi_az = true, redis_multi_az = true).
+# User pool: the permanent one of bootstrap/identity.
+
+# Permanent user pool of the human channels (T4, bootstrap/identity): applied once,
+# outside this composition, so the portal and the app keep the same pool and client IDs.
+data "terraform_remote_state" "identity" {
+  backend = "s3"
+  config = {
+    bucket = "solventa-tfstate-368083581678"
+    key    = "bootstrap/identity/terraform.tfstate"
+    region = "us-east-2"
+  }
+}
 
 module "platform" {
   source = "../../../modules/platform"
@@ -35,6 +47,14 @@ module "platform" {
   redis_multi_az            = var.redis_multi_az
 
   cors_allow_origin = var.cors_allow_origin
+
+  existing_cognito = {
+    user_pool_id  = data.terraform_remote_state.identity.outputs.user_pool_id
+    user_pool_arn = data.terraform_remote_state.identity.outputs.user_pool_arn
+    issuer        = data.terraform_remote_state.identity.outputs.issuer
+    jwks_url      = data.terraform_remote_state.identity.outputs.jwks_url
+    client_ids    = data.terraform_remote_state.identity.outputs.client_ids
+  }
 
   deletion_protection = true
   ephemeral           = false
