@@ -113,6 +113,9 @@ services:
       - EMAIL_URL=http://email:9030
       - DOCUMENTS_DIR=/tmp/documents
       - DOCUMENT_LINK_SECRET=${DOCUMENT_LINK_SECRET:-}
+      # The link of the e-mail opens from the host, as the staging smoke test
+      # does through the API Gateway.
+      - DOCUMENTS_PUBLIC_BASE_URL=http://localhost:${ORIGINATION_PORT:-8190}
     depends_on:
       postgres:
         condition: service_healthy
