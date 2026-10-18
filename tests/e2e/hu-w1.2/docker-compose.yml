@@ -4,8 +4,11 @@
 # ./run.sh, which generates the local secrets (never printed), seeds Moto and
 # drives the scenarios. Build context is the repository root.
 #
+# HU-W1.2-03 adds origination's own PostgreSQL, the e-mail stub (to count the
+# requote notices) and the Cognito settings of the human routes.
+#
 # Published ports (127.0.0.1 only, configurable): audit 8290, origination 8291,
-# Toxiproxy API 8494 and Moto 5120.
+# Toxiproxy API 8494, Moto 5120 and the e-mail stub 9131.
 name: hu-w1-2-e2e
 
 services:
@@ -20,6 +23,27 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+
+  postgres-origination:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=origination
+      - POSTGRES_USER=origination
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U origination -d origination"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  email:
+    build:
+      context: ../../..
+      dockerfile: stubs/email/Dockerfile
+    ports:
+      - "127.0.0.1:${EMAIL_PORT:-9131}:9030"
+    environment:
+      - PORT=9030
 
   redis:
     image: redis:7-alpine
@@ -123,7 +147,24 @@ services:
       - KYC_URL=http://toxiproxy:9021
       # HU-W1.2-01: the consent is verified with the real audit service.
       - AUDIT_URL=http://audit:8080
+      # HU-W1.2-03: the offers are persisted, the human routes need Cognito
+      # (Moto, written by run.sh) and the requote notice goes out by e-mail.
+      - DATABASE_URL=postgres://origination:${PG_PASSWORD:-}@postgres-origination:5432/origination?sslmode=disable
+      - AUTH_ISSUER=${AUTH_ISSUER:-}
+      - AUTH_JWKS_URL=${AUTH_JWKS_URL:-}
+      - AUTH_CLIENT_IDS=${AUTH_CLIENT_IDS:-}
+      - EMAIL_URL=http://email:9030
+      - DOCUMENTS_DIR=/tmp/documents
+      - DOCUMENT_LINK_SECRET=${DOCUMENT_LINK_SECRET:-}
+      - OFFER_REQUOTE_POLL_INTERVAL_MS=1000
+      - OFFER_LINK_BASE_URL=http://localhost:4200
     depends_on:
+      postgres-origination:
+        condition: service_healthy
+      email:
+        condition: service_started
+      moto:
+        condition: service_healthy
       redis:
         condition: service_healthy
       toxiproxy-init:

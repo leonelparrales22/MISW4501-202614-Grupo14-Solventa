@@ -10,8 +10,8 @@
 # The script exits with a non-zero code if any check fails. The environment is
 # always removed at the end (down -v). Requirements: Docker (compose v2) and
 # curl. The PostgreSQL secret is random, generated here and never printed.
-#
-# The HU-W1.2-03 routes (offers) are added to this folder by that story.
+#   3. the offer routes of HU-W1.2-03, in run-offers.sh (own PostgreSQL, audit
+#      and a Moto token for the human routes), called at the end.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -58,5 +58,11 @@ $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=
 echo "== Schemathesis: origination with AUDIT_URL (the consent is verified with audit)"
 $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://origination-audit:8080 \
   --include-path-regex="$ROUTES" --checks=all --hypothesis-max-examples=100 --hypothesis-seed=2
+
+# Free this stack before starting the one of the offers.
+cleanup
+
+echo "== Offer routes (HU-W1.2-03)"
+./run-offers.sh
 
 echo "== origination contract passed."
