@@ -49,6 +49,15 @@ func TestMain(m *testing.M) {
 // Docker is not available (decision P5 of HA-D02).
 func newDB(t *testing.T) *sql.DB {
 	t.Helper()
+	db := newUnmigratedDB(t)
+	require.NoError(t, postgres.Migrate(context.Background(), db))
+	return db
+}
+
+// newUnmigratedDB returns an empty database without any migration, to
+// upgrade it step by step.
+func newUnmigratedDB(t *testing.T) *sql.DB {
+	t.Helper()
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 	ctx := context.Background()
 	containerOnce.Do(func() {
@@ -72,7 +81,6 @@ func newDB(t *testing.T) *sql.DB {
 	db, err := postgres.Open(ctx, strings.Replace(adminURL, "/origination?", "/"+name+"?", 1))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
-	require.NoError(t, postgres.Migrate(ctx, db))
 	return db
 }
 
@@ -436,6 +444,80 @@ func TestListsOfDueChargesAndExceptions(t *testing.T) {
 	ex, err = s.ListExceptions(context.Background(), 1)
 	require.NoError(t, err)
 	assert.Len(t, ex, 1)
+}
+
+// A charge whose window ends while it waits for its payment method becomes
+// an issuance exception with payment_method_missing (HU-W1.3-02 §5). Before
+// migration 0004 PostgreSQL refused that reason (finding H-9 of HA-D02).
+func TestAChargeWithoutAPaymentMethodExpiresAsAnIssuanceException(t *testing.T) {
+	s := postgres.NewChargeStore(newDB(t))
+	ctx := context.Background()
+	waiting := createWaitingForCard(t, s, "acc-missing")
+	create(t, s, "acc-paid") // has its payment method: the worker charges it instead
+
+	n, err := s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt.Add(-time.Second))
+	require.NoError(t, err)
+	assert.Zero(t, n, "still within its window")
+
+	n, err = s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	got, err := s.Get(ctx, "acc-missing")
+	require.NoError(t, err)
+	assert.Equal(t, domain.ChargeFailed, got.Status)
+	assert.Equal(t, domain.ChargePaymentMethodMissing, got.FailureReason)
+	assert.Empty(t, got.PaymentMethod.Kind, "no payment method was ever handed over")
+	assert.True(t, got.NextAttemptAt.IsZero())
+	assert.True(t, got.LastFailureAt.Equal(waiting.WindowEndsAt))
+	paid, err := s.Get(ctx, "acc-paid")
+	require.NoError(t, err)
+	assert.Equal(t, domain.ChargePending, paid.Status, "a charge with a payment method is not swept")
+
+	ex, err := s.ListExceptions(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, ex, 1)
+	assert.Equal(t, "acc-missing", ex[0].AcceptanceID)
+	assert.Equal(t, domain.ChargePaymentMethodMissing, ex[0].FailureReason)
+
+	n, err = s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt.Add(time.Hour))
+	require.NoError(t, err)
+	assert.Zero(t, n, "an expired charge is expired once")
+	_, err = s.AttachPaymentMethod(ctx, "acc-missing", testCard(), waiting.WindowEndsAt.Add(time.Minute))
+	assert.ErrorIs(t, err, ports.ErrChargeNotPayable, "only operations can resume it")
+}
+
+// Migration 0004 upgrades a database already migrated with 0001-0003, as
+// the ones of the other environments are: the old constraint refused the
+// reason, the new one takes it and still refuses an unknown one.
+func TestMigration0004LetsAnExistingDatabaseStorePaymentMethodMissing(t *testing.T) {
+	db := newUnmigratedDB(t)
+	ctx := context.Background()
+	old := fstest.MapFS{}
+	for _, name := range []string{"0001_charge_attempt.sql", "0002_charge_payment_method.sql", "0003_offer.sql"} {
+		data, err := migrations.FS.ReadFile(name)
+		require.NoError(t, err)
+		old[name] = &fstest.MapFile{Data: data}
+	}
+	require.NoError(t, postgres.MigrateFS(ctx, db, old))
+	s := postgres.NewChargeStore(db)
+	waiting := createWaitingForCard(t, s, "acc-before-0004")
+
+	_, err := s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt)
+	require.Error(t, err, "without 0004 the CHECK of 0001 refuses payment_method_missing")
+	assert.Contains(t, err.Error(), "charge_attempt_failure_reason_check")
+
+	require.NoError(t, postgres.Migrate(ctx, db))
+	n, err := s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	got, err := s.Get(ctx, "acc-before-0004")
+	require.NoError(t, err)
+	assert.Equal(t, domain.ChargePaymentMethodMissing, got.FailureReason)
+
+	_, err = db.ExecContext(ctx, `UPDATE charge_attempt SET failure_reason = 'unknown' WHERE acceptance_id = $1`, "acc-before-0004")
+	require.Error(t, err, "the constraint still refuses an unknown reason")
+	assert.Contains(t, err.Error(), "charge_attempt_failure_reason_check")
 }
 
 func TestGetUnknownCharge(t *testing.T) {
