@@ -29,6 +29,11 @@ output "api_key_values" {
   sensitive   = true
 }
 
+output "public_paths" {
+  description = "Paths of the public routes, without session or API key (HA-D02)."
+  value       = [for k in sort(keys(local.public_resources)) : "/v1/${k}"]
+}
+
 output "cognito_authorizer_id" {
   description = "ID of the COGNITO_USER_POOLS authorizer of the human routes (HA-S01; null without cognito_user_pool_arns)."
   value       = one(aws_api_gateway_authorizer.cognito[*].id)

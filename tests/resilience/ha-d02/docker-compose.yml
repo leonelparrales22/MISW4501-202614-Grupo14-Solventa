@@ -103,12 +103,19 @@ services:
       - PAYMENT_GATEWAY_URL=http://toxiproxy:9041
       - DATABASE_URL=postgres://origination:${PG_PASSWORD:-}@postgres:5432/origination?sslmode=disable
       - RETRY_WINDOW_SECONDS=${RETRY_WINDOW_SECONDS:-86400}
+      # Longest wait between charge attempts: 60 s as in the service; the
+      # rehearsal of the staging smoke test lowers it to 15 s, like the window
+      # of staging (decision D-6 of the AWS phase).
+      - CHARGE_RETRY_MAX_MS=${CHARGE_RETRY_MAX_MS:-60000}
       - CHARGE_POLL_INTERVAL_MS=200
       - ACCEPTANCE_POLL_INTERVAL_MS=200
       # HU-W1.3-03: required with a gateway (decision D-16 b).
       - EMAIL_URL=http://email:9030
       - DOCUMENTS_DIR=/tmp/documents
       - DOCUMENT_LINK_SECRET=${DOCUMENT_LINK_SECRET:-}
+      # The link of the e-mail opens from the host, as the staging smoke test
+      # does through the API Gateway.
+      - DOCUMENTS_PUBLIC_BASE_URL=http://localhost:${ORIGINATION_PORT:-8190}
     depends_on:
       postgres:
         condition: service_healthy

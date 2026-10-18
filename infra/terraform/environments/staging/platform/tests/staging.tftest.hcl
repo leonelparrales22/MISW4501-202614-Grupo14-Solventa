@@ -66,6 +66,74 @@ run "staging_is_ephemeral_and_small" {
   }
 }
 
+# HA-D02 (C5): origination keeps one task, without autoscaling, while
+# acceptances and the advisor inbox live in memory.
+run "origination_runs_a_single_task" {
+  command = plan
+
+  assert {
+    condition = (
+      module.platform.desired_counts["origination"] == 1 &&
+      module.platform.service_sizing["origination"].desired_count == 1 &&
+      module.platform.service_sizing["origination"].max_count == 1
+    )
+    error_message = "Origination runs exactly one task and never scales out (C5): desired_count = max_count = 1."
+  }
+}
+
+# HA-D02: the levers of a window are optional; without them staging is the
+# platform of T4 as it was.
+run "window_variables_are_optional" {
+  command = plan
+
+  assert {
+    condition = (
+      length(var.stub_desired_count_overrides) == 0 && length(var.origination_environment) == 0 &&
+      length(var.seed_users) == 0 && var.seed_user_password == null && length(var.extra_tags) == 0
+    )
+    error_message = "Without a window every lever is empty."
+  }
+
+  assert {
+    condition     = module.platform.desired_counts["payment-gateway"] == 1 && module.platform.desired_counts["email"] == 1
+    error_message = "By default the payment gateway and e-mail stubs run one task each."
+  }
+}
+
+# The values of ha-d02.example.tfvars, with a mock password (never a real one).
+run "the_ha_d02_window_takes_down_only_the_payment_gateway" {
+  command = plan
+
+  variables {
+    stub_desired_count_overrides = { payment-gateway = 0 }
+    origination_environment      = { RETRY_WINDOW_SECONDS = "300", CHARGE_RETRY_MAX_MS = "15000" }
+    extra_tags                   = { Owner = "nicolas", Story = "HA-D02" }
+    seed_user_password           = "mock-value-not-a-password"
+    seed_users = {
+      insured    = { email = "asegurado.ha-d02@example.com", group = "insured" }
+      advisor    = { email = "asesor.ha-d02@example.com", group = "advisor" }
+      operations = { email = "operaciones.ha-d02@example.com", group = "operations" }
+    }
+  }
+
+  assert {
+    condition = module.platform.desired_counts["payment-gateway"] == 0 && alltrue([
+      for k, c in module.platform.desired_counts : c == 1 if k != "payment-gateway"
+    ])
+    error_message = "The outage lever only takes the payment gateway to 0 tasks."
+  }
+}
+
+run "extra_tags_cannot_replace_the_default_tags" {
+  command = plan
+
+  variables {
+    extra_tags = { Env = "production" }
+  }
+
+  expect_failures = [var.extra_tags]
+}
+
 run "ttl_is_required_and_validated" {
   command = plan
 

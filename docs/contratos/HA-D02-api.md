@@ -72,7 +72,7 @@ Pago confirmado:
 | `pending` con `attempts: 0` / `in_progress` | «Estamos procesando tu pago» (primer intento en curso) |
 | `pending` con `attempts > 0` | «Tu pago está pendiente»: aceptación guardada, clave de operación, intentos sin respuesta, próximo reintento (`next_attempt_at`) y la ventana (`retry_window.ends_at`) |
 | `confirmed` | «Pago confirmado»; con `policy_id`, cobertura activa y la póliza (E5 de HU-W1.3-03 con `/v1/policies/{policy_id}/…`). Si `policy_id` aún no llega, seguir consultando |
-| `failed` | Excepción: `retry_window_expired` (la pasarela no respondió en 24 h) o `payment_rejected` (la pasarela rechazó; la pantalla de rechazo E4c es de HU-W1.3-02). Lo gestiona operaciones sin perder la aceptación |
+| `failed` | Excepción: `retry_window_expired` (la pasarela no respondió en 24 h), `payment_rejected` (la pasarela rechazó; la pantalla de rechazo E4c es de HU-W1.3-02) o `payment_method_missing` (la ventana venció sin que el cliente entregara un medio de pago, HU-W1.3-02). Lo gestiona operaciones sin perder la aceptación |
 
 - `attempts` cuenta los intentos fallidos de la ventana actual (incluidos los que no se enviaron porque el circuit breaker aislaba la
   pasarela).
@@ -84,7 +84,8 @@ Pago confirmado:
 
 ### `GET /v1/issuance-exceptions?limit=` → `200` (solo `operations`)
 
-Los cobros en excepción, el último en fallar primero (`limit` 1–200, por defecto 50). Para la pantalla O1/O1b (HU-W1.3-04):
+Los cobros en excepción, el último en fallar primero (`limit` 1–200, por defecto 50), con `reason` `retry_window_expired`,
+`payment_rejected` o `payment_method_missing`. Para la pantalla O1/O1b (HU-W1.3-04):
 
 ```json
 { "items": [ {
@@ -115,7 +116,11 @@ reanudaciones a la vez gana una), `403` para otros roles.
 
 ## 4. Lo que todavía es provisional
 
-- Monto asegurado, plazo y coberturas del evento de activación son de demostración (250 000 000 COP, 120 meses, muerte e incapacidad
-  total y permanente) hasta HU-W1.2-03.
-- Las aceptaciones y ofertas siguen en memoria (HU-W1.3-01): una aceptación aún sin cobro se pierde con un reinicio; un cobro ya creado no.
-- En AWS faltan el RDS de originación, el secreto `DATABASE_URL` y el despliegue del stub `payment-gateway` (infraestructura, T4/T5).
+- Monto asegurado, plazo y coberturas del evento de activación: los de la oferta personalizada (HU-W1.2-03) cuando la oferta lo es;
+  las de demostración (`demo-…`) y las ajustadas (`adj-…`) activan los de demostración (250 000 000 COP, 120 meses, muerte e
+  incapacidad total y permanente). Una personalizada sin términos completos no se cobra (fase AWS, D-16).
+- Las aceptaciones siguen en memoria (HU-W1.3-01): una aceptación aún sin cobro se pierde con un reinicio; un cobro ya creado no. Por
+  eso originación corre con una sola tarea en AWS (C5).
+- En AWS (fase AWS de HA-D02, `infra/terraform/modules/platform`): originación recibe su `DATABASE_URL` de Secrets Manager, los stubs
+  `payment-gateway` y `email` corren detrás de Cloud Map, y `GET /v1/issuance-exceptions` y `POST …/charge/resume` pasan por el API
+  Gateway con el authorizer de Cognito.

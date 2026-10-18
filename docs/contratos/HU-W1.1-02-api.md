@@ -228,8 +228,8 @@ aceptación:  in_review ─ accept ─▶ registered ─▶ issuance_pending   (
 ## 7. Cómo correrlo en local
 
 Igual que HA-D02 (`services/origination/README.md` → «Desarrollo»): Cognito de Moto (`tests/security/ha-s01/local`), PostgreSQL, la
-pasarela y el correo, y originación con `AUTH_*`, `PAYMENT_GATEWAY_URL`, `DATABASE_URL`, `EMAIL_URL`, `DOCUMENTS_DIR` y
-`DOCUMENT_LINK_SECRET`. Sin `EMAIL_URL` la bandeja funciona igual, pero no se envían los correos del ajuste y el rechazo (lo dice el
+pasarela y el correo, y originación con `AUTH_*`, `PAYMENT_GATEWAY_URL`, `DATABASE_URL`, `EMAIL_URL`, `DOCUMENTS_DIR` (en AWS,
+`DOCUMENTS_BUCKET`) y `DOCUMENT_LINK_SECRET`. Sin `EMAIL_URL` la bandeja funciona igual, pero no se envían los correos del ajuste y el rechazo (lo dice el
 log al arrancar). Los correos que recibiría el asegurado se ven en `GET http://localhost:<puerto del stub>/messages?to=<correo>`.
 
 Correos reales capturados (sin enlace y sin las observaciones del asesor; clave `review-outcome:<acceptance_id>`):
@@ -254,4 +254,4 @@ Correos reales capturados (sin enlace y sin las observaciones del asesor; clave 
 | Correo | Proveedor simulado (`stubs/email`) | — | Proveedor real |
 | SMS y push | No existen | — | — |
 | Paginación | No hay | La lista trae todos los casos del filtro | Cuando el volumen lo pida |
-| Rutas en el API Gateway (AWS) | No registradas | Solo se puede probar en local | Infraestructura |
+| Rutas en el API Gateway (AWS) | Registradas: `/v1/review-requests` (`GET`, `POST`) detrás del authorizer de Cognito (fase AWS de HA-D02) | Se prueba también por el gateway de staging | — |

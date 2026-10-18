@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/email"
@@ -31,6 +33,7 @@ import (
 	ofadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/openfinance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/pdf"
 	redisadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/redis"
+	s3adapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/s3"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/issuance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/orchestrator"
@@ -258,11 +261,12 @@ type contractWiring struct {
 }
 
 // newContractWiring wires the contractual issuance (HU-W1.3-03): the PDF
-// generator, the document directory, the signed links, the e-mail provider
-// and the in-memory repository and audit log (PENDING: PostgreSQL and the
-// audit service). It starts the worker that issues the documents.
+// generator, the document store (S3 in AWS or a local directory, HA-D02), the
+// signed links, the e-mail provider and the in-memory repository and audit log
+// (PENDING: PostgreSQL and the audit service). It starts the worker that
+// issues the documents.
 func newContractWiring(ctx context.Context, cfg contractConfig) (contractWiring, error) {
-	store, err := filestore.New(cfg.documentsDir)
+	store, where, err := newDocumentStore(ctx, cfg)
 	if err != nil {
 		return contractWiring{}, err
 	}
@@ -281,12 +285,44 @@ func newContractWiring(ctx context.Context, cfg contractConfig) (contractWiring,
 	}, cfg.service)
 	go service.Run(ctx)
 	log.Printf("contractual document: PDF in %s, e-mail via %s, links valid %s, in-memory repository and audit log (pending PostgreSQL and the audit service)",
-		store.Dir(), cfg.emailURL, cfg.service.LinkTTL)
+		where, cfg.emailURL, cfg.service.LinkTTL)
 	return contractWiring{
 		service:     service,
 		reader:      issuance.NewContractReader(repo, store, audit, signer, clock),
 		emailClient: emailClient,
 	}, nil
+}
+
+// documentStoreCheckTimeout bounds the check of the documents bucket at start.
+const documentStoreCheckTimeout = 10 * time.Second
+
+// newDocumentStore opens the document repository of the contractual issuance
+// (decision D-3 a of HA-D02): the S3 bucket of DOCUMENTS_BUCKET, with the
+// credentials and the region of the environment (the task role and AWS_REGION
+// in ECS) and checked before serving, or the directory of DOCUMENTS_DIR. It
+// returns where the documents go, for the log.
+func newDocumentStore(ctx context.Context, cfg contractConfig) (ports.DocumentStore, string, error) {
+	if cfg.documentsBucket == "" {
+		store, err := filestore.New(cfg.documentsDir)
+		if err != nil {
+			return nil, "", err
+		}
+		return store, store.Dir(), nil
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("could not load the AWS configuration for %s: %w", envDocumentsBucket, err)
+	}
+	store, err := s3adapter.New(awss3.NewFromConfig(awsCfg), cfg.documentsBucket)
+	if err != nil {
+		return nil, "", err
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, documentStoreCheckTimeout)
+	defer cancel()
+	if err := store.Check(checkCtx); err != nil {
+		return nil, "", err
+	}
+	return store, "s3://" + store.Bucket(), nil
 }
 
 // newAssistedQuoteService wires the advisor quote (HU-W1.1-01) over the
@@ -481,16 +517,25 @@ func loadAcceptanceConfig(getenv func(string) string, cfg *acceptanceConfig) err
 // envEmailURL names the variable that turns the contractual document on.
 const envEmailURL = "EMAIL_URL"
 
+// Variables of the document repository (decision D-3 a of HA-D02): exactly one
+// of them is set when EMAIL_URL is.
+const (
+	envDocumentsBucket = "DOCUMENTS_BUCKET"
+	envDocumentsDir    = "DOCUMENTS_DIR"
+)
+
 // contractConfig configures the contractual document and its notification
 // (HU-W1.3-03). It is enabled when EMAIL_URL is set; then the signing secret
-// and the document directory are required too.
+// and exactly one document repository are required too: an S3 bucket in AWS
+// (documentsBucket) or a directory locally (documentsDir).
 type contractConfig struct {
-	enabled      bool
-	emailURL     string
-	emailTimeout time.Duration
-	documentsDir string
-	linkSecret   string
-	service      issuance.ContractConfig
+	enabled         bool
+	emailURL        string
+	emailTimeout    time.Duration
+	documentsBucket string
+	documentsDir    string
+	linkSecret      string
+	service         issuance.ContractConfig
 }
 
 // loadContractConfig reads the HU-W1.3-03 variables. publicPort is the port of
@@ -501,10 +546,16 @@ func loadContractConfig(getenv func(string) string, publicPort string, cfg *cont
 		return nil
 	}
 	cfg.enabled = true
-	cfg.documentsDir = getenv("DOCUMENTS_DIR")
+	cfg.documentsBucket = getenv(envDocumentsBucket)
+	cfg.documentsDir = getenv(envDocumentsDir)
 	cfg.linkSecret = getenv("DOCUMENT_LINK_SECRET")
-	if cfg.documentsDir == "" {
-		return fmt.Errorf("DOCUMENTS_DIR is required when %s is set", envEmailURL)
+	switch {
+	case cfg.documentsBucket == "" && cfg.documentsDir == "":
+		return fmt.Errorf("%s (an S3 bucket, in AWS) or %s (a local directory) is required when %s is set",
+			envDocumentsBucket, envDocumentsDir, envEmailURL)
+	case cfg.documentsBucket != "" && cfg.documentsDir != "":
+		return fmt.Errorf("%s and %s are both set: set only one, the S3 bucket in AWS or the local directory",
+			envDocumentsBucket, envDocumentsDir)
 	}
 	if len(cfg.linkSecret) < links.MinSecretLength {
 		return fmt.Errorf("DOCUMENT_LINK_SECRET (at least %d characters) is required when %s is set", links.MinSecretLength, envEmailURL)

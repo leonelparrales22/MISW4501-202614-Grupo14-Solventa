@@ -60,3 +60,45 @@ variable "cors_allow_origin" {
   type        = string
   default     = "*"
 }
+
+# --- Levers of a test window (HA-D02) ------------------------------------------------
+
+variable "stub_desired_count_overrides" {
+  description = "Tasks per stub that override the default of 1: { payment-gateway = 0 } takes the payment gateway down, {} brings it back (HA-D02, decision D-6)."
+  type        = map(number)
+  default     = {}
+}
+
+variable "origination_environment" {
+  description = "Extra environment variables of origination for the window, for example a short retry window (RETRY_WINDOW_SECONDS) and a lower longest wait (CHARGE_RETRY_MAX_MS). They cannot replace the values of the platform."
+  type        = map(string)
+  default     = {}
+}
+
+variable "seed_users" {
+  description = "Test users of the user pool (insured, advisor, operations or partner), so the smoke test gets real tokens."
+  type = map(object({
+    email      = string
+    group      = string
+    partner_id = optional(string)
+  }))
+  default = {}
+}
+
+variable "seed_user_password" {
+  description = "Permanent password of the seed users. Only through TF_VAR_seed_user_password; never in a file."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "extra_tags" {
+  description = "Tags added to the default ones, for example Owner and Story to filter the cost of a window (HA-D02, decision D-7). They cannot replace Project, Env, Task or TTL."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = length(setintersection(toset(keys(var.extra_tags)), toset(["Project", "Env", "Task", "TTL"]))) == 0
+    error_message = "extra_tags cannot replace the default tags Project, Env, Task or TTL."
+  }
+}

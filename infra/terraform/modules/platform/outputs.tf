@@ -44,6 +44,11 @@ output "log_group" {
   value       = module.ecs.log_group_name
 }
 
+output "service_sizing" {
+  description = "Fargate size and task range of each service (autoscaling only where max_count > desired_count)."
+  value       = var.service_sizing
+}
+
 output "desired_counts" {
   description = "Configured task count of each service and stub."
   value       = module.ecs.desired_counts

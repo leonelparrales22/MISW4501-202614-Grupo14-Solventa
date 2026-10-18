@@ -2,13 +2,21 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/modules/localstack"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/memory"
@@ -186,9 +194,134 @@ func TestContractConfigOverrides(t *testing.T) {
 	assert.Equal(t, 500*time.Millisecond, c.emailTimeout)
 }
 
+// TestContractConfigTakesExactlyOneDocumentStore covers decision D-3 a of
+// HA-D02: with EMAIL_URL, the documents go to an S3 bucket (AWS) or to a local
+// directory, never to both and never to neither.
+func TestContractConfigTakesExactlyOneDocumentStore(t *testing.T) {
+	t.Run("only the bucket", func(t *testing.T) {
+		m := contractEnv()
+		delete(m, "DOCUMENTS_DIR")
+		m["DOCUMENTS_BUCKET"] = "solventa-stg-documents-368083581678"
+
+		cfg, err := loadConfig(env(m))
+
+		require.NoError(t, err)
+		assert.True(t, cfg.contracts.enabled)
+		assert.Equal(t, "solventa-stg-documents-368083581678", cfg.contracts.documentsBucket)
+		assert.Empty(t, cfg.contracts.documentsDir)
+	})
+	t.Run("only the directory", func(t *testing.T) {
+		cfg, err := loadConfig(env(contractEnv()))
+
+		require.NoError(t, err)
+		assert.Empty(t, cfg.contracts.documentsBucket)
+		assert.Equal(t, "/var/solventa/documents", cfg.contracts.documentsDir)
+	})
+	t.Run("both", func(t *testing.T) {
+		m := contractEnv()
+		m["DOCUMENTS_BUCKET"] = "solventa-stg-documents-368083581678"
+
+		_, err := loadConfig(env(m))
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "DOCUMENTS_BUCKET and DOCUMENTS_DIR are both set")
+	})
+	t.Run("neither", func(t *testing.T) {
+		m := contractEnv()
+		delete(m, "DOCUMENTS_DIR")
+
+		_, err := loadConfig(env(m))
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "DOCUMENTS_BUCKET")
+		assert.Contains(t, err.Error(), "DOCUMENTS_DIR")
+	})
+	t.Run("without EMAIL_URL nothing is required", func(t *testing.T) {
+		m := requiredEnv()
+		m["DOCUMENTS_BUCKET"] = "solventa-stg-documents-368083581678"
+		m["DOCUMENTS_DIR"] = "/var/solventa/documents"
+
+		cfg, err := loadConfig(env(m))
+
+		require.NoError(t, err)
+		assert.False(t, cfg.contracts.enabled)
+	})
+}
+
+// isolateAWSConfig points the AWS SDK of the test at dummy credentials and
+// at no shared configuration, so the developer's profile is never read.
+func isolateAWSConfig(t *testing.T, endpoint string) {
+	t.Helper()
+	none := filepath.Join(t.TempDir(), "none")
+	t.Setenv("AWS_CONFIG_FILE", none)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", none)
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_REGION", "us-east-2")
+	t.Setenv("AWS_ENDPOINT_URL_S3", endpoint)
+	t.Setenv("AWS_MAX_ATTEMPTS", "1")
+}
+
+func TestNewDocumentStoreRefusesAnUnreachableBucket(t *testing.T) {
+	isolateAWSConfig(t, "http://127.0.0.1:1")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, _, err := newDocumentStore(ctx, contractConfig{documentsBucket: "solventa-stg-documents"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"solventa-stg-documents" is not reachable`)
+}
+
+func TestNewDocumentStoreUsesTheBucketOfTheEnvironment(t *testing.T) {
+	testcontainers.SkipIfProviderIsNotHealthy(t)
+	ctx := context.Background()
+	ctr, err := localstack.Run(ctx, "localstack/localstack:4.14.0", testcontainers.WithEnv(map[string]string{"SERVICES": "s3"}))
+	testcontainers.CleanupContainer(t, ctr)
+	require.NoError(t, err)
+	host, err := ctr.Host(ctx)
+	require.NoError(t, err)
+	port, err := ctr.MappedPort(ctx, "4566/tcp")
+	require.NoError(t, err)
+	if host == "localhost" {
+		// An IP address makes the SDK address the bucket by path, as LocalStack needs.
+		host = "127.0.0.1"
+	}
+	isolateAWSConfig(t, fmt.Sprintf("http://%s:%s", host, port.Port()))
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	require.NoError(t, err)
+	_, err = awss3.NewFromConfig(awsCfg).CreateBucket(ctx, &awss3.CreateBucketInput{
+		Bucket:                    aws.String("solventa-test-documents"),
+		CreateBucketConfiguration: &types.CreateBucketConfiguration{LocationConstraint: types.BucketLocationConstraintUsEast2},
+	})
+	require.NoError(t, err)
+
+	store, where, err := newDocumentStore(ctx, contractConfig{documentsBucket: "solventa-test-documents"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "s3://solventa-test-documents", where)
+	require.NoError(t, store.Put(ctx, "policies/pol-1/contract-v1.pdf", []byte("%PDF-1"), "application/pdf"))
+	got, err := store.Get(ctx, "policies/pol-1/contract-v1.pdf")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("%PDF-1"), got)
+}
+
+func TestNewDocumentStoreFallsBackToTheDirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	_, where, err := newDocumentStore(context.Background(), contractConfig{documentsDir: dir})
+
+	require.NoError(t, err)
+	abs, _ := filepath.Abs(dir)
+	assert.Equal(t, abs, where)
+}
+
 func TestContractConfigRejectsInvalidValues(t *testing.T) {
 	for name, extra := range map[string]map[string]string{
 		"no documents dir":  {"DOCUMENTS_DIR": ""},
+		"dir and bucket":    {"DOCUMENTS_BUCKET": "solventa-stg-documents"},
 		"no link secret":    {"DOCUMENT_LINK_SECRET": ""},
 		"short link secret": {"DOCUMENT_LINK_SECRET": "short"},
 		"poll":              {"CONTRACT_POLL_INTERVAL_MS": "0"},

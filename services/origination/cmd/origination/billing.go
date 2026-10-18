@@ -23,10 +23,11 @@ const (
 	envDatabaseURL       = "DATABASE_URL"
 )
 
-// Demonstration coverage terms of the embedded offer: the same values the
-// contractual document used before the real charge existed. PENDING:
-// HU-W1.2-03 persists the insured amount, the term and the coverages with the
-// offer (rating engine); then demoCoverageTerms reads them from the offer.
+// Demonstration coverage terms: the values the contractual document used
+// before the real charge existed. Since HU-W1.2-03 a personalized offer carries
+// its own insured amount, term and coverages, and its charge activates them
+// (decision D-16 of HA-D02); only the demo (demo-…) and adjusted (adj-…)
+// offers, which carry none, keep these.
 const (
 	demoInsuredAmount = 250_000_000
 	demoTermMonths    = 120
@@ -144,15 +145,15 @@ func newBilling(ctx context.Context, cfg billingConfig, handlers ...ports.Covera
 	log.Printf("premium charge: PostgreSQL migrated, gateway %s (timeout %s), retries from %s up to %s within %s, poll every %s, claim lease %s",
 		cfg.gatewayURL, cfg.gatewayTimeout, cfg.retry.Base, cfg.retry.Max, cfg.retry.Window, cfg.worker.PollInterval, cfg.worker.ClaimLease)
 	return billingWiring{
-		starter: billing.NewStarter(repo, demoCoverageTerms, clock, cfg.retry, worker.Notify),
+		starter: billing.NewStarter(repo, billing.OfferTerms(demoCoverageTerms()), clock, cfg.retry, worker.Notify),
 		service: billing.NewService(repo, clock, cfg.retry, worker.Notify),
 		db:      db,
 	}, nil
 }
 
-// demoCoverageTerms returns the coverage terms of an embedded offer: today the
-// demonstration values (see demoInsuredAmount). PENDING: HU-W1.2-03.
-func demoCoverageTerms(domain.Offer) (domain.CoverageTerms, error) {
+// demoCoverageTerms returns the demonstration terms that the demo and adjusted
+// offers activate (see demoInsuredAmount).
+func demoCoverageTerms() domain.CoverageTerms {
 	return domain.CoverageTerms{
 		InsuredAmount: demoInsuredAmount,
 		TermMonths:    demoTermMonths,
@@ -160,7 +161,7 @@ func demoCoverageTerms(domain.Offer) (domain.CoverageTerms, error) {
 			{Code: domain.CoverageDeath, InsuredAmount: demoInsuredAmount},
 			{Code: domain.CoverageDisability, InsuredAmount: demoInsuredAmount},
 		},
-	}, nil
+	}
 }
 
 // logWithoutBilling explains what happens to an approved acceptance when the

@@ -17,8 +17,8 @@ run "one_repository_per_image" {
   command = plan
 
   assert {
-    condition     = length(module.ecr.repository_names) == 8
-    error_message = "There must be one repository for each of the 5 services and 3 stubs with a Dockerfile."
+    condition     = length(module.ecr.repository_names) == 10
+    error_message = "There must be one repository for each of the 5 services and 5 stubs with a Dockerfile."
   }
 
   assert {

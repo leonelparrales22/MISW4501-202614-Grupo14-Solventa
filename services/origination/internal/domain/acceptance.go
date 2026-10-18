@@ -14,6 +14,11 @@ type Offer struct {
 	Mode         OfferMode
 	ProfileScore float64
 	ExpiresAt    time.Time
+	// Terms are the coverage terms the offer activates once it is paid. Only
+	// a personalized offer carries them (HU-W1.2-03, priced by the rating
+	// engine); the demo and adjusted offers leave them empty and their charge
+	// activates the demonstration terms (HA-D02, decision D-16).
+	Terms CoverageTerms
 }
 
 // IsExpired tells whether the offer validity is over at the given time: an

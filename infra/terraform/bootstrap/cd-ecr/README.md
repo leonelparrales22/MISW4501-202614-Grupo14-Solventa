@@ -16,14 +16,14 @@ Es permanente, como [`remote-state`](../remote-state/README.md): no es de una ve
 
 | Elemento | Configuración | Por qué |
 |---|---|---|
-| Repositorios | `solventa/<imagen>` para `audit`, `claims`, `notifications`, `origination`, `partners`, `kyc`, `opendata`, `openfinance` | Uno por Dockerfile existente en `services/` y `stubs/` |
+| Repositorios | `solventa/<imagen>` para `audit`, `claims`, `notifications`, `origination`, `partners`, `kyc`, `opendata`, `openfinance`, `email` y `payment-gateway` (los dos últimos desde HU-W1.3-02, aplicados el 2026-10-18) | Uno por Dockerfile existente en `services/` y `stubs/`: 10 |
 | Etiquetas de imagen | `IMMUTABLE` | La etiqueta es el SHA del commit y nunca se sobrescribe: un SHA siempre es la misma imagen y el rollback es redesplegar una etiqueta anterior |
 | Escaneo | `scan_on_push = true` | Vulnerabilidades visibles en cada publicación, sin costo adicional del escaneo básico |
 | Ciclo de vida | Imágenes sin etiqueta a los 7 días; se conservan las 30 más recientes | Evita acumular almacenamiento (créditos gratuitos) |
 | Proveedor OIDC | `token.actions.githubusercontent.com`, audiencia `sts.amazonaws.com` | GitHub Actions obtiene credenciales temporales; **no hay llaves de AWS guardadas en GitHub** |
 | Rol | `solventa-github-actions-ecr` | Lo asume `backend-cd` |
 | Confianza del rol | Igualdad exacta del claim `sub` con `repo:leonelparrales22@52500190/MISW4501-202614-Grupo14-Solventa@1325296709:ref:refs/heads/{develop,main}` | Solo ejecuciones sobre esas ramas; **nunca un PR**, ni un fork, ni otra rama. El repositorio usa *subject claims* inmutables, así que el `sub` lleva los IDs numéricos del dueño y del repo (sobreviven a un cambio de nombre y un repo nuevo con el mismo nombre no hereda el acceso) |
-| Permisos del rol | `ecr:GetAuthorizationToken` (no admite recurso) y las acciones de *push* + `DescribeImages` + `BatchGetImage` (buildx lee manifiestos al publicar) solo sobre los 8 repositorios | Mínimo privilegio: no puede descargar capas, borrar imágenes ni tocar otros servicios |
+| Permisos del rol | `ecr:GetAuthorizationToken` (no admite recurso) y las acciones de *push* + `DescribeImages` + `BatchGetImage` (buildx lee manifiestos al publicar) solo sobre los 10 repositorios | Mínimo privilegio: no puede descargar capas, borrar imágenes ni tocar otros servicios |
 | Estado | `bootstrap/cd-ecr/terraform.tfstate` en el bucket del estado remoto | Convención de claves de T4 |
 
 Salidas: `role_arn`, `oidc_provider_arn` y `repository_urls`.
@@ -76,5 +76,5 @@ Usan un proveedor simulado: no necesitan credenciales y no crean nada.
 
 ## Costos
 
-Los repositorios vacíos no cuestan. El almacenamiento de ECR cuesta ≈ US$ 0,10 por GB al mes; ocho imágenes distroless de pocos
+Los repositorios vacíos no cuestan. El almacenamiento de ECR cuesta ≈ US$ 0,10 por GB al mes; diez imágenes distroless de pocos
 MB y la política de ciclo de vida lo mantienen muy por debajo de US$ 1 al mes.

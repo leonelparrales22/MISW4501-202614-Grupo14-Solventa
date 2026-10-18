@@ -115,6 +115,44 @@ variable "human_routes" {
   }
 }
 
+# --- Public routes (HA-D02) ------------------------------------------------------------
+
+variable "public_routes" {
+  description = "Read-only routes without session or API key (key: path segment under /v1), for example documents for the signed link of the contractual document (HU-W1.3-03). The route and every sub-path (/{proxy+}) are proxied to the same path of the backend. rate_limit and burst_limit (requests per second) throttle each method at the stage, since no usage plan covers a public route."
+  type = map(object({
+    methods     = list(string)
+    rate_limit  = optional(number)
+    burst_limit = optional(number)
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for r in values(var.public_routes) : length(r.methods) > 0 && alltrue([for m in r.methods : m == "GET"])])
+    error_message = "Public routes are read-only: their only method is GET."
+  }
+
+  validation {
+    condition     = alltrue([for k in keys(var.public_routes) : can(regex("^[a-z0-9][a-z0-9-]*$", k))])
+    error_message = "Public route keys must be a single lowercase path segment (for example documents)."
+  }
+
+  validation {
+    condition     = !contains(keys(var.public_routes), "risk-profiles")
+    error_message = "risk-profiles is the partner quoting journey (API key only); it cannot be a public route (CA-5)."
+  }
+
+  validation {
+    condition     = alltrue([for r in values(var.public_routes) : (r.rate_limit == null || r.rate_limit > 0) && (r.burst_limit == null || r.burst_limit > 0)])
+    error_message = "rate_limit and burst_limit of a public route must be greater than 0 when set."
+  }
+}
+
+variable "binary_media_types" {
+  description = "Media types the REST API passes as binary, for example [\"*/*\"] so a PDF reaches any client intact whatever its Accept header (HA-D02). With a non-empty list the CORS preflight converts its body to text. Empty keeps the API text only, as before."
+  type        = list(string)
+  default     = []
+}
+
 variable "cors_allow_origin" {
   description = "Value of Access-Control-Allow-Origin in the CORS preflight and the gateway 4XX responses (the web client sends a Bearer token, not cookies). Pin it to the portal origin outside test windows."
   type        = string

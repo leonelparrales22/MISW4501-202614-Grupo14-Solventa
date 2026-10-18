@@ -201,3 +201,160 @@ run "authorizer_needs_a_user_pool_arn" {
 
   expect_failures = [var.cognito_user_pool_arns]
 }
+
+# --- Public routes and binary media types (HA-D02) ---------------------------------
+
+run "public_routes_skip_the_authorizer_and_the_api_key" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { policies = { methods = ["GET"] } }
+    public_routes          = { documents = { methods = ["GET"], rate_limit = 10, burst_limit = 20 } }
+  }
+
+  assert {
+    condition = length(aws_api_gateway_method.public) == 2 && alltrue([
+      for m in aws_api_gateway_method.public :
+      m.authorization == "NONE" && m.api_key_required == false && m.authorizer_id == null && m.http_method == "GET"
+    ])
+    error_message = "A public route and its sub-paths answer GET without session and without API key."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_integration.public["documents GET"].uri == "http://internal-alb.example.com/v1/documents" &&
+      aws_api_gateway_integration.public["documents/{proxy+} GET"].uri == "http://internal-alb.example.com/v1/documents/{proxy}" &&
+      aws_api_gateway_integration.public["documents/{proxy+} GET"].request_parameters["integration.request.path.proxy"] == "method.request.path.proxy" &&
+      alltrue([for i in aws_api_gateway_integration.public : i.type == "HTTP_PROXY" && i.timeout_milliseconds == 5000])
+    )
+    error_message = "Public routes are proxied to the same path of the backend with the ADR-02 timeout."
+  }
+
+  assert {
+    condition = length(aws_api_gateway_method_settings.public) == 2 && alltrue([
+      for s in aws_api_gateway_method_settings.public :
+      s.settings[0].throttling_rate_limit == 10 && s.settings[0].throttling_burst_limit == 20 && s.settings[0].caching_enabled == false
+    ])
+    error_message = "Each public method is throttled at the stage (decision D-5: 10 req/s, burst 20) and never cached."
+  }
+
+  assert {
+    condition     = aws_api_gateway_method_settings.public["documents/{proxy+} GET"].method_path == "v1/documents/{proxy+}/GET"
+    error_message = "The throttle applies to the method of the signed link."
+  }
+
+  assert {
+    condition     = output.public_paths == ["/v1/documents", "/v1/documents/{proxy+}"]
+    error_message = "The module exposes the public paths."
+  }
+
+  assert {
+    condition     = length(aws_api_gateway_method.human) == 2 && alltrue([for m in aws_api_gateway_method.human : m.authorization == "COGNITO_USER_POOLS"])
+    error_message = "The human routes keep the Cognito authorizer next to the public ones."
+  }
+}
+
+run "public_routes_are_read_only" {
+  command = plan
+
+  variables {
+    public_routes = { documents = { methods = ["GET", "POST"] } }
+  }
+
+  expect_failures = [var.public_routes]
+}
+
+run "a_route_cannot_be_public_and_human" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { documents = { methods = ["GET"] } }
+    public_routes          = { documents = { methods = ["GET"] } }
+  }
+
+  expect_failures = [aws_api_gateway_resource.public]
+}
+
+run "quoting_journey_cannot_become_public" {
+  command = plan
+
+  variables {
+    public_routes = { risk-profiles = { methods = ["GET"] } }
+  }
+
+  expect_failures = [var.public_routes]
+}
+
+run "binary_media_types_keep_the_preflight_as_text" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { policies = { methods = ["GET"] } }
+    binary_media_types     = ["*/*"]
+  }
+
+  assert {
+    condition     = aws_api_gateway_rest_api.this.binary_media_types == tolist(["*/*"])
+    error_message = "The API passes every media type as binary, so the PDF reaches the client intact (decision D-4)."
+  }
+
+  assert {
+    condition     = alltrue([for i in aws_api_gateway_integration.human_options : i.content_handling == "CONVERT_TO_TEXT"])
+    error_message = "With binary media types the MOCK preflight converts its body to text, so its template still answers 200."
+  }
+
+  assert {
+    condition     = alltrue([for i in aws_api_gateway_integration.human : i.content_handling == null])
+    error_message = "The proxied routes pass the bytes through unchanged."
+  }
+}
+
+run "defaults_change_nothing" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { policies = { methods = ["GET"] } }
+  }
+
+  assert {
+    condition = (
+      length(aws_api_gateway_resource.public) == 0 && length(aws_api_gateway_method.public) == 0 &&
+      length(aws_api_gateway_method_settings.public) == 0 && output.public_paths == []
+    )
+    error_message = "Without public_routes there are no public resources."
+  }
+
+  # binary_media_types is computed by the provider, so the mock fills it; the
+  # configuration leaves it null (see main.tf) and the hash below ignores it.
+  assert {
+    condition     = alltrue([for i in aws_api_gateway_integration.human_options : i.content_handling == null])
+    error_message = "Without binary_media_types the preflight stays as before."
+  }
+
+  assert {
+    condition = aws_api_gateway_deployment.this.triggers.redeployment == sha1(join("", [
+      jsonencode([
+        aws_api_gateway_resource.resolve.id,
+        aws_api_gateway_resource.customer.id,
+        aws_api_gateway_method.resolve_post,
+        aws_api_gateway_method.customer_get,
+        aws_api_gateway_integration.resolve_post,
+        aws_api_gateway_integration.customer_get,
+      ]),
+      jsonencode([
+        aws_api_gateway_authorizer.cognito,
+        aws_api_gateway_method.human,
+        aws_api_gateway_integration.human,
+        aws_api_gateway_method.human_options,
+        aws_api_gateway_integration.human_options,
+        aws_api_gateway_integration_response.human_options,
+        aws_api_gateway_gateway_response.cors,
+      ]),
+    ]))
+    error_message = "Without public routes or binary types the redeployment hash is the one of HA-L01 and HA-S01."
+  }
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/billing"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 )
 
@@ -104,6 +105,36 @@ func TestBillingConfigRejectsAGatewayWithoutAuth(t *testing.T) {
 	assert.False(t, cfg.acceptances.enabled)
 }
 
+// TestBillingWithTheDocumentsInS3KeepsItsRequirements: the document store of
+// AWS (DOCUMENTS_BUCKET, HA-D02 AWS phase) does not relax what the charge
+// needs: its database, the e-mail provider and the human routes.
+func TestBillingWithTheDocumentsInS3KeepsItsRequirements(t *testing.T) {
+	inS3 := func() map[string]string {
+		m := billingEnv()
+		delete(m, "DOCUMENTS_DIR")
+		m["DOCUMENTS_BUCKET"] = "solventa-stg-documents-368083581678"
+		return m
+	}
+	cfg, err := loadConfig(env(inS3()))
+	require.NoError(t, err)
+	assert.True(t, cfg.billing.enabled)
+	assert.Equal(t, "solventa-stg-documents-368083581678", cfg.contracts.documentsBucket)
+
+	for missing, want := range map[string]string{
+		"DATABASE_URL": "DATABASE_URL is required",
+		"EMAIL_URL":    "EMAIL_URL is required",
+		"AUTH_ISSUER":  "AUTH_ISSUER is required",
+	} {
+		t.Run("without "+missing, func(t *testing.T) {
+			m := inS3()
+			delete(m, missing)
+			_, err := loadConfig(env(m))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), want)
+		})
+	}
+}
+
 func TestBillingConfigRejectsInvalidValues(t *testing.T) {
 	for name, extra := range map[string]map[string]string{
 		"timeout":          {"PAYMENT_GATEWAY_TIMEOUT_MS": "x"},
@@ -127,8 +158,7 @@ func TestBillingConfigRejectsInvalidValues(t *testing.T) {
 }
 
 func TestDemoCoverageTermsActivateAValidCoverage(t *testing.T) {
-	terms, err := demoCoverageTerms(domain.Offer{})
-	require.NoError(t, err)
+	terms := demoCoverageTerms()
 	assert.InDelta(t, 250_000_000, terms.InsuredAmount, 0.001)
 	assert.Equal(t, 120, terms.TermMonths)
 	require.Len(t, terms.Coverages, 2)
@@ -241,4 +271,12 @@ func TestNewBillingMigratesChargesAndActivatesTheCoverage(t *testing.T) {
 		c, err := wiring.service.Get(insured, "acc-1")
 		return err == nil && c.ActivationPublished()
 	}, 5*time.Second, 20*time.Millisecond)
+
+	// Decision D-16: a personalized offer activates its own terms, so one
+	// without them is refused instead of falling back to the demonstration ones.
+	err = wiring.starter.Start(ctx,
+		domain.Acceptance{ID: "acc-2", OfferID: "off-0123456789abcdef", CustomerID: "cust-1", AcceptedAt: time.Now()},
+		domain.Offer{ID: "off-0123456789abcdef", CustomerID: "cust-1", Premium: 98_400, Currency: "COP",
+			Applicant: domain.Applicant{FullName: "Ana", DocumentID: "123", Email: "a@x.co"}})
+	assert.ErrorIs(t, err, billing.ErrIncompleteTerms)
 }

@@ -83,8 +83,11 @@ run "every_service_has_its_own_database_secret" {
   command = plan
 
   assert {
-    condition     = toset(keys(module.secrets.names)) == toset(["origination/database", "claims/database", "partners/database", "audit/database", "notifications/database"])
-    error_message = "Each of the five services needs its own database secret."
+    condition = toset(keys(module.secrets.names)) == toset([
+      "origination/database", "claims/database", "partners/database", "audit/database", "notifications/database",
+      "origination/document-link",
+    ])
+    error_message = "Each of the five services needs its own database secret, and origination the key of its document links."
   }
 
   assert {
@@ -167,6 +170,182 @@ run "services_can_be_switched_off" {
     condition     = length(module.ecs.desired_counts) == 10 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
     error_message = "The five services and the five stubs keep their ECS services, at 0 tasks."
   }
+}
+
+# HU-W1.3-02 / HA-D02: the payment gateway and e-mail stubs run next to the
+# other three behind Cloud Map, and a staging window can take the payment
+# gateway down on its own (decision D-6).
+run "charge_and_email_stubs_run_behind_cloud_map" {
+  command = plan
+
+  variables {
+    image_tag_overrides          = { email = "prueba-ha-d02" }
+    stub_desired_count_overrides = { payment-gateway = 0 }
+  }
+
+  assert {
+    condition     = alltrue([for s in ["openfinance", "opendata", "kyc", "email"] : module.ecs.desired_counts[s] == 1]) && module.ecs.desired_counts["payment-gateway"] == 0
+    error_message = "Every stub runs one task, except the payment gateway taken down with its override."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.PAYMENT_GATEWAY_URL == "http://payment-gateway.solventa-test.local:9040" &&
+      local.service_environment.origination.EMAIL_URL == "http://email.solventa-test.local:9030"
+    )
+    error_message = "Origination reaches both stubs by their Cloud Map names."
+  }
+
+  assert {
+    condition     = endswith(local.image_uris["email"], ":prueba-ha-d02") && endswith(local.image_uris["payment-gateway"], ":0123456789ab")
+    error_message = "The e-mail and payment gateway images accept a tag override like the others."
+  }
+}
+
+# HA-D02, AWS phase: origination starts with the contractual document wired to
+# S3 (with EMAIL_URL it needs exactly one document store and the link key).
+run "origination_gets_the_document_configuration" {
+  command = plan
+
+  variables {
+    origination_environment = { RETRY_WINDOW_SECONDS = "300", CHARGE_RETRY_MAX_MS = "15000" }
+  }
+
+  # Known at plan time, so the assertions can read them.
+  override_resource {
+    target          = module.apigateway.aws_api_gateway_stage.this
+    override_during = plan
+    values = {
+      invoke_url = "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    }
+  }
+
+  override_resource {
+    target          = module.secrets.aws_secretsmanager_secret.this
+    override_during = plan
+    values = {
+      arn = "arn:aws:secretsmanager:us-east-2:123456789012:secret:solventa-test/secret-AbCdEf"
+    }
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.DOCUMENTS_BUCKET == "solventa-test-documents-123456789012" &&
+      local.service_environment.origination.AWS_REGION == "us-east-2" &&
+      !contains(keys(local.service_environment.origination), "DOCUMENTS_DIR")
+    )
+    error_message = "Origination gets the documents bucket and the region, and never a local directory."
+  }
+
+  assert {
+    condition     = local.service_environment.origination.DOCUMENTS_PUBLIC_BASE_URL == "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    error_message = "The links of the e-mail point to the API Gateway stage (its invoke URL)."
+  }
+
+  assert {
+    condition = (
+      endswith(local.service_secrets.origination.DOCUMENT_LINK_SECRET, ":DOCUMENT_LINK_SECRET::") &&
+      endswith(local.service_secrets.origination.DATABASE_URL, ":DATABASE_URL::") &&
+      !contains(keys(local.service_environment.origination), "DOCUMENT_LINK_SECRET")
+    )
+    error_message = "The link key reaches origination from Secrets Manager, never as a plain environment variable."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_secrets.claims), "DOCUMENT_LINK_SECRET")
+    error_message = "Only origination reads the key of the document links."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.RETRY_WINDOW_SECONDS == "300" &&
+      local.service_environment.origination.CHARGE_RETRY_MAX_MS == "15000"
+    )
+    error_message = "origination_environment adds the variables of a test window."
+  }
+}
+
+run "origination_environment_cannot_override_platform_values" {
+  command = plan
+
+  variables {
+    origination_environment = { PAYMENT_GATEWAY_URL = "http://elsewhere:9040" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
+
+run "origination_environment_cannot_replace_the_document_store" {
+  command = plan
+
+  variables {
+    origination_environment = { DOCUMENTS_DIR = "/tmp/documents" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
+
+# HU-W1.1-02 and HA-D02: the advisor inbox and the issuance exceptions reach
+# origination through the ALB and the Cognito authorizer.
+run "inbox_and_exceptions_are_routed" {
+  command = plan
+
+  assert {
+    condition = (
+      contains(local.services.origination.paths, "/v1/review-requests*") &&
+      contains(local.services.origination.paths, "/v1/issuance-exceptions*") &&
+      length(chunklist(local.services.origination.paths, 5)) == 2
+    )
+    error_message = "Origination owns the inbox and the exceptions in the ALB (9 prefixes, 2 listener rules)."
+  }
+
+  assert {
+    condition = (
+      toset(var.human_routes["review-requests"].methods) == toset(["GET", "POST"]) &&
+      toset(var.human_routes["issuance-exceptions"].methods) == toset(["GET"]) &&
+      contains(var.human_routes["acceptances"].methods, "POST")
+    )
+    error_message = "The inbox (GET and POST), the exceptions (GET) and the charge actions (POST under acceptances) are human routes."
+  }
+}
+
+# HA-D02: the signed link of the e-mail opens the document without a session.
+run "the_document_link_is_public" {
+  command = plan
+
+  assert {
+    condition     = module.apigateway.public_paths == ["/v1/documents", "/v1/documents/{proxy+}"]
+    error_message = "GET /v1/documents/{token} is public: the signed, expiring token protects it."
+  }
+
+  assert {
+    condition     = var.public_routes["documents"].rate_limit == 10 && var.public_routes["documents"].burst_limit == 20
+    error_message = "The public route is throttled at the stage (decision D-5: 10 req/s, burst 20)."
+  }
+
+  assert {
+    condition     = !contains(keys(var.human_routes), "documents")
+    error_message = "The document link is not a human route."
+  }
+}
+
+run "seed_users_are_optional" {
+  command = plan
+
+  assert {
+    condition     = length(var.seed_users) == 0 && var.seed_user_password == null
+    error_message = "The platform creates no test users unless a staging window asks for them."
+  }
+}
+
+run "stub_overrides_name_real_stubs" {
+  command = plan
+
+  variables {
+    stub_desired_count_overrides = { pasarela = 0 }
+  }
+
+  expect_failures = [var.stub_desired_count_overrides]
 }
 
 run "rejects_incomplete_service_sizing" {

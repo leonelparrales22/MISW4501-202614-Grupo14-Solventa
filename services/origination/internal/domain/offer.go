@@ -151,7 +151,9 @@ func (o PersonalizedOffer) CanRenew(now time.Time) bool {
 // the charge consume. The owner takes the place of CustomerID, because that is
 // the subject those flows check; an unclaimed offer has none, so nobody can
 // accept it. A superseded offer stops being acceptable at the moment it was
-// replaced.
+// replaced. The coverage terms go along, so the charge activates the insured
+// amount, the term and the coverages the offer was priced with (HA-D02,
+// decision D-16).
 func (o PersonalizedOffer) AsOffer() Offer {
 	expires := o.ExpiresAt
 	if !o.SupersededAt.IsZero() && o.SupersededAt.Before(expires) {
@@ -166,6 +168,7 @@ func (o PersonalizedOffer) AsOffer() Offer {
 		Mode:         o.Mode,
 		ProfileScore: o.Profile.Score,
 		ExpiresAt:    expires,
+		Terms:        copyTerms(o.Terms),
 	}
 }
 

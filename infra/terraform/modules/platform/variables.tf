@@ -43,8 +43,8 @@ variable "image_tag_overrides" {
   default     = {}
 
   validation {
-    condition     = alltrue([for k in keys(var.image_tag_overrides) : contains(["origination", "claims", "partners", "audit", "notifications", "openfinance", "opendata", "kyc"], k)])
-    error_message = "image_tag_overrides keys must be image names: origination, claims, partners, audit, notifications, openfinance, opendata or kyc."
+    condition     = alltrue([for k in keys(var.image_tag_overrides) : contains(["origination", "claims", "partners", "audit", "notifications", "openfinance", "opendata", "kyc", "email", "payment-gateway"], k)])
+    error_message = "image_tag_overrides keys must be image names: origination, claims, partners, audit, notifications, openfinance, opendata, kyc, email or payment-gateway."
   }
 }
 
@@ -72,9 +72,39 @@ variable "service_sizing" {
 }
 
 variable "stub_desired_count" {
-  description = "Tasks of each provider stub (Open Finance, Open Data, KYC)."
+  description = "Tasks of each provider stub (Open Finance, Open Data, KYC, e-mail and payment gateway)."
   type        = number
   default     = 1
+}
+
+variable "stub_desired_count_overrides" {
+  description = "Tasks per stub that override stub_desired_count. A staging window sets payment-gateway = 0 to take the payment gateway down and an empty map to bring it back (HA-D02, decision D-6); only that ECS service changes."
+  type        = map(number)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for k in keys(var.stub_desired_count_overrides) : contains(["openfinance", "opendata", "kyc", "email", "payment-gateway"], k)])
+    error_message = "stub_desired_count_overrides keys must be stub names: openfinance, opendata, kyc, email or payment-gateway."
+  }
+
+  validation {
+    condition     = alltrue([for n in values(var.stub_desired_count_overrides) : n >= 0 && floor(n) == n])
+    error_message = "stub_desired_count_overrides values must be whole numbers of tasks, 0 or more."
+  }
+}
+
+variable "origination_environment" {
+  description = "Extra environment variables of origination, for a test window (for example RETRY_WINDOW_SECONDS and CHARGE_RETRY_MAX_MS, decision D-6 of HA-D02). It cannot replace what the platform sets: PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, any *_URL, AUTH_*, DOCUMENTS_* or DOCUMENT_LINK_*."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for k in keys(var.origination_environment) :
+      can(regex("^[A-Z][A-Z0-9_]*$", k)) && !can(regex("^(PORT|REDIS_ADDR|AWS_REGION|DATABASE_URL|.*_URL|AUTH_.*|DOCUMENTS_.*|DOCUMENT_LINK_.*)$", k))
+    ])
+    error_message = "origination_environment keys must be UPPER_SNAKE_CASE and cannot replace a value of the platform (PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, *_URL, AUTH_*, DOCUMENTS_*, DOCUMENT_LINK_*)."
+  }
 }
 
 variable "log_retention_days" {
@@ -144,7 +174,41 @@ variable "human_routes" {
     assisted-quotes = { methods = ["GET", "POST"] }
     customers       = { methods = ["GET"] }
     policies        = { methods = ["GET"] }
+    # Advisor inbox (HU-W1.1-02): list and read the requests, POST the
+    # decision. Issuance exceptions of the premium charge (HA-D02): read by
+    # operations; their resumption is POST /v1/acceptances/{id}/charge/resume.
+    review-requests     = { methods = ["GET", "POST"] }
+    issuance-exceptions = { methods = ["GET"] }
   }
+}
+
+variable "public_routes" {
+  description = "Read-only routes without session or API key (key: path segment under /v1). Default: the signed link of the contractual document, GET /v1/documents/{token} (HU-W1.3-03, HA-D02), throttled at 10 req/s with a burst of 20 (decision D-5), since no usage plan covers it."
+  type = map(object({
+    methods     = list(string)
+    rate_limit  = optional(number)
+    burst_limit = optional(number)
+  }))
+  default = {
+    documents = { methods = ["GET"], rate_limit = 10, burst_limit = 20 }
+  }
+}
+
+variable "seed_users" {
+  description = "Test users of the user pool for a staging window (insured, advisor, operations or partner), so the smoke test gets real tokens. Empty by default; production-demo never sets them."
+  type = map(object({
+    email      = string
+    group      = string
+    partner_id = optional(string)
+  }))
+  default = {}
+}
+
+variable "seed_user_password" {
+  description = "Permanent password of the seed users. Only through TF_VAR_seed_user_password; never in a file."
+  type        = string
+  default     = null
+  sensitive   = true
 }
 
 variable "cors_allow_origin" {

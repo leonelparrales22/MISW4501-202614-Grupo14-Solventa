@@ -7,8 +7,9 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 )
 
-// Demo coverage terms of the fixture: the ones origination uses until
-// HU-W1.2-03 persists them with the offer.
+// Demo coverage terms of the fixture: the ones origination activates for the
+// demo and adjusted offers (a personalized offer of HU-W1.2-03 activates its
+// own, decision D-16 of HA-D02).
 const (
 	fixtureInsuredAmount = 250_000_000
 	fixtureTermMonths    = 120

@@ -4,16 +4,21 @@
 # which only set the per-environment values.
 #
 #   client --HTTPS--> API Gateway REST (usage plans + API keys per partner,
-#     Cognito authorizer on the human routes)
+#     Cognito authorizer on the human routes, public signed document link)
 #     --VPC link V2--> internal ALB (EXP-D03 health checks, 30 s drain)
 #     --> ECS Fargate services --> RDS PostgreSQL (one database per service),
 #         ElastiCache Redis, SNS/SQS with DLQs, S3
-#     --Cloud Map--> stubs of the external providers (Open Finance, Open Data, KYC)
+#     --Cloud Map--> stubs of the external providers (Open Finance, Open Data, KYC,
+#                    e-mail and payment gateway)
 #
 # The ECR repositories are permanent and shared (bootstrap/cd-ecr): this module
 # only reads them.
 
 data "aws_caller_identity" "current" {}
+
+# Region of the AWS SDK of the services (AWS_REGION), explicit rather than
+# discovered from the task metadata.
+data "aws_region" "current" {}
 
 locals {
   account_id = data.aws_caller_identity.current.account_id
@@ -28,6 +33,8 @@ locals {
       paths = [
         "/v1/risk-profiles*", "/v1/offers*", "/v1/acceptances*", "/v1/assisted-quotes*",
         "/v1/customers*", "/v1/policies*", "/v1/documents*",
+        # Advisor inbox (HU-W1.1-02) and issuance exceptions of operations (HA-D02).
+        "/v1/review-requests*", "/v1/issuance-exceptions*",
       ]
       buckets   = ["documents"]
       publishes = ["origination"]
@@ -176,11 +183,19 @@ module "cognito" {
 
   name                = var.name
   deletion_protection = var.deletion_protection
+
+  # Test users of a staging window (empty by default; production-demo never sets them).
+  seed_users         = var.seed_users
+  seed_user_password = var.seed_user_password
 }
 
 # Partner routes need an API key and get the usage plan of their partner
 # (decision D-7: 100 req/s, burst 200). Human routes go through the Cognito
 # authorizer, which validates the JWT before the request reaches the service.
+# The public routes (the signed link of the contractual document, HA-D02) ask
+# for neither and are throttled at the stage. Every media type passes as binary
+# (decision D-4), so the PDF reaches the browser, curl and the web client
+# intact; JSON goes through the HTTP_PROXY integrations unchanged.
 module "apigateway" {
   source = "../apigateway"
 
@@ -193,6 +208,8 @@ module "apigateway" {
   partners               = var.partners
   cognito_user_pool_arns = [module.cognito.user_pool_arn]
   human_routes           = var.human_routes
+  public_routes          = var.public_routes
+  binary_media_types     = ["*/*"]
   cors_allow_origin      = var.cors_allow_origin
 }
 
@@ -240,25 +257,40 @@ module "buckets" {
   force_destroy = var.ephemeral
 }
 
+# Key that signs the links of the contractual document (HU-W1.3-03): only
+# origination reads it, from Secrets Manager. Like the database passwords, the
+# value also lands in the encrypted remote state of T4.
+resource "random_password" "document_link" {
+  length  = 48
+  special = false
+}
+
 # One secret per service with its own login role, password and DATABASE_URL:
-# a service can only reach its own database.
+# a service can only reach its own database. Origination also gets the key of
+# its document links (HA-D02, AWS phase).
 module "secrets" {
   source = "../secrets"
 
   prefix                  = var.name
   recovery_window_in_days = var.ephemeral ? 0 : 7
-  secrets                 = { for s in keys(local.services) : "${s}/database" => "PostgreSQL credentials and DATABASE_URL of ${s} (only its own database)" }
+  secrets = merge(
+    { for s in keys(local.services) : "${s}/database" => "PostgreSQL credentials and DATABASE_URL of ${s} (only its own database)" },
+    { "origination/document-link" = "DOCUMENT_LINK_SECRET of origination: signs the links of the contractual document (HU-W1.3-03)" },
+  )
 
-  values = {
-    for s, db in module.rds.databases : "${s}/database" => jsonencode({
-      username     = db.username
-      password     = module.rds.passwords[s]
-      dbname       = db.database
-      host         = module.rds.address
-      port         = module.rds.port
-      DATABASE_URL = "postgres://${db.username}:${module.rds.passwords[s]}@${module.rds.address}:${module.rds.port}/${db.database}?sslmode=require"
-    })
-  }
+  values = merge(
+    {
+      for s, db in module.rds.databases : "${s}/database" => jsonencode({
+        username     = db.username
+        password     = module.rds.passwords[s]
+        dbname       = db.database
+        host         = module.rds.address
+        port         = module.rds.port
+        DATABASE_URL = "postgres://${db.username}:${module.rds.passwords[s]}@${module.rds.address}:${module.rds.port}/${db.database}?sslmode=require"
+      })
+    },
+    { "origination/document-link" = jsonencode({ DOCUMENT_LINK_SECRET = random_password.document_link.result }) },
+  )
 }
 
 # --- Compute ------------------------------------------------------------------------------
@@ -313,7 +345,9 @@ locals {
   }
 
   service_environment = {
-    origination = {
+    # The values of the platform win over origination_environment, whose
+    # validation already refuses them.
+    origination = merge(var.origination_environment, {
       PORT             = tostring(local.service_port)
       REDIS_ADDR       = module.redis.primary_endpoint
       OPEN_FINANCE_URL = "http://openfinance.${local.namespace}:${local.stubs.openfinance}"
@@ -325,7 +359,22 @@ locals {
       AUTH_ISSUER         = module.cognito.issuer
       AUTH_JWKS_URL       = module.cognito.jwks_url
       AUTH_CLIENT_IDS     = join(",", values(module.cognito.client_ids))
-    }
+      # Contractual document (HU-W1.3-03) in AWS (HA-D02): the PDF goes to the
+      # documents bucket, and the e-mail links open it through the public
+      # GET /v1/documents/{token} of the API Gateway stage.
+      DOCUMENTS_BUCKET          = module.buckets["documents"].bucket
+      DOCUMENTS_PUBLIC_BASE_URL = module.apigateway.invoke_url
+      AWS_REGION                = data.aws_region.current.region
+    })
+  }
+
+  # Secrets Manager values of each service (the ECS secrets field): its
+  # DATABASE_URL and, for origination, the key of the document links.
+  service_secrets = {
+    for k in keys(local.services) : k => merge(
+      { DATABASE_URL = "${module.secrets.arns["${k}/database"]}:DATABASE_URL::" },
+      k == "origination" ? { DOCUMENT_LINK_SECRET = "${module.secrets.arns["origination/document-link"]}:DOCUMENT_LINK_SECRET::" } : {},
+    )
   }
 }
 
@@ -352,7 +401,7 @@ module "ecs" {
         load_balanced        = true
         target_group_arn     = module.alb.target_group_arns[k]
         environment          = lookup(local.service_environment, k, { PORT = tostring(local.service_port) })
-        secrets              = { DATABASE_URL = "${module.secrets.arns["${k}/database"]}:DATABASE_URL::" }
+        secrets              = local.service_secrets[k]
         task_role_statements = local.task_role_statements[k]
       }
     },
@@ -362,8 +411,8 @@ module "ecs" {
         port           = port
         cpu            = 256
         memory         = 512
-        desired_count  = var.services_enabled ? var.stub_desired_count : 0
-        max_count      = var.services_enabled ? var.stub_desired_count : 0
+        desired_count  = var.services_enabled ? lookup(var.stub_desired_count_overrides, k, var.stub_desired_count) : 0
+        max_count      = var.services_enabled ? lookup(var.stub_desired_count_overrides, k, var.stub_desired_count) : 0
         discovery_name = k
         environment    = { PORT = tostring(port) }
       }
