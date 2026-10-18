@@ -174,6 +174,11 @@ variable "human_routes" {
     assisted-quotes = { methods = ["GET", "POST"] }
     customers       = { methods = ["GET"] }
     policies        = { methods = ["GET"] }
+    # Advisor inbox (HU-W1.1-02): list and read the requests, POST the
+    # decision. Issuance exceptions of the premium charge (HA-D02): read by
+    # operations; their resumption is POST /v1/acceptances/{id}/charge/resume.
+    review-requests     = { methods = ["GET", "POST"] }
+    issuance-exceptions = { methods = ["GET"] }
   }
 }
 

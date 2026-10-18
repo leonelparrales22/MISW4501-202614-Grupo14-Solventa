@@ -33,6 +33,8 @@ locals {
       paths = [
         "/v1/risk-profiles*", "/v1/offers*", "/v1/acceptances*", "/v1/assisted-quotes*",
         "/v1/customers*", "/v1/policies*", "/v1/documents*",
+        # Advisor inbox (HU-W1.1-02) and issuance exceptions of operations (HA-D02).
+        "/v1/review-requests*", "/v1/issuance-exceptions*",
       ]
       buckets   = ["documents"]
       publishes = ["origination"]

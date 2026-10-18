@@ -46,11 +46,13 @@ Hoy ningún servicio usa PostgreSQL todavía (adaptadores en memoria); la variab
 
 | Servicio | Prefijos en el ALB | Estado |
 |---|---|---|
-| `origination` | `/v1/risk-profiles*`, `/v1/offers*`, `/v1/acceptances*`, `/v1/assisted-quotes*`, `/v1/customers*`, `/v1/policies*`, `/v1/documents*` | Implementados |
+| `origination` | `/v1/risk-profiles*`, `/v1/offers*`, `/v1/acceptances*`, `/v1/assisted-quotes*`, `/v1/customers*`, `/v1/policies*`, `/v1/documents*`, `/v1/review-requests*`, `/v1/issuance-exceptions*` (9 prefijos, 2 reglas del ALB) | Implementados |
 | `claims`, `partners`, `audit`, `notifications` | `/v1/claims*`, `/v1/partners*`, `/v1/audit*`, `/v1/notifications*` | Reservados (solo `GET /health`); un target group necesita al menos una regla |
 
 En API Gateway las rutas de socio son las de cotización (`/v1/risk-profiles/...`, API key) y las humanas por defecto son `offers`,
-`acceptances`, `assisted-quotes`, `customers` y `policies` (authorizer de Cognito; variable `human_routes`). `GET /v1/documents/{token}`
+`acceptances` (`GET` y `POST`: medio de pago y reanudación del cobro), `assisted-quotes`, `customers`, `policies`, `review-requests`
+(bandeja del asesor, HU-W1.1-02: `GET` y `POST`) e `issuance-exceptions` (excepciones de emisión de operaciones, HA-D02: `GET`), con el
+authorizer de Cognito (variable `human_routes`). `GET /v1/documents/{token}`
 es un enlace firmado sin sesión y el módulo `apigateway` aún no publica rutas públicas: queda fuera del gateway hasta entonces.
 
 ## Imágenes

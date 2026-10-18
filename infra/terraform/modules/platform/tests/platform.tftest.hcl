@@ -285,6 +285,30 @@ run "origination_environment_cannot_replace_the_document_store" {
   expect_failures = [var.origination_environment]
 }
 
+# HU-W1.1-02 and HA-D02: the advisor inbox and the issuance exceptions reach
+# origination through the ALB and the Cognito authorizer.
+run "inbox_and_exceptions_are_routed" {
+  command = plan
+
+  assert {
+    condition = (
+      contains(local.services.origination.paths, "/v1/review-requests*") &&
+      contains(local.services.origination.paths, "/v1/issuance-exceptions*") &&
+      length(chunklist(local.services.origination.paths, 5)) == 2
+    )
+    error_message = "Origination owns the inbox and the exceptions in the ALB (9 prefixes, 2 listener rules)."
+  }
+
+  assert {
+    condition = (
+      toset(var.human_routes["review-requests"].methods) == toset(["GET", "POST"]) &&
+      toset(var.human_routes["issuance-exceptions"].methods) == toset(["GET"]) &&
+      contains(var.human_routes["acceptances"].methods, "POST")
+    )
+    error_message = "The inbox (GET and POST), the exceptions (GET) and the charge actions (POST under acceptances) are human routes."
+  }
+}
+
 run "stub_overrides_name_real_stubs" {
   command = plan
 
