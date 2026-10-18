@@ -97,3 +97,106 @@ func (s *Service) Resume(ctx context.Context, acceptanceID, note string) (domain
 	s.notify()
 	return c, nil
 }
+
+// ErrInvalidPaymentMethod is returned when the payment method of screen E4 is
+// not usable.
+var ErrInvalidPaymentMethod = errors.New("the payment method is not valid")
+
+// AttachPaymentMethod stores the payment method the insured handed over in
+// screen E4 and makes the charge due, so the worker of HA-D02 charges it with
+// the mechanism unchanged (HU-W1.3-02).
+//
+// Only the insured who owns the acceptance: paying is not something an
+// advisor or an analyst does on someone else's behalf.
+func (s *Service) AttachPaymentMethod(ctx context.Context, acceptanceID string,
+	m domain.PaymentMethod) (domain.Charge, error) {
+	current, err := s.repo.Get(ctx, acceptanceID)
+	if err != nil {
+		return domain.Charge{}, err
+	}
+	// No privileged roles on purpose: paying is not something an advisor or
+	// an analyst does on someone else's behalf, so only the owner passes.
+	if err := security.RequireOwnerOrRole(ctx, current.CustomerID); err != nil {
+		return domain.Charge{}, err
+	}
+	if err := validatePaymentMethod(m); err != nil {
+		return domain.Charge{}, err
+	}
+
+	c, err := s.repo.AttachPaymentMethod(ctx, acceptanceID, m, s.clock.Now().UTC())
+	if err != nil {
+		if errors.Is(err, ports.ErrChargeNotFound) || errors.Is(err, ports.ErrChargeNotPayable) {
+			return domain.Charge{}, err
+		}
+		return domain.Charge{}, fmt.Errorf("could not attach the payment method of acceptance %s: %w", acceptanceID, err)
+	}
+	// The token is never logged: it is the credential of a card.
+	slog.InfoContext(ctx, "payment method stored", "acceptance_id", c.AcceptanceID,
+		"method", string(c.PaymentMethod.Kind), "payment_attempt", c.PaymentAttempt,
+		"idempotency_key", c.IdempotencyKey)
+	s.notify()
+	return c, nil
+}
+
+// validatePaymentMethod keeps out what the gateway or the screen could not
+// use. The strictest rule is about the token: a value that looks like a card
+// number means the client sent the PAN instead of tokenising it, and that
+// must fail loudly rather than be charged.
+func validatePaymentMethod(m domain.PaymentMethod) error {
+	switch m.Kind {
+	case domain.PaymentCard:
+		if m.Token == "" || !validToken(m.Token) {
+			return fmt.Errorf("%w: a card needs its gateway token", ErrInvalidPaymentMethod)
+		}
+		if looksLikeACardNumber(m.Token) {
+			return fmt.Errorf("%w: the token looks like a card number; the card is tokenised by the browser, never sent here",
+				ErrInvalidPaymentMethod)
+		}
+		if m.Last4 != "" && !fourDigits(m.Last4) {
+			return fmt.Errorf("%w: last4 must be exactly four digits", ErrInvalidPaymentMethod)
+		}
+	case domain.PaymentPSE:
+		if m.BankCode == "" {
+			return fmt.Errorf("%w: PSE needs the bank", ErrInvalidPaymentMethod)
+		}
+	default:
+		return fmt.Errorf("%w: the method must be card or pse", ErrInvalidPaymentMethod)
+	}
+	if m.Installments < 1 || m.Installments > domain.MaxInstallments {
+		return fmt.Errorf("%w: instalments must be between 1 and %d", ErrInvalidPaymentMethod, domain.MaxInstallments)
+	}
+	return nil
+}
+
+func validToken(s string) bool {
+	if len(s) < 8 || len(s) > 128 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// looksLikeACardNumber is true for 13 to 19 digits and nothing else.
+func looksLikeACardNumber(s string) bool {
+	if len(s) < 13 || len(s) > 19 {
+		return false
+	}
+	return allDigits(s)
+}
+
+func fourDigits(s string) bool { return len(s) == 4 && allDigits(s) }
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}

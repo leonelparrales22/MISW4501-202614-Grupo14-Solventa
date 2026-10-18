@@ -22,6 +22,7 @@ type ChargeService interface {
 	Get(ctx context.Context, acceptanceID string) (domain.Charge, error)
 	ListExceptions(ctx context.Context, limit int) ([]domain.Charge, error)
 	Resume(ctx context.Context, acceptanceID, note string) (domain.Charge, error)
+	AttachPaymentMethod(ctx context.Context, acceptanceID string, m domain.PaymentMethod) (domain.Charge, error)
 }
 
 // WithCharges mounts the premium charge routes (HA-D02). They are human
@@ -39,8 +40,21 @@ func WithCharges(svc ChargeService, verifier security.Verifier) Option {
 			operations := security.RequireRole(security.RoleOperations)
 			r.With(operations).Get("/v1/issuance-exceptions", listIssuanceExceptions(svc))
 			r.With(operations).Post("/v1/acceptances/{acceptance_id}/charge/resume", resumeCharge(svc))
+			// Screen E4: only the insured pays, so no advisor or analyst
+			// role here (HU-W1.3-02).
+			r.With(security.RequireRole(security.RoleInsured)).
+				Post("/v1/acceptances/{acceptance_id}/charge/payment-method", attachPaymentMethod(svc))
 		})
 	}
+}
+
+type paymentMethodBody struct {
+	Method       string    `json:"method"`
+	Brand        *string   `json:"brand"`
+	Last4        *string   `json:"last4"`
+	Installments int       `json:"installments"`
+	BankCode     *string   `json:"bank_code"`
+	CapturedAt   time.Time `json:"captured_at"`
 }
 
 type retryWindowBody struct {
@@ -68,7 +82,11 @@ type chargeResponse struct {
 	CoverageActivatedAt   *time.Time      `json:"coverage_activated_at"`
 	ActivationPublishedAt *time.Time      `json:"activation_published_at"`
 	ResumeCount           int             `json:"resume_count"`
-	UpdatedAt             time.Time       `json:"updated_at"`
+	// PaymentMethod is null while there is none; PaymentAttempt counts how
+	// many the customer handed over, which is not Attempts (HU-W1.3-02).
+	PaymentMethod  *paymentMethodBody `json:"payment_method"`
+	PaymentAttempt int                `json:"payment_attempt"`
+	UpdatedAt      time.Time          `json:"updated_at"`
 }
 
 type issuanceExceptionBody struct {
@@ -94,6 +112,42 @@ type issuanceExceptionsResponse struct {
 
 type resumeRequest struct {
 	Note string `json:"note"`
+}
+
+// paymentMethodRequest is the body of screen E4. The card number is never
+// here: the browser tokenises it against the gateway and only the token
+// travels, which keeps the platform out of PCI-DSS scope.
+type paymentMethodRequest struct {
+	Method       string `json:"method"`
+	PaymentToken string `json:"payment_token"`
+	Brand        string `json:"brand"`
+	Last4        string `json:"last4"`
+	Installments *int   `json:"installments"`
+	BankCode     string `json:"bank_code"`
+}
+
+func attachPaymentMethod(svc ChargeService) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		id, ok := pathID(req, "acceptance_id")
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid_request", "acceptance_id (max 128 chars) is required")
+			return
+		}
+		var in paymentMethodRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, maxBodyBytes)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
+			return
+		}
+		installments := 1
+		if in.Installments != nil {
+			installments = *in.Installments
+		}
+		c, err := svc.AttachPaymentMethod(req.Context(), id, domain.PaymentMethod{
+			Kind: domain.PaymentMethodKind(in.Method), Token: in.PaymentToken,
+			Brand: in.Brand, Last4: in.Last4, Installments: installments, BankCode: in.BankCode,
+		})
+		respondCharge(w, req, http.StatusAccepted, c, err)
+	}
 }
 
 func getCharge(svc ChargeService) http.HandlerFunc {
@@ -134,8 +188,13 @@ func respondCharge(w http.ResponseWriter, req *http.Request, status int, c domai
 	case errors.Is(err, ports.ErrChargeNotFound):
 		writeError(w, http.StatusNotFound, "charge_not_found",
 			"the acceptance has no premium charge (underwriting has not approved it, it is in review or it does not exist)")
+	case errors.Is(err, billing.ErrInvalidPaymentMethod):
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	case errors.Is(err, ports.ErrChargeNotResumable):
 		writeError(w, http.StatusConflict, "charge_not_resumable", "only a failed charge can be resumed")
+	case errors.Is(err, ports.ErrChargeNotPayable):
+		writeError(w, http.StatusConflict, "charge_not_payable",
+			"the charge does not take a payment method: it is being charged, it is confirmed, or its result is ambiguous and only operations can resume it")
 	case isAuthError(err):
 		writeAuthError(w, err)
 	default:
@@ -216,7 +275,26 @@ func toChargeResponse(c domain.Charge) chargeResponse {
 		CoverageActivatedAt:   optionalTime(c.ActivatedAt),
 		ActivationPublishedAt: optionalTime(c.ActivationPublishedAt),
 		ResumeCount:           c.ResumeCount,
+		PaymentMethod:         toPaymentMethodBody(c.PaymentMethod),
+		PaymentAttempt:        c.PaymentAttempt,
 		UpdatedAt:             c.UpdatedAt.UTC(),
+	}
+}
+
+// toPaymentMethodBody returns nil while the customer has not handed over a
+// payment method. It is the field a client reads to tell "waiting for the
+// card" (E4) from "the gateway is failing" (E4b): both are status pending.
+func toPaymentMethodBody(m domain.PaymentMethod) *paymentMethodBody {
+	if !m.Captured() {
+		return nil
+	}
+	return &paymentMethodBody{
+		Method:       string(m.Kind),
+		Brand:        optionalString(m.Brand),
+		Last4:        optionalString(m.Last4),
+		Installments: m.Installments,
+		BankCode:     optionalString(m.BankCode),
+		CapturedAt:   m.CapturedAt.UTC(),
 	}
 }
 

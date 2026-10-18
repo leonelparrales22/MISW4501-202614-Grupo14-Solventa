@@ -305,11 +305,38 @@ func chargeTerms(domain.Offer) (domain.CoverageTerms, error) {
 }
 
 // accept accepts a demo offer and returns the acceptance id.
+// accept registers the acceptance and hands over a payment method, which is
+// what makes the charge due (HU-W1.3-02). The tests below are about the
+// charge mechanism of HA-D02, so they start once there is something to
+// charge with; the waiting state has its own test.
 func (e *chargeEnv) accept(t *testing.T, customer, offer string) string {
+	t.Helper()
+	id := e.acceptWithoutPaying(t, customer, offer)
+	e.pay(t, id, customer)
+	return id
+}
+
+// acceptWithoutPaying leaves the charge where the acceptance leaves it:
+// pending, with no payment method and no due date.
+func (e *chargeEnv) acceptWithoutPaying(t *testing.T, customer, offer string) string {
 	t.Helper()
 	status, body := e.acc.do(t, http.MethodPost, "/v1/offers/"+offer+"/acceptance", "insured:"+customer, `{"channel":"web"}`)
 	require.Equal(t, http.StatusAccepted, status, "the acceptance is registered whatever the gateway does")
 	return body["acceptance_id"].(string)
+}
+
+// pay hands over the card of screen E4. The number never travels: only the
+// token the gateway gave the browser.
+func (e *chargeEnv) pay(t *testing.T, id, customer string) map[string]any {
+	t.Helper()
+	// Underwriting approves and stores the charge asynchronously, so the
+	// payment method can arrive before there is a charge to attach it to.
+	e.waitCharge(t, id, "insured:"+customer, func(map[string]any) bool { return true })
+	status, body := e.acc.do(t, http.MethodPost, "/v1/acceptances/"+id+"/charge/payment-method",
+		"insured:"+customer,
+		`{"method":"card","payment_token":"tok_7b3c1f9a","brand":"visa","last4":"1111","installments":1}`)
+	require.Equal(t, http.StatusAccepted, status, "the payment method is accepted")
+	return body
 }
 
 func (e *chargeEnv) charge(t *testing.T, id, token string) (int, map[string]any) {
@@ -543,4 +570,77 @@ func TestChargeOfAnAcceptanceInReviewDoesNotExist(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, code)
 	assert.Equal(t, "charge_not_found", m["error"])
 	assert.Zero(t, e.gw.totalCharged())
+}
+
+// --- Payment method (HU-W1.3-02) -------------------------------------------
+
+// Nothing is charged until the customer hands over a payment method in screen
+// E4. The acceptance is still the no-loss point: the charge exists from the
+// moment underwriting approves, it just has no due date yet.
+func TestChargeWaitsForThePaymentMethodOfScreenE4(t *testing.T) {
+	e := newChargeEnv(t, chargeEnvOptions{})
+
+	id := e.acceptWithoutPaying(t, "cust-1", "demo-active-wait")
+
+	c := e.waitCharge(t, id, "insured:cust-1", func(map[string]any) bool { return true })
+	assert.Equal(t, "pending", c["status"], "the charge exists from the acceptance")
+	assert.Nil(t, c["payment_method"], "there is no payment method yet: screen E4")
+	assert.Nil(t, c["next_attempt_at"], "and no due date, so the worker leaves it alone")
+	assert.EqualValues(t, 0, c["payment_attempt"])
+	_, charged := e.gw.chargesOf("cobro-" + id)
+	assert.Zero(t, charged, "the gateway is never called without a payment method")
+}
+
+func TestThePaymentMethodMakesTheChargeDueAndItIsCharged(t *testing.T) {
+	e := newChargeEnv(t, chargeEnvOptions{})
+	id := e.acceptWithoutPaying(t, "cust-1", "demo-active-pay")
+
+	body := e.pay(t, id, "cust-1")
+
+	method, ok := body["payment_method"].(map[string]any)
+	require.True(t, ok, "the answer carries the payment method: %v", body)
+	assert.Equal(t, "card", method["method"])
+	assert.Equal(t, "1111", method["last4"], "enough to show Visa ...1111, never the number")
+	assert.EqualValues(t, 1, body["payment_attempt"])
+	e.waitCharge(t, id, "insured:cust-1", func(m map[string]any) bool { return m["status"] == "confirmed" })
+}
+
+// Only the owner pays: an advisor or an analyst does not pay for someone else.
+func TestOnlyTheOwnerHandsOverThePaymentMethod(t *testing.T) {
+	e := newChargeEnv(t, chargeEnvOptions{})
+	id := e.acceptWithoutPaying(t, "cust-1", "demo-active-owner")
+	e.waitCharge(t, id, "insured:cust-1", func(map[string]any) bool { return true })
+
+	const card = `{"method":"card","payment_token":"tok_7b3c1f9a","brand":"visa","last4":"1111","installments":1}`
+	for _, caller := range []string{"insured:someone-else", "advisor:adv-1", "operations:ops-1"} {
+		status, _ := e.acc.do(t, http.MethodPost, "/v1/acceptances/"+id+"/charge/payment-method", caller, card)
+		assert.Equal(t, http.StatusForbidden, status, "caller %s", caller)
+	}
+}
+
+// A card number where the token goes means the client did not tokenise: it
+// must fail loudly instead of dragging a PAN into the service.
+func TestACardNumberInsteadOfATokenIsRefused(t *testing.T) {
+	e := newChargeEnv(t, chargeEnvOptions{})
+	id := e.acceptWithoutPaying(t, "cust-1", "demo-active-pan")
+	e.waitCharge(t, id, "insured:cust-1", func(map[string]any) bool { return true })
+
+	status, body := e.acc.do(t, http.MethodPost, "/v1/acceptances/"+id+"/charge/payment-method", "insured:cust-1",
+		`{"method":"card","payment_token":"4111111111111111","installments":1}`)
+
+	assert.Equal(t, http.StatusBadRequest, status)
+	assert.Equal(t, "invalid_request", body["error"])
+}
+
+// A confirmed charge takes no other card.
+func TestAConfirmedChargeTakesNoPaymentMethod(t *testing.T) {
+	e := newChargeEnv(t, chargeEnvOptions{})
+	id := e.accept(t, "cust-1", "demo-active-done")
+	e.waitCharge(t, id, "insured:cust-1", func(m map[string]any) bool { return m["status"] == "confirmed" })
+
+	status, body := e.acc.do(t, http.MethodPost, "/v1/acceptances/"+id+"/charge/payment-method", "insured:cust-1",
+		`{"method":"card","payment_token":"tok_other","brand":"visa","last4":"4242","installments":1}`)
+
+	assert.Equal(t, http.StatusConflict, status)
+	assert.Equal(t, "charge_not_payable", body["error"])
 }

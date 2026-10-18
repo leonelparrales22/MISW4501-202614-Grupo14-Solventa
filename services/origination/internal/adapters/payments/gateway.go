@@ -29,7 +29,9 @@ var _ ports.PaymentGateway = (*Gateway)(nil)
 func NewGateway(client Charger) *Gateway { return &Gateway{client: client} }
 
 // Charge charges the premium of the charge with its idempotency key; the
-// reference is the offer and the amount is in minor units.
+// reference is the offer and the amount is in minor units. The token of the
+// payment method travels too when there is one (HU-W1.3-02): it is what tells
+// the gateway which card to charge.
 func (g *Gateway) Charge(ctx context.Context, c domain.Charge) (string, error) {
 	ch, err := g.client.Charge(ctx, payments.ChargeRequest{
 		IdempotencyKey: c.IdempotencyKey,
@@ -37,6 +39,7 @@ func (g *Gateway) Charge(ctx context.Context, c domain.Charge) (string, error) {
 		CustomerID:     c.CustomerID,
 		AmountMinor:    c.AmountMinor,
 		Currency:       c.Currency,
+		PaymentToken:   c.PaymentMethod.Token,
 	})
 	if err != nil {
 		return "", err

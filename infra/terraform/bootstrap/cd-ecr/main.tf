@@ -21,6 +21,11 @@ locals {
     "kyc",
     "opendata",
     "openfinance",
+    # HU-W1.3-02: origination refuses to start with the charge enabled unless
+    # it can reach a payment gateway and an e-mail provider, so both stubs
+    # need a registry to be deployed from.
+    "email",
+    "payment-gateway",
   ])
 
   github_owner = split("/", var.github_repository)[0]

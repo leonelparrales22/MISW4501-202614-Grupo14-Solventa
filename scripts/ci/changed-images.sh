@@ -21,6 +21,8 @@ images=(
   "kyc:stubs/kyc"
   "opendata:stubs/opendata"
   "openfinance:stubs/openfinance"
+  "email:stubs/email"
+  "payment-gateway:stubs/payment-gateway"
 )
 
 shared='^(pkg/|go\.work$|go\.work\.sum$|\.dockerignore$|scripts/ci/|\.github/workflows/backend-cd\.yml$)'

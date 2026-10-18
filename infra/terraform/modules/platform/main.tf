@@ -71,6 +71,11 @@ locals {
     openfinance = 9000
     opendata    = 9010
     kyc         = 9020
+    # HU-W1.3-02: without a payment gateway the premium charge has nobody to
+    # charge, and origination requires an e-mail provider whenever the charge
+    # is enabled (decision D-16 b), so it does not start without both.
+    email             = 9030
+    "payment-gateway" = 9040
   }
 
   images = setunion(keys(local.services), keys(local.stubs))
@@ -314,9 +319,12 @@ locals {
       OPEN_FINANCE_URL = "http://openfinance.${local.namespace}:${local.stubs.openfinance}"
       OPEN_DATA_URL    = "http://opendata.${local.namespace}:${local.stubs.opendata}"
       KYC_URL          = "http://kyc.${local.namespace}:${local.stubs.kyc}"
-      AUTH_ISSUER      = module.cognito.issuer
-      AUTH_JWKS_URL    = module.cognito.jwks_url
-      AUTH_CLIENT_IDS  = join(",", values(module.cognito.client_ids))
+      EMAIL_URL        = "http://email.${local.namespace}:${local.stubs.email}"
+      # Setting this is what enables the premium charge (HA-D02).
+      PAYMENT_GATEWAY_URL = "http://payment-gateway.${local.namespace}:${local.stubs["payment-gateway"]}"
+      AUTH_ISSUER         = module.cognito.issuer
+      AUTH_JWKS_URL       = module.cognito.jwks_url
+      AUTH_CLIENT_IDS     = join(",", values(module.cognito.client_ids))
     }
   }
 }

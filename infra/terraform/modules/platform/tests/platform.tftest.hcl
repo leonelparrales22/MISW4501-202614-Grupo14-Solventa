@@ -151,7 +151,7 @@ run "without_tag_the_latest_image_is_pinned_by_digest" {
   }
 
   assert {
-    condition     = length(data.aws_ecr_image.latest) == 8 && strcontains(local.image_uris["audit"], "@sha256:")
+    condition     = length(data.aws_ecr_image.latest) == 10 && strcontains(local.image_uris["audit"], "@sha256:")
     error_message = "Without image_tag every image is the most recent one, pinned by digest."
   }
 }
@@ -164,8 +164,8 @@ run "services_can_be_switched_off" {
   }
 
   assert {
-    condition     = length(module.ecs.desired_counts) == 8 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
-    error_message = "The five services and the three stubs keep their ECS services, at 0 tasks."
+    condition     = length(module.ecs.desired_counts) == 10 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
+    error_message = "The five services and the five stubs keep their ECS services, at 0 tasks."
   }
 }
 

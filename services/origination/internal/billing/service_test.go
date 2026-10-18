@@ -120,3 +120,99 @@ func TestResumeRules(t *testing.T) {
 	_, err = svc.Resume(ops, "acc-2", "nota")
 	assert.ErrorIs(t, err, boom)
 }
+
+// --- Payment method (HU-W1.3-02) -------------------------------------------
+
+// pendingChargeService builds a service whose only charge is pending and
+// still waiting for its payment method.
+func pendingChargeService() (*memRepo, *billing.Service) {
+	repo := newMemRepo()
+	repo.put(domain.NewCharge(acceptance("acc-1"), offer("acc-1"),
+		domain.CoverageTerms{TermMonths: 120}, t0, t0.Add(24*time.Hour)))
+	return repo, billing.NewService(repo, &clock{now: t0}, resilience.DefaultRetryPolicy(), nil)
+}
+
+func cardMethod() domain.PaymentMethod {
+	return domain.PaymentMethod{
+		Kind: domain.PaymentCard, Token: "tok_7b3c1f9a",
+		Brand: "visa", Last4: "1111", Installments: 1,
+	}
+}
+
+func TestTheOwnerHandsOverThePaymentMethodAndTheChargeBecomesDue(t *testing.T) {
+	repo, svc := pendingChargeService()
+	now := t0
+
+	c, err := svc.AttachPaymentMethod(as(security.RoleInsured, "cust-1"), "acc-1", cardMethod())
+
+	require.NoError(t, err)
+	assert.Equal(t, now, c.NextAttemptAt, "the worker can pick it up now")
+	assert.Equal(t, 1, c.PaymentAttempt)
+	assert.Equal(t, "1111", c.PaymentMethod.Last4)
+	stored, _ := repo.Get(context.Background(), "acc-1")
+	assert.True(t, stored.PaymentMethod.Captured())
+}
+
+// Paying is not something an advisor or an analyst does for someone else.
+func TestOnlyTheOwnerHandsOverThePaymentMethod(t *testing.T) {
+	_, svc := pendingChargeService()
+
+	for _, ctx := range []context.Context{
+		as(security.RoleInsured, "someone-else"),
+		as(security.RoleAdvisor, "adv-1"),
+		as(security.RoleOperations, "ops-1"),
+	} {
+		_, err := svc.AttachPaymentMethod(ctx, "acc-1", cardMethod())
+		assert.ErrorIs(t, err, security.ErrForbidden)
+	}
+}
+
+// A client that sends the card number instead of the token must fail loudly:
+// the number must never reach this service.
+func TestACardNumberInsteadOfATokenIsRefused(t *testing.T) {
+	_, svc := pendingChargeService()
+	m := cardMethod()
+	m.Token = "4111111111111111"
+
+	_, err := svc.AttachPaymentMethod(as(security.RoleInsured, "cust-1"), "acc-1", m)
+
+	assert.ErrorIs(t, err, billing.ErrInvalidPaymentMethod)
+	assert.Contains(t, err.Error(), "looks like a card number")
+}
+
+func TestThePaymentMethodIsValidated(t *testing.T) {
+	_, svc := pendingChargeService()
+	ctx := as(security.RoleInsured, "cust-1")
+
+	for name, m := range map[string]domain.PaymentMethod{
+		"a card with no token": {Kind: domain.PaymentCard, Installments: 1},
+		"pse with no bank":     {Kind: domain.PaymentPSE, Installments: 1},
+		"an unknown method":    {Kind: "bitcoin", Installments: 1},
+		"too many instalments": {Kind: domain.PaymentCard, Token: "tok_7b3c1f9a", Installments: 48},
+		"last4 that is not":    {Kind: domain.PaymentCard, Token: "tok_7b3c1f9a", Last4: "11", Installments: 1},
+	} {
+		_, err := svc.AttachPaymentMethod(ctx, "acc-1", m)
+		assert.ErrorIs(t, err, billing.ErrInvalidPaymentMethod, name)
+	}
+}
+
+func TestPSENeedsNoToken(t *testing.T) {
+	_, svc := pendingChargeService()
+
+	c, err := svc.AttachPaymentMethod(as(security.RoleInsured, "cust-1"), "acc-1",
+		domain.PaymentMethod{Kind: domain.PaymentPSE, BankCode: "1007", Installments: 1})
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.PaymentPSE, c.PaymentMethod.Kind)
+}
+
+func TestAChargeThatTakesNoPaymentMethodIsRefused(t *testing.T) {
+	repo, svc := pendingChargeService()
+	confirmed, _ := repo.Get(context.Background(), "acc-1")
+	confirmed.Status = domain.ChargeConfirmed
+	repo.rows["acc-1"] = confirmed
+
+	_, err := svc.AttachPaymentMethod(as(security.RoleInsured, "cust-1"), "acc-1", cardMethod())
+
+	assert.ErrorIs(t, err, ports.ErrChargeNotPayable)
+}

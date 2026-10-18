@@ -325,3 +325,38 @@ func (c *clock) set(t time.Time) {
 }
 
 func (c *clock) advance(d time.Duration) { c.set(c.Now().Add(d)) }
+
+func (r *memRepo) AttachPaymentMethod(_ context.Context, id string,
+	m domain.PaymentMethod, now time.Time) (domain.Charge, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.writeErr != nil {
+		return domain.Charge{}, r.writeErr
+	}
+	row, ok := r.rows[id]
+	if !ok {
+		return domain.Charge{}, ports.ErrChargeNotFound
+	}
+	if !row.TakesPaymentMethod() {
+		return domain.Charge{}, ports.ErrChargeNotPayable
+	}
+	row = row.WithPaymentMethod(m, now)
+	r.rows[id] = row
+	return row, nil
+}
+
+func (r *memRepo) ExpireWithoutPaymentMethod(_ context.Context, now time.Time) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	expired := 0
+	for id, row := range r.rows {
+		if row.Status != domain.ChargePending || !row.NextAttemptAt.IsZero() ||
+			row.WindowEndsAt.IsZero() || row.WindowEndsAt.After(now) {
+			continue
+		}
+		row.Status, row.FailureReason, row.LastFailureAt = domain.ChargeFailed, domain.ChargePaymentMethodMissing, now
+		r.rows[id] = row
+		expired++
+	}
+	return expired, nil
+}
