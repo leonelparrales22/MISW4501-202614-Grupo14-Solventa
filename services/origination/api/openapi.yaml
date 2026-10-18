@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.9.0
+  version: 0.10.0
 paths:
   /health:
     get:
@@ -125,6 +125,183 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/offers:
+    post:
+      summary: Generate the personalized offer of the embedded journey (HU-W1.2-03)
+      description: >
+        Partner-channel route (the API Gateway authenticates the partner with
+        its API key; the service reads no token). Verifies with the audit
+        service that the customer has an active explicit consent and that
+        consent_id is that consent (HU-W1.2-01), resolves the risk profile,
+        prices it with the rating engine (v1) and stores the offer, immutable,
+        with a copy of the profile, the applied rules and the engine version.
+        The offer is valid for 24 hours. When the external sources fail the
+        offer is still produced, in provisional mode: provisional_reason tells
+        whether it was priced with the last cached profile of the customer
+        (cached_profile, with profile_date) or with the base actuarial profile
+        (base_actuarial_profile); the worker replaces it with a normal offer
+        when the source returns (see GET). The offer has no owner until the
+        insured opens it with a session (GET claims it). The id is 128 random
+        bits and is the only thing the redirect to the web flow carries. The
+        response never carries the risk score, the rules or the identity
+        document. Without AUDIT_URL this route answers 503
+        consent_unverifiable: a consent that cannot be verified is never
+        assumed.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateOfferRequest"
+      responses:
+        "201":
+          description: Offer generated
+          headers:
+            Location:
+              description: Path of the offer.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Offer"
+        "400":
+          description: Malformed body (invalid_request) or invalid fields (validation_failed, with the field list)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/ValidationError"
+        "422":
+          description: >
+            The customer has no active consent (consent_required) or consent_id
+            is not their consent (consent_mismatch). No source was queried.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The consent could not be verified (consent_unverifiable; no source
+            was queried) or the offer could not be produced (offer_unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/offers/{offer_id}:
+    get:
+      summary: Read an offer (HU-W1.2-03)
+      description: >
+        The first insured who opens a personalized offer with a session claims
+        it and is its owner from then on: another insured gets 403, and an
+        advisor or operations analyst reads it without claiming. status is
+        active, expired (24 hours after creation) or superseded (a provisional
+        offer a normal one replaced when the external source returned;
+        superseded_by points to the new one and accepting the old one answers
+        offer_expired). can_accept and can_renew tell what the customer can do
+        next; an expired offer is renewed with POST .../renewal. The adjusted
+        (adj-*, HU-W1.1-02) and demonstration (demo-*, HU-W1.3-01) offers are
+        served here too with a reduced view: kind adjusted or demo, only
+        premium, currency, mode, expires_at and status, and terms, conditions,
+        profile and the other details null; they are never claimed (their owner
+        is the customer of the offer).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/OfferID"
+      responses:
+        "200":
+          description: The offer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Offer"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The offer does not exist (offer_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The offer could not be read (offer_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/offers/{offer_id}/renewal:
+    post:
+      summary: Renew an expired offer (HU-W1.2-03)
+      description: >
+        Only the owner (insured). Creates a new offer with the same credit data
+        and the age recalculated, after verifying the consent again, and
+        resolving and rating again. It is idempotent: asking again returns the
+        same renewal with 200. 409 offer_still_valid while the offer can still
+        be accepted; 409 offer_superseded (with superseded_by) when a requote
+        replaced it, because the newer offer is the one to use.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/OfferID"
+      responses:
+        "201":
+          description: Renewal created
+          headers:
+            Location:
+              description: Path of the new offer.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Offer"
+        "200":
+          description: The offer was already renewed; the existing renewal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Offer"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The offer does not exist (offer_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: offer_still_valid or offer_superseded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OfferConflict"
+        "422":
+          description: >
+            No active consent (consent_required) or the holder is no longer
+            insurable (validation_failed on birth_date)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/ValidationError"
+        "503":
+          description: The consent could not be verified (consent_unverifiable) or the renewal failed (offer_unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/offers/{offer_id}/acceptance:
     post:
       summary: Accept an offer and trigger underwriting (HU-W1.3-01)
@@ -137,9 +314,13 @@ paths:
         that acceptance with 200 (also after the offer expired), so retrying
         is safe and never repeats the process; no Idempotency-Key header is
         needed. Only the insured who owns the offer may accept it.
-        Offers, underwriting, the advisor inbox, issuance and the storage are
-        in-memory stand-ins for now (PENDING: HU-W1.2-03, the underwriting
-        engine, HU-W1.1-02, HU-W1.3-02/HA-D02 and PostgreSQL).
+        A personalized offer (HU-W1.2-03) belongs to the insured who first
+        opened it (GET /v1/offers/{offer_id}); an unclaimed one answers 403.
+        A provisional offer that a normal one replaced is no longer
+        acceptable: it answers 422 offer_expired, with expires_at the moment it
+        was replaced. Underwriting, the advisor inbox, issuance and the
+        acceptance storage are in-memory stand-ins for now (PENDING: the
+        underwriting engine and PostgreSQL).
       security:
         - cognitoJwt: []
       parameters:
@@ -906,6 +1087,7 @@ components:
         type: string
         minLength: 1
         maxLength: 128
+        pattern: "^[A-Za-z0-9_-]+$"
   responses:
     ContractPDF:
       description: The contractual document
@@ -1228,6 +1410,169 @@ components:
           type: string
           nullable: true
           enum: [quote_expired]
+    GenerateOfferRequest:
+      type: object
+      required: [customer_id, consent_id, partner_id, application_id, document_id, full_name, email, birth_date, insured_amount, term_months]
+      properties:
+        customer_id:
+          type: string
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Id the partner uses for the customer; the consent and the profile are keyed by it.
+        consent_id:
+          type: string
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Id of the consent recorded by audit (HU-W1.2-01); it must be the customer's active consent.
+        partner_id:
+          type: string
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_-]+$"
+        application_id:
+          type: string
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Id of the credit application at the partner.
+        document_id:
+          type: string
+          pattern: "^[A-Za-z0-9]{5,20}$"
+        full_name:
+          type: string
+          minLength: 3
+          maxLength: 120
+        email:
+          type: string
+          format: email
+          description: Where the requote notice is sent.
+        birth_date:
+          type: string
+          format: date
+          description: The holder must be between 18 and 70 years old.
+        insured_amount:
+          type: number
+          minimum: 10000000
+          maximum: 2000000000
+        term_months:
+          type: integer
+          minimum: 12
+          maximum: 360
+    Offer:
+      type: object
+      required: [offer_id, kind, status, premium, currency, mode, expires_at, can_accept, can_renew]
+      properties:
+        offer_id:
+          type: string
+        kind:
+          type: string
+          enum: [personalized, adjusted, demo]
+        status:
+          type: string
+          enum: [active, expired, superseded]
+        premium:
+          type: number
+          description: Monthly premium.
+        currency:
+          type: string
+        mode:
+          type: string
+          enum: [normal, provisional]
+        expires_at:
+          type: string
+          format: date-time
+        can_accept:
+          type: boolean
+        can_renew:
+          type: boolean
+        channel:
+          type: string
+          nullable: true
+          enum: [embedded, assisted]
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        provisional_reason:
+          type: string
+          nullable: true
+          enum: [cached_profile, base_actuarial_profile]
+        profile_date:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the cached profile was calculated (provisional_reason cached_profile).
+        unavailable_source:
+          type: string
+          nullable: true
+        profile:
+          type: object
+          nullable: true
+          required: [category, source]
+          properties:
+            category:
+              type: string
+            source:
+              type: string
+              enum: [open_finance, cache, base_actuarial, external_sources]
+        terms:
+          type: object
+          nullable: true
+          required: [insured_amount, term_months, coverages]
+          properties:
+            insured_amount:
+              type: number
+            term_months:
+              type: integer
+            coverages:
+              type: array
+              items:
+                $ref: "#/components/schemas/Coverage"
+        conditions:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: Codes the client translates (validity_24h, onerous_beneficiary_lender, monthly_premium, max_insured_age_70, provisional_requote_when_source_restored).
+        rater_version:
+          type: string
+          nullable: true
+        applicant:
+          type: object
+          nullable: true
+          properties:
+            full_name:
+              type: string
+        credit:
+          type: object
+          nullable: true
+          properties:
+            partner_id:
+              type: string
+            application_id:
+              type: string
+        superseded_by:
+          type: string
+          nullable: true
+          description: The offer that replaced this provisional one.
+        renewed_by:
+          type: string
+          nullable: true
+          description: The renewal of this expired offer.
+    OfferConflict:
+      type: object
+      required: [error, message, offer_id]
+      properties:
+        error:
+          type: string
+          enum: [offer_still_valid, offer_superseded]
+        message:
+          type: string
+        offer_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        superseded_by:
+          type: string
     AcceptOfferRequest:
       type: object
       required: [channel]
@@ -1854,10 +2199,13 @@ components:
           enum:
             - invalid_request
             - consent_required
+            - consent_mismatch
+            - consent_unverifiable
             - request_aborted
             - unauthorized
             - forbidden
             - offer_not_found
+            - offer_unavailable
             - acceptance_not_found
             - acceptance_not_registered
             - acceptance_unavailable

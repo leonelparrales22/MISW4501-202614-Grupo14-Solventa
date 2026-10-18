@@ -1,0 +1,106 @@
+# Contract test of the offer routes of origination (HU-W1.2-03, OBJ 05): the real
+# service with its own PostgreSQL, the real audit service (the consent), the
+# Open Finance stub and Moto as the Cognito of the human routes, checked against
+# api/openapi.yaml by Schemathesis. Run it with ./run-offers.sh (run.sh calls
+# it). Build context is the repository root. Published ports (127.0.0.1 only):
+# origination 8295, Moto 5121.
+name: origination-contract-offers
+
+services:
+  postgres-origination:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=origination
+      - POSTGRES_USER=origination
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U origination -d origination"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  postgres-audit:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=audit
+      - POSTGRES_USER=audit
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit -d audit"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  openfinance:
+    build:
+      context: ../../../..
+      dockerfile: stubs/openfinance/Dockerfile
+    environment:
+      - PORT=9000
+
+  moto:
+    image: motoserver/moto:5.2.3
+    ports:
+      - "127.0.0.1:${MOTO_PORT:-5121}:5000"
+    environment:
+      - MOTO_COGNITO_IDP_USER_POOL_ID_STRATEGY=HASH
+      - MOTO_COGNITO_IDP_USER_POOL_CLIENT_ID_STRATEGY=HASH
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/moto-api/')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  audit:
+    build:
+      context: ../../../..
+      dockerfile: services/audit/Dockerfile
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://audit:${PG_PASSWORD:-}@postgres-audit:5432/audit?sslmode=disable
+    depends_on:
+      postgres-audit:
+        condition: service_healthy
+
+  origination:
+    build:
+      context: ../../../..
+      dockerfile: services/origination/Dockerfile
+    ports:
+      - "127.0.0.1:${ORIGINATION_OFFERS_PORT:-8295}:8080"
+    environment:
+      - PORT=8080
+      - REDIS_ADDR=redis:6379
+      - OPEN_FINANCE_URL=http://openfinance:9000
+      - AUDIT_URL=http://audit:8080
+      - DATABASE_URL=postgres://origination:${PG_PASSWORD:-}@postgres-origination:5432/origination?sslmode=disable
+      # Cognito of Moto, written by run-offers.sh after seeding it.
+      - AUTH_ISSUER=${AUTH_ISSUER:-}
+      - AUTH_JWKS_URL=${AUTH_JWKS_URL:-}
+      - AUTH_CLIENT_IDS=${AUTH_CLIENT_IDS:-}
+    depends_on:
+      postgres-origination:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      moto:
+        condition: service_healthy
+      openfinance:
+        condition: service_started
+      audit:
+        condition: service_started
+
+  # Started on demand by run-offers.sh (docker compose run --rm schemathesis ...).
+  schemathesis:
+    image: schemathesis/schemathesis:v3.39.16
+    profiles: ["tools"]
+    volumes:
+      - ../../api:/api:ro

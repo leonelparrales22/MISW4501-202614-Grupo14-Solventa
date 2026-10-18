@@ -65,9 +65,15 @@ func main() {
 		resolverOptions(cfg)...,
 	)
 
+	offers, err := newOfferWiring(context.Background(), cfg, resolver)
+	if err != nil {
+		log.Fatalf("could not set up the personalized offers: %v", err)
+	}
+	cfg.acceptances.offers, cfg.acceptances.acceptanceStore = offers.router, offers.acceptances
+
 	// WithObservability must come first: chi only accepts middlewares before
 	// the routes are registered.
-	opts := []httpadapter.Option{httpadapter.WithObservability(serviceName)}
+	opts := []httpadapter.Option{httpadapter.WithObservability(serviceName), httpadapter.WithEmbeddedOffers(offers.service)}
 	if cfg.acceptances.enabled {
 		verifier, err := security.NewJWKSVerifier(context.Background(), cfg.acceptances.auth)
 		if err != nil {
@@ -106,10 +112,11 @@ func main() {
 		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
 			httpadapter.WithAcceptances(acceptances, verifier),
+			httpadapter.WithOffers(offers.service, verifier),
 			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver), verifier),
 			httpadapter.WithReviews(reviews, verifier))
 	} else {
-		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01, contract documents HU-W1.3-03, advisor inbox HU-W1.1-02) are not mounted", security.EnvIssuer)
+		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01, contract documents HU-W1.3-03, advisor inbox HU-W1.1-02, offer read and renewal HU-W1.2-03) are not mounted", security.EnvIssuer)
 	}
 
 	srv := &http.Server{
@@ -176,6 +183,9 @@ type config struct {
 
 	// Explicit consent verified with the audit service (HU-W1.2-01).
 	audit auditConfig
+
+	// Personalized offer (HU-W1.2-03).
+	offers offerConfig
 }
 
 // acceptanceConfig configures the offer acceptance (HU-W1.3-01). Its routes
@@ -189,6 +199,12 @@ type acceptanceConfig struct {
 	// reviewScoreThreshold is the profile score above which the provisional
 	// underwriting routes a normal offer to the advisor (decision #40).
 	reviewScoreThreshold float64
+	// offers serves the offers of the acceptance, the advisor inbox and the
+	// charge (HU-W1.2-03); acceptanceStore is where acceptances are written. The
+	// personalized offer service and the requote worker share them. When nil,
+	// newAcceptanceService builds its own in-memory ones.
+	offers          *memory.OfferRouter
+	acceptanceStore *memory.AcceptanceStore
 }
 
 // newAcceptanceService wires the offer acceptance (HU-W1.3-01) and the advisor
@@ -201,8 +217,14 @@ type acceptanceConfig struct {
 func newAcceptanceService(ctx context.Context, cfg acceptanceConfig, starter ports.IssuanceStarter,
 	notifier ports.ReviewOutcomeNotifier) (*issuance.AcceptanceService, *underwriting.ReviewService) {
 	clock := systemClock{}
-	offers := memory.NewOfferStub(clock)
-	acceptances := memory.NewAcceptanceStore()
+	offers := cfg.offers
+	if offers == nil {
+		offers = memory.NewOfferRouter(memory.NewOfferStub(clock), memory.NewPersonalizedOfferStore())
+	}
+	acceptances := cfg.acceptanceStore
+	if acceptances == nil {
+		acceptances = memory.NewAcceptanceStore()
+	}
 	reviews := memory.NewReviewQueueStub()
 	underwriter := underwriting.NewHumanAdjustedUnderwriter(reviews,
 		memory.NewUnderwriterStub(clock, cfg.flakyFailures, cfg.reviewScoreThreshold), clock)
@@ -404,6 +426,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadAuditConfig(getenv, &cfg.audit); err != nil {
+		return config{}, err
+	}
+	if err := loadOfferConfig(getenv, &cfg.offers); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
