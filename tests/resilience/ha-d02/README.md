@@ -14,6 +14,14 @@ k6 ──▶ origination (8190) ──▶ Toxiproxy ──▶ stub payment-gatew
 Moto (Cognito local): tokens del asegurado y de operaciones
 ```
 
+**Medio de pago (HU-W1.3-02).** Desde HU-W1.3-02 el cobro se crea al aprobarse la suscripción pero su primer intento no vence
+hasta que el cliente entrega un medio de pago en la pantalla E4 ([contrato](../../../docs/contratos/HU-W1.3-02-api.md) §1 y §3).
+Por eso `k6/create.js`, después de registrar las aceptaciones de cada fase, espera a que exista el cobro de cada una
+(`GET /v1/acceptances/{id}/charge` responde `404` mientras corre la suscripción) y entrega **PSE**
+(`POST …/charge/payment-method` con `{"method":"pse","bank_code":"1007"}`): PSE no tokeniza, así que ninguna tarjeta pasa por
+el escenario. Comprueba el `202`, `payment_method.method = "pse"` y la clave `cobro-<id>`. Sin ese paso los cobros quedarían
+`pending` sin vencer y el escenario no convergería. La ventana de 24 h cuenta desde que se crea el cobro, no desde el pago.
+
 ## Cómo correrlo
 
 ```bash
@@ -37,12 +45,12 @@ Cada fase pasa solo si todos los *checks* de k6 se cumplen (`checks == 1`).
 
 | # | Fase | Qué se verifica |
 |---|---|---|
-| 1 | Línea base | 10 aceptaciones → cobro confirmado, emisión contractual completada, 1 cobro real por clave |
+| 1 | Línea base | 10 aceptaciones con PSE → cobro confirmado, emisión contractual completada, 1 cobro real por clave |
 | 2 | Caída total (proxy deshabilitado) | 50 aceptaciones → todas `202` y consultables (CA-1); cobro `pending` con intentos, clave `cobro-<id>` y ventana de 24 h (CA-2); sin emisión (`404`, CA-4) |
 | 3 | Reinicio de originación durante la caída | Los 50 cobros siguen `pending` desde PostgreSQL |
 | 4 | Respuesta ambigua (*toxic* `timeout` en la respuesta) | 20 aceptaciones → registradas, `pending` y sin emisión; además, entre las 70 pendientes, al menos una **cobrada por la pasarela mientras originación sigue esperando** (la respuesta se perdió), con un solo cobro real |
 | 5 | Restablecimiento | Las 70 confirmadas con su emisión completada; en la pasarela, 1 cobro real por clave y 80 en total (0 perdidas, 0 duplicadas); 1 correo por póliza (CA-5) |
-| 6 | Ventana vencida (`RETRY_WINDOW_SECONDS=10`, pasarela caída) | 5 aceptaciones → `failed` (`retry_window_expired`), visibles en `GET /v1/issuance-exceptions` para operaciones y prohibidas al asegurado, sin emisión; con la pasarela de vuelta, operaciones las reanuda con nota (misma clave) → confirmadas con 1 cobro real y su emisión (CA-3) |
+| 6 | Ventana vencida (`RETRY_WINDOW_SECONDS=10`, pasarela caída) | 5 aceptaciones con PSE entregado en cuanto aparece el cobro → `failed` (`retry_window_expired`; sin medio de pago sería `payment_method_missing`), visibles en `GET /v1/issuance-exceptions` para operaciones y prohibidas al asegurado, sin emisión; con la pasarela de vuelta, operaciones las reanuda con nota (misma clave) → confirmadas con 1 cobro real y su emisión (CA-3) |
 | 7 | Contrato | Schemathesis (`--checks=all`) sobre `GET /v1/acceptances/{id}/charge`, `POST …/charge/resume` y `GET /v1/issuance-exceptions`, con token de asegurado y de operaciones |
 
 Notas:
@@ -56,6 +64,8 @@ Notas:
   la convergencia toma a lo sumo un ciclo (9–21 s en las corridas locales). Detalle en `resultados/`.
 - La ventana real es de 24 h; aquí se acorta a 10 s solo en la fase 6, como EC-D02 («se validó el mecanismo con una ventana
   acortada»).
+- `CHARGE_RETRY_MAX_MS` (60 s por defecto, como el servicio) se puede bajar desde el entorno de `docker compose`; el ensayo local
+  del humo de staging lo deja en 15 s, como la ventana de staging (D-6 de la fase AWS).
 - **Contrafáctico** (`counterfactual`): con `SUPPORTS_IDEMPOTENCY=false` la pasarela cobra cada reintento. `verify.js` informa
   cuántas claves quedaron duplicadas en vez de fallar. Documenta que la garantía en el caso ambiguo depende de que el
   proveedor respete la clave (D-10); no cuenta para aprobar la historia.
@@ -67,8 +77,8 @@ Notas:
 | `docker-compose.yml` | PostgreSQL, stubs `payment-gateway` y `email`, Toxiproxy (+ `toxiproxy-init`), Moto, originación y, con el perfil `tools`, k6 y Schemathesis |
 | `run.sh` | Orquesta las fases, genera los secretos locales y siembra Moto |
 | `toxiproxy.sh` | `down`, `ambiguous` y `up` sobre el proxy `payment-gateway` |
-| `k6/create.js` | Crea aceptaciones como el asegurado y comprueba que quedan registradas y consultables |
+| `k6/create.js` | Crea aceptaciones como el asegurado, comprueba que quedan registradas y consultables y entrega PSE a cada cobro en cuanto existe |
 | `k6/await.js` | Espera el estado del cobro (`pending`, `confirmed`, `failed`) y lo verifica con la emisión contractual; con `RESUME=1` reanuda las excepciones |
 | `k6/verify.js` | Cuenta en la pasarela los cobros reales por clave y en el stub de correo los mensajes por póliza |
-| `k6/lib.js` | Login en Moto y utilidades comunes |
+| `k6/lib.js` | Login en Moto, entrega de PSE (`payWithPSE`) y utilidades comunes |
 | `resultados/` | Evidencia de cada corrida (local) |
