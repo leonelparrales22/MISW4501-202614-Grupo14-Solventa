@@ -104,6 +104,36 @@ func TestBillingConfigRejectsAGatewayWithoutAuth(t *testing.T) {
 	assert.False(t, cfg.acceptances.enabled)
 }
 
+// TestBillingWithTheDocumentsInS3KeepsItsRequirements: the document store of
+// AWS (DOCUMENTS_BUCKET, HA-D02 AWS phase) does not relax what the charge
+// needs: its database, the e-mail provider and the human routes.
+func TestBillingWithTheDocumentsInS3KeepsItsRequirements(t *testing.T) {
+	inS3 := func() map[string]string {
+		m := billingEnv()
+		delete(m, "DOCUMENTS_DIR")
+		m["DOCUMENTS_BUCKET"] = "solventa-stg-documents-368083581678"
+		return m
+	}
+	cfg, err := loadConfig(env(inS3()))
+	require.NoError(t, err)
+	assert.True(t, cfg.billing.enabled)
+	assert.Equal(t, "solventa-stg-documents-368083581678", cfg.contracts.documentsBucket)
+
+	for missing, want := range map[string]string{
+		"DATABASE_URL": "DATABASE_URL is required",
+		"EMAIL_URL":    "EMAIL_URL is required",
+		"AUTH_ISSUER":  "AUTH_ISSUER is required",
+	} {
+		t.Run("without "+missing, func(t *testing.T) {
+			m := inS3()
+			delete(m, missing)
+			_, err := loadConfig(env(m))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), want)
+		})
+	}
+}
+
 func TestBillingConfigRejectsInvalidValues(t *testing.T) {
 	for name, extra := range map[string]map[string]string{
 		"timeout":          {"PAYMENT_GATEWAY_TIMEOUT_MS": "x"},
