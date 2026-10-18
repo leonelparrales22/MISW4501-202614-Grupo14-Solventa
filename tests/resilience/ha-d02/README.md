@@ -116,7 +116,7 @@ su log y la pasarela una línea `charge request key=… new_charge=…` por cobr
 ```bash
 cd tests/resilience/ha-d02
 export TF_DIR=../../../infra/terraform/environments/staging/platform   # invoke_url, cliente web, bucket y logs
-export TF_VAR_seed_user_password=…   # el mismo valor del apply (de SOLVENTA_HA_D02_SEED_PASSWORD), nunca en un archivo
+export SEED_USER_PASSWORD=…   # la contraseña del pool permanente (de SOLVENTA_IDENTITY_SEED_PASSWORD), nunca en un archivo
 export STATE_DIR=<carpeta de la evidencia>
 bash staging/smoke.sh prepare happy inbox auth declined
 # terraform plan/apply con -var 'stub_desired_count_overrides={"payment-gateway"=0}' (solo cambia payment-gateway)
