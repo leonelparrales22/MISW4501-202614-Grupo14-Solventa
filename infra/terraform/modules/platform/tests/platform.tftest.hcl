@@ -359,3 +359,89 @@ run "rejects_incomplete_service_sizing" {
 
   expect_failures = [var.service_sizing]
 }
+
+# T4 (permanent user pool): without existing_cognito the platform creates its
+# own user pool, as before.
+run "creates_its_own_user_pool_by_default" {
+  command = plan
+
+  assert {
+    condition     = var.existing_cognito == null && length(module.cognito) == 1
+    error_message = "Without existing_cognito the platform creates its own user pool."
+  }
+}
+
+# T4: with the permanent user pool of bootstrap/identity the platform creates
+# none and wires the received one into the authorizer, AUTH_* and the output.
+run "uses_an_existing_user_pool" {
+  command = plan
+
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+
+  assert {
+    condition     = length(module.cognito) == 0
+    error_message = "With existing_cognito the platform must not create a user pool."
+  }
+
+  assert {
+    condition     = local.cognito.user_pool_arn == "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+    error_message = "The Cognito authorizer must use the received user pool."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.AUTH_ISSUER == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1" &&
+      local.service_environment.origination.AUTH_JWKS_URL == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json" &&
+      local.service_environment.origination.AUTH_CLIENT_IDS == "mobile-client-test,web-client-test"
+    )
+    error_message = "AUTH_ISSUER, AUTH_JWKS_URL and AUTH_CLIENT_IDS of the services come from the received user pool."
+  }
+
+  assert {
+    condition     = output.cognito.user_pool_id == "us-east-2_PermTest1" && output.cognito.client_ids["web"] == "web-client-test"
+    error_message = "The cognito output describes the received user pool."
+  }
+}
+
+run "existing_pool_rejects_seed_users" {
+  command = plan
+
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+    seed_users = {
+      advisor = { email = "asesor.prueba@example.com", group = "advisor" }
+    }
+  }
+
+  expect_failures = [var.existing_cognito]
+}
+
+run "existing_pool_must_be_a_cognito_pool" {
+  command = plan
+
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:iam::123456789012:role/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+
+  expect_failures = [var.existing_cognito]
+}

@@ -22,10 +22,10 @@ output "usage_plan_ids" {
 output "cognito" {
   description = "User pool of the human channels and the AUTH_* values of the services."
   value = {
-    user_pool_id = module.cognito.user_pool_id
-    issuer       = module.cognito.issuer
-    jwks_url     = module.cognito.jwks_url
-    client_ids   = module.cognito.client_ids
+    user_pool_id = local.cognito.user_pool_id
+    issuer       = local.cognito.issuer
+    jwks_url     = local.cognito.jwks_url
+    client_ids   = local.cognito.client_ids
   }
 }
 
