@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -106,4 +108,60 @@ func TestEnvHelpers(t *testing.T) {
 	assert.Equal(t, 0, envInt("X_MISSING"))
 	assert.Equal(t, "d", orDefault("", "d"))
 	assert.Equal(t, "v", orDefault("v", "d"))
+}
+
+// captureLog sends the output of the standard logger to a buffer for the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	})
+	return &buf
+}
+
+// policyMail is a multi-line message with the signed link of the contractual
+// document, like the one origination sends (HU-W1.3-03).
+const policyMail = `{"to":"ana@example.com","subject":"Tu póliza de Solventa fue emitida",` +
+	`"body":"Hola Ana:\nDescarga tu documento en https://api.example/staging/v1/documents/tok.abc\nSolventa"}`
+
+func TestANewMessageIsWrittenToTheLogOnOneLine(t *testing.T) {
+	logs := captureLog(t)
+	h := newHandler(0, 0)
+
+	require.Equal(t, http.StatusCreated, post(t, h, "policy-issued:pol-1", policyMail).Code)
+
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	require.Len(t, lines, 1, "one line per message, whatever its body")
+	line := lines[0]
+	assert.Contains(t, line, "message accepted id=msg-1 to=ana@example.com")
+	assert.Contains(t, line, `subject="Tu póliza de Solventa fue emitida"`)
+	assert.Contains(t, line, "idempotency_key=policy-issued:pol-1")
+	assert.Contains(t, line, `body="Hola Ana:\nDescarga tu documento en https://api.example/staging/v1/documents/tok.abc\nSolventa"`,
+		"the link of the e-mail can be read from the log (CloudWatch Logs in AWS, HA-D02)")
+}
+
+func TestADuplicateIsLoggedWithoutItsBody(t *testing.T) {
+	h := newHandler(0, 0)
+	require.Equal(t, http.StatusCreated, post(t, h, "policy-issued:pol-1", policyMail).Code)
+	logs := captureLog(t)
+
+	require.Equal(t, http.StatusOK, post(t, h, "policy-issued:pol-1", policyMail).Code)
+
+	line := strings.TrimSpace(logs.String())
+	assert.Equal(t, "duplicate message id=msg-1 to=ana@example.com idempotency_key=policy-issued:pol-1: already accepted, not stored again", line)
+	assert.NotContains(t, line, "documents/tok.abc")
+}
+
+func TestAnInvalidMessageIsNotLogged(t *testing.T) {
+	logs := captureLog(t)
+	h := newHandler(0, 0)
+
+	assert.Equal(t, http.StatusBadRequest, post(t, h, "k", `{"to":"a@b.co"}`).Code)
+	assert.Equal(t, http.StatusBadRequest, post(t, h, "", policyMail).Code)
+	assert.Empty(t, logs.String())
 }

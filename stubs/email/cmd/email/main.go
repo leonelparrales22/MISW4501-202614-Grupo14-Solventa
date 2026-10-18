@@ -2,6 +2,9 @@
 // messages, keeps them in memory and lists them, so a test or a demo can
 // verify what the insured would have received. A message with an
 // Idempotency-Key already accepted is answered with 200 and not stored again.
+// Every new message is also written to the log on one line, with its body, so
+// it can be read where GET /messages is out of reach (CloudWatch Logs in AWS,
+// HA-D02); a duplicate is logged without its body.
 // Faults and latency are injected from outside with Toxiproxy; FAIL_FIRST and
 // ARTIFICIAL_DELAY_MS are shortcuts for quick local runs.
 package main
@@ -92,6 +95,12 @@ func (s *server) send(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusCreated
 	if duplicate {
 		status = http.StatusOK
+		log.Printf("duplicate message id=%s to=%s idempotency_key=%s: already accepted, not stored again",
+			existing.ID, existing.To, existing.IdempotencyKey)
+	} else {
+		// %q keeps the body (and its links) on a single log line.
+		log.Printf("message accepted id=%s to=%s subject=%q idempotency_key=%s body=%q",
+			existing.ID, existing.To, existing.Subject, existing.IdempotencyKey, existing.Body)
 	}
 	writeJSON(w, status, existing)
 }
