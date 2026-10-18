@@ -194,6 +194,23 @@ variable "public_routes" {
   }
 }
 
+variable "seed_users" {
+  description = "Test users of the user pool for a staging window (insured, advisor, operations or partner), so the smoke test gets real tokens. Empty by default; production-demo never sets them."
+  type = map(object({
+    email      = string
+    group      = string
+    partner_id = optional(string)
+  }))
+  default = {}
+}
+
+variable "seed_user_password" {
+  description = "Permanent password of the seed users. Only through TF_VAR_seed_user_password; never in a file."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
 variable "cors_allow_origin" {
   description = "Allowed origin of the human routes (pin it to the portal origin outside test windows)."
   type        = string

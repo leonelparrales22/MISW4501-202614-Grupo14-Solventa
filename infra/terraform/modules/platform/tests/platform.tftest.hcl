@@ -329,6 +329,15 @@ run "the_document_link_is_public" {
   }
 }
 
+run "seed_users_are_optional" {
+  command = plan
+
+  assert {
+    condition     = length(var.seed_users) == 0 && var.seed_user_password == null
+    error_message = "The platform creates no test users unless a staging window asks for them."
+  }
+}
+
 run "stub_overrides_name_real_stubs" {
   command = plan
 

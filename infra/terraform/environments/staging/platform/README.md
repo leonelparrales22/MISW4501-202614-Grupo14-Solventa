@@ -21,7 +21,8 @@ destruye en la misma sesión**. La topología está en el README del módulo; aq
 | Usage plans | D-7: 100 req/s, ráfaga 200, sin cuota, por socio | Decisión D-7 vigente |
 | Estado remoto | `staging/platform/terraform.tfstate` en `solventa-tfstate-368083581678`, bloqueo nativo de S3 | Convención de T4 |
 
-Etiquetas por defecto: `Project=solventa`, `Env=staging`, `Task=T4`, `TTL=<var.ttl>`.
+Etiquetas por defecto: `Project=solventa`, `Env=staging`, `Task=T4`, `TTL=<var.ttl>`. `extra_tags` agrega otras (por ejemplo
+`Owner` y `Story` para filtrar el costo de una ventana en Cost Explorer) y no puede reemplazar esas cuatro.
 
 ## Variables
 
@@ -35,24 +36,63 @@ Etiquetas por defecto: `Project=solventa`, `Env=staging`, `Task=T4`, `TTL=<var.t
 | `rds_multi_az` | `false` | Réplica en espera de PostgreSQL |
 | `redis_multi_az` | `false` | Réplica de Redis con *failover* automático |
 | `cors_allow_origin` | `"*"` | Origen permitido de las rutas humanas |
+| `stub_desired_count_overrides` | `{}` | Tareas por stub; `{ payment-gateway = 0 }` tumba la pasarela y `{}` la restaura (HA-D02, D-6) |
+| `origination_environment` | `{}` | Variables extra de `origination` para la ventana (p. ej. `RETRY_WINDOW_SECONDS`, `CHARGE_RETRY_MAX_MS`); no puede reemplazar las de la plataforma |
+| `seed_users` | `{}` | Usuarios de prueba del user pool (asegurado, asesor, operaciones o socio) para obtener tokens reales |
+| `seed_user_password` | `null` (sensible) | Contraseña permanente de los usuarios de prueba; **solo** por `TF_VAR_seed_user_password`, nunca en un archivo |
+| `extra_tags` | `{}` | Etiquetas adicionales (`Owner`, `Story`…) |
+
+[`ha-d02.example.tfvars`](ha-d02.example.tfvars) trae los valores de la ventana de HA-D02 (tres usuarios ficticios `@example.com`,
+ventana de reintentos de 300 s, espera máxima de 15 s y `Owner=nicolas`, `Story=HA-D02`), sin contraseña ni etiquetas de imagen.
 
 ## Procedimiento
+
+El primer `apply` va **en dos tiempos** (ver «Primer `apply` en dos tiempos» en el README del
+[módulo](../../../modules/platform/README.md#primer-apply-en-dos-tiempos)): `origination` y `audit` abren PostgreSQL al arrancar y
+necesitan que `db-init` haya creado su rol. `db-init` se lanza con el **comando literal** de `terraform output -raw db_init_command`,
+copiado y ejecutado tal cual: nunca con `eval`, para que la mutación de AWS quede a la vista (y del *hook* del harness).
 
 ```bash
 export AWS_PROFILE=solventa          # cuenta 368083581678
 cd infra/terraform/environments/staging/platform
 terraform init
-terraform apply -var ttl=2026-10-20
 
-# Una vez, tras el primer apply: crea una base y un usuario por servicio.
-eval "$(terraform output -raw db_init_command)"
+# 1. Todo menos las tareas (P1).
+terraform plan -out p1.tfplan -var ttl=2026-10-20 -var image_tag=<sha de 12> -var services_enabled=false
+terraform apply p1.tfplan
+
+# 2. Una vez: crea una base y un usuario por servicio. Imprime el comando y ejecútelo tal cual;
+#    espere a que la tarea termine con código 0 («database <svc> ready» ×5 en el log, prefijo db-init).
+terraform output -raw db_init_command
+
+# 3. Las tareas (P2): solo cambian los desired_count y el autoescalado.
+terraform plan -out p2.tfplan -var ttl=2026-10-20 -var image_tag=<sha de 12>
+terraform apply p2.tfplan
 
 # ... ventana ...
 
-terraform destroy -var ttl=2026-10-20
+terraform destroy -auto-approve -input=false -var ttl=2026-10-20 -var image_tag=<sha de 12>
+terraform state list                  # vacío
 ```
 
-La tarea `db-init` se explica en el README de [`production-demo/platform`](../../production-demo/platform/README.md#procedimiento).
+Una ventana con usuarios de prueba agrega `-var-file=ha-d02.example.tfvars` a los tres comandos de Terraform y pasa la contraseña en
+el mismo comando con `TF_VAR_seed_user_password` (la ventana de HA-D02 la toma de la variable de usuario de Windows
+`SOLVENTA_HA_D02_SEED_PASSWORD`, que se borra al terminar). La tarea `db-init` se explica en el README de
+[`production-demo/platform`](../../production-demo/platform/README.md#procedimiento).
+
+### Caída de la pasarela en una ventana (HA-D02)
+
+```bash
+# Tumbar solo la pasarela: el plan debe cambiar únicamente el desired_count de payment-gateway.
+terraform plan -out down.tfplan <mismas variables> -var 'stub_desired_count_overrides={"payment-gateway"=0}'
+terraform apply down.tfplan
+# Restaurarla con un plan preparado de antemano, para aplicarlo en cuanto haga falta.
+terraform plan -out restore.tfplan <mismas variables>
+terraform apply restore.tfplan
+```
+
+Las aceptaciones, la bandeja y la emisión de `origination` viven en memoria (C5): cualquier `apply` que reinicie `origination` las
+borra. Por eso la imagen va fijada por etiqueta y los `apply` de la caída solo tocan el servicio `payment-gateway`.
 
 ## Ventana del 2026-10-17
 
@@ -84,8 +124,14 @@ Duración total: unos 21 minutos con recursos encendidos; costo estimado ≈ US$
 No se probó en esta ventana: el *rate limiting* bajo carga (medido en [`ha-l01`](../ha-l01/README.md)), el inicio de sesión con un
 usuario real de Cognito (medido en [`ha-s01`](../ha-s01/README.md)) ni los modos `single` / `per_az` del NAT y Multi-AZ.
 
+## Ventana de HA-D02 (AAAA-MM-DD)
+
+Pendiente: se llena al cerrar la ventana de HA-D02 (paso C1 de su plan) con las horas, los recursos, el humo de
+[`tests/resilience/ha-d02/staging`](../../../../../tests/resilience/ha-d02/README.md) y la verificación del `destroy`.
+
 ## Costos (aproximados, `us-east-2`; verificar antes de aplicar)
 
-Con los valores por defecto: 8 tareas (≈ US$ 0,11/h), sus 8 IPv4 públicas (≈ US$ 0,04/h), ALB (≈ US$ 0,023/h), RDS y Redis
-(≈ US$ 0,016/h cada uno), caché del gateway (≈ US$ 0,02/h) y secretos: **≈ US$ 0,23 por hora** (≈ US$ 170 si quedara encendida un
-mes). `nat_mode = "single"` suma ≈ US$ 0,045/h y quita las IPv4 de las tareas.
+Con los valores por defecto: 10 tareas (`origination` 0,5 vCPU / 1 GB y 9 de 0,25 vCPU / 0,5 GB: los otros cuatro servicios y los
+cinco stubs, ≈ US$ 0,136/h), sus 10 IPv4 públicas (≈ US$ 0,05/h), ALB (≈ US$ 0,023/h), RDS y Redis (≈ US$ 0,016–0,019/h cada uno),
+caché del gateway (≈ US$ 0,02/h) y 7 secretos: **≈ US$ 0,27 por hora** (≈ US$ 195 si quedara encendida un mes). Con
+`services_enabled = false` quedan ≈ US$ 0,08/h. `nat_mode = "single"` suma ≈ US$ 0,045/h y quita las IPv4 de las tareas.

@@ -29,12 +29,13 @@ provider "aws" {
   # Refuse to plan or apply against any other account.
   allowed_account_ids = ["368083581678"]
 
+  # extra_tags (Owner, Story...) are added; the four default tags always win.
   default_tags {
-    tags = {
+    tags = merge(var.extra_tags, {
       Project = "solventa"
       Env     = "staging"
       Task    = "T4"
       TTL     = var.ttl
-    }
+    })
   }
 }

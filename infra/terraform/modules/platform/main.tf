@@ -183,6 +183,10 @@ module "cognito" {
 
   name                = var.name
   deletion_protection = var.deletion_protection
+
+  # Test users of a staging window (empty by default; production-demo never sets them).
+  seed_users         = var.seed_users
+  seed_user_password = var.seed_user_password
 }
 
 # Partner routes need an API key and get the usage plan of their partner

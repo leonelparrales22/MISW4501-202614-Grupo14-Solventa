@@ -141,6 +141,7 @@ el estado remoto cifrado del bucket de T4.
 | `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) | Usage plans (D-7) |
 | `human_routes` | rutas de `origination` | Rutas detrás de Cognito |
 | `public_routes` | `documents` (`GET`, 10 req/s, ráfaga 20) | Rutas sin sesión ni API key (enlace firmado del documento, HA-D02) |
+| `seed_users` / `seed_user_password` | `{}` / `null` | Usuarios de prueba del user pool para una ventana de staging (contraseña solo por `TF_VAR_seed_user_password`; production-demo no los expone) |
 | `cors_allow_origin` | `"*"` | Origen de las rutas humanas |
 | `cache_ttl_seconds` | `60` | TTL del `GET` cacheado (D-6) |
 | `deletion_protection` | `true` | RDS, ALB y user pool |
