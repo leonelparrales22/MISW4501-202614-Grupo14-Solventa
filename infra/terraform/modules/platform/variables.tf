@@ -160,6 +160,17 @@ variable "partners" {
   }
 }
 
+variable "portal_base_url" {
+  description = "Origin of the web portal of this environment (https://<distribution>.cloudfront.net, without a trailing slash; T5). When set, the e-mail links of origination point to the portal: OFFER_LINK_BASE_URL and DOCUMENTS_PUBLIC_BASE_URL (decision D-11). Null keeps the document links on the API Gateway stage."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.portal_base_url == null || can(regex("^https://[^/]+$", var.portal_base_url))
+    error_message = "portal_base_url must be an https origin without path or trailing slash (for example https://d1234abcd.cloudfront.net)."
+  }
+}
+
 variable "portal_partner" {
   description = "Partner of partners whose API key the web portal composition gives to CloudFront (output portal_partner_api_key, T5)."
   type        = string

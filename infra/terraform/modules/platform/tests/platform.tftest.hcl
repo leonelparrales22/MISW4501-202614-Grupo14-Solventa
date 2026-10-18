@@ -448,3 +448,50 @@ run "api_origin_matches_the_stage" {
     error_message = "The API origin of the portal is the REST API domain with the stage as origin path."
   }
 }
+
+# Decision D-11 of T5: with the portal, both e-mail links open through it.
+run "portal_links_follow_portal_base_url" {
+  command = plan
+
+  variables {
+    portal_base_url = "https://d1234abcd.cloudfront.net"
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.OFFER_LINK_BASE_URL == "https://d1234abcd.cloudfront.net" &&
+      local.service_environment.origination.DOCUMENTS_PUBLIC_BASE_URL == "https://d1234abcd.cloudfront.net"
+    )
+    error_message = "With portal_base_url, the offer and document links of the e-mails point to the portal."
+  }
+}
+
+run "without_portal_the_links_stay_as_before" {
+  command = plan
+
+  override_resource {
+    target          = module.apigateway.aws_api_gateway_stage.this
+    override_during = plan
+    values = {
+      invoke_url = "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    }
+  }
+
+  assert {
+    condition = (
+      !contains(keys(local.service_environment.origination), "OFFER_LINK_BASE_URL") &&
+      local.service_environment.origination.DOCUMENTS_PUBLIC_BASE_URL == "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    )
+    error_message = "Without a portal, origination keeps its default offer link and the document link on the stage."
+  }
+}
+
+run "portal_base_url_is_an_https_origin" {
+  command = plan
+
+  variables {
+    portal_base_url = "https://d1234abcd.cloudfront.net/"
+  }
+
+  expect_failures = [var.portal_base_url]
+}

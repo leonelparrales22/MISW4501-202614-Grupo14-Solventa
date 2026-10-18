@@ -96,6 +96,7 @@ El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/
 | Socio `portal-embebido` | API key y usage plan propios (10 req/s, ráfaga 20). CloudFront agrega su key a las rutas de socio de las pantallas públicas; el navegador nunca la ve (D-3 de T5) |
 | Salida `api_origin` | Dominio del REST API, stage (el *origin path* de CloudFront) e `invoke_url` |
 | Salida `portal_partner_api_key` | Key del socio `portal_partner` (sensible); solo la lee la composición `web` para el encabezado de origen de CloudFront |
+| Variable `portal_base_url` | Origen del portal (`https://<distribución>.cloudfront.net`). Con ella, los dos enlaces de los correos de originación apuntan al portal (D-11 de T5). La composición del ambiente la toma del parámetro SSM `/solventa/<ambiente>/web/url` |
 
 ## Imágenes
 
@@ -116,7 +117,8 @@ El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/
 | `PAYMENT_GATEWAY_URL` | Stub `payment-gateway` por Cloud Map (9040) | Enciende el cobro de la prima (HA-D02); exige `DATABASE_URL`, `EMAIL_URL` y `AUTH_ISSUER` |
 | `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_CLIENT_IDS` | User pool del ambiente | Rutas humanas (HA-S01) |
 | `DOCUMENTS_BUCKET` | Bucket `documents` del ambiente | Repositorio del documento contractual en S3 (HA-D02, fase AWS); el servicio comprueba el bucket al arrancar |
-| `DOCUMENTS_PUBLIC_BASE_URL` | `invoke_url` del stage de API Gateway | Base del enlace firmado del correo: `<invoke_url>/v1/documents/<token>` |
+| `DOCUMENTS_PUBLIC_BASE_URL` | `portal_base_url` si existe (T5, D-11); si no, `invoke_url` del stage de API Gateway | Base del enlace firmado del correo: `<base>/v1/documents/<token>`; con el portal, el PDF se abre por CloudFront |
+| `OFFER_LINK_BASE_URL` | `portal_base_url`, solo si existe (T5, D-11) | Base de los enlaces de los correos de oferta hacia las pantallas del portal; sin portal, el servicio usa su valor por defecto (`http://localhost:4200`) |
 | `AWS_REGION` | Región del proveedor (`us-east-2`) | Región del SDK de AWS (S3) |
 | `DATABASE_URL` (secreto) | `<nombre>/origination/database` | Base propia: cobro de la prima (HA-D02) y ofertas personalizadas (HU-W1.2-03) |
 | `DOCUMENT_LINK_SECRET` (secreto) | `<nombre>/origination/document-link`, 48 caracteres aleatorios (`random_password`) | Firma de los enlaces del documento; nunca va como variable en claro |
@@ -155,6 +157,7 @@ el estado remoto cifrado del bucket de T4.
 | `redis_node_type` / `redis_multi_az` | `cache.t4g.micro` / `false` | Redis |
 | `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) y `portal-embebido` (10 req/s, ráfaga 20, T5) | Usage plans (D-7; el socio de demostración del portal, D-3 de T5) |
 | `portal_partner` | `"portal-embebido"` | Socio cuya key recibe CloudFront (salida `portal_partner_api_key`, T5) |
+| `portal_base_url` | `null` | Origen `https://` del portal web; apunta los enlaces de los correos al portal (T5, D-11) |
 | `human_routes` | rutas de `origination` | Rutas detrás de Cognito |
 | `public_routes` | `documents` (`GET`, 10 req/s, ráfaga 20) | Rutas sin sesión ni API key (enlace firmado del documento, HA-D02) |
 | `seed_users` / `seed_user_password` | `{}` / `null` | Usuarios de prueba del user pool para una ventana de staging (contraseña solo por `TF_VAR_seed_user_password`; production-demo no los expone) |
@@ -177,5 +180,5 @@ terraform test
 
 `tests/platform.tftest.hcl` comprueba de punta a punta los usage plans de D-7, un secreto y un usuario por servicio, el script de
 `db-init`, los tres modos de NAT, la resolución de imágenes y el apagado de los servicios. Desde T5 comprueba también que el stub de la
-pasarela queda detrás del ALB solo en `/tokens`, que `portal-embebido` tiene su propio usage plan y que `api_origin` corresponde al
-stage.
+pasarela queda detrás del ALB solo en `/tokens`, que `portal-embebido` tiene su propio usage plan, que `api_origin` corresponde al
+stage y que, con `portal_base_url`, los enlaces de los correos apuntan al portal (sin él, quedan como antes).

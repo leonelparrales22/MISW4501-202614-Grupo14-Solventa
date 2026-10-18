@@ -383,11 +383,17 @@ locals {
       AUTH_CLIENT_IDS     = join(",", values(module.cognito.client_ids))
       # Contractual document (HU-W1.3-03) in AWS (HA-D02): the PDF goes to the
       # documents bucket, and the e-mail links open it through the public
-      # GET /v1/documents/{token} of the API Gateway stage.
+      # GET /v1/documents/{token}: through the web portal when it exists (its
+      # CloudFront distribution sends /v1/* to this stage, T5 decision D-11),
+      # otherwise straight through the API Gateway stage.
       DOCUMENTS_BUCKET          = module.buckets["documents"].bucket
-      DOCUMENTS_PUBLIC_BASE_URL = module.apigateway.invoke_url
+      DOCUMENTS_PUBLIC_BASE_URL = coalesce(var.portal_base_url, module.apigateway.invoke_url)
       AWS_REGION                = data.aws_region.current.region
-    })
+      },
+      # Links of the offer e-mails to the screens of the portal (T5, D-11);
+      # without a portal the service keeps its own default.
+      var.portal_base_url != null ? { OFFER_LINK_BASE_URL = var.portal_base_url } : {}
+    )
   }
 
   # Secrets Manager values of each service (the ECS secrets field): its
