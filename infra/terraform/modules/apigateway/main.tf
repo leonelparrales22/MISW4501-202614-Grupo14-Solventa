@@ -19,6 +19,18 @@
 #   HU-W1.3-03 (GET /v1/documents/{token}); each method can be throttled at the
 #   stage, since no usage plan covers it. binary_media_types lets a PDF through
 #   intact. Without them nothing of this is created and nothing changes.
+# - Public card tokenization (T5, optional): with payment_tokenization,
+#   POST /pasarela/tokens (outside /v1; the name is fixed by the HU-W1.3-02
+#   contract) reaches the simulated payment gateway behind the load balancer
+#   without session or API key, throttled at the stage, so the web client can
+#   tokenize a card without the number going through Solventa. Without it
+#   nothing of this is created and nothing changes.
+# - Partner routes on explicit paths (T5, optional): partner_routes publishes
+#   exact paths under /v1 (for example the consent of HU-W1.2-01 and
+#   POST /v1/offers of HU-W1.2-03) with the partner API key, never with the
+#   authorizer. A partner route can take the root of a human route, whose
+#   sub-paths keep Cognito: root_methods separates the methods of that root.
+#   Without them nothing of this is created and nothing changes.
 
 locals {
   private_integration = var.vpc_link_v2_id != null
@@ -135,8 +147,9 @@ resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.this.id
 
   # The human-channel resources (HA-S01), the public routes and the binary
-  # media types (HA-D02) join the hash only when they exist, so an API without
-  # them keeps the same redeployment hash as before.
+  # media types (HA-D02), the public card tokenization and the partner routes
+  # (T5) join the hash only when they exist, so an API without them keeps the
+  # same redeployment hash as before.
   triggers = {
     redeployment = sha1(join("", concat(
       [jsonencode([
@@ -163,6 +176,19 @@ resource "aws_api_gateway_deployment" "this" {
         aws_api_gateway_integration.public,
       ])] : [],
       length(var.binary_media_types) > 0 ? [jsonencode(var.binary_media_types)] : [],
+      length(var.partner_routes) > 0 ? [jsonencode([
+        aws_api_gateway_resource.partner_l1,
+        aws_api_gateway_resource.partner_l2,
+        aws_api_gateway_resource.partner_l3,
+        aws_api_gateway_method.partner,
+        aws_api_gateway_integration.partner,
+      ])] : [],
+      local.payment_tokenization_enabled ? [jsonencode([
+        aws_api_gateway_resource.payment_gateway,
+        aws_api_gateway_resource.payment_tokens,
+        aws_api_gateway_method.payment_tokens_post,
+        aws_api_gateway_integration.payment_tokens_post,
+      ])] : [],
     )))
   }
 
@@ -261,9 +287,20 @@ locals {
     { for r, res in aws_api_gateway_resource.human_proxy : "${r}/{proxy+}" => res.id },
   )
 
+  # Methods of each human resource: the root takes root_methods when it is set
+  # (T5), every sub-path takes methods.
+  human_resource_methods = merge(
+    { for r, h in var.human_routes : r => h.root_methods != null ? h.root_methods : h.methods },
+    { for r, h in var.human_routes : "${r}/{proxy+}" => h.methods },
+  )
+
+  # A resource without human methods (a root given to a partner route) has no
+  # preflight either.
+  human_preflight_resources = { for key, res in local.human_resources : key => res if length(local.human_resource_methods[key]) > 0 }
+
   human_methods = merge([
     for key, res in local.human_resources : {
-      for m in var.human_routes[res.route].methods : "${key} ${m}" => {
+      for m in local.human_resource_methods[key] : "${key} ${m}" => {
         resource    = key
         route       = res.route
         proxy       = res.proxy
@@ -362,7 +399,7 @@ resource "aws_api_gateway_integration" "human" {
 
 # CORS preflight: OPTIONS never asks for a token or an API key.
 resource "aws_api_gateway_method" "human_options" {
-  for_each = local.human_resources
+  for_each = local.human_preflight_resources
 
   rest_api_id      = aws_api_gateway_rest_api.this.id
   resource_id      = local.human_resource_ids[each.key]
@@ -372,7 +409,7 @@ resource "aws_api_gateway_method" "human_options" {
 }
 
 resource "aws_api_gateway_integration" "human_options" {
-  for_each = local.human_resources
+  for_each = local.human_preflight_resources
 
   rest_api_id = aws_api_gateway_rest_api.this.id
   resource_id = local.human_resource_ids[each.key]
@@ -390,7 +427,7 @@ resource "aws_api_gateway_integration" "human_options" {
 }
 
 resource "aws_api_gateway_method_response" "human_options" {
-  for_each = local.human_resources
+  for_each = local.human_preflight_resources
 
   rest_api_id = aws_api_gateway_rest_api.this.id
   resource_id = local.human_resource_ids[each.key]
@@ -405,7 +442,7 @@ resource "aws_api_gateway_method_response" "human_options" {
 }
 
 resource "aws_api_gateway_integration_response" "human_options" {
-  for_each = local.human_resources
+  for_each = local.human_preflight_resources
 
   rest_api_id = aws_api_gateway_rest_api.this.id
   resource_id = local.human_resource_ids[each.key]
@@ -414,7 +451,7 @@ resource "aws_api_gateway_integration_response" "human_options" {
 
   response_parameters = {
     "method.response.header.Access-Control-Allow-Origin"  = "'${var.cors_allow_origin}'"
-    "method.response.header.Access-Control-Allow-Methods" = "'${join(",", concat(var.human_routes[each.value.route].methods, ["OPTIONS"]))}'"
+    "method.response.header.Access-Control-Allow-Methods" = "'${join(",", concat(local.human_resource_methods[each.key], ["OPTIONS"]))}'"
     "method.response.header.Access-Control-Allow-Headers" = "'${local.cors_allow_headers}'"
   }
 
@@ -541,4 +578,186 @@ resource "aws_api_gateway_method_settings" "public" {
   }
 
   depends_on = [aws_api_gateway_method_settings.all]
+}
+
+# --- Public card tokenization of the simulated payment gateway (T5) --------------
+
+locals {
+  payment_tokenization_enabled = var.payment_tokenization != null
+}
+
+# /pasarela hangs from the root, outside /v1: the HU-W1.3-02 contract (section 8)
+# and the local proxy of the web client (proxy.conf.json) use that prefix.
+resource "aws_api_gateway_resource" "payment_gateway" {
+  count = local.payment_tokenization_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
+  path_part   = "pasarela"
+}
+
+resource "aws_api_gateway_resource" "payment_tokens" {
+  count = local.payment_tokenization_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.payment_gateway[0].id
+  path_part   = "tokens"
+}
+
+# Only POST: the gateway exposes no other route of the simulator (/charges and
+# /debug/* answer 403 Missing Authentication Token).
+resource "aws_api_gateway_method" "payment_tokens_post" {
+  count = local.payment_tokenization_enabled ? 1 : 0
+
+  rest_api_id      = aws_api_gateway_rest_api.this.id
+  resource_id      = aws_api_gateway_resource.payment_tokens[0].id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "payment_tokens_post" {
+  count = local.payment_tokenization_enabled ? 1 : 0
+
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.payment_tokens[0].id
+  http_method             = aws_api_gateway_method.payment_tokens_post[0].http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "POST"
+  uri                     = "${local.backend}${var.payment_tokenization.backend_path}"
+  connection_type         = local.connection_type
+  connection_id           = var.vpc_link_v2_id
+  integration_target      = local.private_integration ? var.integration_target_arn : null
+  timeout_milliseconds    = var.integration_timeout_ms
+}
+
+# No usage plan covers a route without API key: the throttle lives at the stage.
+resource "aws_api_gateway_method_settings" "payment_tokens" {
+  count = local.payment_tokenization_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "pasarela/tokens/POST"
+
+  settings {
+    metrics_enabled        = true
+    caching_enabled        = false
+    throttling_rate_limit  = var.payment_tokenization.rate_limit
+    throttling_burst_limit = var.payment_tokenization.burst_limit
+  }
+
+  depends_on = [aws_api_gateway_method_settings.all]
+}
+
+# --- Partner routes on explicit paths (T5) ------------------------------------------
+
+locals {
+  partner_segments = { for route in keys(var.partner_routes) : route => split("/", route) }
+
+  # First segments that are already human routes: the partner route takes the
+  # root resource of that human route instead of creating another one.
+  partner_shared_human = toset([
+    for route, segments in local.partner_segments : segments[0] if contains(keys(var.human_routes), segments[0])
+  ])
+
+  # Prefixes of the keys by depth (each resource hangs from its parent).
+  partner_l1 = toset([
+    for route, segments in local.partner_segments : segments[0] if !contains(keys(var.human_routes), segments[0])
+  ])
+  partner_l2 = toset([for route, segments in local.partner_segments : join("/", slice(segments, 0, 2)) if length(segments) >= 2])
+  partner_l3 = toset([for route, segments in local.partner_segments : route if length(segments) == 3])
+
+  partner_l1_ids = merge(
+    { for k, r in aws_api_gateway_resource.partner_l1 : k => r.id },
+    { for k in local.partner_shared_human : k => aws_api_gateway_resource.human[k].id },
+  )
+
+  partner_resource_ids = merge(
+    local.partner_l1_ids,
+    { for k, r in aws_api_gateway_resource.partner_l2 : k => r.id },
+    { for k, r in aws_api_gateway_resource.partner_l3 : k => r.id },
+  )
+
+  partner_methods = merge([
+    for route, r in var.partner_routes : {
+      for m in r.methods : "${route} ${m}" => { route = route, http_method = m }
+    }
+  ]...)
+}
+
+resource "aws_api_gateway_resource" "partner_l1" {
+  for_each = local.partner_l1
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.v1.id
+  path_part   = each.key
+
+  lifecycle {
+    precondition {
+      condition     = !contains(keys(var.public_routes), each.key)
+      error_message = "A partner route cannot start with a public route: the same path would need the API key and none."
+    }
+  }
+}
+
+resource "aws_api_gateway_resource" "partner_l2" {
+  for_each = local.partner_l2
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = local.partner_l1_ids[split("/", each.key)[0]]
+  path_part   = split("/", each.key)[1]
+}
+
+resource "aws_api_gateway_resource" "partner_l3" {
+  for_each = local.partner_l3
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.partner_l2[join("/", slice(split("/", each.key), 0, 2))].id
+  path_part   = split("/", each.key)[2]
+}
+
+# Like the quoting journey: only the partner API key, never the authorizer and
+# no preflight (the partner calls server to server, or the portal through
+# CloudFront on the same origin).
+resource "aws_api_gateway_method" "partner" {
+  for_each = local.partner_methods
+
+  rest_api_id      = aws_api_gateway_rest_api.this.id
+  resource_id      = local.partner_resource_ids[each.value.route]
+  http_method      = each.value.http_method
+  authorization    = "NONE"
+  api_key_required = true
+
+  lifecycle {
+    precondition {
+      condition = (
+        !contains(keys(var.human_routes), split("/", each.value.route)[0]) ||
+        length(split("/", each.value.route)) == 1
+      )
+      error_message = "Under a human route, a partner route can only take its root: deeper paths would collide with its {proxy+}."
+    }
+
+    precondition {
+      condition = (
+        !contains(keys(var.human_routes), each.value.route) ||
+        !contains(lookup(local.human_resource_methods, each.value.route, []), each.value.http_method)
+      )
+      error_message = "A method of a partner route repeats a human method on the same root: set root_methods of the human route without it."
+    }
+  }
+}
+
+resource "aws_api_gateway_integration" "partner" {
+  for_each = local.partner_methods
+
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = local.partner_resource_ids[each.value.route]
+  http_method             = aws_api_gateway_method.partner[each.key].http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = each.value.http_method
+  uri                     = "${local.backend}/v1/${each.value.route}"
+  connection_type         = local.connection_type
+  connection_id           = var.vpc_link_v2_id
+  integration_target      = local.private_integration ? var.integration_target_arn : null
+  timeout_milliseconds    = var.integration_timeout_ms
 }

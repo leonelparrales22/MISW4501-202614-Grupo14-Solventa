@@ -11,6 +11,8 @@
 #         ElastiCache Redis, SNS/SQS with DLQs, S3
 #     --Cloud Map--> stubs of the external providers (Open Finance, Open Data, KYC,
 #                    e-mail and payment gateway)
+#   browser --POST /pasarela/tokens (public, T5)--> API Gateway --> internal ALB
+#     /tokens --> payment gateway stub (card tokenization of screen E4)
 #
 # The ECR repositories are permanent and shared (bootstrap/cd-ecr): this module
 # only reads them.
@@ -85,6 +87,20 @@ locals {
     email             = 9030
     "payment-gateway" = 9040
   }
+
+  # Stubs that the browser also reaches through the API Gateway, so they sit
+  # behind the ALB besides Cloud Map: only the card tokenization of the payment
+  # gateway (T5, decision D-4), on /tokens alone (the ALB answers 404 to
+  # /charges and /debug/*, and the gateway does not even publish them).
+  lb_stubs = {
+    "payment-gateway" = { priority = 6, paths = ["/tokens"] }
+  }
+
+  # Services that another service calls directly inside the VPC, so they are
+  # also registered in Cloud Map without leaving the ALB: only audit, whose
+  # consent verification origination asks before profiling (HU-W1.2-01) and
+  # before a personalized offer (HU-W1.2-03). T5, decision D-21 (a).
+  discoverable_services = ["audit"]
 
   images = setunion(keys(local.services), keys(local.stubs))
 
@@ -170,13 +186,22 @@ module "alb" {
   ingress_security_group_ids = { vpc_link = aws_security_group.vpc_link.id }
   deletion_protection        = var.deletion_protection
 
-  targets = {
-    for k, s in local.services : k => {
-      port          = local.service_port
-      priority      = s.priority
-      path_patterns = s.paths
-    }
-  }
+  targets = merge(
+    {
+      for k, s in local.services : k => {
+        port          = local.service_port
+        priority      = s.priority
+        path_patterns = s.paths
+      }
+    },
+    {
+      for k, s in local.lb_stubs : k => {
+        port          = local.stubs[k]
+        priority      = s.priority
+        path_patterns = s.paths
+      }
+    },
+  )
 }
 
 module "cognito" {
@@ -216,9 +241,13 @@ locals {
 # (decision D-7: 100 req/s, burst 200). Human routes go through the Cognito
 # authorizer, which validates the JWT before the request reaches the service.
 # The public routes (the signed link of the contractual document, HA-D02) ask
-# for neither and are throttled at the stage. Every media type passes as binary
+# for neither and are throttled at the stage. The consent of HU-W1.2-01 and
+# POST /v1/offers of HU-W1.2-03 are partner routes on exact paths (T5); the
+# consent verification of audit is never published. Every media type passes as binary
 # (decision D-4), so the PDF reaches the browser, curl and the web client
-# intact; JSON goes through the HTTP_PROXY integrations unchanged.
+# intact; JSON goes through the HTTP_PROXY integrations unchanged. The card
+# tokenization of the payment gateway (T5) is public too: POST /pasarela/tokens
+# goes to /tokens of the stub behind the ALB, throttled at the stage.
 module "apigateway" {
   source = "../apigateway"
 
@@ -231,9 +260,11 @@ module "apigateway" {
   partners               = var.partners
   cognito_user_pool_arns = [local.cognito.user_pool_arn]
   human_routes           = var.human_routes
+  partner_routes         = var.partner_routes
   public_routes          = var.public_routes
   binary_media_types     = ["*/*"]
   cors_allow_origin      = var.cors_allow_origin
+  payment_tokenization   = {}
 }
 
 # --- Data -----------------------------------------------------------------------------------
@@ -382,13 +413,25 @@ locals {
       AUTH_ISSUER         = local.cognito.issuer
       AUTH_JWKS_URL       = local.cognito.jwks_url
       AUTH_CLIENT_IDS     = join(",", values(local.cognito.client_ids))
+      # Consent verification of HU-W1.2-01 (and of the personalized offer of
+      # HU-W1.2-03): audit through Cloud Map, never through the API Gateway,
+      # where GET /v1/audit/consent-verifications is not published. If audit
+      # does not answer within AUDIT_TIMEOUT_MS (300 ms by default) origination
+      # fails closed. T5, decision D-21 (a).
+      AUDIT_URL = "http://audit.${local.namespace}:${local.service_port}"
       # Contractual document (HU-W1.3-03) in AWS (HA-D02): the PDF goes to the
       # documents bucket, and the e-mail links open it through the public
-      # GET /v1/documents/{token} of the API Gateway stage.
+      # GET /v1/documents/{token}: through the web portal when it exists (its
+      # CloudFront distribution sends /v1/* to this stage, T5 decision D-11),
+      # otherwise straight through the API Gateway stage.
       DOCUMENTS_BUCKET          = module.buckets["documents"].bucket
-      DOCUMENTS_PUBLIC_BASE_URL = module.apigateway.invoke_url
+      DOCUMENTS_PUBLIC_BASE_URL = coalesce(var.portal_base_url, module.apigateway.invoke_url)
       AWS_REGION                = data.aws_region.current.region
-    })
+      },
+      # Links of the offer e-mails to the screens of the portal (T5, D-11);
+      # without a portal the service keeps its own default.
+      var.portal_base_url != null ? { OFFER_LINK_BASE_URL = var.portal_base_url } : {}
+    )
   }
 
   # Secrets Manager values of each service (the ECS secrets field): its
@@ -423,6 +466,7 @@ module "ecs" {
         max_count            = var.services_enabled ? var.service_sizing[k].max_count : 0
         load_balanced        = true
         target_group_arn     = module.alb.target_group_arns[k]
+        discovery_name       = contains(local.discoverable_services, k) ? k : null
         environment          = lookup(local.service_environment, k, { PORT = tostring(local.service_port) })
         secrets              = local.service_secrets[k]
         task_role_statements = local.task_role_statements[k]
@@ -430,14 +474,18 @@ module "ecs" {
     },
     {
       for k, port in local.stubs : k => {
-        image          = local.image_uris[k]
-        port           = port
-        cpu            = 256
-        memory         = 512
-        desired_count  = var.services_enabled ? lookup(var.stub_desired_count_overrides, k, var.stub_desired_count) : 0
-        max_count      = var.services_enabled ? lookup(var.stub_desired_count_overrides, k, var.stub_desired_count) : 0
-        discovery_name = k
-        environment    = { PORT = tostring(port) }
+        image         = local.image_uris[k]
+        port          = port
+        cpu           = 256
+        memory        = 512
+        desired_count = var.services_enabled ? lookup(var.stub_desired_count_overrides, k, var.stub_desired_count) : 0
+        max_count     = var.services_enabled ? lookup(var.stub_desired_count_overrides, k, var.stub_desired_count) : 0
+        # Origination keeps reaching every stub through Cloud Map; the ones of
+        # lb_stubs are also behind the ALB (T5).
+        discovery_name   = k
+        load_balanced    = contains(keys(local.lb_stubs), k)
+        target_group_arn = contains(keys(local.lb_stubs), k) ? module.alb.target_group_arns[k] : null
+        environment      = { PORT = tostring(port) }
       }
     },
   )

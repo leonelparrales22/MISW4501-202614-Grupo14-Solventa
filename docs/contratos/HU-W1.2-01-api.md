@@ -222,7 +222,7 @@ consentimiento sigue activo y no hace falta volver a pedirlo.
 | Revocación del consentimiento | No existe (el modelo la admite como registro nuevo) | HU futura |
 | Uso único del KYC | Dura lo que el consentimiento; su uso no se registra | HU futura |
 | Particionado por fecha de `consent_record` | No existe | Cuando el volumen lo pida |
-| Rutas en el API Gateway (AWS) y variables de ECS (`AUDIT_URL`, `DATABASE_URL`, `AUTH_*` de `audit`) | No registradas | Tarea de Terraform (`chore(infra)`) |
+| Rutas en el API Gateway (AWS) y `AUDIT_URL` | Registradas en `modules/platform` (T5): `GET /v1/audit/consent-terms/current` y `POST /v1/audit/consents` como rutas de socio con API key (CloudFront pone la del portal); originación llega a `audit` por Cloud Map dentro de la VPC (`AUDIT_URL=http://audit.<nombre>.local:8080`); `GET /v1/audit/consent-verifications` no se publica. `DATABASE_URL` de `audit` ya la inyectaba la plataforma (T4) | `AUTH_*` de `audit` y la ruta de evidencia `GET /v1/audit/consents/{consent_id}` (no se publica): HU-W4.2-02 |
 | Código de error propio para «consentimiento no verificable» | Es `503 request_aborted` | Dueños de `handler.go` |
 | Cotización asistida (`POST /v1/assisted-quotes`) | Sigue con el `consent_active` afirmado por el asesor | HU-W1.1-01 |
 

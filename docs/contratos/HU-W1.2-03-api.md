@@ -467,7 +467,7 @@ Para simular la caída de Open Finance, desactivar su proxy en Toxiproxy (`POST 
 | Correo de recotización | Reintentos en el proceso; si se detiene mientras reintenta, el aviso se pierde | El cliente ve el reemplazo al volver (§5.3) | Cola persistente |
 | Eventos `OfferGenerated`, `OfferRequoted` | Registrados en `docs/events/README.md`; **no se publican** | — | HU-W4.1-01 |
 | Revocación del consentimiento | Fuera de alcance (HU-W1.2-01, D2) | — | Historia futura |
-| Rutas en el API Gateway (AWS) y variables de ECS | No registradas | Solo se puede probar en local | `chore(infra)` |
+| Rutas en el API Gateway (AWS) y variables de ECS | Registradas en `modules/platform` (T5): `POST /v1/offers` con la API key del socio (ruta exacta) y las demás rutas de ofertas (`GET /v1/offers/{offer_id}`, `…/renewal`, `…/acceptance`) con Cognito; `AUDIT_URL` en originación por Cloud Map | Probado en la ventana de staging de T5 (humo W-4, W-9 y W-10, E2E `nube`) | — |
 
 ## 9. Cambios para otras historias
 

@@ -19,7 +19,8 @@ destruye en la misma sesión**. La topología está en el README del módulo; aq
 | Identidad | User pool permanente `solventa-users` de [`bootstrap/identity`](../../../bootstrap/identity/README.md), leído por `terraform_remote_state` (clave `bootstrap/identity/terraform.tfstate`) y pasado al módulo en `existing_cognito`; esta composición no crea pool ni usuarios | Las ventanas usan los mismos cuatro usuarios de prueba y los mismos clientes que el portal y la app |
 | Ciclo de vida | `ephemeral = true`: sin snapshot final, buckets con `force_destroy`, secretos sin ventana de recuperación (se pueden recrear con el mismo nombre); sin `deletion_protection` | Se destruye tras cada ventana |
 | Logs | 3 días | — |
-| Usage plans | D-7: 100 req/s, ráfaga 200, sin cuota, por socio | Decisión D-7 vigente |
+| Usage plans | D-7: 100 req/s, ráfaga 200, sin cuota, por socio; `portal-embebido` (10 req/s, ráfaga 20) para el portal web (T5, D-3) | Decisión D-7 vigente |
+| Portal web (T5) | La URL del portal sale del parámetro SSM `/solventa/staging/web/url` que publica [`staging/web`](../web/README.md); con ella, los enlaces de los correos apuntan al portal (D-11). CORS sigue en `*` (D-12 b) | Sin el sitio, todo queda como antes |
 | Estado remoto | `staging/platform/terraform.tfstate` en `solventa-tfstate-368083581678`, bloqueo nativo de S3 | Convención de T4 |
 
 Etiquetas por defecto: `Project=solventa`, `Env=staging`, `Task=T4`, `TTL=<var.ttl>`. `extra_tags` agrega otras (por ejemplo
@@ -37,6 +38,7 @@ Etiquetas por defecto: `Project=solventa`, `Env=staging`, `Task=T4`, `TTL=<var.t
 | `rds_multi_az` | `false` | Réplica en espera de PostgreSQL |
 | `redis_multi_az` | `false` | Réplica de Redis con *failover* automático |
 | `cors_allow_origin` | `"*"` | Origen permitido de las rutas humanas |
+| `portal_base_url` | `null` | Origen del portal; `null` lo lee del parámetro SSM `/solventa/staging/web/url` (T5) |
 | `stub_desired_count_overrides` | `{}` | Tareas por stub; `{ payment-gateway = 0 }` tumba la pasarela y `{}` la restaura (HA-D02, D-6) |
 | `origination_environment` | `{}` | Variables extra de `origination` para la ventana (p. ej. `RETRY_WINDOW_SECONDS`, `CHARGE_RETRY_MAX_MS`); no puede reemplazar las de la plataforma |
 | `extra_tags` | `{}` | Etiquetas adicionales (`Owner`, `Story`…) |
@@ -44,7 +46,30 @@ Etiquetas por defecto: `Project=solventa`, `Env=staging`, `Task=T4`, `TTL=<var.t
 [`ha-d02.example.tfvars`](ha-d02.example.tfvars) trae los valores de la ventana de HA-D02 (ventana de reintentos de 300 s, espera
 máxima de 15 s y `Owner=nicolas`, `Story=HA-D02`), sin contraseña ni etiquetas de imagen.
 
-## Procedimiento
+## Encender y apagar con un comando (T5)
+
+Desde T5 una ventana de staging (plataforma y portal web) se enciende y se apaga con `scripts/environment/up.sh staging` y
+`down.sh staging` (D-16; documentados en [`scripts/README.md`](../../../../../scripts/README.md)). Hacen lo mismo que el procedimiento
+manual de abajo, en el orden correcto y con las etiquetas de imagen calculadas solas:
+
+```
+scripts/environment/up.sh staging                 # planifica fase por fase y se detiene (no aplica nada)
+EXTRA_TAGS='{Owner="nicolas",Story="<ID>"}' scripts/environment/up.sh staging --yes
+    etiquetas desde ECR (las de 12 caracteres cuyo commit está en origin/develop; nunca prueba-*) →
+    plataforma sin tareas → db-init → sitio (staging/web) → plataforma con tareas y la URL del portal →
+    publicación del front (cd-portal.yml desde develop) → humo
+scripts/environment/down.sh staging --yes         # destroy de la plataforma y después del sitio; state list vacío en las dos
+```
+
+- `--dry-run` solo lee (STS, ECR, `git fetch`, `terraform plan -lock=false`); `--only`, `--from` y `--skip` eligen fases.
+- La identidad es el pool permanente de `bootstrap/identity`: esta composición lo lee siempre, sin variables (P1); `down.sh` no lo toca.
+- Cada ventana sigue exigiendo la autorización del equipo y la estimación de costo escrita, y se apaga en la misma sesión.
+
+## Ventana de T5
+
+Pendiente: se registra aquí al terminar la ventana de staging de T5 (URL del portal recortada, fases, humo y apagado).
+
+## Procedimiento manual (referencia)
 
 Antes de todo, [`bootstrap/identity`](../../../bootstrap/identity/README.md) debe estar **aplicada**: esta composición lee su
 estado (pool, emisor, JWKS y clientes) y sin él ni siquiera se puede planear. El `destroy` de la ventana no toca el user pool, que no
@@ -82,7 +107,7 @@ Una ventana como la de HA-D02 agrega `-var-file=ha-d02.example.tfvars` a los tre
 los cuatro usuarios de prueba permanentes del pool (asegurado, asesor, operaciones y socio; ver
 [`bootstrap/identity`](../../../bootstrap/identity/README.md)): su contraseña la tiene Nicolás y los guiones la reciben por el
 entorno (p. ej. `SEED_USER_PASSWORD` del humo de HA-D02), nunca en un archivo; Terraform no la necesita en esta composición. La
-tarea `db-init` se explica en el README de [`production-demo/platform`](../../production-demo/platform/README.md#procedimiento).
+tarea `db-init` se explica en el README de [`production-demo/platform`](../../production-demo/platform/README.md#procedimiento-manual-referencia).
 
 ### Caída de la pasarela en una ventana (HA-D02)
 

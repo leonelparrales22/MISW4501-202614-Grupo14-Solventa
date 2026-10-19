@@ -148,24 +148,46 @@ variable "redis_multi_az" {
 # --- Edge -------------------------------------------------------------------------------
 
 variable "partners" {
-  description = "Partners with their own API key and usage plan (decision D-7: 100 req/s, burst 200)."
+  description = "Partners with their own API key and usage plan (decision D-7: 100 req/s, burst 200). portal-embebido is the demonstration partner whose key CloudFront adds to the partner routes of the public screens of the web portal (T5, decision D-3: 10 req/s, burst 20); the browser never sees it."
   type = map(object({
     rate_limit  = number
     burst_limit = number
   }))
   default = {
-    socio-a = { rate_limit = 100, burst_limit = 200 }
-    socio-b = { rate_limit = 100, burst_limit = 200 }
+    socio-a         = { rate_limit = 100, burst_limit = 200 }
+    socio-b         = { rate_limit = 100, burst_limit = 200 }
+    portal-embebido = { rate_limit = 10, burst_limit = 20 }
   }
 }
 
+variable "portal_base_url" {
+  description = "Origin of the web portal of this environment (https://<distribution>.cloudfront.net, without a trailing slash; T5). When set, the e-mail links of origination point to the portal: OFFER_LINK_BASE_URL and DOCUMENTS_PUBLIC_BASE_URL (decision D-11). Null keeps the document links on the API Gateway stage."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.portal_base_url == null || can(regex("^https://[^/]+$", var.portal_base_url))
+    error_message = "portal_base_url must be an https origin without path or trailing slash (for example https://d1234abcd.cloudfront.net)."
+  }
+}
+
+variable "portal_partner" {
+  description = "Partner of partners whose API key the web portal composition gives to CloudFront (output portal_partner_api_key, T5)."
+  type        = string
+  default     = "portal-embebido"
+}
+
 variable "human_routes" {
-  description = "Routes of the portal web and mobile app behind the Cognito authorizer (key: path segment under /v1). Default: the authenticated routes of origination."
+  description = "Routes of the portal web and mobile app behind the Cognito authorizer (key: path segment under /v1). Default: the authenticated routes of origination. root_methods (optional) sets the methods of the root /v1/<route> alone; [] gives the root to a partner route (partner_routes)."
   type = map(object({
-    methods = list(string)
+    methods      = list(string)
+    root_methods = optional(list(string))
   }))
   default = {
-    offers = { methods = ["GET", "POST"] }
+    # GET /v1/offers/{offer_id}, POST .../renewal and .../acceptance need the
+    # session (HU-W1.2-03, HU-W1.3-01). The root POST /v1/offers belongs to the
+    # partner (partner_routes), so the root has no human method (T5).
+    offers = { methods = ["GET", "POST"], root_methods = [] }
     # POST carries the payment method of screen E4 (HU-W1.3-02) and the
     # resumption of a failed charge by operations (HA-D02); both hang from
     # /v1/acceptances/{id}/charge and the gateway only lets through the
@@ -179,6 +201,23 @@ variable "human_routes" {
     # operations; their resumption is POST /v1/acceptances/{id}/charge/resume.
     review-requests     = { methods = ["GET", "POST"] }
     issuance-exceptions = { methods = ["GET"] }
+  }
+}
+
+variable "partner_routes" {
+  description = "Partner-channel routes on exact paths under /v1, with the partner API key and never the authorizer (T5). Default: the consent of HU-W1.2-01 (GET /v1/audit/consent-terms/current and POST /v1/audit/consents, contract HU-W1.2-01 section 2) and the personalized offer of HU-W1.2-03 (POST /v1/offers, contract HU-W1.2-03 section 2). GET /v1/audit/consent-verifications is internal to the VPC and is never published."
+  type = map(object({
+    methods = list(string)
+  }))
+  default = {
+    offers                        = { methods = ["POST"] }
+    "audit/consent-terms/current" = { methods = ["GET"] }
+    "audit/consents"              = { methods = ["POST"] }
+  }
+
+  validation {
+    condition     = !contains(keys(var.partner_routes), "audit/consent-verifications")
+    error_message = "The consent verification of audit is internal to the VPC (HU-W1.2-01): /v1/audit/consent-verifications can never be published."
   }
 }
 

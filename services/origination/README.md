@@ -143,12 +143,12 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `AWS_REGION` | — | Región del SDK de AWS cuando se usa `DOCUMENTS_BUCKET` (la plataforma la fija, `us-east-2`) |
 | `DOCUMENT_LINK_SECRET` | — | Secreto (≥ 32 caracteres) con el que se firman los enlaces; viene del entorno o de Secrets Manager, nunca del código |
 | `DOCUMENT_LINK_TTL_HOURS` | `168` | Vigencia del enlace seguro del correo |
-| `DOCUMENTS_PUBLIC_BASE_URL` | `http://localhost:$PORT` | Base pública de los enlaces (el API Gateway en AWS) |
+| `DOCUMENTS_PUBLIC_BASE_URL` | `http://localhost:$PORT` | Base pública de los enlaces: en AWS, la URL del portal web cuando existe (T5: `GET /v1/documents/{token}` llega por CloudFront al API Gateway) y, sin portal, el `invoke_url` del stage |
 | `EMAIL_TIMEOUT_MS` | `2000` | Corte duro de cada envío de correo |
 | `CONTRACT_POLL_INTERVAL_MS`, `CONTRACT_ATTEMPT_TIMEOUT_MS` | `500`, `10000` | Cada cuánto el trabajador busca emisiones pendientes (una activación nueva lo despierta enseguida) y el tope de un intento |
 | `CONTRACT_RETRY_BASE_MS`, `CONTRACT_RETRY_MAX_MS` | `1000`, `15000` | Espera tras el primer fallo (se duplica) y su tope; caben varios intentos dentro de los 60 s |
 | `CONTRACT_MAX_ATTEMPTS` | `12` | Intentos fallidos antes de marcar la emisión `failed` (el documento sigue disponible) |
-| `AUDIT_URL` | vacío | URL base del servicio `audit` (HU-W1.2-01). Definida: el consentimiento de `/v1/risk-profiles/*` lo verifica `audit` antes de consultar nada y falla cerrado si no responde. Vacía: el llamador sigue afirmando `consent_active` (el log avisa «HU-W1.2-01 not enforced»); así siguen funcionando `tests/resilience/ha-d01` y k6. No cubre la cotización asistida (desde HU-W1.2-03: también es la que verifica el consentimiento de `POST /v1/offers`; sin ella esa ruta responde `503 consent_unverifiable` y el trabajador de recotización no corre) |
+| `AUDIT_URL` | vacío | URL base del servicio `audit` (HU-W1.2-01). Definida: el consentimiento de `/v1/risk-profiles/*` lo verifica `audit` antes de consultar nada y falla cerrado si no responde. Vacía: el llamador sigue afirmando `consent_active` (el log avisa «HU-W1.2-01 not enforced»); así siguen funcionando `tests/resilience/ha-d01` y k6. No cubre la cotización asistida (desde HU-W1.2-03: también es la que verifica el consentimiento de `POST /v1/offers`; sin ella esa ruta responde `503 consent_unverifiable` y el trabajador de recotización no corre). **En AWS la fija la plataforma** (T5): `http://audit.<nombre>.local:8080`, `audit` por Cloud Map dentro de la VPC (`modules/platform`), y no se puede reemplazar con `origination_environment` |
 | `AUDIT_TIMEOUT_MS` | `300` | Corte de cada verificación de consentimiento (HU-W1.2-01). Su circuit breaker abre con 3 fallas seguidas, 5 s abierto y 3 éxitos para cerrar (los de EC-D01) |
 | `LOG_LEVEL` | `info` | Nivel de los logs JSON (`debug`, `info`, `warn`, `error`). Cada línea lleva `service`, `correlation_id` y, dentro de una petición, `trace_id`/`span_id` |
 | `ENVIRONMENT` | `local` | Etiqueta `deployment.environment` de la telemetría |
@@ -162,7 +162,7 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `DATABASE_URL` | vacío | PostgreSQL de originación (secreto: viene del entorno o de Secrets Manager, nunca se registra). **Obligatoria si `PAYMENT_GATEWAY_URL` está definida** (decisión D-2b): el cobro siempre es durable (desde HU-W1.2-03: definida, también persiste las ofertas personalizadas en un pool propio y aplica sus migraciones; vacía, las ofertas viven en memoria y el log lo avisa) |
 | `OFFER_REQUOTE_POLL_INTERVAL_MS` | `60000` | Cada cuánto el trabajador de recotización revisa las ofertas provisionales vigentes (HU-W1.2-03). Solo corre con `AUDIT_URL` |
 | `OFFER_REQUOTE_BATCH` | `50` | Ofertas provisionales que revisa en cada vuelta (HU-W1.2-03) |
-| `OFFER_LINK_BASE_URL` | `http://localhost:4200` | Dirección del front web con la que se arma el enlace del correo de recotización (`/embebido/oferta/<id>`) (HU-W1.2-03) |
+| `OFFER_LINK_BASE_URL` | `http://localhost:4200` | Dirección del front web con la que se arma el enlace del correo de recotización (`/embebido/oferta/<id>`) (HU-W1.2-03). En AWS la plataforma la fija con la URL del portal web cuando existe (T5) |
 | `PAYMENT_GATEWAY_TIMEOUT_MS` | `700` | Corte duro de cada intento de cobro (decisión D-9); un corte solo vuelve ambigua la respuesta, que se reintenta con la misma clave |
 | `RETRY_WINDOW_SECONDS` | `86400` | Ventana de reintentos del cobro (24 h, ADR-01); al vencer, el cobro queda como excepción de emisión |
 | `CHARGE_RETRY_BASE_MS`, `CHARGE_RETRY_MAX_MS` | `500`, `60000` | Espera tras el primer intento fallido (se duplica) y su tope (decisión D-4 A, valores de EC-D02) |
@@ -378,7 +378,9 @@ detalles en `null`. Su dueño es el cliente de la oferta; nunca se reclaman.
 **Lo que la respuesta nunca trae:** `score`, `rules` ni el documento de identidad.
 
 **Pendiente (otras historias):** la oferta ajustada `adj-*` no usa los datos de la oferta personalizada (HU-W1.1-02); la
-publicación de `OfferGenerated` y `OfferRequoted` (HU-W4.1-01); el API Gateway y las variables de ECS (`chore(infra)`). Desde la fase AWS
+publicación de `OfferGenerated` y `OfferRequoted` (HU-W4.1-01). El API Gateway y las variables de ECS ya están en
+`infra/terraform/modules/platform` (T5: `POST /v1/offers` con la API key del socio, las demás rutas de ofertas con Cognito y
+`AUDIT_URL` por Cloud Map). Desde la fase AWS
 de HA-D02 (D-16), la activación y el documento contractual de una oferta personalizada usan su monto asegurado, su plazo y sus
 coberturas.
 

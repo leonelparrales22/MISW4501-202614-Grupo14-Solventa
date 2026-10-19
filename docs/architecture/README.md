@@ -15,6 +15,7 @@ La arquitectura se documenta en la Wiki: [Visión de arquitectura](https://githu
 | `pkg/outbox`, `pkg/idempotency`, `pkg/events` | Transactional outbox, consumidor idempotente, contratos de eventos (HA-D02, HA-05) |
 | `stubs/*` | Stubs del ecosistema externo |
 | `infra/terraform` | Tarea T4 del plan de sprints |
+| `infra/terraform/modules/web-portal`, `environments/*/web`, `scripts/environment` | T5 (versión web): el cliente web corre en el navegador; sus archivos se sirven desde S3 privado detrás de CloudFront, con el API Gateway («Facade») en el mismo dominio. *Arquitectura final* no modela dónde se sirve el portal: es una decisión de despliegue de T5 informada al equipo, no un ADR |
 | `tests/*` | k6, Toxiproxy, ZAP |
 
 Decisión: monorepo para el componente backend; web y móvil viven en sus propios repositorios.

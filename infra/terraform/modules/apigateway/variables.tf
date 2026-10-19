@@ -91,11 +91,19 @@ variable "cognito_user_pool_arns" {
 }
 
 variable "human_routes" {
-  description = "Human-channel routes (portal web and mobile app) behind the Cognito authorizer. Key: path segment under /v1 (for example quotes); the route and every sub-path (/{proxy+}) are proxied to the same path of the backend. Each one gets a CORS preflight (OPTIONS) without authorization."
+  description = "Human-channel routes (portal web and mobile app) behind the Cognito authorizer. Key: path segment under /v1 (for example quotes); the route and every sub-path (/{proxy+}) are proxied to the same path of the backend. Each resource with methods gets a CORS preflight (OPTIONS) without authorization. root_methods (T5) sets the methods of the root /v1/<route> on its own: null means the same as methods; [] leaves the root without human methods and without preflight, for example when the root belongs to a partner route (partner_routes)."
   type = map(object({
-    methods = list(string)
+    methods      = list(string)
+    root_methods = optional(list(string))
   }))
   default = {}
+
+  validation {
+    condition = alltrue([
+      for r in values(var.human_routes) : r.root_methods == null || alltrue([for m in coalesce(r.root_methods, []) : contains(["GET", "POST", "PUT", "PATCH", "DELETE"], m)])
+    ])
+    error_message = "root_methods of a human route must be among GET, POST, PUT, PATCH and DELETE (it can be empty)."
+  }
 
   validation {
     condition = alltrue([
@@ -112,6 +120,33 @@ variable "human_routes" {
   validation {
     condition     = !contains(keys(var.human_routes), "risk-profiles")
     error_message = "risk-profiles is the partner quoting journey (API key only); it cannot be a human route (CA-5)."
+  }
+}
+
+# --- Partner routes on explicit paths (T5) ---------------------------------------------
+
+variable "partner_routes" {
+  description = "Partner-channel routes on exact paths under /v1 (key: 1 to 3 lowercase segments, for example offers, audit/consents or audit/consent-terms/current), published like the quoting journey: API key of the partner (its usage plan applies), no authorizer, no preflight, HTTP_PROXY to the same path of the backend. A key whose first segment is a human route must be that segment alone, and then it takes the root of that human route (set its root_methods so they do not repeat). Empty: nothing is created and nothing changes."
+  type = map(object({
+    methods = list(string)
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for k in keys(var.partner_routes) : can(regex("^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*){0,2}$", k))])
+    error_message = "partner_routes keys must be 1 to 3 lowercase path segments under /v1 (for example audit/consents)."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in values(var.partner_routes) : length(r.methods) > 0 && length(distinct(r.methods)) == length(r.methods) && alltrue([for m in r.methods : contains(["GET", "POST", "PUT", "PATCH", "DELETE"], m)])
+    ])
+    error_message = "Each partner route needs at least one method among GET, POST, PUT, PATCH and DELETE, without repetitions."
+  }
+
+  validation {
+    condition     = alltrue([for k in keys(var.partner_routes) : split("/", k)[0] != "risk-profiles"])
+    error_message = "risk-profiles is fixed in the module (the quoting journey); it cannot be a partner route."
   }
 }
 
@@ -157,4 +192,26 @@ variable "cors_allow_origin" {
   description = "Value of Access-Control-Allow-Origin in the CORS preflight and the gateway 4XX responses (the web client sends a Bearer token, not cookies). Pin it to the portal origin outside test windows."
   type        = string
   default     = "*"
+}
+
+# --- Public card tokenization (T5) -------------------------------------------------------
+
+variable "payment_tokenization" {
+  description = "Public POST /pasarela/tokens route of the simulated payment gateway (outside /v1; the name is fixed by the HU-W1.3-02 contract, section 8): the web client sends the card straight to the gateway, so the number never goes through Solventa. No session and no API key; rate_limit and burst_limit (requests per second) throttle it at the stage. backend_path is the path of the gateway behind the load balancer. Null: nothing is created."
+  type = object({
+    backend_path = optional(string, "/tokens")
+    rate_limit   = optional(number, 5)
+    burst_limit  = optional(number, 10)
+  })
+  default = null
+
+  validation {
+    condition     = var.payment_tokenization == null || can(regex("^/[A-Za-z0-9/_-]*$", var.payment_tokenization.backend_path))
+    error_message = "payment_tokenization.backend_path must be an absolute path (for example /tokens)."
+  }
+
+  validation {
+    condition     = var.payment_tokenization == null || try(var.payment_tokenization.rate_limit > 0 && var.payment_tokenization.burst_limit > 0, false)
+    error_message = "payment_tokenization.rate_limit and burst_limit must be greater than 0."
+  }
 }

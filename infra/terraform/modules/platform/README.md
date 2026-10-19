@@ -10,12 +10,15 @@ cliente ──HTTPS──▶ API Gateway REST (stage = ambiente; todos los tipos
    │  rutas de socio: API key + usage plan por socio (D-7: 100 req/s, ráfaga 200)
    │  rutas humanas: authorizer de Cognito (valida el JWT)
    │  ruta pública: GET /v1/documents/{token} (enlace firmado del correo; 10 req/s, ráfaga 20, D-5)
+   │  ruta pública: POST /pasarela/tokens (tokenización de la tarjeta en E4; 5 req/s, ráfaga 10, T5)
    └──VPC Link V2──▶ ALB interno (health check EXP-D03, deregistration delay 30 s)
+        ├──/tokens──▶ stub payment-gateway (solo la tokenización, T5)
         └──por ruta──▶ ECS Fargate: origination · claims · partners · audit · notifications
                           ├─▶ RDS PostgreSQL (una base y un usuario por servicio)
                           ├─▶ ElastiCache Redis
                           ├─▶ SNS (un tópico por dominio) ─▶ SQS por consumidor + DLQ
                           ├─▶ S3 (documents, evidence)
+                          ├─Cloud Map─▶ audit (origination verifica el consentimiento, HU-W1.2-01, T5)
                           └─Cloud Map─▶ stubs openfinance · opendata · kyc · email · payment-gateway
 ```
 
@@ -89,8 +92,13 @@ cuando esos datos estén en PostgreSQL. Un reinicio de la tarea borra lo que est
 |---|---|---|
 | `origination` | `/v1/risk-profiles*`, `/v1/offers*`, `/v1/acceptances*`, `/v1/assisted-quotes*`, `/v1/customers*`, `/v1/policies*`, `/v1/documents*`, `/v1/review-requests*`, `/v1/issuance-exceptions*` (9 prefijos, 2 reglas del ALB) | Implementados |
 | `claims`, `partners`, `audit`, `notifications` | `/v1/claims*`, `/v1/partners*`, `/v1/audit*`, `/v1/notifications*` | Reservados (solo `GET /health`); un target group necesita al menos una regla |
+| stub `payment-gateway` | `/tokens` (prioridad 6) | Tokenización de la tarjeta desde el navegador (T5, `local.lb_stubs`); el resto del simulador no se alcanza por el ALB |
 
-En API Gateway las rutas de socio son las de cotización (`/v1/risk-profiles/...`, API key) y las humanas por defecto son `offers`,
+En API Gateway las rutas de socio son las de cotización (`/v1/risk-profiles/...`, API key) y, desde T5 (variable `partner_routes`), el
+consentimiento de HU-W1.2-01 (`GET /v1/audit/consent-terms/current` y `POST /v1/audit/consents`) y la oferta personalizada de HU-W1.2-03
+(`POST /v1/offers`), también con la API key del socio y nunca con el authorizer. La verificación del consentimiento
+(`GET /v1/audit/consent-verifications`) es interna de la VPC y **no se publica** (la variable lo rechaza). Las humanas por defecto son
+`offers` (solo sus subrutas: `GET /v1/offers/{offer_id}`, `…/renewal` y `…/acceptance`; la raíz es del socio, `root_methods = []`),
 `acceptances` (`GET` y `POST`: medio de pago y reanudación del cobro), `assisted-quotes`, `customers`, `policies`, `review-requests`
 (bandeja del asesor, HU-W1.1-02: `GET` y `POST`) e `issuance-exceptions` (excepciones de emisión de operaciones, HA-D02: `GET`), con el
 authorizer de Cognito (variable `human_routes`).
@@ -100,6 +108,21 @@ token firmado y con vencimiento lo protege (variable `public_routes`, HA-D02). C
 10 req/s con ráfaga de 20 (D-5). Para que el PDF llegue íntegro a cualquier cliente (navegador, `curl`, la descarga autenticada del
 front con `responseType: 'blob'`), la API declara `*/*` como tipo binario (D-4): las integraciones `HTTP_PROXY` pasan los bytes sin
 tocarlos (también el JSON) y el *preflight* `MOCK` convierte su cuerpo a texto para seguir respondiendo `200`.
+
+## Portal web (T5)
+
+El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/web`, módulo
+[`web-portal`](../web-portal/README.md)) con el API en el **mismo dominio**. Para eso la plataforma aporta:
+
+| Pieza | Qué hace |
+|---|---|
+| Tokenización pública | `POST /pasarela/tokens` en el gateway (sin sesión ni API key, 5 req/s, ráfaga 10) → ALB `/tokens` → stub `payment-gateway`, que sigue también en Cloud Map para el cobro de originación (D-4 de T5). Su *target group* es `<nombre>-payment-gateway` (29 caracteres en `solventa-demo`) y el puerto 9040 se abre solo al ALB |
+| Socio `portal-embebido` | API key y usage plan propios (10 req/s, ráfaga 20). CloudFront agrega su key a las rutas de socio de las pantallas públicas; el navegador nunca la ve (D-3 de T5) |
+| Salida `api_origin` | Dominio del REST API, stage (el *origin path* de CloudFront) e `invoke_url` |
+| Salida `portal_partner_api_key` | Key del socio `portal_partner` (sensible); solo la lee la composición `web` para el encabezado de origen de CloudFront |
+| `audit` en Cloud Map | `audit` se registra también en Cloud Map (`local.discoverable_services`) sin dejar el ALB, para que originación verifique el consentimiento dentro de la VPC (`AUDIT_URL`, D-21 a de T5); el módulo `ecs` abre el 8080 entre las tareas. `audit` sigue sin `AUTH_*`: su autorización y la ruta de evidencia son de HU-W4.2-02 (D-23 c) |
+| Salida `audit_url` | El `AUDIT_URL` de la definición de tarea de originación (`http://audit.<nombre>.local:8080`); lo comprueban las pruebas de las composiciones |
+| Variable `portal_base_url` | Origen del portal (`https://<distribución>.cloudfront.net`). Con ella, los dos enlaces de los correos de originación apuntan al portal (D-11 de T5). La composición del ambiente la toma del parámetro SSM `/solventa/<ambiente>/web/url` |
 
 ## Imágenes
 
@@ -118,9 +141,11 @@ tocarlos (también el JSON) y el *preflight* `MOCK` convierte su cuerpo a texto 
 | `OPEN_FINANCE_URL`, `OPEN_DATA_URL`, `KYC_URL` | Stubs por Cloud Map (9000, 9010, 9020) | Perfilamiento en paralelo (HA-L01) |
 | `EMAIL_URL` | Stub `email` por Cloud Map (9030) | Correo de emisión y de la bandeja; con él se enciende el documento contractual (HU-W1.3-03) |
 | `PAYMENT_GATEWAY_URL` | Stub `payment-gateway` por Cloud Map (9040) | Enciende el cobro de la prima (HA-D02); exige `DATABASE_URL`, `EMAIL_URL` y `AUTH_ISSUER` |
+| `AUDIT_URL` | `audit` por Cloud Map: `http://audit.<nombre>.local:8080` (T5, D-21 a) | Verificación del consentimiento antes del perfilamiento (HU-W1.2-01) y de la oferta personalizada (HU-W1.2-03). Si `audit` no responde en `AUDIT_TIMEOUT_MS` (300 ms por defecto, no se cambia) originación falla cerrado; sin la variable no verifica ni genera ofertas personalizadas |
 | `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_CLIENT_IDS` | User pool del ambiente: el permanente de `bootstrap/identity` (`existing_cognito`) o el que crea el módulo | Rutas humanas (HA-S01) |
 | `DOCUMENTS_BUCKET` | Bucket `documents` del ambiente | Repositorio del documento contractual en S3 (HA-D02, fase AWS); el servicio comprueba el bucket al arrancar |
-| `DOCUMENTS_PUBLIC_BASE_URL` | `invoke_url` del stage de API Gateway | Base del enlace firmado del correo: `<invoke_url>/v1/documents/<token>` |
+| `DOCUMENTS_PUBLIC_BASE_URL` | `portal_base_url` si existe (T5, D-11); si no, `invoke_url` del stage de API Gateway | Base del enlace firmado del correo: `<base>/v1/documents/<token>`; con el portal, el PDF se abre por CloudFront |
+| `OFFER_LINK_BASE_URL` | `portal_base_url`, solo si existe (T5, D-11) | Base de los enlaces de los correos de oferta hacia las pantallas del portal; sin portal, el servicio usa su valor por defecto (`http://localhost:4200`) |
 | `AWS_REGION` | Región del proveedor (`us-east-2`) | Región del SDK de AWS (S3) |
 | `DATABASE_URL` (secreto) | `<nombre>/origination/database` | Base propia: cobro de la prima (HA-D02) y ofertas personalizadas (HU-W1.2-03) |
 | `DOCUMENT_LINK_SECRET` (secreto) | `<nombre>/origination/document-link`, 48 caracteres aleatorios (`random_password`) | Firma de los enlaces del documento; nunca va como variable en claro |
@@ -157,8 +182,11 @@ el estado remoto cifrado del bucket de T4.
 | `log_retention_days` | `7` | Retención de logs |
 | `rds_instance_class` / `rds_multi_az` / `rds_backup_retention_days` | `db.t4g.micro` / `false` / `1` | PostgreSQL |
 | `redis_node_type` / `redis_multi_az` | `cache.t4g.micro` / `false` | Redis |
-| `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) | Usage plans (D-7) |
-| `human_routes` | rutas de `origination` | Rutas detrás de Cognito |
+| `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) y `portal-embebido` (10 req/s, ráfaga 20, T5) | Usage plans (D-7; el socio de demostración del portal, D-3 de T5) |
+| `portal_partner` | `"portal-embebido"` | Socio cuya key recibe CloudFront (salida `portal_partner_api_key`, T5) |
+| `portal_base_url` | `null` | Origen `https://` del portal web; apunta los enlaces de los correos al portal (T5, D-11) |
+| `human_routes` | rutas de `origination` | Rutas detrás de Cognito; `offers` con `root_methods = []` (la raíz es del socio, T5) |
+| `partner_routes` | `offers` (`POST`), `audit/consent-terms/current` (`GET`), `audit/consents` (`POST`) | Rutas de socio en rutas exactas, con API key (T5); `audit/consent-verifications` está prohibida |
 | `public_routes` | `documents` (`GET`, 10 req/s, ráfaga 20) | Rutas sin sesión ni API key (enlace firmado del documento, HA-D02) |
 | `existing_cognito` | `null` | User pool externo (`user_pool_id`, `user_pool_arn`, `issuer`, `jwks_url`, `client_ids`); `null` crea uno propio. Ver «User pool propio o externo» |
 | `seed_users` / `seed_user_password` | `{}` / `null` | Usuarios de prueba del pool que crea la plataforma, solo con `existing_cognito = null` (contraseña solo por `TF_VAR_seed_user_password`); las composiciones del repositorio usan los usuarios permanentes de `bootstrap/identity` |
@@ -167,9 +195,10 @@ el estado remoto cifrado del bucket de T4.
 | `deletion_protection` | `true` | RDS, ALB y el user pool cuando lo crea la plataforma |
 | `ephemeral` | `false` | Sin snapshot final, buckets con `force_destroy`, secretos sin ventana de recuperación |
 
-Salidas: `invoke_url`, `api_key_ids`, `api_key_values` (sensible), `usage_plan_ids`, `cognito`, `alb_dns_name`, `ecs_cluster`,
-`log_group`, `service_sizing`, `desired_counts`, `database_users`, `images`, `rds_address`, `redis_endpoint`, `database_secret_arns`,
-`topic_arns`, `queue_urls`, `dlq_urls`, `buckets`, `nat_gateway_ids` y `db_init_command`.
+Salidas: `invoke_url`, `api_key_ids`, `api_key_values` (sensible), `usage_plan_ids`, `api_origin` (T5), `portal_partner_api_key`
+(sensible, T5), `cognito`, `audit_url` (T5), `alb_dns_name`, `ecs_cluster`, `log_group`, `service_sizing`, `desired_counts`, `database_users`, `images`,
+`rds_address`, `redis_endpoint`, `database_secret_arns`, `topic_arns`, `queue_urls`, `dlq_urls`, `buckets`, `nat_gateway_ids` y
+`db_init_command`.
 
 ## Pruebas (locales, sin AWS)
 
@@ -182,3 +211,10 @@ terraform test
 `db-init`, los tres modos de NAT, la resolución de imágenes y el apagado de los servicios. También los dos modos del user pool: sin
 `existing_cognito` la plataforma crea el suyo; con un pool externo no crea ninguno y lo lleva al authorizer, a `AUTH_*` y a la salida
 `cognito`; y la variable rechaza usuarios semilla junto a un pool externo y un ARN que no sea de Cognito.
+Desde T5 comprueba también que el stub de la
+pasarela queda detrás del ALB solo en `/tokens`, que `portal-embebido` tiene su propio usage plan, que `api_origin` corresponde al
+stage y que, con `portal_base_url`, los enlaces de los correos apuntan al portal (sin él, quedan como antes). Y que `audit` es el
+único servicio registrado en Cloud Map, que originación recibe su `AUDIT_URL` sin `AUDIT_TIMEOUT_MS` ni `AUTH_*` para `audit`, y que
+`origination_environment` no puede reemplazarlo. Las rutas de socio: el consentimiento y `POST /v1/offers` se publican con API key, la
+raíz de `/v1/offers` queda sin métodos humanos y sus subrutas con Cognito, y `audit/consent-verifications` no se publica ni puede
+volverse ruta de socio.

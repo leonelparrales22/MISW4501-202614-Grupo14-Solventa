@@ -38,3 +38,13 @@ output "cognito_authorizer_id" {
   description = "ID of the COGNITO_USER_POOLS authorizer of the human routes (HA-S01; null without cognito_user_pool_arns)."
   value       = one(aws_api_gateway_authorizer.cognito[*].id)
 }
+
+output "payment_tokenization_path" {
+  description = "Path of the public card tokenization route (T5; null without payment_tokenization)."
+  value       = local.payment_tokenization_enabled ? "/pasarela/tokens" : null
+}
+
+output "partner_paths" {
+  description = "Paths of the partner routes on explicit paths, with API key (T5)."
+  value       = [for k in sort(keys(var.partner_routes)) : "/v1/${k}"]
+}

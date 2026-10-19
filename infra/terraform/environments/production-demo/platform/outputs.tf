@@ -14,6 +14,17 @@ output "api_key_values" {
   sensitive   = true
 }
 
+output "api_origin" {
+  description = "API Gateway as an origin of the web portal distribution (T5): domain, stage and invoke URL."
+  value       = module.platform.api_origin
+}
+
+output "portal_partner_api_key" {
+  description = "API key of the portal-embebido partner, which only CloudFront sends (T5, decision D-3). Read by environments/production-demo/web."
+  value       = module.platform.portal_partner_api_key
+  sensitive   = true
+}
+
 output "cognito" {
   description = "User pool of the human channels and the AUTH_* values of the services."
   value       = module.platform.cognito

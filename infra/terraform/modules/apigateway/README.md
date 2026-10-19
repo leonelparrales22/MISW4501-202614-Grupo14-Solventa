@@ -43,13 +43,16 @@ module "apigateway" {
 | `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) | Socios de prueba con su API key y usage plan |
 | `tags` | `{}` | Etiquetas adicionales |
 | `cognito_user_pool_arns` | `[]` | User pools de los canales humanos (HA-S01); vacío = API solo de socios |
-| `human_routes` | `{}` | Rutas humanas bajo `/v1` con sus métodos (HA-S01) |
+| `human_routes` | `{}` | Rutas humanas bajo `/v1` con sus métodos (HA-S01); `root_methods` opcional fija los métodos de la raíz (T5) |
 | `cors_allow_origin` | `"*"` | Origen permitido en el *preflight* y en las respuestas 4XX del gateway (HA-S01) |
 | `public_routes` | `{}` | Rutas de solo lectura sin sesión ni API key, con límite opcional por método (HA-D02) |
 | `binary_media_types` | `[]` | Tipos de contenido que la API trata como binarios (HA-D02) |
+| `payment_tokenization` | `null` | Ruta pública `POST /pasarela/tokens` de la pasarela simulada, con `backend_path` (`/tokens`), `rate_limit` (5) y `burst_limit` (10) (T5) |
+| `partner_routes` | `{}` | Rutas de socio en rutas exactas bajo `/v1` (1 a 3 segmentos), con API key y sin authorizer (T5) |
 
 Salidas: `rest_api_id`, `stage_name`, `invoke_url`, `usage_plan_ids`, `api_key_ids`, `api_key_values` (sensible; claves de
-prueba para los guiones k6 de la ventana), `public_paths` (HA-D02) y `cognito_authorizer_id` (HA-S01; `null` sin user pool).
+prueba para los guiones k6 de la ventana), `public_paths` (HA-D02), `cognito_authorizer_id` (HA-S01; `null` sin user pool) y
+`payment_tokenization_path` (T5; `null` sin la tokenización pública) y `partner_paths` (T5; rutas de socio en rutas exactas).
 
 ## Canales humanos: authorizer de Cognito (HA-S01)
 
@@ -108,6 +111,54 @@ siga respondiendo `200`.
 Con los valores por defecto (`public_routes = {}`, `binary_media_types = []`) no se crea nada de estas dos secciones, la API queda
 igual y el *hash* de redespliegue no cambia: `staging/ha-l01` y `staging/ha-s01` no se ven afectados.
 
+## Tokenización pública de la pasarela simulada (T5)
+
+En el paso E4 el navegador manda la tarjeta **directo a la pasarela** y solo el token pasa por Solventa (PCI; contrato
+[HU-W1.3-02](../../../../docs/contratos/HU-W1.3-02-api.md) §2 y §8). En AWS el *stub* `payment-gateway` solo se alcanzaba por Cloud
+Map; `payment_tokenization` lo publica en el gateway:
+
+| Elemento | Configuración |
+|---|---|
+| Recurso | `/pasarela/tokens`, colgado de la raíz y **fuera de `/v1`**: el prefijo lo fijan el contrato y el *proxy* local del cliente web (`proxy.conf.json`) |
+| Método | Solo `POST`, con `authorization = "NONE"` y `api_key_required = false`. Ninguna otra ruta del simulador queda expuesta (`/charges` y `/debug/*` responden `403`) |
+| Integración | `HTTP_PROXY` (mismo VPC link y timeout) a `<backend_base_url><backend_path>`; la plataforma pone el *stub* detrás del ALB solo en `/tokens` |
+| Límite | `rate_limit` / `burst_limit` (req/s; 5 y 10 por defecto, D-4 de T5) en el stage, porque ningún usage plan cubre una ruta sin API key; sin caché |
+
+```hcl
+payment_tokenization = {} # POST /pasarela/tokens → <ALB>/tokens, 5 req/s, ráfaga 10
+```
+
+Con `payment_tokenization = null` (defecto) no se crea nada, la API queda igual y el *hash* de redespliegue no cambia.
+
+## Rutas de socio en rutas exactas (T5)
+
+Además de la cotización (`risk-profiles`, fija en el módulo), `partner_routes` publica rutas del **canal del aliado** en rutas exactas
+bajo `/v1`: la llave es la ruta (1 a 3 segmentos en minúsculas, p. ej. `offers`, `audit/consents` o `audit/consent-terms/current`) y
+cada método se publica como la cotización: `authorization = "NONE"`, `api_key_required = true` (aplica el usage plan de cada socio),
+`HTTP_PROXY` a la misma ruta del servicio y **sin *preflight*** (el socio llama de servidor a servidor, o el portal por CloudFront con
+el mismo origen). Solo se publica lo que se nombra: una ruta vecina, como `audit/consent-verifications`, no existe en el gateway (`403`).
+
+`root_methods` (opcional en `human_routes`) separa los métodos de la raíz `/v1/<ruta>` de los de sus subrutas `{proxy+}`: `null` = los
+mismos de `methods` (lo de siempre); `[]` deja la raíz sin métodos humanos ni *preflight*, para que la tome una ruta de socio. Así
+conviven en `/v1/offers` el `POST` del aliado (API key) y `GET /v1/offers/{id}`, `…/renewal` y `…/acceptance` con Cognito:
+
+```
+/v1/offers                        POST       → API key del socio   partner_routes.offers
+/v1/offers/{proxy+}               GET, POST  → Cognito             human_routes.offers (root_methods = [])
+/v1/audit/consent-terms/current   GET        → API key del socio   partner_routes
+/v1/audit/consents                POST       → API key del socio   partner_routes
+```
+
+| Regla | Cómo se aplica |
+|---|---|
+| Formato y métodos | Validación de la variable: 1 a 3 segmentos; métodos `GET`, `POST`, `PUT`, `PATCH`, `DELETE` sin repetir |
+| `risk-profiles` | No puede ser ruta de socio (es fija en el módulo) |
+| Ruta pública | Una ruta de socio no puede empezar por una llave de `public_routes` (*precondition*) |
+| Bajo una ruta humana | Solo puede tomar su raíz (una ruta más profunda chocaría con `{proxy+}`), y sus métodos no pueden repetir los de `root_methods` (*preconditions*) |
+
+Con `partner_routes = {}` y sin `root_methods` (los valores por defecto) no se crea nada nuevo, la API queda igual y el *hash* de
+redespliegue no cambia: `staging/ha-l01` y `staging/ha-s01` no se ven afectados.
+
 ## Validación local (sin AWS)
 
 ```bash
@@ -121,4 +172,8 @@ que toda ruta humana usa el authorizer y ninguna exige API key, que las rutas de
 sin autorización y las respuestas 4XX con CORS. Desde HA-D02 afirma además que las rutas públicas no usan authorizer ni API key y
 quedan limitadas en el stage, que son de solo lectura, que una ruta no puede ser pública y humana, que `risk-profiles` no puede ser
 pública, que con tipos binarios el *preflight* convierte su cuerpo a texto y que los valores por defecto no cambian nada (mismo
-*hash* de redespliegue).
+*hash* de redespliegue). Desde T5 afirma que la tokenización pública es un único `POST` en `/pasarela/tokens`, sin sesión ni API key,
+limitado en el stage, que sin ella no existe ninguna ruta `/pasarela` y que `backend_path` debe ser una ruta absoluta. Y que las rutas
+de socio exigen API key sin authorizer ni *preflight*, construyen sus recursos por profundidad, toman la raíz de una ruta humana sin
+tocar sus subrutas, que `root_methods` por defecto repite `methods`, y que se rechazan `risk-profiles`, una ruta pública, una ruta
+profunda bajo una humana y un método repetido en la raíz.

@@ -49,6 +49,11 @@ GET  /v1/audit/consents/{id} ─────────▶ evidencia completa (
   `200`.
 - **Verificación sin autenticación:** `GET /v1/audit/consent-verifications` es una llamada entre servicios sin token. **Debe ser
   alcanzable solo desde la red interna** (ALB interno o grupo de seguridad), nunca publicarse a los aliados.
+- **En AWS (T5, `infra/terraform/modules/platform`):** los términos y el registro del consentimiento
+  (`GET /v1/audit/consent-terms/current` y `POST /v1/audit/consents`) se publican en el API Gateway como rutas de socio, con la API
+  key del aliado (en el portal web la pone CloudFront). La verificación **no se publica** (el gateway responde `403`): originación la
+  pide dentro de la VPC, a `audit` registrado en Cloud Map (`AUDIT_URL=http://audit.<nombre>.local:8080`). La evidencia
+  (`GET /v1/audit/consents/{consent_id}`) tampoco se publica y `audit` sigue sin `AUTH_*` en AWS: los dos quedan para HU-W4.2-02.
 - **Pendiente (fuera de alcance):** revocación del consentimiento (será un registro nuevo, nunca un `UPDATE`; el Terraform cita
   «CA-5, revocación ≤ 5 min», pero la HU publicada, issue #64, tiene cuatro criterios), particionado de `consent_record` por fecha y
   registro del uso único del KYC. No publica ni consume eventos.

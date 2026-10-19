@@ -8,8 +8,9 @@ versionado, solo TLS (política que niega `aws:SecureTransport = false`) y versi
 | `bucket` | — | Nombre global (p. ej. `solventa-stg-documents-<cuenta>`) |
 | `force_destroy` | `false` | Solo ambientes efímeros |
 | `noncurrent_version_expiration_days` | `30` | — |
+| `extra_policy_json` | `null` | Política IAM (JSON) cuyas declaraciones se suman a la del bucket, p. ej. la lectura de una distribución de CloudFront del portal web (T5). Sin ella, la política es la de siempre: solo TLS |
 
-Salidas: `bucket` y `arn`.
+Salidas: `bucket`, `arn` y `regional_domain_name` (origen de una distribución de CloudFront).
 
 ## Pruebas (locales, sin AWS)
 

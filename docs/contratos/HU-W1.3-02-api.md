@@ -212,4 +212,4 @@ lo use.
 - **Guardar el medio de pago para cobros futuros** (renovaciones) no es de esta historia: el token se usa una vez y no
   se reutiliza.
 - **El despliegue del *stub* en AWS:** desplegado en staging y en la plataforma (fase AWS de HA-D02); la tokenización pública
-  (`/pasarela/tokens`) queda pendiente de la fase de CloudFront.
+  se publica con T5 como `POST /pasarela/tokens` del API Gateway (sin sesión ni API key, 5 req/s), en el dominio del portal web.
