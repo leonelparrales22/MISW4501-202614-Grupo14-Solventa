@@ -148,7 +148,7 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `CONTRACT_POLL_INTERVAL_MS`, `CONTRACT_ATTEMPT_TIMEOUT_MS` | `500`, `10000` | Cada cuánto el trabajador busca emisiones pendientes (una activación nueva lo despierta enseguida) y el tope de un intento |
 | `CONTRACT_RETRY_BASE_MS`, `CONTRACT_RETRY_MAX_MS` | `1000`, `15000` | Espera tras el primer fallo (se duplica) y su tope; caben varios intentos dentro de los 60 s |
 | `CONTRACT_MAX_ATTEMPTS` | `12` | Intentos fallidos antes de marcar la emisión `failed` (el documento sigue disponible) |
-| `AUDIT_URL` | vacío | URL base del servicio `audit` (HU-W1.2-01). Definida: el consentimiento de `/v1/risk-profiles/*` lo verifica `audit` antes de consultar nada y falla cerrado si no responde. Vacía: el llamador sigue afirmando `consent_active` (el log avisa «HU-W1.2-01 not enforced»); así siguen funcionando `tests/resilience/ha-d01` y k6. No cubre la cotización asistida (desde HU-W1.2-03: también es la que verifica el consentimiento de `POST /v1/offers`; sin ella esa ruta responde `503 consent_unverifiable` y el trabajador de recotización no corre) |
+| `AUDIT_URL` | vacío | URL base del servicio `audit` (HU-W1.2-01). Definida: el consentimiento de `/v1/risk-profiles/*` lo verifica `audit` antes de consultar nada y falla cerrado si no responde. Vacía: el llamador sigue afirmando `consent_active` (el log avisa «HU-W1.2-01 not enforced»); así siguen funcionando `tests/resilience/ha-d01` y k6. No cubre la cotización asistida (desde HU-W1.2-03: también es la que verifica el consentimiento de `POST /v1/offers`; sin ella esa ruta responde `503 consent_unverifiable` y el trabajador de recotización no corre). **En AWS la fija la plataforma** (T5): `http://audit.<nombre>.local:8080`, `audit` por Cloud Map dentro de la VPC (`modules/platform`), y no se puede reemplazar con `origination_environment` |
 | `AUDIT_TIMEOUT_MS` | `300` | Corte de cada verificación de consentimiento (HU-W1.2-01). Su circuit breaker abre con 3 fallas seguidas, 5 s abierto y 3 éxitos para cerrar (los de EC-D01) |
 | `LOG_LEVEL` | `info` | Nivel de los logs JSON (`debug`, `info`, `warn`, `error`). Cada línea lleva `service`, `correlation_id` y, dentro de una petición, `trace_id`/`span_id` |
 | `ENVIRONMENT` | `local` | Etiqueta `deployment.environment` de la telemetría |
@@ -378,7 +378,9 @@ detalles en `null`. Su dueño es el cliente de la oferta; nunca se reclaman.
 **Lo que la respuesta nunca trae:** `score`, `rules` ni el documento de identidad.
 
 **Pendiente (otras historias):** la oferta ajustada `adj-*` no usa los datos de la oferta personalizada (HU-W1.1-02); la
-publicación de `OfferGenerated` y `OfferRequoted` (HU-W4.1-01); el API Gateway y las variables de ECS (`chore(infra)`). Desde la fase AWS
+publicación de `OfferGenerated` y `OfferRequoted` (HU-W4.1-01). El API Gateway y las variables de ECS ya están en
+`infra/terraform/modules/platform` (T5: `POST /v1/offers` con la API key del socio, las demás rutas de ofertas con Cognito y
+`AUDIT_URL` por Cloud Map). Desde la fase AWS
 de HA-D02 (D-16), la activación y el documento contractual de una oferta personalizada usan su monto asegurado, su plazo y sus
 coberturas.
 
