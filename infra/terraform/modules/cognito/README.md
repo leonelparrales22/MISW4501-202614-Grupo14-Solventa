@@ -13,8 +13,8 @@ usan API keys y usage plans del API Gateway (CA-5).
 | Clientes `web` y `mobile` | Sin secreto, `ALLOW_USER_PASSWORD_AUTH` + `ALLOW_REFRESH_TOKEN_AUTH`, revocación activa, errores que no revelan si el usuario existe | Clientes públicos (D-5); `RevokeToken` al cerrar sesión (CA-4) |
 | Atributos escribibles por el usuario | Solo `name` | La lista explícita evita que Cognito deje escribir todos los atributos (incluido `custom:partner_id`) |
 | Vigencias | ID y access token: 5 min · refresco web: 12 h · refresco móvil: 30 días | D-6. Un token revocado sigue siendo válido hasta su `exp`: ventana residual ≤ 5 min (`docs/api/README.md`) |
-| Plan y protección | Essentials (gratis hasta 10 000 MAU); `deletion_protection` activa salvo en las ventanas de staging | Arquitectura (proveedor de identidad) |
-| Usuarios semilla | Opcionales (`seed_users`), con contraseña **permanente** y sin invitación | Solo para ventanas de staging (D-13) |
+| Plan y protección | Essentials (gratis hasta 10 000 MAU); `deletion_protection` activa salvo en los pools efímeros de las ventanas de staging | Arquitectura (proveedor de identidad) |
+| Usuarios semilla | Opcionales (`seed_users`), con contraseña **permanente** y sin invitación | Ventanas de staging con pool propio (D-13) y los cuatro usuarios de prueba permanentes del pool de `bootstrap/identity` |
 
 ## Uso
 
@@ -48,6 +48,10 @@ module "cognito" {
 
 Salidas: `user_pool_id`, `user_pool_arn` (proveedor del authorizer del API Gateway), `issuer` y `jwks_url` (`AUTH_ISSUER` y
 `AUTH_JWKS_URL` de los servicios), `client_ids` (`web`, `mobile`; juntos forman `AUTH_CLIENT_IDS`) y `group_names`.
+
+El pool permanente de los canales humanos, `solventa-users`, se crea con este módulo en
+[`bootstrap/identity`](../../bootstrap/identity/README.md) (candado activo y un usuario de prueba por rol); las composiciones de la
+plataforma lo leen por estado remoto. Composiciones como `staging/ha-s01` crean su propio pool efímero.
 
 El alta de usuarios fuera de staging sigue el runbook «Aprovisionar usuarios internos y del portal del socio»
 (`docs/runbooks/README.md`): en el Sprint 1 es administrativa (D-2); el alta desde el sistema llega con HU-W3.1-01 y la de

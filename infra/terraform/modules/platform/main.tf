@@ -4,7 +4,8 @@
 # which only set the per-environment values.
 #
 #   client --HTTPS--> API Gateway REST (usage plans + API keys per partner,
-#     Cognito authorizer on the human routes, public signed document link)
+#     Cognito authorizer (own or external user pool) on the human routes,
+#     public signed document link)
 #     --VPC link V2--> internal ALB (EXP-D03 health checks, 30 s drain)
 #     --> ECS Fargate services --> RDS PostgreSQL (one database per service),
 #         ElastiCache Redis, SNS/SQS with DLQs, S3
@@ -180,13 +181,35 @@ module "alb" {
 
 module "cognito" {
   source = "../cognito"
+  count  = var.existing_cognito == null ? 1 : 0
 
   name                = var.name
   deletion_protection = var.deletion_protection
 
-  # Test users of a staging window (empty by default; production-demo never sets them).
+  # Test users, only when the platform creates its own user pool (existing_cognito
+  # = null); empty by default. staging and production-demo never set them: they
+  # use the permanent test users of bootstrap/identity.
   seed_users         = var.seed_users
   seed_user_password = var.seed_user_password
+}
+
+# The user pool was created without count before existing_cognito existed: a
+# state with that address keeps its pool when existing_cognito is null.
+moved {
+  from = module.cognito
+  to   = module.cognito[0]
+}
+
+locals {
+  # User pool of the human channels: the permanent one received in existing_cognito
+  # (bootstrap/identity, T4) or the one this module creates for the environment.
+  cognito = var.existing_cognito != null ? var.existing_cognito : {
+    user_pool_id  = one(module.cognito[*].user_pool_id)
+    user_pool_arn = one(module.cognito[*].user_pool_arn)
+    issuer        = one(module.cognito[*].issuer)
+    jwks_url      = one(module.cognito[*].jwks_url)
+    client_ids    = one(module.cognito[*].client_ids)
+  }
 }
 
 # Partner routes need an API key and get the usage plan of their partner
@@ -206,7 +229,7 @@ module "apigateway" {
   integration_target_arn = module.alb.arn
   cache_ttl_seconds      = var.cache_ttl_seconds
   partners               = var.partners
-  cognito_user_pool_arns = [module.cognito.user_pool_arn]
+  cognito_user_pool_arns = [local.cognito.user_pool_arn]
   human_routes           = var.human_routes
   public_routes          = var.public_routes
   binary_media_types     = ["*/*"]
@@ -356,9 +379,9 @@ locals {
       EMAIL_URL        = "http://email.${local.namespace}:${local.stubs.email}"
       # Setting this is what enables the premium charge (HA-D02).
       PAYMENT_GATEWAY_URL = "http://payment-gateway.${local.namespace}:${local.stubs["payment-gateway"]}"
-      AUTH_ISSUER         = module.cognito.issuer
-      AUTH_JWKS_URL       = module.cognito.jwks_url
-      AUTH_CLIENT_IDS     = join(",", values(module.cognito.client_ids))
+      AUTH_ISSUER         = local.cognito.issuer
+      AUTH_JWKS_URL       = local.cognito.jwks_url
+      AUTH_CLIENT_IDS     = join(",", values(local.cognito.client_ids))
       # Contractual document (HU-W1.3-03) in AWS (HA-D02): the PDF goes to the
       # documents bucket, and the e-mail links open it through the public
       # GET /v1/documents/{token} of the API Gateway stage.

@@ -49,6 +49,25 @@ Variables de entorno de los servicios que monten rutas humanas (ninguna es secre
 
 Montaje: ver `ExampleAuthenticate`, `ExampleRequireRole` y `ExampleRequireOwnerOrRole` en `pkg/security/example_test.go`.
 
+### Valores de los clientes por ambiente
+
+`production-demo` y `staging` usan el mismo user pool **permanente**, `solventa-users`, en la región `us-east-2`, creado por
+[`infra/terraform/bootstrap/identity`](../../infra/terraform/bootstrap/identity/README.md) (T4). Sus identificadores no cambian entre
+ventanas de staging, así que el portal web y la app móvil los configuran una sola vez. Ninguno es secreto.
+
+| Valor | Salida de `bootstrap/identity` | Identificador (aplicado el 2026-10-18) | Quién lo usa |
+|---|---|---|---|
+| Región | `region` | `us-east-2` | Portal web y app móvil (llamadas a Cognito) |
+| ID del user pool | `user_pool_id` | `us-east-2_EWwg8NL2C` | Portal web y app móvil |
+| Cliente web (`solventa-users-web`) | `client_ids["web"]` | `v16a9q5ba8hhh5keo76fjd4e1` | Portal web |
+| Cliente móvil (`solventa-users-mobile`) | `client_ids["mobile"]` | `6dri40bi3sk74cr0jb5djq43c0` | App móvil |
+| Emisor | `issuer` | `https://cognito-idp.us-east-2.amazonaws.com/us-east-2_EWwg8NL2C` | `AUTH_ISSUER` de los servicios (lo pone `modules/platform`); los dos clientes forman `AUTH_CLIENT_IDS` |
+
+Se pueden volver a leer con `terraform -chdir=infra/terraform/bootstrap/identity output <salida>` (por nombre; requiere
+credenciales de la cuenta `368083581678`, porque el estado está en el bucket de T4). Los usuarios de prueba de ese pool, uno por
+rol, están en el runbook
+[«Usuarios de prueba permanentes»](../runbooks/README.md#5-usuarios-de-prueba-permanentes-bootstrapidentity).
+
 ### Catálogo de rutas humanas en `openapi.yaml`
 
 Cada historia que agregue rutas las clasifica en el contrato de su servicio (HA-S01 no cambia ningún `openapi.yaml` porque todavía no hay rutas humanas):

@@ -23,12 +23,31 @@ cliente ──HTTPS──▶ API Gateway REST (stage = ambiente; todos los tipos
 |---|---|---|
 | Red | [`network`](../network/README.md) | VPC en dos AZ; `nat_mode` (`none` / `single` / `per_az`) decide dónde corren las tareas |
 | ECR | [`ecr`](../ecr/README.md) vía [`bootstrap/cd-ecr`](../../bootstrap/cd-ecr/README.md) | Repositorios permanentes y compartidos; aquí solo se leen (`data "aws_ecr_repository"`) |
-| Borde | [`apigateway`](../apigateway/README.md), [`cognito`](../cognito/README.md), [`alb`](../alb/README.md) | Usage plans y API keys por socio (D-7); user pool con authorizer; ALB interno en subredes privadas, solo alcanzable desde el VPC link |
+| Borde | [`apigateway`](../apigateway/README.md), [`cognito`](../cognito/README.md), [`alb`](../alb/README.md) | Usage plans y API keys por socio (D-7); user pool propio o externo (`existing_cognito`) con authorizer; ALB interno en subredes privadas, solo alcanzable desde el VPC link |
 | Cómputo | [`ecs`](../ecs/README.md) | Un servicio ECS por microservicio y por stub; autoescalado por CPU al 60 % (ADR-02); tarea `db-init` de un solo uso |
 | Datos | [`rds`](../rds/README.md), [`elasticache`](../elasticache/README.md) | PostgreSQL y Redis en subredes privadas; Multi-AZ por variable |
 | Eventos | [`messaging`](../messaging/README.md) | Tópicos `origination` y `claims`; colas `origination`, `audit`, `notifications` con DLQ ([catálogo](../../../../docs/events/README.md)) |
 | Objetos | [`s3`](../s3/README.md) | `documents` (documento contractual, HU-W1.3-03) y `evidence` (evidencia de siniestros) |
 | Secretos | [`secrets`](../secrets/README.md) | Un secreto por servicio con su `DATABASE_URL`, y `origination/document-link` con la clave de los enlaces del documento contractual |
+
+## User pool propio o externo
+
+El user pool de los canales humanos puede venir de fuera de la plataforma o crearlo el módulo:
+
+- **Externo** (`existing_cognito` con `user_pool_id`, `user_pool_arn`, `issuer`, `jwks_url` y `client_ids`): la plataforma no crea
+  ningún pool y usa el recibido en el authorizer del API Gateway, en `AUTH_ISSUER`, `AUTH_JWKS_URL` y `AUTH_CLIENT_IDS` de los
+  servicios y en la salida `cognito`. Las dos composiciones del repositorio pasan el **pool permanente** de
+  [`bootstrap/identity`](../../bootstrap/identity/README.md), que leen por `terraform_remote_state`: el portal y la app conservan
+  el mismo pool, los mismos clientes y los mismos usuarios de prueba en todas las ventanas, y un `destroy` del ambiente no lo toca.
+- **Propio** (`existing_cognito = null`, el valor por defecto): la plataforma crea su pool con el módulo [`cognito`](../cognito/README.md)
+  (nombre = `name`, candado según `deletion_protection`) y, si se piden, sus usuarios semilla (`seed_users`, `seed_user_password`).
+
+La variable se valida: el ARN debe ser de un user pool de Cognito, el emisor debe terminar en el ID del pool, la URL de JWKS debe ser
+la de ese emisor y debe haber al menos un cliente. Con un pool externo, `seed_users` y `seed_user_password` se rechazan: los usuarios de
+prueba se declaran donde se administra ese pool (`bootstrap/identity`). Esa validación compara dos variables y por eso el módulo exige
+**Terraform 1.9 o superior** (las composiciones ya piden 1.11). El módulo `cognito` se crea con `count`; un bloque `moved` traslada
+la dirección sin índice a `module.cognito[0]`, así que un estado creado antes de `existing_cognito` conserva su pool con el valor por
+defecto.
 
 ## Una base por servicio, un usuario por servicio
 
@@ -99,7 +118,7 @@ tocarlos (también el JSON) y el *preflight* `MOCK` convierte su cuerpo a texto 
 | `OPEN_FINANCE_URL`, `OPEN_DATA_URL`, `KYC_URL` | Stubs por Cloud Map (9000, 9010, 9020) | Perfilamiento en paralelo (HA-L01) |
 | `EMAIL_URL` | Stub `email` por Cloud Map (9030) | Correo de emisión y de la bandeja; con él se enciende el documento contractual (HU-W1.3-03) |
 | `PAYMENT_GATEWAY_URL` | Stub `payment-gateway` por Cloud Map (9040) | Enciende el cobro de la prima (HA-D02); exige `DATABASE_URL`, `EMAIL_URL` y `AUTH_ISSUER` |
-| `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_CLIENT_IDS` | User pool del ambiente | Rutas humanas (HA-S01) |
+| `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_CLIENT_IDS` | User pool del ambiente: el permanente de `bootstrap/identity` (`existing_cognito`) o el que crea el módulo | Rutas humanas (HA-S01) |
 | `DOCUMENTS_BUCKET` | Bucket `documents` del ambiente | Repositorio del documento contractual en S3 (HA-D02, fase AWS); el servicio comprueba el bucket al arrancar |
 | `DOCUMENTS_PUBLIC_BASE_URL` | `invoke_url` del stage de API Gateway | Base del enlace firmado del correo: `<invoke_url>/v1/documents/<token>` |
 | `AWS_REGION` | Región del proveedor (`us-east-2`) | Región del SDK de AWS (S3) |
@@ -141,10 +160,11 @@ el estado remoto cifrado del bucket de T4.
 | `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) | Usage plans (D-7) |
 | `human_routes` | rutas de `origination` | Rutas detrás de Cognito |
 | `public_routes` | `documents` (`GET`, 10 req/s, ráfaga 20) | Rutas sin sesión ni API key (enlace firmado del documento, HA-D02) |
-| `seed_users` / `seed_user_password` | `{}` / `null` | Usuarios de prueba del user pool para una ventana de staging (contraseña solo por `TF_VAR_seed_user_password`; production-demo no los expone) |
+| `existing_cognito` | `null` | User pool externo (`user_pool_id`, `user_pool_arn`, `issuer`, `jwks_url`, `client_ids`); `null` crea uno propio. Ver «User pool propio o externo» |
+| `seed_users` / `seed_user_password` | `{}` / `null` | Usuarios de prueba del pool que crea la plataforma, solo con `existing_cognito = null` (contraseña solo por `TF_VAR_seed_user_password`); las composiciones del repositorio usan los usuarios permanentes de `bootstrap/identity` |
 | `cors_allow_origin` | `"*"` | Origen de las rutas humanas |
 | `cache_ttl_seconds` | `60` | TTL del `GET` cacheado (D-6) |
-| `deletion_protection` | `true` | RDS, ALB y user pool |
+| `deletion_protection` | `true` | RDS, ALB y el user pool cuando lo crea la plataforma |
 | `ephemeral` | `false` | Sin snapshot final, buckets con `force_destroy`, secretos sin ventana de recuperación |
 
 Salidas: `invoke_url`, `api_key_ids`, `api_key_values` (sensible), `usage_plan_ids`, `cognito`, `alb_dns_name`, `ecs_cluster`,
@@ -159,4 +179,6 @@ terraform test
 ```
 
 `tests/platform.tftest.hcl` comprueba de punta a punta los usage plans de D-7, un secreto y un usuario por servicio, el script de
-`db-init`, los tres modos de NAT, la resolución de imágenes y el apagado de los servicios.
+`db-init`, los tres modos de NAT, la resolución de imágenes y el apagado de los servicios. También los dos modos del user pool: sin
+`existing_cognito` la plataforma crea el suyo; con un pool externo no crea ninguno y lo lleva al authorizer, a `AUTH_*` y a la salida
+`cognito`; y la variable rechaza usuarios semilla junto a un pool externo y un ARN que no sea de Cognito.

@@ -39,9 +39,9 @@
 #   CLIENT_ID         web client of the user pool (required unless TF_DIR is set)
 #   COGNITO_URL       Cognito endpoint (default: the public one of AWS_REGION, us-east-2);
 #                     http://localhost:5110/ for Moto
-#   SEED_USER_PASSWORD or TF_VAR_seed_user_password: password of the seed users
-#   INSURED_USER, ADVISOR_USER, OPERATIONS_USER: usernames (defaults: the *.ha-d02 users
-#                     of ha-d02.example.tfvars)
+#   SEED_USER_PASSWORD or TF_VAR_seed_user_password: password of the test users
+#   INSURED_USER, ADVISOR_USER, OPERATIONS_USER: usernames (defaults: the permanent test
+#                     users of bootstrap/identity)
 #   EMAIL_SOURCE      logs (CloudWatch, default) or api (GET $EMAIL_URL/messages)
 #   GATEWAY_SOURCE    logs (CloudWatch, default) or api (GET $GATEWAY_URL/debug/charges)
 #   EMAIL_URL, GATEWAY_URL: the stubs, for the api sources (local rehearsal)
@@ -76,9 +76,9 @@ CLIENT_ID="${CLIENT_ID:-}"
 REGION="${AWS_REGION:-us-east-2}"
 COGNITO_URL="${COGNITO_URL:-https://cognito-idp.${REGION}.amazonaws.com/}"
 PASSWORD="${SEED_USER_PASSWORD:-${TF_VAR_seed_user_password:-}}"
-INSURED_USER="${INSURED_USER:-asegurado.ha-d02@example.com}"
-ADVISOR_USER="${ADVISOR_USER:-asesor.ha-d02@example.com}"
-OPERATIONS_USER="${OPERATIONS_USER:-operaciones.ha-d02@example.com}"
+INSURED_USER="${INSURED_USER:-asegurado@example.com}"
+ADVISOR_USER="${ADVISOR_USER:-asesor@example.com}"
+OPERATIONS_USER="${OPERATIONS_USER:-operaciones@example.com}"
 EMAIL_SOURCE="${EMAIL_SOURCE:-logs}"
 GATEWAY_SOURCE="${GATEWAY_SOURCE:-logs}"
 EMAIL_URL="${EMAIL_URL:-}"

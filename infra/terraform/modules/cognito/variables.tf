@@ -81,7 +81,7 @@ variable "explicit_auth_flows" {
 }
 
 variable "seed_users" {
-  description = "Optional test users created by the administrator (staging only). One group per user; partner_id is required for the partner group and forbidden for the others."
+  description = "Optional test users created by the administrator (staging windows of their own compositions and the permanent test users of bootstrap/identity). One group per user; partner_id is required for the partner group and forbidden for the others."
   type = map(object({
     email      = string
     group      = string
