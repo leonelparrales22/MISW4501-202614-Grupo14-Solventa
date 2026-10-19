@@ -4,7 +4,7 @@
 # domain. Everything goes through the URL of the portal, as a browser would.
 # Bash and curl only; JSON is read with grep and sed (there is no jq).
 #
-# Usage: smoke.sh [phase ...]        (no phase, or "all": every phase; audit only with SMOKE_AUDIT=1)
+# Usage: smoke.sh [phase ...]        (no phase, or "all": every phase)
 #        smoke.sh --help
 #
 # Phases:
@@ -14,9 +14,11 @@
 #   bucket    W-2  the bucket straight from S3 -> 403; its policy is not public
 #   api       W-3  /v1/* through CloudFront: 401 without a token, 200 with the advisor token,
 #                  never cached (X-Cache Miss twice), 403 JSON for an unknown route
-#   partner   W-4  POST /v1/risk-profiles/resolve through CloudFront without a key -> 200 (and
-#                  with an invented key, which CloudFront overwrites); straight to the
-#                  gateway without a key -> 403 {"message":"Forbidden"}
+#   partner   W-4  registers the consent of cliente-<run> through CloudFront first; then
+#                  POST /v1/risk-profiles/resolve through CloudFront without a key -> 200 (and
+#                  with an invented key, which CloudFront overwrites); a customer without a
+#                  consent -> 422 consent_required (origination asks audit, HU-W1.2-01 CA-3);
+#                  straight to the gateway without a key -> 403 {"message":"Forbidden"}
 #   tokens    W-5  POST /pasarela/tokens -> 201 tok_...; invalid number -> 400; the rest of the
 #                  simulator (/pasarela/charges, /pasarela/debug/charges) -> 403
 #   journey   W-6  demo offer -> card tokenized through the portal -> charge confirmed ->
@@ -26,8 +28,15 @@
 #                  DOCUMENTS_PUBLIC_BASE_URL are the portal (read-only AWS calls)
 #   publish   W-8  objects of the site: index.html no-cache, a bundle immutable, config.json
 #                  with the ETag Terraform wrote; the last invalidation completed
-#   audit     W-9  (only with SMOKE_AUDIT=1, when the audit routes are wired in the gateway)
-#                  consent terms and consent through CloudFront; POST /v1/offers -> off-...
+#   audit     W-9  consent terms and consent through CloudFront (201, repeated -> 200 with the
+#                  same consent_id); POST /v1/offers with it -> 201 off-...; with the consent of
+#                  another customer -> 422 consent_mismatch; GET /v1/offers/{id} without a token
+#                  -> 401 and with the insured token -> 200; POST /v1/offers straight to the
+#                  gateway without a key -> 403
+#   internal  W-10 GET /v1/audit/consent-verifications through CloudFront and straight to the
+#                  gateway -> 403 (not published); AUDIT_URL of origination; its log since its
+#                  task started says "verified with audit at" and never "AUDIT_URL is not
+#                  set"; audit is a service of the Cloud Map namespace (read-only AWS calls)
 #
 # Secrets are never printed: the password comes from the environment, bodies with
 # credentials go through stdin, the Authorization header through a private temporary
@@ -41,14 +50,13 @@
 #                     PORTAL_URL, BUCKET, DISTRIBUTION_ID and CONFIG_ETAG from its outputs
 #                     (terraform output -raw, never -json)
 #   PLATFORM_TF_DIR   platform composition (default .../<env>/platform); fills INVOKE_URL,
-#                     LOG_GROUP, CLUSTER and EXPECTED_USER_POOL_ID
+#                     LOG_GROUP, CLUSTER, EXPECTED_USER_POOL_ID and EXPECTED_AUDIT_URL
 #   PORTAL_URL, BUCKET, DISTRIBUTION_ID, CONFIG_ETAG, INVOKE_URL, LOG_GROUP, CLUSTER,
-#   EXPECTED_USER_POOL_ID: set them to skip the Terraform outputs
+#   EXPECTED_USER_POOL_ID, EXPECTED_AUDIT_URL: set them to skip the Terraform outputs
 #   SEED_USER_PASSWORD (or SOLVENTA_IDENTITY_SEED_PASSWORD): password of the permanent users of
-#                     bootstrap/identity; needed by api and journey
+#                     bootstrap/identity; needed by api, journey and audit
 #   INSURED_USER, ADVISOR_USER, OPERATIONS_USER: usernames (defaults asegurado@, asesor@ and
 #                     operaciones@example.com, the permanent users of bootstrap/identity)
-#   SMOKE_AUDIT       1 adds the audit phase to "all"
 #   RUN_ID            suffix of the demo offers and customers (default r<epoch seconds>)
 set -euo pipefail
 
@@ -56,7 +64,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 usage() {
-  sed -n '2,52p' "$0"
+  awk 'NR > 1 && /^set -euo pipefail/ { exit } NR > 1 { print }' "$0"
   exit "${1:-0}"
 }
 [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]] && usage 0
@@ -88,6 +96,7 @@ tf_raw() {
 [[ -n "${INVOKE_URL:-}" ]] || INVOKE_URL="$(tf_raw "$PLATFORM_TF_DIR" invoke_url)"
 [[ -n "${LOG_GROUP:-}" ]] || LOG_GROUP="$(tf_raw "$PLATFORM_TF_DIR" log_group)"
 [[ -n "${CLUSTER:-}" ]] || CLUSTER="$(tf_raw "$PLATFORM_TF_DIR" ecs_cluster)"
+[[ -n "${EXPECTED_AUDIT_URL:-}" ]] || EXPECTED_AUDIT_URL="$(tf_raw "$PLATFORM_TF_DIR" audit_url)"
 if [[ -z "${EXPECTED_USER_POOL_ID:-}" ]]; then
   EXPECTED_USER_POOL_ID="$(terraform -chdir="$PLATFORM_TF_DIR" output -no-color cognito 2>/dev/null |
     sed -n 's/^ *"user_pool_id" *= *"\([^"]*\)".*/\1/p' | head -n 1 || true)"
@@ -106,15 +115,14 @@ STARTED_MS="$(( ($(date +%s) - 60) * 1000 ))"
 
 PHASES=("$@")
 if [[ ${#PHASES[@]} -eq 0 || "${PHASES[0]}" == all ]]; then
-  PHASES=(static bucket api partner tokens journey links publish)
-  [[ "${SMOKE_AUDIT:-0}" == 1 ]] && PHASES+=(audit)
+  PHASES=(static bucket api partner tokens journey links publish audit internal)
 fi
 for p in "${PHASES[@]}"; do
   case "$p" in
-    static | bucket | api | partner | tokens | journey | links | publish | audit) ;;
+    static | bucket | api | partner | tokens | journey | links | publish | audit | internal) ;;
     *) echo "Unknown phase: $p (see --help)." >&2; exit 2 ;;
   esac
-  if [[ "$p" == api || "$p" == journey ]] && [[ -z "$PASSWORD" ]]; then
+  if [[ "$p" == api || "$p" == journey || "$p" == audit ]] && [[ -z "$PASSWORD" ]]; then
     echo "Phase $p needs SEED_USER_PASSWORD or SOLVENTA_IDENTITY_SEED_PASSWORD." >&2
     exit 2
   fi
@@ -246,13 +254,12 @@ wait_charge() { # acceptance timeout condition
 exists() { true; }
 is_confirmed() { [[ "$(jget status)" == confirmed && -n "$(jget policy_id)" && "$(jget policy_id)" != null ]]; }
 is_rejected() { [[ "$(jget status)" == failed && "$(jget failure_reason)" == payment_rejected ]]; }
-tokenize() { # card number -> TOK, BRAND, LAST4 (through the portal, without session)
-  local code
-  code="$(request POST "$PORTAL_URL/pasarela/tokens" "" "{\"number\":\"$1\",\"holder\":\"Prueba Portal\"}")"
+# Called directly, never inside $(...): the globals it fills must reach the caller.
+tokenize() { # card number -> TOKEN_CODE, TOK, BRAND, LAST4 (through the portal, without session)
+  TOKEN_CODE="$(request POST "$PORTAL_URL/pasarela/tokens" "" "{\"number\":\"$1\",\"holder\":\"Prueba Portal\"}")"
   TOK="$(jget token)"
   BRAND="$(jget brand)"
   LAST4="$(jget last4)"
-  printf '%s' "$code"
 }
 pay_card() { # acceptance -> code
   request POST "$PORTAL_URL/v1/acceptances/$1/charge/payment-method" "$(token insured)" \
@@ -267,9 +274,9 @@ wait_issuance() { # policy timeout
     sleep 3
   done
 }
-logs_of() { # stream-prefix filter-pattern
+logs_of() { # stream-prefix filter-pattern [start-ms]
   aws_ro logs filter-log-events --region "$REGION" --log-group-name "$LOG_GROUP" --log-stream-name-prefix "$1" \
-    --start-time "$STARTED_MS" --filter-pattern "$2" --query 'events[].message' --output text 2>/dev/null |
+    --start-time "${3:-$STARTED_MS}" --filter-pattern "$2" --query 'events[].message' --output text 2>/dev/null |
     tr '\t' '\n' | tr -d '\r'
 }
 wait_mail() { # to subject marker timeout
@@ -281,6 +288,31 @@ wait_mail() { # to subject marker timeout
     sleep 5
   done
 }
+# --- Consent of HU-W1.2-01 through the portal (W-4 and W-9) ---------------------------
+
+# Called directly, never inside $(...): the globals they fill must reach the caller.
+TERMS_VERSION=""
+CONSENTED=" "
+load_terms() { # -> TERMS_CODE, TERMS_VERSION, TERMS_SOURCES (the codes of every source, quoted)
+  TERMS_CODE="$(request GET "$PORTAL_URL/v1/audit/consent-terms/current" "")"
+  TERMS_VERSION="$(jget version)"
+  TERMS_SOURCES="$(grep -o '"code": *"[a-z_]*"' "$TMP/body" | sed 's/.*"\([a-z_]*\)"$/"\1"/' | paste -sd, - || true)"
+}
+# Idempotent by (customer, application, terms version): the first time 201, then 200.
+register_consent() { # customer application -> CONSENT_CODE, CONSENT_ID
+  [[ -n "$TERMS_VERSION" ]] || load_terms
+  CONSENT_CODE="$(request POST "$PORTAL_URL/v1/audit/consents" "" \
+    "{\"customer_id\":\"$1\",\"document_id\":\"1020304050\",\"full_name\":\"Ana Maria Perez\",\"terms_version\":\"$TERMS_VERSION\",\"accepted_sources\":[${TERMS_SOURCES}],\"accepted_data_policy\":true,\"channel\":\"embedded\",\"partner_id\":\"portal-embebido\",\"application_id\":\"$2\"}")"
+  CONSENT_ID="$(jget consent_id)"
+  [[ "$CONSENT_CODE" == 201 || "$CONSENT_CODE" == 200 ]] && CONSENTED+="$1|$2 "
+  return 0
+}
+consented() { [[ "$CONSENTED" == *" $1|$2 "* ]]; } # customer application -> registered in this run
+offer_body() { # customer consent -> body of POST /v1/offers (HU-W1.2-03)
+  printf '{"customer_id":"%s","consent_id":"%s","partner_id":"portal-embebido","application_id":"app-%s","document_id":"1020304050","full_name":"Ana Maria Perez","email":"ana.demo@example.com","birth_date":"1985-03-14","insured_amount":250000000,"term_months":120}' \
+    "$1" "$2" "$RUN_ID"
+}
+
 link_in() { grep -o 'https\?://[^ "\\]*/v1/documents/[A-Za-z0-9._~-]*' <<<"$1" | head -n 1 || true; }
 bundle_name() { grep -o 'main-[A-Za-z0-9]*\.js' "$1" | head -n 1 || true; }
 
@@ -367,13 +399,20 @@ phase_api() { # W-3
 }
 
 phase_partner() { # W-4
-  echo "== W-4 partner route"
+  echo "== W-4 partner route (run $RUN_ID)"
   local body code
+  register_consent "cliente-$RUN_ID" "app-$RUN_ID"
+  check "Consent of cliente-$RUN_ID registered through CloudFront first (HU-W1.2-01)" \
+    "$([[ ( "$CONSENT_CODE" == 201 || "$CONSENT_CODE" == 200 ) && "$CONSENT_ID" == cns-* ]]; echo $?)" \
+    "HTTP $CONSENT_CODE, consent $(cut_token "$CONSENT_ID")"
   body="{\"customer_id\":\"cliente-$RUN_ID\",\"consent_active\":true}"
   code="$(request POST "$PORTAL_URL/v1/risk-profiles/resolve" "" "$body")"
   expect_code "POST /v1/risk-profiles/resolve through CloudFront, no key -> 200 (CloudFront adds it)" 200 "$code" "mode $(jget mode)"
   code="$(request POST "$PORTAL_URL/v1/risk-profiles/resolve" "" "$body" "x-api-key: invented-$RUN_ID")"
   expect_code "The same with an invented x-api-key -> 200 (CloudFront overwrites it)" 200 "$code"
+  code="$(request POST "$PORTAL_URL/v1/risk-profiles/resolve" "" "{\"customer_id\":\"sin-consentimiento-$RUN_ID\",\"consent_active\":true}")"
+  check "sin-consentimiento-$RUN_ID -> 422 consent_required (origination asks audit, CA-3)" \
+    "$([[ "$code" == 422 && "$(jget error)" == consent_required ]]; echo $?)" "HTTP $code $(cut -c1-80 "$TMP/body")"
   if [[ -n "$INVOKE_URL" ]]; then
     code="$(request POST "$INVOKE_URL/v1/risk-profiles/resolve" "" "$body")"
     check "Straight to the gateway without a key -> 403 {\"message\":\"Forbidden\"} (I-4)" \
@@ -385,11 +424,10 @@ phase_partner() { # W-4
 
 phase_tokens() { # W-5
   echo "== W-5 tokens"
-  local code
-  code="$(tokenize 4111111111111111)"
-  check "POST /pasarela/tokens with 4111… -> 201 tok_…" "$([[ "$code" == 201 && "$TOK" == tok_* ]]; echo $?)" "HTTP $code, brand $BRAND, last4 $LAST4"
-  code="$(tokenize 4111111111111112)"
-  expect_code "An invalid card number -> 400" 400 "$code" "$(jget error)"
+  tokenize 4111111111111111
+  check "POST /pasarela/tokens with 4111… -> 201 tok_…" "$([[ "$TOKEN_CODE" == 201 && "$TOK" == tok_* ]]; echo $?)" "HTTP $TOKEN_CODE, brand $BRAND, last4 $LAST4"
+  tokenize 4111111111111112
+  expect_code "An invalid card number -> 400" 400 "$TOKEN_CODE" "$(jget error)"
   expect_code "GET /pasarela/debug/charges -> 403 (not published)" 403 "$(request GET "$PORTAL_URL/pasarela/debug/charges" "")"
   expect_code "POST /pasarela/charges -> 403 (not published)" 403 "$(request POST "$PORTAL_URL/pasarela/charges" "" '{}')"
 }
@@ -401,8 +439,8 @@ phase_journey() { # W-6
   id="$ACC"
   ok "Accept demo-active-$RUN_ID through the portal -> 202" "acceptance $id"
   wait_charge "$id" 90 exists || { fail "The charge exists after the underwriting" "HTTP $(charge "$id")"; return 0; }
-  code="$(tokenize 4111111111111111)"
-  [[ "$code" == 201 ]] || { fail "Card tokenized through the portal" "HTTP $code"; return 0; }
+  tokenize 4111111111111111
+  [[ "$TOKEN_CODE" == 201 ]] || { fail "Card tokenized through the portal" "HTTP $TOKEN_CODE"; return 0; }
   expect_code "Card token handed over -> 202" 202 "$(pay_card "$id")"
   if wait_charge "$id" 120 is_confirmed; then
     policy="$(jget policy_id)"
@@ -434,8 +472,8 @@ phase_journey() { # W-6
   accept "demo-active-${RUN_ID}d" || return 0
   id="$ACC"
   wait_charge "$id" 90 exists || { fail "The charge of the declined card exists" "HTTP $(charge "$id")"; return 0; }
-  code="$(tokenize 4000000000000002)"
-  [[ "$code" == 201 ]] || { fail "Declined card tokenized" "HTTP $code"; return 0; }
+  tokenize 4000000000000002
+  [[ "$TOKEN_CODE" == 201 ]] || { fail "Declined card tokenized" "HTTP $TOKEN_CODE"; return 0; }
   expect_code "Declined card token handed over -> 202" 202 "$(pay_card "$id")"
   if wait_charge "$id" 120 is_rejected; then
     ok "Card ending in 0002 -> failed payment_rejected (E4c)" "acceptance $id"
@@ -491,20 +529,98 @@ phase_publish() { # W-8
 }
 
 phase_audit() { # W-9
-  echo "== W-9 audit routes (SMOKE_AUDIT=1)"
-  local code version sources body consent
-  code="$(request GET "$PORTAL_URL/v1/audit/consent-terms/current" "")"
-  version="$(jget version)"
-  sources="$(grep -o '"code": *"[a-z_]*"' "$TMP/body" | sed 's/.*"\([a-z_]*\)"$/"\1"/' | paste -sd, - || true)"
-  expect_code "GET /v1/audit/consent-terms/current through CloudFront -> 200" 200 "$code" "version $version"
-  body="{\"customer_id\":\"cliente-$RUN_ID\",\"document_id\":\"1020304050\",\"full_name\":\"Ana Maria Perez\",\"terms_version\":\"$version\",\"accepted_sources\":[${sources}],\"accepted_data_policy\":true,\"channel\":\"embedded\",\"partner_id\":\"portal-embebido\",\"application_id\":\"app-$RUN_ID\"}"
-  code="$(request POST "$PORTAL_URL/v1/audit/consents" "" "$body")"
-  consent="$(jget consent_id)"
-  check "POST /v1/audit/consents through CloudFront -> 201" "$([[ "$code" == 201 || "$code" == 200 ]]; echo $?)" "HTTP $code, consent ${consent:0:8}…"
-  body="{\"customer_id\":\"cliente-$RUN_ID\",\"consent_id\":\"$consent\",\"partner_id\":\"portal-embebido\",\"application_id\":\"app-$RUN_ID\",\"document_id\":\"1020304050\",\"full_name\":\"Ana Maria Perez\",\"email\":\"ana.demo@example.com\",\"birth_date\":\"1985-03-14\",\"insured_amount\":250000000,\"term_months\":120}"
-  code="$(request POST "$PORTAL_URL/v1/offers" "" "$body")"
-  check "POST /v1/offers through CloudFront -> 201 with an off-… offer" \
-    "$([[ "$code" == 201 && "$(jget offer_id)" == off-* ]]; echo $?)" "HTTP $code $(jget offer_id)"
+  echo "== W-9 consent and personalized offer through the portal (run $RUN_ID)"
+  local expected first other code offer t
+  load_terms
+  expect_code "GET /v1/audit/consent-terms/current through CloudFront -> 200" 200 "$TERMS_CODE" \
+    "version $TERMS_VERSION, sources $TERMS_SOURCES"
+  expected=201
+  consented "cliente-$RUN_ID" "app-$RUN_ID" && expected=200 # W-4 already registered it
+  register_consent "cliente-$RUN_ID" "app-$RUN_ID"
+  first="$CONSENT_ID"
+  check "POST /v1/audit/consents through CloudFront -> $expected cns-…" \
+    "$([[ "$CONSENT_CODE" == "$expected" && "$first" == cns-* ]]; echo $?)" "HTTP $CONSENT_CODE, consent $(cut_token "$first")"
+  register_consent "cliente-$RUN_ID" "app-$RUN_ID"
+  check "Repeating it -> 200 with the same consent_id (idempotent)" \
+    "$([[ "$CONSENT_CODE" == 200 && "$CONSENT_ID" == "$first" ]]; echo $?)" "HTTP $CONSENT_CODE, consent $(cut_token "$CONSENT_ID")"
+  register_consent "cliente-$RUN_ID-b" "app-$RUN_ID-b"
+  other="$CONSENT_ID"
+  check "Consent of a second customer cliente-$RUN_ID-b -> 201" \
+    "$([[ "$CONSENT_CODE" == 201 && "$other" == cns-* && "$other" != "$first" ]]; echo $?)" "HTTP $CONSENT_CODE, consent $(cut_token "$other")"
+
+  code="$(request POST "$PORTAL_URL/v1/offers" "" "$(offer_body "cliente-$RUN_ID" "$first")")"
+  offer="$(jget offer_id)"
+  check "POST /v1/offers through CloudFront with that consent -> 201 off-…" \
+    "$([[ "$code" == 201 && "$offer" == off-* ]]; echo $?)" "HTTP $code $offer, mode $(jget mode)"
+  code="$(request POST "$PORTAL_URL/v1/offers" "" "$(offer_body "cliente-$RUN_ID" "$other")")"
+  check "POST /v1/offers with the consent of cliente-$RUN_ID-b -> 422 consent_mismatch" \
+    "$([[ "$code" == 422 && "$(jget error)" == consent_mismatch ]]; echo $?)" "HTTP $code $(cut -c1-80 "$TMP/body")"
+
+  if [[ "$offer" == off-* ]]; then
+    code="$(request GET "$PORTAL_URL/v1/offers/$offer" "")"
+    expect_code "GET /v1/offers/$offer without a token -> 401 (the human route keeps Cognito)" 401 "$code"
+    t="$(token insured)"
+    code="$(request GET "$PORTAL_URL/v1/offers/$offer" "$t")"
+    expect_code "GET /v1/offers/$offer with the insured token -> 200" 200 "$code" "status $(jget status), token $(cut_token "$t")"
+  else
+    skip "GET /v1/offers/{offer_id} with and without a token" "no personalized offer"
+  fi
+  if [[ -n "$INVOKE_URL" ]]; then
+    code="$(request POST "$INVOKE_URL/v1/offers" "" "$(offer_body "cliente-$RUN_ID" "$first")")"
+    check "POST /v1/offers straight to the gateway without a key -> 403 {\"message\":\"Forbidden\"}" \
+      "$([[ "$code" == 403 && "$(jget message)" == Forbidden ]]; echo $?)" "HTTP $code $(cut -c1-80 "$TMP/body")"
+  else
+    skip "POST /v1/offers straight to the gateway without a key" "INVOKE_URL unknown"
+  fi
+}
+
+phase_internal() { # W-10
+  echo "== W-10 internal consent verification"
+  local code td url task started started_ms verified unset_line namespace ns_id svc
+  code="$(request GET "$PORTAL_URL/v1/audit/consent-verifications?customer_id=cliente-$RUN_ID" "")"
+  expect_code "GET /v1/audit/consent-verifications through CloudFront -> 403 (not published)" 403 "$code"
+  if [[ -n "$INVOKE_URL" ]]; then
+    code="$(request GET "$INVOKE_URL/v1/audit/consent-verifications?customer_id=cliente-$RUN_ID" "")"
+    expect_code "The same straight to the gateway -> 403 (not published)" 403 "$code"
+  else
+    skip "GET /v1/audit/consent-verifications straight to the gateway" "INVOKE_URL unknown"
+  fi
+  if [[ -z "$CLUSTER" ]]; then skip "AUDIT_URL, log and Cloud Map of origination" "CLUSTER unknown"; return 0; fi
+
+  td="$(aws_ro ecs describe-services --region "$REGION" --cluster "$CLUSTER" --services origination \
+    --query 'services[0].taskDefinition' --output text 2>&1 | tr -d '\r' || true)"
+  url="$(aws_ro ecs describe-task-definition --region "$REGION" --task-definition "$td" \
+    --query "taskDefinition.containerDefinitions[0].environment[?name=='AUDIT_URL'].value | [0]" --output text 2>&1 | tr -d '\r' || true)"
+  if [[ -n "$EXPECTED_AUDIT_URL" ]]; then
+    check "AUDIT_URL of origination = $EXPECTED_AUDIT_URL (Cloud Map, D-21 a)" \
+      "$([[ "$url" == "$EXPECTED_AUDIT_URL" ]]; echo $?)" "$url (${td##*/})"
+  else
+    check "AUDIT_URL of origination = http://audit.<name>.local:8080 (Cloud Map, D-21 a)" \
+      "$([[ "$url" =~ ^http://audit\.[a-z0-9-]+\.local:8080$ ]]; echo $?)" "$url (${td##*/})"
+  fi
+
+  task="$(aws_ro ecs list-tasks --region "$REGION" --cluster "$CLUSTER" --service-name origination --desired-status RUNNING \
+    --query 'taskArns[0]' --output text 2>&1 | tr -d '\r' || true)"
+  started="$(aws_ro ecs describe-tasks --region "$REGION" --cluster "$CLUSTER" --tasks "$task" \
+    --query 'tasks[0].startedAt' --output text 2>&1 | tr -d '\r' || true)"
+  started_ms="$(( $(date -d "$started" +%s 2>/dev/null || echo 0) * 1000 ))"
+  if [[ "$task" == arn:* && "$started_ms" -gt 0 ]]; then
+    verified="$(logs_of "origination/origination/${task##*/}" '"verified with audit at"' "$started_ms" | head -n 1 || true)"
+    unset_line="$(logs_of "origination/origination/${task##*/}" '"AUDIT_URL is not set"' "$started_ms" | head -n 1 || true)"
+    check "Log of origination since its task started: consent (HU-W1.2-01): verified with audit at …" \
+      "$([[ "$verified" == *"consent (HU-W1.2-01): verified with audit at "* ]]; echo $?)" "task ${task##*/}, ${verified:0:110}"
+    check "… and no line \"AUDIT_URL is not set\"" "$([[ -z "$unset_line" ]]; echo $?)" "${unset_line:0:110}"
+  else
+    fail "Running task of origination and its start" "task '${task##*/}', startedAt '$started'"
+  fi
+
+  namespace="${url#http://audit.}"
+  namespace="${namespace%%:*}"
+  ns_id="$(aws_ro servicediscovery list-namespaces --region "$REGION" \
+    --query "Namespaces[?Name=='$namespace'].Id | [0]" --output text 2>&1 | tr -d '\r' || true)"
+  svc="$(aws_ro servicediscovery list-services --region "$REGION" --filters "Name=NAMESPACE_ID,Values=$ns_id,Condition=EQ" \
+    --query "Services[?Name=='audit'].Name | [0]" --output text 2>&1 | tr -d '\r' || true)"
+  check "Cloud Map: the namespace $namespace has the service audit" "$([[ "$svc" == audit ]]; echo $?)" "namespace $ns_id, service $svc"
 }
 
 for p in "${PHASES[@]}"; do
