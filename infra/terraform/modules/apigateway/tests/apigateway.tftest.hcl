@@ -451,3 +451,214 @@ run "payment_tokenization_rejects_relative_backend_path" {
 
   expect_failures = [var.payment_tokenization]
 }
+
+# --- Partner routes on explicit paths and root_methods (T5, decision D-22) --------------
+
+run "partner_routes_default_creates_nothing" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { offers = { methods = ["GET", "POST"] } }
+  }
+
+  assert {
+    condition = (
+      length(aws_api_gateway_resource.partner_l1) == 0 && length(aws_api_gateway_resource.partner_l2) == 0 &&
+      length(aws_api_gateway_resource.partner_l3) == 0 && length(aws_api_gateway_method.partner) == 0 &&
+      length(aws_api_gateway_integration.partner) == 0 && output.partner_paths == []
+    )
+    error_message = "Without partner_routes there are no partner resources or methods."
+  }
+}
+
+run "partner_routes_require_api_key_and_no_authorizer" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { policies = { methods = ["GET"] } }
+    partner_routes = {
+      "audit/consent-terms/current" = { methods = ["GET"] }
+      "audit/consents"              = { methods = ["POST"] }
+    }
+  }
+
+  assert {
+    condition = length(aws_api_gateway_method.partner) == 2 && alltrue([
+      for m in aws_api_gateway_method.partner :
+      m.authorization == "NONE" && m.api_key_required == true && m.authorizer_id == null
+    ])
+    error_message = "A partner route asks for the partner API key and never uses the Cognito authorizer (CA-5)."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_integration.partner["audit/consent-terms/current GET"].uri == "http://internal-alb.example.com/v1/audit/consent-terms/current" &&
+      aws_api_gateway_integration.partner["audit/consents POST"].uri == "http://internal-alb.example.com/v1/audit/consents" &&
+      alltrue([for i in aws_api_gateway_integration.partner : i.type == "HTTP_PROXY" && i.timeout_milliseconds == 5000])
+    )
+    error_message = "Partner routes are proxied to the same exact path of the backend with the ADR-02 timeout."
+  }
+
+  assert {
+    condition     = length(aws_api_gateway_method.human_options) == 2
+    error_message = "Partner routes get no preflight: only the human resources have OPTIONS."
+  }
+
+  assert {
+    condition     = output.partner_paths == ["/v1/audit/consent-terms/current", "/v1/audit/consents"]
+    error_message = "The module exposes the partner paths."
+  }
+}
+
+run "nested_partner_routes_build_their_parents" {
+  command = apply
+
+  variables {
+    partner_routes = {
+      "audit/consent-terms/current" = { methods = ["GET"] }
+      "audit/consents"              = { methods = ["POST"] }
+    }
+  }
+
+  assert {
+    condition = (
+      keys(aws_api_gateway_resource.partner_l1) == ["audit"] &&
+      toset(keys(aws_api_gateway_resource.partner_l2)) == toset(["audit/consent-terms", "audit/consents"]) &&
+      keys(aws_api_gateway_resource.partner_l3) == ["audit/consent-terms/current"]
+    )
+    error_message = "Each prefix of the keys gets one resource, by depth."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_resource.partner_l1["audit"].parent_id == aws_api_gateway_resource.v1.id &&
+      aws_api_gateway_resource.partner_l2["audit/consents"].parent_id == aws_api_gateway_resource.partner_l1["audit"].id &&
+      aws_api_gateway_resource.partner_l2["audit/consent-terms"].path_part == "consent-terms" &&
+      aws_api_gateway_resource.partner_l3["audit/consent-terms/current"].parent_id == aws_api_gateway_resource.partner_l2["audit/consent-terms"].id &&
+      aws_api_gateway_resource.partner_l3["audit/consent-terms/current"].path_part == "current"
+    )
+    error_message = "Each partner resource hangs from its parent: /v1/audit/consent-terms/current."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_method.partner["audit/consents POST"].resource_id == aws_api_gateway_resource.partner_l2["audit/consents"].id &&
+      aws_api_gateway_method.partner["audit/consent-terms/current GET"].resource_id == aws_api_gateway_resource.partner_l3["audit/consent-terms/current"].id
+    )
+    error_message = "Each method is on the resource of its exact path; the intermediate audit/consent-terms has none."
+  }
+}
+
+run "partner_route_shares_the_root_of_a_human_route" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { offers = { methods = ["GET", "POST"], root_methods = [] } }
+    partner_routes         = { offers = { methods = ["POST"] } }
+  }
+
+  assert {
+    condition = (
+      length(aws_api_gateway_resource.partner_l1) == 0 &&
+      aws_api_gateway_method.partner["offers POST"].resource_id == aws_api_gateway_resource.human["offers"].id &&
+      aws_api_gateway_method.partner["offers POST"].api_key_required == true &&
+      aws_api_gateway_method.partner["offers POST"].authorization == "NONE"
+    )
+    error_message = "POST /v1/offers takes the root of the human route offers, with the partner API key."
+  }
+
+  assert {
+    condition = (
+      toset(keys(aws_api_gateway_method.human)) == toset(["offers/{proxy+} GET", "offers/{proxy+} POST"]) &&
+      alltrue([for m in aws_api_gateway_method.human : m.authorization == "COGNITO_USER_POOLS" && m.api_key_required == false])
+    )
+    error_message = "/v1/offers/{proxy+} keeps GET and POST with Cognito; the root has no human method."
+  }
+
+  assert {
+    condition = (
+      keys(aws_api_gateway_method.human_options) == ["offers/{proxy+}"] &&
+      aws_api_gateway_integration_response.human_options["offers/{proxy+}"].response_parameters["method.response.header.Access-Control-Allow-Methods"] == "'GET,POST,OPTIONS'"
+    )
+    error_message = "The root without human methods has no preflight; the sub-paths keep theirs."
+  }
+}
+
+run "human_root_methods_default_to_methods" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes = {
+      quotes  = { methods = ["GET", "POST"] }
+      reviews = { methods = ["GET", "POST"], root_methods = ["GET"] }
+    }
+  }
+
+  assert {
+    condition = (
+      toset(keys(aws_api_gateway_method.human)) == toset([
+        "quotes GET", "quotes POST", "quotes/{proxy+} GET", "quotes/{proxy+} POST",
+        "reviews GET", "reviews/{proxy+} GET", "reviews/{proxy+} POST",
+      ])
+    )
+    error_message = "Without root_methods the root has the same methods as its sub-paths; with them, only those."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_integration_response.human_options["quotes"].response_parameters["method.response.header.Access-Control-Allow-Methods"] == "'GET,POST,OPTIONS'" &&
+      aws_api_gateway_integration_response.human_options["reviews"].response_parameters["method.response.header.Access-Control-Allow-Methods"] == "'GET,OPTIONS'" &&
+      aws_api_gateway_integration_response.human_options["reviews/{proxy+}"].response_parameters["method.response.header.Access-Control-Allow-Methods"] == "'GET,POST,OPTIONS'"
+    )
+    error_message = "Each preflight allows the methods of its own resource."
+  }
+}
+
+run "partner_routes_reject_the_quoting_journey" {
+  command = plan
+
+  variables {
+    partner_routes = { "risk-profiles/x" = { methods = ["POST"] } }
+  }
+
+  expect_failures = [var.partner_routes]
+}
+
+run "partner_routes_reject_a_public_route" {
+  command = plan
+
+  variables {
+    public_routes  = { documents = { methods = ["GET"] } }
+    partner_routes = { "documents/sign" = { methods = ["POST"] } }
+  }
+
+  expect_failures = [aws_api_gateway_resource.partner_l1]
+}
+
+run "partner_routes_reject_a_deep_path_under_a_human_route" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { offers = { methods = ["GET", "POST"] } }
+    partner_routes         = { "offers/batch" = { methods = ["POST"] } }
+  }
+
+  expect_failures = [aws_api_gateway_method.partner]
+}
+
+run "partner_routes_reject_a_method_of_the_human_root" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { offers = { methods = ["GET", "POST"] } }
+    partner_routes         = { offers = { methods = ["POST"] } }
+  }
+
+  expect_failures = [aws_api_gateway_method.partner]
+}
