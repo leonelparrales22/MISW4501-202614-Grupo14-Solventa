@@ -66,7 +66,8 @@ leftover() { # label value (empty or None = nothing left)
 
 if [[ "$ENVIRONMENT" == staging ]]; then
   PLATFORM_ARGS=("-var=ttl=$TTL")
-  WEB_ARGS=("-var=ttl=$TTL")
+  # The site is destroyed after the platform, whose outputs no longer exist: it must not read them (window of 2026-10-18).
+  WEB_ARGS=("-var=ttl=$TTL" "-var=api_enabled=false")
   if [[ -n "${EXTRA_TAGS:-}" ]]; then
     PLATFORM_ARGS+=("-var=extra_tags=$EXTRA_TAGS")
     WEB_ARGS+=("-var=extra_tags=$EXTRA_TAGS")
