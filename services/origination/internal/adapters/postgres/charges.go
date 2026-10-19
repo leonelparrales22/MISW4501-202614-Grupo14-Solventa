@@ -300,8 +300,14 @@ func (s *ChargeStore) Fail(ctx context.Context, c domain.Charge, now time.Time, 
 // failed, so of two analysts resuming at once only one wins.
 func (s *ChargeStore) Resume(ctx context.Context, acceptanceID string, r domain.ChargeResumption) (domain.Charge, error) {
 	at := r.At.UTC()
+	// A charge that failed with payment_method_missing never had a payment
+	// method, so it must not become due: the worker would call the gateway
+	// with no token. It goes back to waiting for one -pending with no due
+	// date- which is the state HU-W1.3-02 already uses for that, and the
+	// customer can pay from screen E4 within the new window.
 	c, found, err := s.one(ctx, `UPDATE charge_attempt
-		SET status = 'pending', attempts = 0, next_attempt_at = $2, claimed_until = NULL, failure_reason = NULL,
+		SET status = 'pending', attempts = 0, claimed_until = NULL, failure_reason = NULL,
+		    next_attempt_at = CASE WHEN payment_method_kind IS NULL THEN NULL ELSE $2::timestamptz END,
 		    window_started_at = $2, window_ends_at = $3, resume_count = resume_count + 1, last_resumed_by = $4,
 		    last_resumed_at = $2, resume_note = $5, updated_at = $2
 		WHERE acceptance_id = $1 AND status = 'failed'
@@ -394,21 +400,22 @@ func (s *ChargeStore) AttachPaymentMethod(ctx context.Context, acceptanceID stri
 // waiting for a payment method. The reason is not retry_window_expired: no
 // retry ever happened, and saying so would send operations looking for a
 // gateway problem that never existed.
-func (s *ChargeStore) ExpireWithoutPaymentMethod(ctx context.Context, now time.Time) (int, error) {
+func (s *ChargeStore) ExpireWithoutPaymentMethod(ctx context.Context, now time.Time) ([]string, error) {
 	at := now.UTC()
-	res, err := s.db.ExecContext(ctx, `UPDATE charge_attempt
+	// It returns the acceptances and not a count so the worker can log one
+	// line per charge, with its id, like every other failure. A count told
+	// operations that something expired but not what, and the exception in
+	// their tray had no line behind it.
+	ids, err := s.ids(ctx, `UPDATE charge_attempt
 		SET status = 'failed', failure_reason = $2, last_failure_at = $1, next_attempt_at = NULL,
 		    last_error = 'the customer did not hand over a payment method before the retry window ended',
 		    updated_at = $1
 		WHERE status = 'pending' AND next_attempt_at IS NULL
-		  AND window_ends_at IS NOT NULL AND window_ends_at <= $1`,
+		  AND window_ends_at IS NOT NULL AND window_ends_at <= $1
+		RETURNING acceptance_id`,
 		at, string(domain.ChargePaymentMethodMissing))
 	if err != nil {
-		return 0, fmt.Errorf("expire the charges with no payment method: %w", err)
+		return nil, fmt.Errorf("expire the charges with no payment method: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("count the expired charges: %w", err)
-	}
-	return int(n), nil
+	return ids, nil
 }

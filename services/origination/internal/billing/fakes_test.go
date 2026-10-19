@@ -195,7 +195,12 @@ func (r *memRepo) Resume(_ context.Context, id string, res domain.ChargeResumpti
 	if row.Status != domain.ChargeFailed {
 		return domain.Charge{}, ports.ErrChargeNotResumable
 	}
-	row.Status, row.Attempts, row.NextAttemptAt, row.FailureReason = domain.ChargePending, 0, res.At, ""
+	row.Status, row.Attempts, row.FailureReason = domain.ChargePending, 0, ""
+	// Sin medio de pago vuelve a esperarlo, no a cobrarse (HU-W1.3-02).
+	row.NextAttemptAt = res.At
+	if !row.PaymentMethod.Captured() {
+		row.NextAttemptAt = time.Time{}
+	}
 	row.WindowStartedAt, row.WindowEndsAt = res.At, res.WindowEndsAt
 	row.ResumeCount++
 	row.LastResumedBy, row.LastResumedAt, row.ResumeNote = res.By, res.At, res.Note
@@ -345,10 +350,10 @@ func (r *memRepo) AttachPaymentMethod(_ context.Context, id string,
 	return row, nil
 }
 
-func (r *memRepo) ExpireWithoutPaymentMethod(_ context.Context, now time.Time) (int, error) {
+func (r *memRepo) ExpireWithoutPaymentMethod(_ context.Context, now time.Time) ([]string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	expired := 0
+	var expired []string
 	for id, row := range r.rows {
 		if row.Status != domain.ChargePending || !row.NextAttemptAt.IsZero() ||
 			row.WindowEndsAt.IsZero() || row.WindowEndsAt.After(now) {
@@ -356,7 +361,8 @@ func (r *memRepo) ExpireWithoutPaymentMethod(_ context.Context, now time.Time) (
 		}
 		row.Status, row.FailureReason, row.LastFailureAt = domain.ChargeFailed, domain.ChargePaymentMethodMissing, now
 		r.rows[id] = row
-		expired++
+		expired = append(expired, id)
 	}
+	sort.Strings(expired)
 	return expired, nil
 }

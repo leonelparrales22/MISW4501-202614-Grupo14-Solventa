@@ -21,9 +21,24 @@ func as(role security.Role, subject string) context.Context {
 	return security.WithClaims(context.Background(), security.Claims{Subject: subject, Roles: []security.Role{role}})
 }
 
+// failedCharge es un cobro al que se le acabo la ventana tras nueve intentos,
+// asi que necesariamente tenia medio de pago: sin el no se habria llamado a la
+// pasarela ni una vez (HU-W1.3-02).
 func failedCharge(id string) domain.Charge {
 	c := domain.NewCharge(acceptance(id), offer(id), domain.CoverageTerms{TermMonths: 120}, t0, t0.Add(time.Hour))
 	c.Status, c.FailureReason, c.Attempts, c.LastFailureAt = domain.ChargeFailed, domain.ChargeRetryWindowExpired, 9, t0.Add(time.Hour)
+	c.PaymentMethod = domain.PaymentMethod{
+		Kind: domain.PaymentCard, Token: "tok_7b3c1f9a", Brand: "visa", Last4: "1111", Installments: 1, CapturedAt: t0,
+	}
+	c.PaymentAttempt = 1
+	return c
+}
+
+// expiredWithoutPaymentMethod es el cobro que nunca llego a tener tarjeta: la
+// ventana se acabo esperandola y el barrido lo dejo como excepcion.
+func expiredWithoutPaymentMethod(id string) domain.Charge {
+	c := domain.NewCharge(acceptance(id), offer(id), domain.CoverageTerms{TermMonths: 120}, t0, t0.Add(time.Hour))
+	c.Status, c.FailureReason, c.LastFailureAt = domain.ChargeFailed, domain.ChargePaymentMethodMissing, t0.Add(time.Hour)
 	return c
 }
 
@@ -67,6 +82,24 @@ func TestListExceptionsIsForOperations(t *testing.T) {
 		_, err := svc.ListExceptions(as(security.RoleOperations, "ops-1"), limit)
 		assert.ErrorIs(t, err, billing.ErrInvalidLimit)
 	}
+}
+
+// Reanudar un cobro que nunca tuvo medio de pago no puede dejarlo listo para
+// cobrarse: el worker llamaria a la pasarela sin token. Vuelve a E4, que es
+// de lo que se trata darle otra ventana al cliente (HU-W1.3-02).
+func TestResumeWithoutAPaymentMethodSendsItBackToE4(t *testing.T) {
+	repo := newMemRepo()
+	repo.put(expiredWithoutPaymentMethod("acc-1"))
+	now := t0.Add(2 * time.Hour)
+	svc := billing.NewService(repo, &clock{now: now}, resilience.DefaultRetryPolicy(), func() {})
+
+	c, err := svc.Resume(as(security.RoleOperations, "ops-7"), "acc-1", "el cliente pide otra ventana")
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.ChargePending, c.Status)
+	assert.True(t, c.NextAttemptAt.IsZero(), "esperando la tarjeta, no vencido")
+	assert.Equal(t, now.Add(24*time.Hour), c.WindowEndsAt)
+	assert.True(t, c.TakesPaymentMethod(), "y el cliente puede pagar desde E4")
 }
 
 func TestResumeMovesAFailedChargeBackWithTheSameKeyAndANewWindow(t *testing.T) {

@@ -174,11 +174,16 @@ saber con qué clave se está cobrando (`cobro-<id>` con 1, `cobro-<id>-2` con 2
 | Rechazado | `failed` + `payment_rejected` | presente | **E4c**, con «Intentar con otro medio de pago» |
 | Otra tarjeta tras el rechazo | `pending` | la nueva, `payment_attempt` + 1 | Procesando |
 | Sin tarjeta a tiempo | `failed` + `payment_method_missing` | `null` | Excepción |
+| Reanudado tras quedarse sin tarjeta | `pending`, `next_attempt_at: null` | `null` | **E4** otra vez, con ventana nueva |
 | Ventana vencida sin respuesta | `failed` + `retry_window_expired` | presente | Excepción, **sin** reintento del cliente |
 | Confirmado | `confirmed` | presente | E5 · Póliza emitida |
 
 `failure_reason` gana el valor **`payment_method_missing`**: la ventana de 24 horas venció sin que el cliente entregara
 un medio de pago. Aparece también en `GET /v1/issuance-exceptions`, de donde se sirve el monitoreo de HU-W1.3-04.
+
+**Reanudar uno de esos cobros no lo cobra: lo devuelve a E4.** Queda `pending` con `next_attempt_at: null`, igual que cuando
+nació, y el cliente entrega el medio de pago dentro de la ventana nueva. Si volviera vencido, el *worker* llamaría a la pasarela
+sin token. El barrido lo vuelve a vencer si la ventana nueva también pasa sin pago.
 
 ## 6. Lo que cambia en la pasarela simulada
 
