@@ -143,7 +143,7 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `AWS_REGION` | — | Región del SDK de AWS cuando se usa `DOCUMENTS_BUCKET` (la plataforma la fija, `us-east-2`) |
 | `DOCUMENT_LINK_SECRET` | — | Secreto (≥ 32 caracteres) con el que se firman los enlaces; viene del entorno o de Secrets Manager, nunca del código |
 | `DOCUMENT_LINK_TTL_HOURS` | `168` | Vigencia del enlace seguro del correo |
-| `DOCUMENTS_PUBLIC_BASE_URL` | `http://localhost:$PORT` | Base pública de los enlaces (el API Gateway en AWS) |
+| `DOCUMENTS_PUBLIC_BASE_URL` | `http://localhost:$PORT` | Base pública de los enlaces: en AWS, la URL del portal web cuando existe (T5: `GET /v1/documents/{token}` llega por CloudFront al API Gateway) y, sin portal, el `invoke_url` del stage |
 | `EMAIL_TIMEOUT_MS` | `2000` | Corte duro de cada envío de correo |
 | `CONTRACT_POLL_INTERVAL_MS`, `CONTRACT_ATTEMPT_TIMEOUT_MS` | `500`, `10000` | Cada cuánto el trabajador busca emisiones pendientes (una activación nueva lo despierta enseguida) y el tope de un intento |
 | `CONTRACT_RETRY_BASE_MS`, `CONTRACT_RETRY_MAX_MS` | `1000`, `15000` | Espera tras el primer fallo (se duplica) y su tope; caben varios intentos dentro de los 60 s |
@@ -162,7 +162,7 @@ falta Open Finance y OPEN_FINANCE_REQUIRED=false ────▶ perfil parcial 
 | `DATABASE_URL` | vacío | PostgreSQL de originación (secreto: viene del entorno o de Secrets Manager, nunca se registra). **Obligatoria si `PAYMENT_GATEWAY_URL` está definida** (decisión D-2b): el cobro siempre es durable (desde HU-W1.2-03: definida, también persiste las ofertas personalizadas en un pool propio y aplica sus migraciones; vacía, las ofertas viven en memoria y el log lo avisa) |
 | `OFFER_REQUOTE_POLL_INTERVAL_MS` | `60000` | Cada cuánto el trabajador de recotización revisa las ofertas provisionales vigentes (HU-W1.2-03). Solo corre con `AUDIT_URL` |
 | `OFFER_REQUOTE_BATCH` | `50` | Ofertas provisionales que revisa en cada vuelta (HU-W1.2-03) |
-| `OFFER_LINK_BASE_URL` | `http://localhost:4200` | Dirección del front web con la que se arma el enlace del correo de recotización (`/embebido/oferta/<id>`) (HU-W1.2-03) |
+| `OFFER_LINK_BASE_URL` | `http://localhost:4200` | Dirección del front web con la que se arma el enlace del correo de recotización (`/embebido/oferta/<id>`) (HU-W1.2-03). En AWS la plataforma la fija con la URL del portal web cuando existe (T5) |
 | `PAYMENT_GATEWAY_TIMEOUT_MS` | `700` | Corte duro de cada intento de cobro (decisión D-9); un corte solo vuelve ambigua la respuesta, que se reintenta con la misma clave |
 | `RETRY_WINDOW_SECONDS` | `86400` | Ventana de reintentos del cobro (24 h, ADR-01); al vencer, el cobro queda como excepción de emisión |
 | `CHARGE_RETRY_BASE_MS`, `CHARGE_RETRY_MAX_MS` | `500`, `60000` | Espera tras el primer intento fallido (se duplica) y su tope (decisión D-4 A, valores de EC-D02) |
