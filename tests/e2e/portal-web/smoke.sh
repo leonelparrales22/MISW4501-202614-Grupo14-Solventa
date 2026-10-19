@@ -74,7 +74,13 @@ REGION="${AWS_REGION:-us-east-2}"
 WEB_TF_DIR="${WEB_TF_DIR:-$REPO_ROOT/infra/terraform/environments/$ENVIRONMENT/web}"
 PLATFORM_TF_DIR="${PLATFORM_TF_DIR:-$REPO_ROOT/infra/terraform/environments/$ENVIRONMENT/platform}"
 
-tf_raw() { terraform -chdir="$1" output -raw "$2" 2>/dev/null || true; }
+# Without state Terraform prints "No outputs found" on stdout with exit code 0: that is nothing.
+tf_raw() {
+  local v
+  v="$(terraform -chdir="$1" output -no-color -raw "$2" 2>/dev/null)" || return 0
+  [[ "$v" == *"No outputs found"* || "$v" == *"Warning:"* ]] && return 0
+  printf '%s' "$v"
+}
 [[ -n "${PORTAL_URL:-}" ]] || PORTAL_URL="$(tf_raw "$WEB_TF_DIR" url)"
 [[ -n "${BUCKET:-}" ]] || BUCKET="$(tf_raw "$WEB_TF_DIR" bucket)"
 [[ -n "${DISTRIBUTION_ID:-}" ]] || DISTRIBUTION_ID="$(tf_raw "$WEB_TF_DIR" distribution_id)"
@@ -83,7 +89,7 @@ tf_raw() { terraform -chdir="$1" output -raw "$2" 2>/dev/null || true; }
 [[ -n "${LOG_GROUP:-}" ]] || LOG_GROUP="$(tf_raw "$PLATFORM_TF_DIR" log_group)"
 [[ -n "${CLUSTER:-}" ]] || CLUSTER="$(tf_raw "$PLATFORM_TF_DIR" ecs_cluster)"
 if [[ -z "${EXPECTED_USER_POOL_ID:-}" ]]; then
-  EXPECTED_USER_POOL_ID="$(terraform -chdir="$PLATFORM_TF_DIR" output cognito 2>/dev/null |
+  EXPECTED_USER_POOL_ID="$(terraform -chdir="$PLATFORM_TF_DIR" output -no-color cognito 2>/dev/null |
     sed -n 's/^ *"user_pool_id" *= *"\([^"]*\)".*/\1/p' | head -n 1 || true)"
 fi
 PORTAL_URL="${PORTAL_URL%/}"
