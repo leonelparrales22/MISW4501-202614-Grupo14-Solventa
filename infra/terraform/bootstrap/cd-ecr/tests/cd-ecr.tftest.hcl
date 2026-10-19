@@ -128,3 +128,41 @@ run "role_can_only_push_to_the_image_repositories" {
     error_message = "The only action allowed on every resource is GetAuthorizationToken."
   }
 }
+
+run "release_tag_parameter_is_created" {
+  command = plan
+
+  assert {
+    condition     = aws_ssm_parameter.production_demo_image_tag.name == "/solventa/production-demo/image-tag"
+    error_message = "The parameter name is read by backend-cd and scripts/environment/up.sh."
+  }
+
+  assert {
+    condition     = aws_ssm_parameter.production_demo_image_tag.value == "none"
+    error_message = "Until main is published the parameter must say none."
+  }
+}
+
+run "deploy_role_is_separate_from_the_publish_role" {
+  command = plan
+
+  assert {
+    condition     = aws_iam_role.deploy.name == "solventa-github-actions-deploy"
+    error_message = "The deploy role name is referenced by the backend-cd workflow."
+  }
+
+  assert {
+    condition     = aws_iam_role_policy_attachment.deploy_read.policy_arn == "arn:aws:iam::aws:policy/ReadOnlyAccess"
+    error_message = "terraform plan needs to read every resource of the platform."
+  }
+
+  assert {
+    condition = flatten([
+      for c in data.aws_iam_policy_document.deploy_trust.statement[0].condition :
+      c.values if c.variable == "token.actions.githubusercontent.com:sub"
+      ]) == [
+      "repo:leonelparrales22@52500190/MISW4501-202614-Grupo14-Solventa@1325296709:environment:production-demo",
+    ]
+    error_message = "Only jobs of the production-demo environment (manual approval) may deploy; never a branch run or a pull request."
+  }
+}

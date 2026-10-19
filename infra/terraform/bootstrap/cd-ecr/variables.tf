@@ -33,6 +33,12 @@ variable "deploy_branches" {
   default     = ["develop", "main"]
 }
 
+variable "deploy_environment" {
+  description = "GitHub environment (with required reviewers) whose jobs may assume the production-demo deploy role."
+  type        = string
+  default     = "production-demo"
+}
+
 variable "create_oidc_provider" {
   description = "Create the GitHub OIDC identity provider. Set to false when the account already has one (an account can hold a single provider per URL) and pass its ARN in existing_oidc_provider_arn."
   type        = bool
