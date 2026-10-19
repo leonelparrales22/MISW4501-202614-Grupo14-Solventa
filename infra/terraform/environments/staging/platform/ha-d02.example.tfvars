@@ -4,17 +4,9 @@
 #   terraform plan -out p1.tfplan -var-file=ha-d02.example.tfvars -var ttl=<YYYY-MM-DD> \
 #     -var image_tag=<sha of 12> -var 'image_tag_overrides={...}' -var services_enabled=false
 #
-# There is NO password and NO image tag here on purpose: seed_user_password is
-# sensitive and only travels in TF_VAR_seed_user_password (never in a file), and
-# the tags go on the command line. The users are fictitious (@example.com).
-
-# Test users of the user pool, one per role of the smoke test: the insured
-# accepts and pays, the advisor decides the inbox, operations resumes a charge.
-seed_users = {
-  insured    = { email = "asegurado.ha-d02@example.com", group = "insured" }
-  advisor    = { email = "asesor.ha-d02@example.com", group = "advisor" }
-  operations = { email = "operaciones.ha-d02@example.com", group = "operations" }
-}
+# There is NO image tag here on purpose: the tags go on the command line. The
+# test users are the permanent ones of bootstrap/identity; their password only
+# travels in the environment of the scripts, never in a file.
 
 # Retry window of 5 minutes instead of 24 hours, so the window sees the issuance
 # exceptions (CA-3), and a longest wait of 15 s between charge attempts instead

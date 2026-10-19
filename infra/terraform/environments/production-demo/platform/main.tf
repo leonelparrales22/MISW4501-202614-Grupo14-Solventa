@@ -4,10 +4,22 @@
 # deletion protection, a final RDS snapshot and 7 days of backups. NAT and
 # Multi-AZ stay off by default for cost and are switched on for the final demo
 # (nat_mode = "per_az", rds_multi_az = true, redis_multi_az = true).
+# User pool: the permanent one of bootstrap/identity.
 #
 # deletion_protection and ephemeral are variables with the values above as
 # defaults (T5, decision D-18): the switch-off command of scripts/environment
 # turns both around to destroy the whole platform the same day of the demo.
+
+# Permanent user pool of the human channels (T4, bootstrap/identity): applied once,
+# outside this composition, so the portal and the app keep the same pool and client IDs.
+data "terraform_remote_state" "identity" {
+  backend = "s3"
+  config = {
+    bucket = "solventa-tfstate-368083581678"
+    key    = "bootstrap/identity/terraform.tfstate"
+    region = "us-east-2"
+  }
+}
 
 module "platform" {
   source = "../../../modules/platform"
@@ -42,6 +54,14 @@ module "platform" {
   # itself is same-origin and never needs it.
   cors_allow_origin = local.cors_allow_origin
   portal_base_url   = local.portal_base_url
+
+  existing_cognito = {
+    user_pool_id  = data.terraform_remote_state.identity.outputs.user_pool_id
+    user_pool_arn = data.terraform_remote_state.identity.outputs.user_pool_arn
+    issuer        = data.terraform_remote_state.identity.outputs.issuer
+    jwks_url      = data.terraform_remote_state.identity.outputs.jwks_url
+    client_ids    = data.terraform_remote_state.identity.outputs.client_ids
+  }
 
   deletion_protection = var.deletion_protection
   ephemeral           = var.ephemeral

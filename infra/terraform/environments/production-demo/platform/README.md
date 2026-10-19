@@ -16,7 +16,8 @@ en el README del módulo.
 | Tareas | ADR-02: 2 en cada servicio (0,25 vCPU / 0,5 GB) con autoescalado por CPU al 60 % hasta 4; `origination` (0,5 vCPU / 1 GB, EXP-L01) **en 1 tarea sin autoescalado** por ahora; 1 por stub | ADR-02 / EXP-D03. `origination` se desvía temporalmente de las 3 tareas de ADR-02 mientras aceptaciones, bandeja y emisión estén en memoria ([C5](../../../modules/platform/README.md#una-tarea-de-originación-c5), HA-D02); vuelve a 3 (hasta 6) cuando estén en PostgreSQL |
 | NAT | `nat_mode = "none"` por defecto | Costo; `per_az` para la demo |
 | RDS / Redis | Single-AZ por defecto, backups de 7 días | Multi-AZ en `db.t4g.micro` supera el presupuesto de US$ 20/mes si queda encendido; se activa para la demo |
-| Protección | `deletion_protection = true` (RDS, ALB, user pool), snapshot final de RDS, secretos con 7 días de recuperación, buckets sin `force_destroy`. Desde T5 son las variables `deletion_protection` y `ephemeral`, con esos mismos valores por defecto: solo el comando de apagado las invierte (D-18) | Entrega evaluable |
+| Identidad | User pool permanente `solventa-users` de [`bootstrap/identity`](../../../bootstrap/identity/README.md), leído por `terraform_remote_state` (clave `bootstrap/identity/terraform.tfstate`) y pasado al módulo en `existing_cognito`; esta composición no crea pool | El portal y la app usan siempre el mismo pool y los mismos clientes |
+| Protección | `deletion_protection = true` (RDS y ALB), snapshot final de RDS, secretos con 7 días de recuperación, buckets sin `force_destroy`; el user pool es el permanente de `bootstrap/identity`, con su propio candado. Desde T5 son las variables `deletion_protection` y `ephemeral`, con esos mismos valores por defecto: solo el comando de apagado las invierte (D-18) | Entrega evaluable |
 | Logs | 14 días | — |
 | Usage plans | D-7: 100 req/s, ráfaga 200, sin cuota, por socio (`socio-a`, `socio-b`); `portal-embebido` (10 req/s, ráfaga 20), el socio de demostración cuya key agrega CloudFront (T5, D-3) | Decisión D-7 vigente |
 | Portal web (T5) | La URL del portal sale del parámetro SSM `/solventa/production-demo/web/url` que publica [`production-demo/web`](../web/README.md); con ella, los enlaces de los correos apuntan al portal (D-11) y CORS se fija a su origen (D-12 b) | Mismo origen para el portal; sin el sitio, todo queda como antes |
@@ -87,6 +88,9 @@ Apagar (al terminar la demo, el mismo día):
 
 ## Procedimiento manual (referencia)
 
+Antes de todo, [`bootstrap/identity`](../../../bootstrap/identity/README.md) debe estar **aplicada**: esta composición lee su
+estado (pool, emisor, JWKS y clientes) y sin él ni siquiera se puede planear.
+
 Es lo que hacen por dentro las fases `platform-base`, `db-init` y `platform` de `up.sh`. El **primer** `apply` va en dos tiempos (ver «Primer `apply` en dos tiempos» en el README del módulo): `origination` (con el cobro
 de la prima) y `audit` abren PostgreSQL al arrancar y necesitan que `db-init` haya creado su rol.
 
@@ -140,6 +144,8 @@ Con `ephemeral = true` RDS no deja snapshot final, los buckets se borran con sus
 recuperación. Sin esas variables, RDS deja el snapshot `solventa-demo-final` (cobra almacenamiento) y los secretos quedan 7 días en
 borrado programado.
 
+El user pool no pertenece a esta composición: `destroy` no lo toca.
+
 ## Costos (aproximados, precios de lista en `us-east-2`; verificar antes de aplicar)
 
 | Elemento | Por hora | Por mes encendido |
@@ -164,3 +170,6 @@ terraform init -backend=false
 terraform validate
 terraform test
 ```
+
+Las pruebas reemplazan el estado remoto de `bootstrap/identity` con `override_data` (un pool simulado): no leen S3 ni necesitan
+credenciales. Comprueban el tamaño de ADR-02, los interruptores de la demo final y que la plataforma usa el pool permanente.

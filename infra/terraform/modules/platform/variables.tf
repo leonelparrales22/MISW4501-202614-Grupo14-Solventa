@@ -212,8 +212,36 @@ variable "public_routes" {
   }
 }
 
+variable "existing_cognito" {
+  description = "User pool created outside the platform (the permanent one of bootstrap/identity, T4). null creates a user pool for this environment."
+  type = object({
+    user_pool_id  = string
+    user_pool_arn = string
+    issuer        = string
+    jwks_url      = string
+    client_ids    = map(string)
+  })
+  default = null
+
+  validation {
+    condition = var.existing_cognito == null ? true : (
+      can(regex("^arn:aws:cognito-idp:[a-z0-9-]+:[0-9]{12}:userpool/", var.existing_cognito.user_pool_arn)) &&
+      startswith(var.existing_cognito.issuer, "https://cognito-idp.") &&
+      endswith(var.existing_cognito.issuer, "/${var.existing_cognito.user_pool_id}") &&
+      var.existing_cognito.jwks_url == "${var.existing_cognito.issuer}/.well-known/jwks.json" &&
+      length(var.existing_cognito.client_ids) > 0
+    )
+    error_message = "existing_cognito must describe a Cognito user pool: its ARN, its issuer (ending in the pool ID), the JWKS URL of that issuer and at least one app client."
+  }
+
+  validation {
+    condition     = var.existing_cognito == null ? true : (length(var.seed_users) == 0 && var.seed_user_password == null)
+    error_message = "Seed users belong to the user pool the platform creates; with existing_cognito, declare the test users where that pool is managed (bootstrap/identity)."
+  }
+}
+
 variable "seed_users" {
-  description = "Test users of the user pool for a staging window (insured, advisor, operations or partner), so the smoke test gets real tokens. Empty by default; production-demo never sets them."
+  description = "Test users of the user pool (insured, advisor, operations or partner), so the smoke test of a staging window gets real tokens; only when the platform creates its user pool (existing_cognito = null). Empty by default; production-demo never sets them."
   type = map(object({
     email      = string
     group      = string
@@ -223,7 +251,7 @@ variable "seed_users" {
 }
 
 variable "seed_user_password" {
-  description = "Permanent password of the seed users. Only through TF_VAR_seed_user_password; never in a file."
+  description = "Permanent password of the seed users, only when the platform creates its user pool. Only through TF_VAR_seed_user_password; never in a file."
   type        = string
   default     = null
   sensitive   = true
@@ -244,7 +272,7 @@ variable "cache_ttl_seconds" {
 # --- Lifecycle ------------------------------------------------------------------------
 
 variable "deletion_protection" {
-  description = "Protect the RDS instance, the ALB and the Cognito user pool against deletion."
+  description = "Protect the RDS instance, the ALB and the Cognito user pool, when the platform creates it, against deletion."
   type        = bool
   default     = true
 }

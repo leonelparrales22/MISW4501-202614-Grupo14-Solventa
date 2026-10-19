@@ -51,6 +51,22 @@ mock_provider "aws" {
 
 mock_provider "random" {}
 
+# Outputs of bootstrap/identity (the permanent user pool), read without AWS:
+# the data source is replaced at its address and the S3 backend is never called.
+override_data {
+  target          = data.terraform_remote_state.identity
+  override_during = plan
+  values = {
+    outputs = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:368083581678:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+}
+
 variables {
   ttl = "2026-12-31"
 }
@@ -97,7 +113,7 @@ run "window_variables_are_optional" {
   assert {
     condition = (
       length(var.stub_desired_count_overrides) == 0 && length(var.origination_environment) == 0 &&
-      length(var.seed_users) == 0 && var.seed_user_password == null && length(var.extra_tags) == 0
+      length(var.extra_tags) == 0
     )
     error_message = "Without a window every lever is empty."
   }
@@ -108,7 +124,8 @@ run "window_variables_are_optional" {
   }
 }
 
-# The values of ha-d02.example.tfvars, with a mock password (never a real one).
+# The values of ha-d02.example.tfvars (the test users are the permanent ones of
+# bootstrap/identity, so the window declares none).
 run "the_ha_d02_window_takes_down_only_the_payment_gateway" {
   command = plan
 
@@ -116,12 +133,6 @@ run "the_ha_d02_window_takes_down_only_the_payment_gateway" {
     stub_desired_count_overrides = { payment-gateway = 0 }
     origination_environment      = { RETRY_WINDOW_SECONDS = "300", CHARGE_RETRY_MAX_MS = "15000" }
     extra_tags                   = { Owner = "nicolas", Story = "HA-D02" }
-    seed_user_password           = "mock-value-not-a-password"
-    seed_users = {
-      insured    = { email = "asegurado.ha-d02@example.com", group = "insured" }
-      advisor    = { email = "asesor.ha-d02@example.com", group = "advisor" }
-      operations = { email = "operaciones.ha-d02@example.com", group = "operations" }
-    }
   }
 
   assert {
@@ -150,6 +161,25 @@ run "ttl_is_required_and_validated" {
   }
 
   expect_failures = [var.ttl]
+}
+
+# T4: the windows use the permanent user pool of bootstrap/identity and its
+# four test users; staging never creates a pool of its own.
+run "uses_the_permanent_user_pool" {
+  command = plan
+
+  assert {
+    condition     = module.platform.cognito.user_pool_id == "us-east-2_PermTest1"
+    error_message = "Staging must use the permanent user pool of bootstrap/identity."
+  }
+
+  assert {
+    condition = (
+      module.platform.cognito.issuer == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1" &&
+      module.platform.cognito.client_ids == tomap({ web = "web-client-test", mobile = "mobile-client-test" })
+    )
+    error_message = "The issuer and the app clients of the services are those of the permanent user pool."
+  }
 }
 
 # --- Web portal (T5) -------------------------------------------------------------------

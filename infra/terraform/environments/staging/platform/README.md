@@ -16,6 +16,7 @@ destruye en la misma sesión**. La topología está en el README del módulo; aq
 | Tareas | 1 por servicio y por stub (`origination` 0,5 vCPU / 1 GB, el resto 0,25 vCPU / 0,5 GB); autoescalado por CPU al 60 % hasta 2, salvo `origination`, fija en 1 | Tamaño de experimento; `origination` en una tarea mientras aceptaciones y bandeja estén en memoria ([C5](../../../modules/platform/README.md#una-tarea-de-originación-c5)) |
 | NAT | `nat_mode = "none"` por defecto | Costo |
 | RDS / Redis | Single-AZ, backup de 1 día | Costo |
+| Identidad | User pool permanente `solventa-users` de [`bootstrap/identity`](../../../bootstrap/identity/README.md), leído por `terraform_remote_state` (clave `bootstrap/identity/terraform.tfstate`) y pasado al módulo en `existing_cognito`; esta composición no crea pool ni usuarios | Las ventanas usan los mismos cuatro usuarios de prueba y los mismos clientes que el portal y la app |
 | Ciclo de vida | `ephemeral = true`: sin snapshot final, buckets con `force_destroy`, secretos sin ventana de recuperación (se pueden recrear con el mismo nombre); sin `deletion_protection` | Se destruye tras cada ventana |
 | Logs | 3 días | — |
 | Usage plans | D-7: 100 req/s, ráfaga 200, sin cuota, por socio; `portal-embebido` (10 req/s, ráfaga 20) para el portal web (T5, D-3) | Decisión D-7 vigente |
@@ -40,12 +41,10 @@ Etiquetas por defecto: `Project=solventa`, `Env=staging`, `Task=T4`, `TTL=<var.t
 | `portal_base_url` | `null` | Origen del portal; `null` lo lee del parámetro SSM `/solventa/staging/web/url` (T5) |
 | `stub_desired_count_overrides` | `{}` | Tareas por stub; `{ payment-gateway = 0 }` tumba la pasarela y `{}` la restaura (HA-D02, D-6) |
 | `origination_environment` | `{}` | Variables extra de `origination` para la ventana (p. ej. `RETRY_WINDOW_SECONDS`, `CHARGE_RETRY_MAX_MS`); no puede reemplazar las de la plataforma |
-| `seed_users` | `{}` | Usuarios de prueba del user pool (asegurado, asesor, operaciones o socio) para obtener tokens reales |
-| `seed_user_password` | `null` (sensible) | Contraseña permanente de los usuarios de prueba; **solo** por `TF_VAR_seed_user_password`, nunca en un archivo |
 | `extra_tags` | `{}` | Etiquetas adicionales (`Owner`, `Story`…) |
 
-[`ha-d02.example.tfvars`](ha-d02.example.tfvars) trae los valores de la ventana de HA-D02 (tres usuarios ficticios `@example.com`,
-ventana de reintentos de 300 s, espera máxima de 15 s y `Owner=nicolas`, `Story=HA-D02`), sin contraseña ni etiquetas de imagen.
+[`ha-d02.example.tfvars`](ha-d02.example.tfvars) trae los valores de la ventana de HA-D02 (ventana de reintentos de 300 s, espera
+máxima de 15 s y `Owner=nicolas`, `Story=HA-D02`), sin contraseña ni etiquetas de imagen.
 
 ## Encender y apagar con un comando (T5)
 
@@ -71,6 +70,10 @@ scripts/environment/down.sh staging --yes         # destroy de la plataforma y d
 Pendiente: se registra aquí al terminar la ventana de staging de T5 (URL del portal recortada, fases, humo y apagado).
 
 ## Procedimiento manual (referencia)
+
+Antes de todo, [`bootstrap/identity`](../../../bootstrap/identity/README.md) debe estar **aplicada**: esta composición lee su
+estado (pool, emisor, JWKS y clientes) y sin él ni siquiera se puede planear. El `destroy` de la ventana no toca el user pool, que no
+pertenece a esta composición.
 
 El primer `apply` va **en dos tiempos** (ver «Primer `apply` en dos tiempos» en el README del
 [módulo](../../../modules/platform/README.md#primer-apply-en-dos-tiempos)): `origination` y `audit` abren PostgreSQL al arrancar y
@@ -100,10 +103,11 @@ terraform destroy -auto-approve -input=false -var ttl=2026-10-20 -var image_tag=
 terraform state list                  # vacío
 ```
 
-Una ventana con usuarios de prueba agrega `-var-file=ha-d02.example.tfvars` a los tres comandos de Terraform y pasa la contraseña en
-el mismo comando con `TF_VAR_seed_user_password` (la ventana de HA-D02 la toma de la variable de usuario de Windows
-`SOLVENTA_HA_D02_SEED_PASSWORD`, que se borra al terminar). La tarea `db-init` se explica en el README de
-[`production-demo/platform`](../../production-demo/platform/README.md#procedimiento-manual-referencia).
+Una ventana como la de HA-D02 agrega `-var-file=ha-d02.example.tfvars` a los tres comandos de Terraform. Los tokens reales salen de
+los cuatro usuarios de prueba permanentes del pool (asegurado, asesor, operaciones y socio; ver
+[`bootstrap/identity`](../../../bootstrap/identity/README.md)): su contraseña la tiene Nicolás y los guiones la reciben por el
+entorno (p. ej. `SEED_USER_PASSWORD` del humo de HA-D02), nunca en un archivo; Terraform no la necesita en esta composición. La
+tarea `db-init` se explica en el README de [`production-demo/platform`](../../production-demo/platform/README.md#procedimiento-manual-referencia).
 
 ### Caída de la pasarela en una ventana (HA-D02)
 
