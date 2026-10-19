@@ -1,0 +1,47 @@
+name: backend-ci
+on:
+  pull_request:
+    paths: ["services/**", "pkg/**", "stubs/**", "go.work", ".golangci.yml", "Makefile", ".github/workflows/backend-ci.yml"]
+  push:
+    branches: [develop, main]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23" }
+      - name: Install golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: make lint
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23" }
+      - run: make build
+      - run: make test
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f coverage.out ]; then
+            {
+              echo '### Total coverage (statements)'
+              echo '```'
+              go tool cover -func=coverage.out | tail -n 1
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            go tool cover -func=coverage.out > coverage-func.txt
+          fi
+      - name: Coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cobertura-unitarias
+          path: |
+            coverage.out
+            coverage-func.txt
+          if-no-files-found: ignore

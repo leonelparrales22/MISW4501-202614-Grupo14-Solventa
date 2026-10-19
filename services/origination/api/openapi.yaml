@@ -1,0 +1,2225 @@
+openapi: 3.0.3
+info:
+  title: Solventa - origination service
+  version: 0.10.0
+paths:
+  /health:
+    get:
+      summary: Shallow health check (ALB, ADR-02)
+      security: []
+      responses:
+        "200":
+          description: OK
+  /v1/risk-profiles/resolve:
+    post:
+      summary: Resolve the risk profile used to price an offer (HA-D01, HA-L01, HU-W1.2-02)
+      description: >
+        Returns the risk profile for the customer. A complete profile of the
+        customer calculated at most 30 days ago is reused as a normal answer
+        (source=cache) and no external source is queried (HU-W1.2-02). Otherwise
+        the external sources (Open Finance, Open Data, KYC) are consulted in
+        parallel, each with a latency
+        budget (120 ms by default) inside a total cut (700 ms); a source that
+        misses its budget is canceled and the profile is calculated with the
+        signals that arrived, marked as partial and combined with the
+        provisional actuarial weights of each source. When no profile can be
+        calculated online (Open Finance missing while it is required, or no
+        source at all), the answer is still 200 but provisional: it uses the
+        last cached profile (at most 30 days old, a partial one since a complete
+        one would have been reused) or, for a customer without one, the base
+        actuarial profile. No external source and no cached
+        profile is used without an active consent. With AUDIT_URL set, the
+        consent is verified with the audit service before anything else
+        (HU-W1.2-01): consent_active is still required by the contract but its
+        value is ignored, 422 consent_required means audit has no active consent
+        for the customer, and an audit that does not answer in time (or an open
+        circuit) is 503 request_aborted, because a consent that cannot be
+        verified is never assumed. Without AUDIT_URL the caller still asserts
+        consent_active.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveRiskProfileRequest"
+      responses:
+        "200":
+          description: Profile resolved, in normal or provisional mode
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveRiskProfileResponse"
+        "400":
+          description: Malformed body or missing fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The customer has no active consent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The request was aborted (for example, the client disconnected) or,
+            with AUDIT_URL set, the consent could not be verified because the
+            audit service did not answer in time (HU-W1.2-01). Nothing was
+            queried.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/risk-profiles/{customer_id}:
+    get:
+      summary: Read the risk profile used to price an offer (HA-L01)
+      description: >
+        Same answer as POST /v1/risk-profiles/resolve, exposed as a read so the
+        API Gateway can serve it from its cache without recalculating. The
+        gateway cache key is the path, the consent_active query parameter and
+        the partner API key, so partners never share entries.
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+        - name: consent_active
+          in: query
+          required: true
+          description: >
+            Whether the customer has an active consent. Asserted by the caller
+            only when the service runs without AUDIT_URL; with it, the audit
+            service decides (HU-W1.2-01) and this value is ignored.
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Profile resolved, in normal or provisional mode
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveRiskProfileResponse"
+        "400":
+          description: Missing or invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The customer has no active consent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The request was aborted (for example, the client disconnected) or,
+            with AUDIT_URL set, the consent could not be verified because the
+            audit service did not answer in time (HU-W1.2-01). Nothing was
+            queried.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/offers:
+    post:
+      summary: Generate the personalized offer of the embedded journey (HU-W1.2-03)
+      description: >
+        Partner-channel route (the API Gateway authenticates the partner with
+        its API key; the service reads no token). Verifies with the audit
+        service that the customer has an active explicit consent and that
+        consent_id is that consent (HU-W1.2-01), resolves the risk profile,
+        prices it with the rating engine (v1) and stores the offer, immutable,
+        with a copy of the profile, the applied rules and the engine version.
+        The offer is valid for 24 hours. When the external sources fail the
+        offer is still produced, in provisional mode: provisional_reason tells
+        whether it was priced with the last cached profile of the customer
+        (cached_profile, with profile_date) or with the base actuarial profile
+        (base_actuarial_profile); the worker replaces it with a normal offer
+        when the source returns (see GET). The offer has no owner until the
+        insured opens it with a session (GET claims it). The id is 128 random
+        bits and is the only thing the redirect to the web flow carries. The
+        response never carries the risk score, the rules or the identity
+        document. Without AUDIT_URL this route answers 503
+        consent_unverifiable: a consent that cannot be verified is never
+        assumed.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateOfferRequest"
+      responses:
+        "201":
+          description: Offer generated
+          headers:
+            Location:
+              description: Path of the offer.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Offer"
+        "400":
+          description: Malformed body (invalid_request) or invalid fields (validation_failed, with the field list)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/ValidationError"
+        "422":
+          description: >
+            The customer has no active consent (consent_required) or consent_id
+            is not their consent (consent_mismatch). No source was queried.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The consent could not be verified (consent_unverifiable; no source
+            was queried) or the offer could not be produced (offer_unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/offers/{offer_id}:
+    get:
+      summary: Read an offer (HU-W1.2-03)
+      description: >
+        The first insured who opens a personalized offer with a session claims
+        it and is its owner from then on: another insured gets 403, and an
+        advisor or operations analyst reads it without claiming. status is
+        active, expired (24 hours after creation) or superseded (a provisional
+        offer a normal one replaced when the external source returned;
+        superseded_by points to the new one and accepting the old one answers
+        offer_expired). can_accept and can_renew tell what the customer can do
+        next; an expired offer is renewed with POST .../renewal. The adjusted
+        (adj-*, HU-W1.1-02) and demonstration (demo-*, HU-W1.3-01) offers are
+        served here too with a reduced view: kind adjusted or demo, only
+        premium, currency, mode, expires_at and status, and terms, conditions,
+        profile and the other details null; they are never claimed (their owner
+        is the customer of the offer).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/OfferID"
+      responses:
+        "200":
+          description: The offer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Offer"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The offer does not exist (offer_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The offer could not be read (offer_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/offers/{offer_id}/renewal:
+    post:
+      summary: Renew an expired offer (HU-W1.2-03)
+      description: >
+        Only the owner (insured). Creates a new offer with the same credit data
+        and the age recalculated, after verifying the consent again, and
+        resolving and rating again. It is idempotent: asking again returns the
+        same renewal with 200. 409 offer_still_valid while the offer can still
+        be accepted; 409 offer_superseded (with superseded_by) when a requote
+        replaced it, because the newer offer is the one to use.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/OfferID"
+      responses:
+        "201":
+          description: Renewal created
+          headers:
+            Location:
+              description: Path of the new offer.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Offer"
+        "200":
+          description: The offer was already renewed; the existing renewal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Offer"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The offer does not exist (offer_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: offer_still_valid or offer_superseded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OfferConflict"
+        "422":
+          description: >
+            No active consent (consent_required) or the holder is no longer
+            insurable (validation_failed on birth_date)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/ValidationError"
+        "503":
+          description: The consent could not be verified (consent_unverifiable) or the renewal failed (offer_unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/offers/{offer_id}/acceptance:
+    post:
+      summary: Accept an offer and trigger underwriting (HU-W1.3-01)
+      description: >
+        Registers the acceptance of the offer by its owner (offer, date and
+        time, channel) before any later step: it is the no-loss point of the
+        journey. Underwriting runs asynchronously afterwards; poll
+        GET /v1/acceptances/{acceptance_id} until the status leaves
+        registered. Accepting an offer that already has an acceptance returns
+        that acceptance with 200 (also after the offer expired), so retrying
+        is safe and never repeats the process; no Idempotency-Key header is
+        needed. Only the insured who owns the offer may accept it.
+        A personalized offer (HU-W1.2-03) belongs to the insured who first
+        opened it (GET /v1/offers/{offer_id}); an unclaimed one answers 403.
+        A provisional offer that a normal one replaced is no longer
+        acceptable: it answers 422 offer_expired, with expires_at the moment it
+        was replaced. Underwriting, the advisor inbox, issuance and the
+        acceptance storage are in-memory stand-ins for now (PENDING: the
+        underwriting engine and PostgreSQL).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/OfferID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptOfferRequest"
+      responses:
+        "202":
+          description: Acceptance registered; underwriting will run asynchronously
+          headers:
+            Location:
+              description: Path of the acceptance to poll.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acceptance"
+        "200":
+          description: The offer was already accepted; the existing acceptance in its current state
+          headers:
+            Location:
+              description: Path of the acceptance to poll.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acceptance"
+        "400":
+          description: Invalid offer_id, malformed body or invalid channel (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an insured or does not own the offer (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The offer does not exist (offer_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The offer validity is over (offer_expired); nothing is registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OfferExpiredError"
+        "503":
+          description: The acceptance could not be registered (acceptance_not_registered); retrying is safe
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: Read the acceptance of an offer (HU-W1.3-01)
+      description: >
+        Returns the acceptance of the offer, so a client that only kept the
+        offer id can resume the journey. Readable by the owner, advisors and
+        operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/OfferID"
+      responses:
+        "200":
+          description: The acceptance in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acceptance"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The offer has no acceptance (acceptance_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/AcceptanceUnavailable"
+  /v1/acceptances/{acceptance_id}:
+    get:
+      summary: Read an acceptance (HU-W1.3-01)
+      description: >
+        Returns the acceptance and its processing state; the client polls it
+        after accepting. Readable by the owner, advisors and operations
+        analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: acceptance_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The acceptance in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acceptance"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The acceptance does not exist (acceptance_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/AcceptanceUnavailable"
+  /v1/acceptances/{acceptance_id}/charge:
+    get:
+      summary: Read the premium charge of an acceptance (HA-D02)
+      description: >
+        Once underwriting approves the acceptance, the service charges the
+        premium in the background with a deterministic idempotency key
+        ("cobro-" + acceptance id). When the payment gateway does not answer,
+        the charge is retried with growing waits (500 ms doubling up to 60 s)
+        and the same key during a 24-hour retry window, so the customer sees
+        "payment pending" with the acceptance saved (screen E4b). When the
+        window ends without a charge, or the gateway declines it, the charge
+        fails and becomes an issuance exception. The coverage is activated
+        only when the charge is confirmed: then policy_id and
+        coverage_activated_at are set and the contractual document of
+        HU-W1.3-03 is issued. Readable by the insured who owns the acceptance,
+        advisors and operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      responses:
+        "200":
+          description: The premium charge in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Charge"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ChargeNotFound"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
+  /v1/acceptances/{acceptance_id}/charge/payment-method:
+    post:
+      summary: Hand over the payment method of a pending premium charge (HU-W1.3-02)
+      description: >
+        Screen E4 calls this after the browser tokenised the card against the
+        payment gateway: the card number never reaches this service, only the
+        token with its brand and last four digits. Storing the method makes the
+        first attempt of the charge due at once, so the worker of HA-D02 picks
+        it up with the mechanism unchanged. Calling it again replaces the method
+        and makes the attempt due again, which is what "try another payment
+        method" of E4c does: after the gateway declined a card, the new one is
+        charged with a new idempotency key ("cobro-<id>-2"), because the gateway
+        replays the stored decline for the old one. A new key is only ever
+        issued after a definitive decline, never after a timeout or an ambiguous
+        result, which is what keeps the no-duplicate guarantee of HA-D02. Only
+        the insured who owns the acceptance.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentMethodRequest"
+      responses:
+        "202":
+          description: The payment method was stored and the first attempt is due
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Charge"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ChargeNotFound"
+        "409":
+          description: >
+            The charge does not take a payment method (charge_not_payable): it
+            is in_progress or confirmed, or it failed with retry_window_expired
+            or payment_method_missing, which only operations resume. A charge
+            that failed with payment_rejected does take another method: that is
+            screen E4c, charged with a new idempotency key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
+  /v1/acceptances/{acceptance_id}/charge/resume:
+    post:
+      summary: Resume a failed premium charge (HA-D02)
+      description: >
+        An operations analyst resumes a charge that ended in an issuance
+        exception, from the registered acceptance: the charge goes back to
+        pending with the same idempotency key and a new 24-hour retry window.
+        The note is required and the author is the subject of the token. Only
+        a failed charge can be resumed; of two resumptions at once, one wins
+        and the other gets 409.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResumeChargeRequest"
+      responses:
+        "202":
+          description: Resumed; the charge is pending again
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Charge"
+        "400":
+          description: Invalid path parameter, body or note (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ChargeNotFound"
+        "409":
+          description: The charge is not failed (charge_not_resumable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
+  /v1/issuance-exceptions:
+    get:
+      summary: List the issuance exceptions (HA-D02)
+      description: >
+        The premium charges that failed (retry window expired, payment
+        rejected, or no payment method handed over before the window ended,
+        HU-W1.3-02), the latest failure first, for the issuance monitoring of
+        operations (the screen O1/O1b is HU-W1.3-04). Only operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: The issuance exceptions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuanceExceptionList"
+        "400":
+          description: Invalid limit (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
+  /v1/assisted-quotes:
+    post:
+      summary: Generate an assisted quote (HU-W1.1-01)
+      description: >
+        An advisor registers the customer data and gets the premium and
+        coverages of a mortgage life quote, priced with the same profiling and
+        rating engine as the embedded channels. The customer is created, or
+        updated when the document id is already known. The quote is persisted
+        with its id and a validity of 24 hours. When the external sources are
+        down the quote is still generated in degraded mode (mode provisional,
+        with the cached profile or the base actuarial profile) and says so in
+        mode, source and notice. Every invalid field is reported at once and no
+        quote is generated. consent_active is affirmed by the caller while the
+        audit service does not expose the consent query. Customers and quotes
+        are in-memory for now (PENDING: PostgreSQL).
+      security:
+        - cognitoJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAssistedQuoteRequest"
+      responses:
+        "201":
+          description: Quote generated
+          headers:
+            Location:
+              description: Path of the quote.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistedQuote"
+        "400":
+          description: Malformed body (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >
+            A field is missing or invalid (validation_failed, with the specific
+            error of each field), or the customer has no active consent
+            (consent_required).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "503":
+          description: The quote could not be generated (quote_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/assisted-quotes/{quote_id}:
+    get:
+      summary: Read an assisted quote (HU-W1.1-01)
+      description: >
+        Returns the quote with its status. After expires_at the status is
+        expired and can_formalize is false with blocked_reason quote_expired:
+        the quote cannot be formalized and the advisor must generate a new one.
+        The quote stays readable after it expires.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: quote_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The quote in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistedQuote"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The quote does not exist (quote_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The quote could not be read (quote_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/customers:
+    get:
+      summary: Recover a customer by document id (HU-W1.1-01)
+      description: >
+        Returns the customer registered with the document id, so the advisor
+        does not type the data again. Advisors only.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: document_id
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9]{5,20}$"
+      responses:
+        "200":
+          description: The customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No customer has that document (customer_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The document id has an invalid format (validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "503":
+          description: The customer could not be read (customer_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/policies/{policy_id}/issuance-status:
+    get:
+      summary: Read the state of the contractual issuance of a policy (HU-W1.3-03)
+      description: >
+        When the coverage is activated the service generates the contractual
+        document, stores it, ties it to the policy and e-mails the insured a
+        secure link, without manual intervention and within 60 seconds of the
+        activation. This endpoint shows how far that went: the document
+        (version, checksum), the notification (channel, status, attempts) and
+        the audit trail (date and time, document version and delivery result of
+        each step). A failed notification is retried with a growing wait
+        while the document stays available. Readable by the insured who owns
+        the policy, advisors and operations analysts. The repository and the
+        audit log are in-memory for now (PENDING: PostgreSQL and the audit
+        service); the document is stored in S3 in AWS (DOCUMENTS_BUCKET) and
+        in a local directory otherwise (DOCUMENTS_DIR).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The issuance in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuanceStatus"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No contractual issuance exists for the policy (policy_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The state could not be read (document_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/policies/{policy_id}/contract-document:
+    get:
+      summary: Download the contractual document of a policy (HU-W1.3-03)
+      description: >
+        Returns the PDF with the conditions, coverages, premium and validity
+        of the policy. Readable by the insured who owns the policy, advisors
+        and operations analysts. While the document is not ready the answer is
+        404 document_not_available.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          $ref: "#/components/responses/ContractPDF"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The policy has no issuance (policy_not_found) or its document is not ready (document_not_available)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The document could not be read (document_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/documents/{token}:
+    get:
+      summary: Download a contractual document through its secure link (HU-W1.3-03)
+      description: >
+        The link of the issuance notification. It needs no session: the signed,
+        expiring token is the authorization. A forged, altered or expired token
+        is 403 invalid_link.
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/ContractPDF"
+        "403":
+          description: The link is invalid or expired (invalid_link)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The document is not available (document_not_available)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The document could not be read (document_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/review-requests:
+    get:
+      summary: List the advisor inbox (HU-W1.1-02)
+      description: >
+        The requests that the automatic underwriting routed to a human
+        decision, with the applicant, the offer, the routing reason, the
+        arrival date and the status (CA-1), filtered by status and optionally
+        by reason and ordered by arrival (CA-5). The counts follow the reason
+        filter and ignore the status, so the client can show both tabs. Only
+        advisors. No pagination yet.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, decided]
+            default: pending
+        - name: reason
+          in: query
+          required: false
+          description: One of the routing reasons of the underwriting (Acceptance.underwriting.reason).
+          schema:
+            type: string
+            enum: [provisional_offer, high_risk_score]
+        - name: order
+          in: query
+          required: false
+          description: By arrival; asc lists the oldest request first.
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+      responses:
+        "200":
+          description: The matching requests and the counts per status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewRequestList"
+        "400":
+          description: Invalid status, reason or order (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ReviewUnavailable"
+  /v1/review-requests/{acceptance_id}:
+    get:
+      summary: Open a request of the advisor inbox (HU-W1.1-02)
+      description: >
+        The request with the mode and the validity of its offer and, once
+        decided, the whole decision record (CA-4). Only advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      responses:
+        "200":
+          description: The request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewRequest"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ReviewRequestNotFound"
+        "503":
+          $ref: "#/components/responses/ReviewUnavailable"
+  /v1/review-requests/{acceptance_id}/decision:
+    post:
+      summary: Decide a request of the advisor inbox (HU-W1.1-02)
+      description: >
+        The advisor accepts, adjusts the premium or rejects the risk (CA-2);
+        observations are required to adjust or reject. The decision is
+        recorded append-only with the advisor (sub and email of the token),
+        the date and time, the type and the observations (CA-4), and the
+        origination flow goes on by itself (CA-3): accept moves the acceptance
+        back to registered with an approved underwriting, so the issuance
+        starts; adjust creates a new offer (adj-{acceptance_id}, the premium
+        with the surcharge, valid 24 hours) that the customer accepts with
+        POST /v1/offers/{offer_id}/acceptance, and leaves the acceptance
+        adjusted; reject leaves it rejected and closes the case. With EMAIL_URL
+        set, the adjust and reject decisions are e-mailed to the customer in
+        the background (no link, no observations; idempotency key
+        review-outcome:{acceptance_id}). Only one decision per request: of two
+        advisors deciding at once, one wins and the other gets 409. Only
+        advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideRequest"
+      responses:
+        "201":
+          description: Decided; the request with its decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewRequest"
+        "400":
+          description: >
+            Invalid path parameter, body or decision type (invalid_request),
+            observations missing to adjust or reject (observations_required)
+            or premium adjustment missing, not allowed or out of range
+            (premium_adjustment_invalid)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ReviewRequestNotFound"
+        "409":
+          description: The request is already decided (review_request_already_decided)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The decision could not be registered (decision_not_registered),
+            the decision is registered but the flow did not continue yet
+            (decision_continuation_pending: retrying the same request
+            completes it) or the request could not be read
+            (review_unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    cognitoJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: ID token of the Cognito user pool (HA-S01).
+  parameters:
+    PolicyID:
+      name: policy_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    AcceptanceID:
+      name: acceptance_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    OfferID:
+      name: offer_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: "^[A-Za-z0-9_-]+$"
+  responses:
+    ContractPDF:
+      description: The contractual document
+      headers:
+        Content-Disposition:
+          schema:
+            type: string
+          description: attachment; filename="poliza-{policy_id}-v{version}.pdf"
+        X-Document-Checksum-SHA256:
+          schema:
+            type: string
+          description: SHA-256 of the document, in hexadecimal.
+      content:
+        application/pdf:
+          schema:
+            type: string
+            format: binary
+    InvalidRequest:
+      description: Invalid path parameter (invalid_request)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing, invalid or expired token (unauthorized)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Role not allowed or acceptance of another customer (forbidden)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ChargeNotFound:
+      description: >
+        The acceptance has no premium charge (charge_not_found): underwriting
+        has not approved it yet, it is in review or it does not exist
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ChargeUnavailable:
+      description: The premium charge could not be read (charge_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    AcceptanceUnavailable:
+      description: The acceptance could not be read (acceptance_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReviewRequestNotFound:
+      description: The acceptance has no request in the advisor inbox (review_request_not_found)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReviewUnavailable:
+      description: The advisor inbox could not be read (review_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    IssuanceStatus:
+      type: object
+      required: [policy_id, status, activated_at, available_at, within_slo, document, notification, audit]
+      properties:
+        policy_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, document_ready, completed, failed]
+          description: >
+            pending: activation received, document not ready; document_ready:
+            document available, notification pending or retrying; completed:
+            document available and insured notified; failed: the notification
+            could not be delivered after every attempt (the document remains
+            available).
+        activated_at:
+          type: string
+          format: date-time
+        available_at:
+          type: string
+          format: date-time
+          nullable: true
+        within_slo:
+          type: boolean
+          nullable: true
+          description: The document was available within 60 seconds of the activation.
+        document:
+          type: object
+          nullable: true
+          required: [document_id, version, content_type, size_bytes, checksum_sha256, generated_at]
+          properties:
+            document_id:
+              type: string
+              format: uuid
+            version:
+              type: integer
+            content_type:
+              type: string
+            size_bytes:
+              type: integer
+            checksum_sha256:
+              type: string
+            generated_at:
+              type: string
+              format: date-time
+        notification:
+          type: object
+          required: [channel, status, attempts, sent_at, last_failure_at]
+          properties:
+            channel:
+              type: string
+              enum: [email]
+            status:
+              type: string
+              enum: [pending, sent, failed]
+            attempts:
+              type: integer
+              description: Failed attempts so far.
+            sent_at:
+              type: string
+              format: date-time
+              nullable: true
+            last_failure_at:
+              type: string
+              format: date-time
+              nullable: true
+        audit:
+          type: array
+          description: Append-only record of the issuance, oldest first.
+          items:
+            type: object
+            required: [event, at]
+            properties:
+              event:
+                type: string
+                enum: [document_generated, notification_sent, notification_failed]
+              at:
+                type: string
+                format: date-time
+              document_version:
+                type: integer
+                nullable: true
+              delivery_result:
+                type: string
+                nullable: true
+                enum: [sent, failed]
+              channel:
+                type: string
+                nullable: true
+              attempt:
+                type: integer
+                nullable: true
+              detail:
+                type: string
+                nullable: true
+    CreateAssistedQuoteRequest:
+      type: object
+      required: [document_id, full_name, email, birth_date, insured_amount, term_months, consent_active]
+      properties:
+        document_id:
+          type: string
+          pattern: "^[A-Za-z0-9]{5,20}$"
+        full_name:
+          type: string
+          minLength: 3
+          maxLength: 120
+        email:
+          type: string
+          format: email
+        birth_date:
+          type: string
+          format: date
+          description: The customer must be between 18 and 70 years old.
+        insured_amount:
+          type: number
+          minimum: 10000000
+          maximum: 2000000000
+          description: Outstanding mortgage balance to insure, in COP.
+        term_months:
+          type: integer
+          minimum: 12
+          maximum: 360
+        consent_active:
+          type: boolean
+          description: The customer consented to be profiled.
+    FieldError:
+      type: object
+      required: [field, code]
+      properties:
+        field:
+          type: string
+          description: JSON name of the invalid field.
+        code:
+          type: string
+          enum: [required, invalid_format, out_of_range]
+    ValidationError:
+      type: object
+      required: [error, message, fields]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed]
+        message:
+          type: string
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldError"
+    Customer:
+      type: object
+      required: [customer_id, document_id, full_name, email, birth_date]
+      properties:
+        customer_id:
+          type: string
+        document_id:
+          type: string
+        full_name:
+          type: string
+        email:
+          type: string
+        birth_date:
+          type: string
+          format: date
+    Coverage:
+      type: object
+      required: [code, insured_amount]
+      properties:
+        code:
+          type: string
+          enum: [death, total_permanent_disability]
+        insured_amount:
+          type: number
+    AssistedQuote:
+      type: object
+      required: [quote_id, customer_id, customer, insured_amount, term_months, premium, currency, coverages, rating_version,
+                 mode, source, profile, profile_date, unavailable_source, notice, created_at, expires_at, status, can_formalize, blocked_reason]
+      properties:
+        quote_id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+        customer:
+          type: object
+          required: [document_id, full_name, email]
+          properties:
+            document_id:
+              type: string
+            full_name:
+              type: string
+            email:
+              type: string
+        insured_amount:
+          type: number
+        term_months:
+          type: integer
+        premium:
+          type: number
+          description: Monthly premium, rounded to 100 pesos.
+        currency:
+          type: string
+          example: COP
+        coverages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Coverage"
+        rating_version:
+          type: string
+          description: Version of the rating table that priced the quote.
+        mode:
+          type: string
+          enum: [normal, provisional]
+          description: provisional when the quote was priced in degraded mode.
+        source:
+          type: string
+          enum: [open_finance, external_sources, cache, base_actuarial]
+          description: Where the risk profile came from.
+        profile:
+          type: object
+          required: [score, category]
+          properties:
+            score:
+              type: number
+            category:
+              type: string
+        profile_date:
+          type: string
+          format: date-time
+          nullable: true
+        unavailable_source:
+          type: string
+          nullable: true
+          description: Set only in provisional mode.
+        notice:
+          type: string
+          nullable: true
+          enum: [last_profile_in_use, personalization_unavailable]
+          description: Message code for the degraded-mode screen; the text is translated by each client.
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: created_at plus 24 hours.
+        status:
+          type: string
+          enum: [valid, expired]
+        can_formalize:
+          type: boolean
+        blocked_reason:
+          type: string
+          nullable: true
+          enum: [quote_expired]
+    GenerateOfferRequest:
+      type: object
+      required: [customer_id, consent_id, partner_id, application_id, document_id, full_name, email, birth_date, insured_amount, term_months]
+      properties:
+        customer_id:
+          type: string
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Id the partner uses for the customer; the consent and the profile are keyed by it.
+        consent_id:
+          type: string
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Id of the consent recorded by audit (HU-W1.2-01); it must be the customer's active consent.
+        partner_id:
+          type: string
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_-]+$"
+        application_id:
+          type: string
+          maxLength: 128
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Id of the credit application at the partner.
+        document_id:
+          type: string
+          pattern: "^[A-Za-z0-9]{5,20}$"
+        full_name:
+          type: string
+          minLength: 3
+          maxLength: 120
+        email:
+          type: string
+          format: email
+          description: Where the requote notice is sent.
+        birth_date:
+          type: string
+          format: date
+          description: The holder must be between 18 and 70 years old.
+        insured_amount:
+          type: number
+          minimum: 10000000
+          maximum: 2000000000
+        term_months:
+          type: integer
+          minimum: 12
+          maximum: 360
+    Offer:
+      type: object
+      required: [offer_id, kind, status, premium, currency, mode, expires_at, can_accept, can_renew]
+      properties:
+        offer_id:
+          type: string
+        kind:
+          type: string
+          enum: [personalized, adjusted, demo]
+        status:
+          type: string
+          enum: [active, expired, superseded]
+        premium:
+          type: number
+          description: Monthly premium.
+        currency:
+          type: string
+        mode:
+          type: string
+          enum: [normal, provisional]
+        expires_at:
+          type: string
+          format: date-time
+        can_accept:
+          type: boolean
+        can_renew:
+          type: boolean
+        channel:
+          type: string
+          nullable: true
+          enum: [embedded, assisted]
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        provisional_reason:
+          type: string
+          nullable: true
+          enum: [cached_profile, base_actuarial_profile]
+        profile_date:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the cached profile was calculated (provisional_reason cached_profile).
+        unavailable_source:
+          type: string
+          nullable: true
+        profile:
+          type: object
+          nullable: true
+          required: [category, source]
+          properties:
+            category:
+              type: string
+            source:
+              type: string
+              enum: [open_finance, cache, base_actuarial, external_sources]
+        terms:
+          type: object
+          nullable: true
+          required: [insured_amount, term_months, coverages]
+          properties:
+            insured_amount:
+              type: number
+            term_months:
+              type: integer
+            coverages:
+              type: array
+              items:
+                $ref: "#/components/schemas/Coverage"
+        conditions:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: Codes the client translates (validity_24h, onerous_beneficiary_lender, monthly_premium, max_insured_age_70, provisional_requote_when_source_restored).
+        rater_version:
+          type: string
+          nullable: true
+        applicant:
+          type: object
+          nullable: true
+          properties:
+            full_name:
+              type: string
+        credit:
+          type: object
+          nullable: true
+          properties:
+            partner_id:
+              type: string
+            application_id:
+              type: string
+        superseded_by:
+          type: string
+          nullable: true
+          description: The offer that replaced this provisional one.
+        renewed_by:
+          type: string
+          nullable: true
+          description: The renewal of this expired offer.
+    OfferConflict:
+      type: object
+      required: [error, message, offer_id]
+      properties:
+        error:
+          type: string
+          enum: [offer_still_valid, offer_superseded]
+        message:
+          type: string
+        offer_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        superseded_by:
+          type: string
+    AcceptOfferRequest:
+      type: object
+      required: [channel]
+      properties:
+        channel:
+          type: string
+          enum: [web, mobile]
+          description: Channel where the customer accepted the offer.
+    Acceptance:
+      type: object
+      required: [acceptance_id, offer_id, customer_id, channel, accepted_at, status, underwriting, review, processing, updated_at]
+      properties:
+        acceptance_id:
+          type: string
+          format: uuid
+        offer_id:
+          type: string
+        customer_id:
+          type: string
+          description: Owner of the offer (the sub claim of their token).
+        channel:
+          type: string
+          enum: [web, mobile]
+        accepted_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [registered, issuance_pending, in_review, adjusted, rejected]
+          description: >
+            registered - persisted, underwriting pending or being retried (also
+            after an advisor accepted it, until the issuance starts);
+            issuance_pending - underwriting approved and issuance started;
+            in_review - routed to a human decision in the advisor inbox;
+            adjusted - an advisor adjusted the premium: the customer accepts
+            the new offer in review.adjusted_offer through the same flow;
+            rejected - an advisor did not accept the risk, the case is closed
+            and nothing is charged (HU-W1.1-02).
+        underwriting:
+          type: object
+          nullable: true
+          description: Null until underwriting decides.
+          required: [outcome, reason, decided_at]
+          properties:
+            outcome:
+              type: string
+              enum: [approved, human_review]
+            reason:
+              type: string
+              nullable: true
+              enum: [provisional_offer, high_risk_score]
+              description: >
+                Why it went to human review. Null when approved. Provisional
+                rules (pending the real underwriting engine): provisional_offer
+                for every provisional offer, whatever its score; high_risk_score
+                for a normal offer whose profile score is above the review
+                threshold (UNDERWRITING_REVIEW_SCORE_THRESHOLD, 0.8 by default;
+                a score of 0 is the lowest risk).
+            decided_at:
+              type: string
+              format: date-time
+        review:
+          type: object
+          nullable: true
+          description: >
+            The advisor decision on a request routed to a human decision
+            (HU-W1.1-02). Null until an advisor decides. After an accept, the
+            underwriting outcome is approved.
+          required: [outcome, decided_at, adjusted_offer]
+          properties:
+            outcome:
+              type: string
+              enum: [accept, adjust, reject]
+            decided_at:
+              type: string
+              format: date-time
+            adjusted_offer:
+              allOf:
+                - $ref: "#/components/schemas/AdjustedOffer"
+              nullable: true
+              description: The new offer of an adjust; null otherwise.
+        processing:
+          type: object
+          required: [attempts, last_failure_at, next_attempt_at]
+          properties:
+            attempts:
+              type: integer
+              minimum: 0
+              description: >
+                Failed processing attempts so far. Greater than 0 while the
+                status is registered means the journey is resuming.
+            last_failure_at:
+              type: string
+              format: date-time
+              nullable: true
+            next_attempt_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: When the next attempt runs. Null once the status left registered.
+        updated_at:
+          type: string
+          format: date-time
+    OfferExpiredError:
+      type: object
+      required: [error, message, offer_id, expires_at]
+      properties:
+        error:
+          type: string
+          enum: [offer_expired]
+        message:
+          type: string
+        offer_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+    ResolveRiskProfileRequest:
+      type: object
+      required: [customer_id, consent_active]
+      properties:
+        customer_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        consent_active:
+          type: boolean
+          description: >
+            Whether the customer has an active consent. Asserted by the caller
+            only when the service runs without AUDIT_URL; with it, the audit
+            service decides (HU-W1.2-01) and this value is ignored.
+    ResolveRiskProfileResponse:
+      type: object
+      required: [customer_id, mode, source, profile, profile_date, unavailable_source, notice, partial, sources]
+      properties:
+        customer_id:
+          type: string
+        mode:
+          type: string
+          enum: [normal, provisional]
+        source:
+          type: string
+          enum: [open_finance, external_sources, cache, base_actuarial]
+          description: >
+            open_finance when Open Finance alone calculated the profile,
+            external_sources when the parallel profiling over several sources
+            did (HA-L01), cache when a cached profile was used (normal mode:
+            a complete profile reused without querying, HU-W1.2-02; provisional
+            mode: a partial one while the sources fail), base_actuarial in
+            provisional mode when there is none.
+        profile:
+          type: object
+          required: [score, category]
+          properties:
+            score:
+              type: number
+              format: double
+            category:
+              type: string
+        profile_date:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the applied profile was calculated. Null for the base actuarial profile.
+        unavailable_source:
+          type: string
+          nullable: true
+          enum: [open_finance]
+          description: The external source that could not be used. Null in normal mode.
+        notice:
+          type: string
+          nullable: true
+          enum: [last_profile_in_use, personalization_unavailable]
+          description: >
+            Code of the message the client shows in provisional mode. Null in normal mode.
+            last_profile_in_use for source=cache, personalization_unavailable for source=base_actuarial.
+        partial:
+          type: boolean
+          description: >
+            True when the profile was calculated online without some of the
+            external sources (they missed their budget, failed or were
+            isolated). Always false in provisional mode, which is reported by
+            mode and source, and for a profile reused from the cache.
+        sources:
+          type: array
+          description: >
+            State and latency of each external source consulted, in priority
+            order (screen E2). Empty when a single source answered directly.
+            In provisional mode it shows which source failed.
+          items:
+            $ref: "#/components/schemas/SourceState"
+    SourceState:
+      type: object
+      required: [name, status, latency_ms]
+      properties:
+        name:
+          type: string
+          enum: [open_finance, open_data, kyc]
+        status:
+          type: string
+          enum: [ok, timeout, error, circuit_open]
+          description: >
+            ok answered inside its budget; timeout missed its budget and was
+            canceled; error answered with a failure; circuit_open was isolated
+            by its circuit breaker and not called.
+        latency_ms:
+          type: integer
+          minimum: 0
+          description: Time from the start of the consultation until the source ended or was canceled.
+    PaymentMethod:
+      type: object
+      required: [method, brand, last4, installments, bank_code, captured_at]
+      description: >
+        The payment method of a charge. The card number never reaches this
+        service: the browser tokenises it against the gateway and only the
+        token, the brand and the last four digits travel here (HU-W1.3-02).
+      properties:
+        method:
+          type: string
+          enum: [card, pse]
+        brand:
+          type: string
+          nullable: true
+          description: Card brand (visa, mastercard, amex); null for pse.
+          example: visa
+        last4:
+          type: string
+          nullable: true
+          pattern: "^[0-9]{4}$"
+          description: Last four digits of the card, to show "Visa ...1111"; null for pse.
+          example: "1111"
+        installments:
+          type: integer
+          minimum: 1
+          maximum: 36
+        bank_code:
+          type: string
+          nullable: true
+          description: Bank chosen for pse; null for card.
+        captured_at:
+          type: string
+          format: date-time
+    PaymentMethodRequest:
+      type: object
+      required: [method]
+      properties:
+        method:
+          type: string
+          enum: [card, pse]
+        payment_token:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{8,128}$"
+          description: >
+            Required with card. The token the gateway returned to the browser.
+            A value that looks like a card number (13 to 19 digits) is rejected
+            with invalid_request, so a mistake in the client never drags a PAN
+            into this service.
+          example: tok_7b3c1f9a
+        brand:
+          type: string
+          example: visa
+        last4:
+          type: string
+          pattern: "^[0-9]{4}$"
+          example: "1111"
+        installments:
+          type: integer
+          minimum: 1
+          maximum: 36
+          default: 1
+        bank_code:
+          type: string
+          description: Required with pse.
+          example: "1007"
+    Charge:
+      type: object
+      required: [acceptance_id, offer_id, customer_id, accepted_at, status, idempotency_key, amount, currency, attempts,
+        last_attempt_at, last_failure_at, next_attempt_at, retry_window, failure_reason, confirmed_at, policy_id,
+        coverage_activated_at, activation_published_at, resume_count, updated_at, payment_method, payment_attempt]
+      properties:
+        acceptance_id:
+          type: string
+        offer_id:
+          type: string
+        customer_id:
+          type: string
+        accepted_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, in_progress, confirmed, failed]
+          description: >
+            pending: waiting for its next attempt (the first, or a retry after
+            the gateway did not answer); in_progress: one worker is calling the
+            gateway; confirmed: charged, the coverage is active; failed: an
+            issuance exception (see failure_reason) until operations resume it.
+        idempotency_key:
+          type: string
+          description: Deterministic key sent to the gateway on every attempt ("cobro-" + acceptance id).
+        amount:
+          type: number
+          description: Premium in units of the currency.
+        currency:
+          type: string
+        attempts:
+          type: integer
+          minimum: 0
+          description: Failed attempts in the current retry window.
+        last_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_failure_at:
+          type: string
+          format: date-time
+          nullable: true
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When a pending charge is retried; null once it finished.
+        retry_window:
+          type: object
+          required: [started_at, ends_at]
+          properties:
+            started_at:
+              type: string
+              format: date-time
+            ends_at:
+              type: string
+              format: date-time
+              nullable: true
+        failure_reason:
+          type: string
+          nullable: true
+          enum: [retry_window_expired, payment_rejected, payment_method_missing, null]
+          description: >
+            retry_window_expired: the 24-hour window ended with the gateway
+            still failing; payment_rejected: the gateway declined the charge;
+            payment_method_missing: the window ended without the customer
+            handing over a payment method, so nothing was ever charged.
+        payment_method:
+          allOf:
+            - $ref: "#/components/schemas/PaymentMethod"
+          nullable: true
+          description: >
+            The payment method of screen E4, null while the customer has not
+            handed one over. This is the field a client reads to tell "waiting
+            for the card" (E4) from "the gateway is failing" (E4b); both are
+            status pending.
+        payment_attempt:
+          type: integer
+          minimum: 0
+          description: >
+            How many payment methods the customer has handed over: 0 before the
+            first one, 2 after a decline and another card. Not to be confused
+            with attempts, which counts the failed gateway attempts of the
+            current window. It also tells which idempotency key is charging:
+            "cobro-<id>" with 1, "cobro-<id>-2" with 2.
+        confirmed_at:
+          type: string
+          format: date-time
+          nullable: true
+        policy_id:
+          type: string
+          nullable: true
+          description: Set when the charge is confirmed; the client opens the issued policy (screen E5) with it.
+        coverage_activated_at:
+          type: string
+          format: date-time
+          nullable: true
+        activation_published_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            When the coverage activation reached the contractual document; null
+            while it is being retried (operations see a late publication).
+        resume_count:
+          type: integer
+          minimum: 0
+        updated_at:
+          type: string
+          format: date-time
+    IssuanceException:
+      type: object
+      required: [acceptance_id, offer_id, customer_id, step, reason, attempts, idempotency_key, amount, currency, accepted_at,
+        failed_at, resume_count, last_resumed_at, last_resumed_by]
+      properties:
+        acceptance_id:
+          type: string
+        offer_id:
+          type: string
+        customer_id:
+          type: string
+        step:
+          type: string
+          enum: [premium_charge]
+        reason:
+          type: string
+          enum: [retry_window_expired, payment_rejected, payment_method_missing]
+        attempts:
+          type: integer
+          minimum: 0
+        idempotency_key:
+          type: string
+        amount:
+          type: number
+        currency:
+          type: string
+        accepted_at:
+          type: string
+          format: date-time
+        failed_at:
+          type: string
+          format: date-time
+        resume_count:
+          type: integer
+          minimum: 0
+        last_resumed_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_resumed_by:
+          type: string
+          nullable: true
+    IssuanceExceptionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssuanceException"
+    ReviewRequestList:
+      type: object
+      required: [items, counts]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReviewRequest"
+        counts:
+          type: object
+          description: Requests per status for the reason filter (the status filter is ignored).
+          required: [pending, decided]
+          properties:
+            pending:
+              type: integer
+              minimum: 0
+            decided:
+              type: integer
+              minimum: 0
+    ReviewRequest:
+      type: object
+      description: A request of the advisor inbox (HU-W1.1-02).
+      required: [acceptance_id, offer_id, customer_id, applicant, offer, reason, received_at, status, decision]
+      properties:
+        acceptance_id:
+          type: string
+          description: The acceptance routed to a human decision; it is also the request number.
+        offer_id:
+          type: string
+        customer_id:
+          type: string
+          description: Owner of the offer (the sub claim of their token).
+        applicant:
+          type: object
+          required: [full_name, document_id, email]
+          properties:
+            full_name:
+              type: string
+            document_id:
+              type: string
+            email:
+              type: string
+        offer:
+          type: object
+          required: [premium, currency]
+          properties:
+            premium:
+              type: number
+            currency:
+              type: string
+            mode:
+              type: string
+              nullable: true
+              enum: [normal, provisional]
+              description: Only in the detail; null when the offer could not be read.
+            expires_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: Only in the detail; null when the offer could not be read.
+        reason:
+          type: string
+          description: The routing reason of the underwriting (provisional_offer, high_risk_score).
+        received_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, decided]
+        decision:
+          allOf:
+            - $ref: "#/components/schemas/HumanDecision"
+          nullable: true
+          description: Null while pending.
+    HumanDecision:
+      type: object
+      description: The append-only record of an advisor decision (CA-4).
+      required: [decision_id, type, advisor, decided_at, observations, premium_adjustment_pct, adjusted_offer, notification]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [accept, adjust, reject]
+        advisor:
+          type: object
+          required: [id, email]
+          properties:
+            id:
+              type: string
+              description: The sub claim of the advisor token.
+            email:
+              type: string
+        decided_at:
+          type: string
+          format: date-time
+        observations:
+          type: string
+          maxLength: 1000
+          description: Required to adjust or reject; may be empty for an accept.
+        premium_adjustment_pct:
+          type: number
+          nullable: true
+          description: The surcharge of an adjust, in percent; null otherwise.
+        adjusted_offer:
+          allOf:
+            - $ref: "#/components/schemas/AdjustedOffer"
+          nullable: true
+          description: The new offer of an adjust; null otherwise.
+        notification:
+          allOf:
+            - $ref: "#/components/schemas/ReviewNotification"
+          nullable: true
+          description: >
+            The e-mail that tells the customer about an adjust or a reject.
+            Null for an accept (the issuance e-mail of HU-W1.3-03 tells the
+            customer) or when EMAIL_URL is not set.
+    AdjustedOffer:
+      type: object
+      required: [offer_id, premium, currency, expires_at]
+      properties:
+        offer_id:
+          type: string
+          description: adj-{acceptance_id}; the customer accepts it with POST /v1/offers/{offer_id}/acceptance.
+        premium:
+          type: number
+          description: The premium of the routed offer with the advisor surcharge, rounded to two decimals.
+        currency:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          description: 24 hours after the decision.
+    ReviewNotification:
+      type: object
+      required: [channel, status, attempts, sent_at]
+      properties:
+        channel:
+          type: string
+          enum: [email]
+        status:
+          type: string
+          enum: [pending, sent, failed]
+          description: >
+            pending - scheduled or being retried with a growing wait (1 s
+            doubling up to 15 s); sent; failed - not delivered after 12 attempts
+            (the decision does not change).
+        attempts:
+          type: integer
+          minimum: 0
+          description: Failed sends so far.
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+    DecideRequest:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [accept, adjust, reject]
+        observations:
+          type: string
+          maxLength: 1000
+          description: Required (not blank) to adjust or reject; optional to accept.
+        premium_adjustment_pct:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 100
+          multipleOf: 0.01
+          description: The surcharge in percent, with up to two decimals. Required to adjust; not allowed otherwise.
+    ResumeChargeRequest:
+      type: object
+      required: [note]
+      properties:
+        note:
+          type: string
+          minLength: 1
+          maxLength: 500
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - consent_required
+            - consent_mismatch
+            - consent_unverifiable
+            - request_aborted
+            - unauthorized
+            - forbidden
+            - offer_not_found
+            - offer_unavailable
+            - acceptance_not_found
+            - acceptance_not_registered
+            - acceptance_unavailable
+            - charge_not_found
+            - charge_not_resumable
+            - charge_unavailable
+            - observations_required
+            - premium_adjustment_invalid
+            - review_request_not_found
+            - review_request_already_decided
+            - decision_not_registered
+            - decision_continuation_pending
+            - review_unavailable
+        message:
+          type: string

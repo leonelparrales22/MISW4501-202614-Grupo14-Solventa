@@ -1,0 +1,453 @@
+openapi: 3.0.3
+info:
+  title: Solventa - audit service
+  version: 0.2.0
+  description: >
+    Audit and consents. HU-W1.2-01: the explicit, immutable consent of the
+    customer to be profiled. The consent routes are mounted only when the
+    service has its DATABASE_URL; the evidence lookup also needs AUTH_*.
+paths:
+  /health:
+    get:
+      summary: Shallow health check (ALB, ADR-02)
+      security: []
+      responses:
+        "200":
+          description: OK
+  /v1/audit/consent-terms/current:
+    get:
+      summary: Current consent terms (HU-W1.2-01 CA-1)
+      description: >
+        The terms the customer must see before consenting: the purpose, who
+        controls the data, the data policy and, for each source, which data it
+        reads and for how long the consent lasts. The grant must send the
+        version shown here.
+      security: []
+      responses:
+        "200":
+          description: The current terms
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentTerms"
+              example:
+                version: v1
+                purpose: risk_profiling_mortgage_life_offer
+                controller: Solventa S.A.
+                policy_ref: personal-data-policy-v1
+                sources:
+                  - code: open_finance
+                    data_categories: [credit_products, balances, payment_behavior]
+                    validity: 12_months
+                  - code: open_data
+                    data_categories: [public_records]
+                    validity: 12_months
+                  - code: kyc
+                    data_categories: [identity_verification]
+                    validity: single_use
+  /v1/audit/consents:
+    post:
+      summary: Record the explicit consent of the customer (HU-W1.2-01 CA-2)
+      description: >
+        Records the consent with the holder, a copy of the scope, the server
+        date and time (granted_at) and the channel. The customer must accept
+        every source (all or nothing) and the data policy. Granting again for
+        the same customer, application and terms version is idempotent: it
+        answers 200 with the stored consent and records nothing. The record is
+        immutable (HU-W1.2-01 CA-4). The user agent is taken from the request
+        header. The receipt does not repeat the holder's document.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantConsentRequest"
+            example:
+              customer_id: cust-1
+              document_id: "1020304050"
+              full_name: Ana María Pérez
+              terms_version: v1
+              accepted_sources: [open_finance, open_data, kyc]
+              accepted_data_policy: true
+              channel: embedded
+              partner_id: partner-1
+              application_id: app-1
+      responses:
+        "201":
+          description: Consent recorded
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentReceipt"
+          links:
+            GetConsentEvidence:
+              operationId: getConsentEvidence
+              parameters:
+                consent_id: $response.body#/consent_id
+        "200":
+          description: The consent for that customer, application and terms version already existed
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentReceipt"
+          links:
+            GetConsentEvidence:
+              operationId: getConsentEvidence
+              parameters:
+                consent_id: $response.body#/consent_id
+        "400":
+          description: Malformed body or invalid fields (every invalid field is listed)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/ValidationError"
+        "409":
+          description: The terms version is not the current one (terms_outdated); show the current terms again
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The consent could not be recorded; nothing was stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/audit/consent-verifications:
+    get:
+      summary: Verify whether a customer has an active consent (HU-W1.2-01 CA-3)
+      description: >
+        Internal route, called by origination before it queries any source. It
+        carries no token: it must be reachable only from inside the network
+        and is not published to the partners. A customer without a consent is
+        not an error: the answer is active=false. An expired consent answers
+        active=false with its evidence.
+      security: []
+      parameters:
+        - name: customer_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The verification
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentVerification"
+        "400":
+          description: customer_id is missing or too long
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The consent could not be verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/audit/consents/{consent_id}:
+    get:
+      operationId: getConsentEvidence
+      summary: Consent evidence (HU-W1.2-01 CA-2)
+      description: >
+        The full record of a consent, with the holder. Human route: only the
+        operations and advisor roles of the Cognito pool read it.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: consent_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      responses:
+        "200":
+          description: The consent evidence
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentEvidence"
+        "401":
+          description: Missing, invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The role may not read consents
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: There is no consent with that id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The consent could not be read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    cognitoJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: ID token of the Cognito user pool (HA-S01).
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - terms_outdated
+            - consent_not_found
+            - service_unavailable
+            - unauthorized
+            - forbidden
+        message:
+          type: string
+    FieldError:
+      type: object
+      required: [field, code]
+      properties:
+        field:
+          type: string
+        code:
+          type: string
+          enum: [required, invalid_format, out_of_range, incomplete, must_be_true]
+    ValidationError:
+      type: object
+      required: [error, message, fields]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed]
+        message:
+          type: string
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldError"
+    SourceTerm:
+      type: object
+      required: [code, data_categories, validity]
+      properties:
+        code:
+          type: string
+          enum: [open_finance, open_data, kyc]
+        data_categories:
+          type: array
+          items:
+            type: string
+        validity:
+          type: string
+          description: single_use is for one profiling; until its use is recorded it lasts as long as the consent.
+          enum: [12_months, single_use]
+    ConsentTerms:
+      type: object
+      required: [version, purpose, controller, policy_ref, sources]
+      properties:
+        version:
+          type: string
+        purpose:
+          type: string
+        controller:
+          type: string
+        policy_ref:
+          type: string
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceTerm"
+    GrantConsentRequest:
+      type: object
+      required:
+        - customer_id
+        - document_id
+        - full_name
+        - terms_version
+        - accepted_sources
+        - accepted_data_policy
+        - channel
+        - partner_id
+        - application_id
+      properties:
+        customer_id:
+          type: string
+          description: The customer id of the partner (the one origination later asks about).
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9_-]+$'
+        document_id:
+          type: string
+          minLength: 5
+          maxLength: 20
+          pattern: '^[A-Za-z0-9]+$'
+        full_name:
+          type: string
+          minLength: 3
+          maxLength: 120
+        terms_version:
+          type: string
+          description: The version shown to the customer (GET /v1/audit/consent-terms/current).
+        accepted_sources:
+          type: array
+          description: Every source of the terms, none missing and none repeated.
+          items:
+            type: string
+        accepted_data_policy:
+          type: boolean
+          description: Must be true.
+        channel:
+          type: string
+          enum: [embedded]
+        partner_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9_-]+$'
+        application_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9_-]+$'
+    ConsentReceipt:
+      type: object
+      required: [consent_id, customer_id, terms_version, purpose, channel, scope, granted_at, expires_at]
+      properties:
+        consent_id:
+          type: string
+          example: cns-0f5c2b7a9d4e4c1c8a3b6e2d1f7a9b0c
+        customer_id:
+          type: string
+        terms_version:
+          type: string
+        purpose:
+          type: string
+        channel:
+          type: string
+        scope:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceTerm"
+        granted_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    ConsentVerification:
+      type: object
+      required: [active, consent_id, granted_at, expires_at, sources]
+      properties:
+        active:
+          type: boolean
+        consent_id:
+          type: string
+          nullable: true
+        granted_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        sources:
+          type: array
+          description: The sources covered at this moment.
+          items:
+            type: string
+    ConsentEvidence:
+      type: object
+      required:
+        - consent_id
+        - customer_id
+        - holder
+        - terms_version
+        - scope
+        - purpose
+        - channel
+        - partner_id
+        - application_id
+        - user_agent
+        - granted_at
+        - expires_at
+      properties:
+        consent_id:
+          type: string
+        customer_id:
+          type: string
+        holder:
+          type: object
+          required: [document_id, full_name]
+          properties:
+            document_id:
+              type: string
+            full_name:
+              type: string
+        terms_version:
+          type: string
+        scope:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceTerm"
+        purpose:
+          type: string
+        channel:
+          type: string
+        partner_id:
+          type: string
+        application_id:
+          type: string
+        user_agent:
+          type: string
+        granted_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time

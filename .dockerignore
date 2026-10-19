@@ -1,0 +1,12 @@
+.git
+.github
+bin/
+*.test
+*.out
+coverage.*
+docs/
+infra/
+tests/
+.idea
+.vscode
+.DS_Store

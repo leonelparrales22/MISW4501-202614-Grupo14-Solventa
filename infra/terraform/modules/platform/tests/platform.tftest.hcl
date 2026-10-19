@@ -1,0 +1,682 @@
+# Configuration tests of the platform composition (T4). They run with mocked
+# providers: no credentials, no network, nothing is created. They check that
+# the modules fit together and the requirements of T4 hold end to end; each
+# module has its own detailed tests.
+#
+#   terraform init -backend=false && terraform test
+
+mock_provider "aws" {
+  mock_data "aws_availability_zones" {
+    defaults = {
+      names = ["us-east-2a", "us-east-2b", "us-east-2c"]
+    }
+  }
+
+  mock_data "aws_region" {
+    defaults = {
+      region = "us-east-2"
+    }
+  }
+
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "123456789012"
+    }
+  }
+
+  mock_data "aws_iam_policy_document" {
+    defaults = {
+      json = "{}"
+    }
+  }
+
+  mock_data "aws_ecr_repository" {
+    defaults = {
+      repository_url = "123456789012.dkr.ecr.us-east-2.amazonaws.com/solventa/image"
+    }
+  }
+
+  mock_data "aws_ecr_image" {
+    defaults = {
+      image_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}
+
+mock_provider "random" {}
+
+variables {
+  name        = "solventa-test"
+  environment = "staging"
+  vpc_cidr    = "10.50.0.0/16"
+  image_tag   = "0123456789ab"
+
+  service_sizing = {
+    origination   = { cpu = 512, memory = 1024, desired_count = 3, max_count = 6 }
+    claims        = { cpu = 256, memory = 512, desired_count = 2, max_count = 4 }
+    partners      = { cpu = 256, memory = 512, desired_count = 2, max_count = 4 }
+    audit         = { cpu = 256, memory = 512, desired_count = 2, max_count = 4 }
+    notifications = { cpu = 256, memory = 512, desired_count = 2, max_count = 4 }
+  }
+}
+
+run "usage_plans_follow_decision_d7" {
+  command = plan
+
+  # T5 adds the demonstration partner of the web portal (portal-embebido, its
+  # own run below); the partners of D-7 keep 100 req/s with a burst of 200.
+  assert {
+    condition     = length(module.apigateway.usage_plan_ids) == 3 && alltrue([for k in ["socio-a", "socio-b"] : var.partners[k].rate_limit == 100 && var.partners[k].burst_limit == 200])
+    error_message = "Each partner gets its own usage plan of 100 req/s with a burst of 200 (decision D-7)."
+  }
+
+  assert {
+    condition     = length(module.apigateway.api_key_ids) == 3
+    error_message = "Each partner needs its own API key."
+  }
+
+  assert {
+    condition     = module.apigateway.stage_name == "staging"
+    error_message = "The stage is named after the environment."
+  }
+}
+
+run "every_service_has_its_own_database_secret" {
+  command = plan
+
+  assert {
+    condition = toset(keys(module.secrets.names)) == toset([
+      "origination/database", "claims/database", "partners/database", "audit/database", "notifications/database",
+      "origination/document-link",
+    ])
+    error_message = "Each of the five services needs its own database secret, and origination the key of its document links."
+  }
+
+  assert {
+    condition     = module.rds.databases["claims"].username == "claims_app"
+    error_message = "Each service connects with its own login role, never the administrator."
+  }
+
+  assert {
+    condition     = strcontains(local.db_init_script, "REVOKE ALL ON DATABASE %I FROM PUBLIC") && strcontains(local.db_init_script, "CREATE DATABASE %I OWNER %I")
+    error_message = "The bootstrap task must give each role its own database and remove the default CONNECT of PUBLIC."
+  }
+}
+
+run "defaults_keep_the_cheap_topology" {
+  command = plan
+
+  assert {
+    condition     = length(module.network.nat_gateway_ids) == 0 && module.network.app_assign_public_ip
+    error_message = "nat_mode defaults to none: no NAT Gateway, tasks with a public IP."
+  }
+
+  assert {
+    condition     = length(module.network.private_subnet_ids) == 2 && length(module.network.availability_zones) == 2
+    error_message = "The VPC spans two availability zones."
+  }
+}
+
+run "demo_switches_on_nat_per_zone" {
+  command = plan
+
+  variables {
+    nat_mode = "per_az"
+  }
+
+  assert {
+    condition     = length(module.network.nat_gateway_ids) == 2 && module.network.app_assign_public_ip == false
+    error_message = "per_az creates one NAT per zone and moves the tasks to the private subnets."
+  }
+}
+
+run "images_follow_the_tag_and_its_overrides" {
+  command = plan
+
+  variables {
+    image_tag_overrides = { kyc = "fedcba987654" }
+  }
+
+  assert {
+    condition     = endswith(local.image_uris["origination"], ":0123456789ab") && endswith(local.image_uris["kyc"], ":fedcba987654")
+    error_message = "Every image uses image_tag unless it has an override."
+  }
+
+  assert {
+    condition     = length(data.aws_ecr_image.latest) == 0
+    error_message = "With image_tag set, no image is resolved by digest."
+  }
+}
+
+run "without_tag_the_latest_image_is_pinned_by_digest" {
+  command = plan
+
+  variables {
+    image_tag = null
+  }
+
+  assert {
+    condition     = length(data.aws_ecr_image.latest) == 10 && strcontains(local.image_uris["audit"], "@sha256:")
+    error_message = "Without image_tag every image is the most recent one, pinned by digest."
+  }
+}
+
+run "services_can_be_switched_off" {
+  command = plan
+
+  variables {
+    services_enabled = false
+  }
+
+  assert {
+    condition     = length(module.ecs.desired_counts) == 10 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
+    error_message = "The five services and the five stubs keep their ECS services, at 0 tasks."
+  }
+}
+
+# HU-W1.3-02 / HA-D02: the payment gateway and e-mail stubs run next to the
+# other three behind Cloud Map, and a staging window can take the payment
+# gateway down on its own (decision D-6).
+run "charge_and_email_stubs_run_behind_cloud_map" {
+  command = plan
+
+  variables {
+    image_tag_overrides          = { email = "prueba-ha-d02" }
+    stub_desired_count_overrides = { payment-gateway = 0 }
+  }
+
+  assert {
+    condition     = alltrue([for s in ["openfinance", "opendata", "kyc", "email"] : module.ecs.desired_counts[s] == 1]) && module.ecs.desired_counts["payment-gateway"] == 0
+    error_message = "Every stub runs one task, except the payment gateway taken down with its override."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.PAYMENT_GATEWAY_URL == "http://payment-gateway.solventa-test.local:9040" &&
+      local.service_environment.origination.EMAIL_URL == "http://email.solventa-test.local:9030"
+    )
+    error_message = "Origination reaches both stubs by their Cloud Map names."
+  }
+
+  assert {
+    condition     = endswith(local.image_uris["email"], ":prueba-ha-d02") && endswith(local.image_uris["payment-gateway"], ":0123456789ab")
+    error_message = "The e-mail and payment gateway images accept a tag override like the others."
+  }
+}
+
+# HA-D02, AWS phase: origination starts with the contractual document wired to
+# S3 (with EMAIL_URL it needs exactly one document store and the link key).
+run "origination_gets_the_document_configuration" {
+  command = plan
+
+  variables {
+    origination_environment = { RETRY_WINDOW_SECONDS = "300", CHARGE_RETRY_MAX_MS = "15000" }
+  }
+
+  # Known at plan time, so the assertions can read them.
+  override_resource {
+    target          = module.apigateway.aws_api_gateway_stage.this
+    override_during = plan
+    values = {
+      invoke_url = "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    }
+  }
+
+  override_resource {
+    target          = module.secrets.aws_secretsmanager_secret.this
+    override_during = plan
+    values = {
+      arn = "arn:aws:secretsmanager:us-east-2:123456789012:secret:solventa-test/secret-AbCdEf"
+    }
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.DOCUMENTS_BUCKET == "solventa-test-documents-123456789012" &&
+      local.service_environment.origination.AWS_REGION == "us-east-2" &&
+      !contains(keys(local.service_environment.origination), "DOCUMENTS_DIR")
+    )
+    error_message = "Origination gets the documents bucket and the region, and never a local directory."
+  }
+
+  assert {
+    condition     = local.service_environment.origination.DOCUMENTS_PUBLIC_BASE_URL == "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    error_message = "The links of the e-mail point to the API Gateway stage (its invoke URL)."
+  }
+
+  assert {
+    condition = (
+      endswith(local.service_secrets.origination.DOCUMENT_LINK_SECRET, ":DOCUMENT_LINK_SECRET::") &&
+      endswith(local.service_secrets.origination.DATABASE_URL, ":DATABASE_URL::") &&
+      !contains(keys(local.service_environment.origination), "DOCUMENT_LINK_SECRET")
+    )
+    error_message = "The link key reaches origination from Secrets Manager, never as a plain environment variable."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_secrets.claims), "DOCUMENT_LINK_SECRET")
+    error_message = "Only origination reads the key of the document links."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.RETRY_WINDOW_SECONDS == "300" &&
+      local.service_environment.origination.CHARGE_RETRY_MAX_MS == "15000"
+    )
+    error_message = "origination_environment adds the variables of a test window."
+  }
+}
+
+run "origination_environment_cannot_override_platform_values" {
+  command = plan
+
+  variables {
+    origination_environment = { PAYMENT_GATEWAY_URL = "http://elsewhere:9040" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
+
+run "origination_environment_cannot_replace_the_document_store" {
+  command = plan
+
+  variables {
+    origination_environment = { DOCUMENTS_DIR = "/tmp/documents" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
+
+# HU-W1.1-02 and HA-D02: the advisor inbox and the issuance exceptions reach
+# origination through the ALB and the Cognito authorizer.
+run "inbox_and_exceptions_are_routed" {
+  command = plan
+
+  assert {
+    condition = (
+      contains(local.services.origination.paths, "/v1/review-requests*") &&
+      contains(local.services.origination.paths, "/v1/issuance-exceptions*") &&
+      length(chunklist(local.services.origination.paths, 5)) == 2
+    )
+    error_message = "Origination owns the inbox and the exceptions in the ALB (9 prefixes, 2 listener rules)."
+  }
+
+  assert {
+    condition = (
+      toset(var.human_routes["review-requests"].methods) == toset(["GET", "POST"]) &&
+      toset(var.human_routes["issuance-exceptions"].methods) == toset(["GET"]) &&
+      contains(var.human_routes["acceptances"].methods, "POST")
+    )
+    error_message = "The inbox (GET and POST), the exceptions (GET) and the charge actions (POST under acceptances) are human routes."
+  }
+}
+
+# HA-D02: the signed link of the e-mail opens the document without a session.
+run "the_document_link_is_public" {
+  command = plan
+
+  assert {
+    condition     = module.apigateway.public_paths == ["/v1/documents", "/v1/documents/{proxy+}"]
+    error_message = "GET /v1/documents/{token} is public: the signed, expiring token protects it."
+  }
+
+  assert {
+    condition     = var.public_routes["documents"].rate_limit == 10 && var.public_routes["documents"].burst_limit == 20
+    error_message = "The public route is throttled at the stage (decision D-5: 10 req/s, burst 20)."
+  }
+
+  assert {
+    condition     = !contains(keys(var.human_routes), "documents")
+    error_message = "The document link is not a human route."
+  }
+}
+
+run "seed_users_are_optional" {
+  command = plan
+
+  assert {
+    condition     = length(var.seed_users) == 0 && var.seed_user_password == null
+    error_message = "The platform creates no test users unless a staging window asks for them."
+  }
+}
+
+run "stub_overrides_name_real_stubs" {
+  command = plan
+
+  variables {
+    stub_desired_count_overrides = { pasarela = 0 }
+  }
+
+  expect_failures = [var.stub_desired_count_overrides]
+}
+
+run "rejects_incomplete_service_sizing" {
+  command = plan
+
+  variables {
+    service_sizing = {
+      origination = { cpu = 512, memory = 1024, desired_count = 1, max_count = 2 }
+    }
+  }
+
+  expect_failures = [var.service_sizing]
+}
+
+# T4 (permanent user pool): without existing_cognito the platform creates its
+# own user pool, as before.
+run "creates_its_own_user_pool_by_default" {
+  command = plan
+
+  assert {
+    condition     = var.existing_cognito == null && length(module.cognito) == 1
+    error_message = "Without existing_cognito the platform creates its own user pool."
+  }
+}
+
+# T4: with the permanent user pool of bootstrap/identity the platform creates
+# none and wires the received one into the authorizer, AUTH_* and the output.
+run "uses_an_existing_user_pool" {
+  command = plan
+
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+
+  assert {
+    condition     = length(module.cognito) == 0
+    error_message = "With existing_cognito the platform must not create a user pool."
+  }
+
+  assert {
+    condition     = local.cognito.user_pool_arn == "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+    error_message = "The Cognito authorizer must use the received user pool."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.AUTH_ISSUER == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1" &&
+      local.service_environment.origination.AUTH_JWKS_URL == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json" &&
+      local.service_environment.origination.AUTH_CLIENT_IDS == "mobile-client-test,web-client-test"
+    )
+    error_message = "AUTH_ISSUER, AUTH_JWKS_URL and AUTH_CLIENT_IDS of the services come from the received user pool."
+  }
+
+  assert {
+    condition     = output.cognito.user_pool_id == "us-east-2_PermTest1" && output.cognito.client_ids["web"] == "web-client-test"
+    error_message = "The cognito output describes the received user pool."
+  }
+}
+
+run "existing_pool_rejects_seed_users" {
+  command = plan
+
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+    seed_users = {
+      advisor = { email = "asesor.prueba@example.com", group = "advisor" }
+    }
+  }
+
+  expect_failures = [var.existing_cognito]
+}
+
+run "existing_pool_must_be_a_cognito_pool" {
+  command = plan
+
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:iam::123456789012:role/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+
+  expect_failures = [var.existing_cognito]
+}
+
+# --- Web portal (T5) ------------------------------------------------------------------
+
+# Decision D-4 of T5: the browser tokenizes the card through the API Gateway, so
+# the payment gateway stub is also behind the ALB, only on /tokens.
+run "payment_gateway_tokens_behind_the_alb" {
+  command = plan
+
+  assert {
+    condition = (
+      toset(keys(module.alb.target_group_arns)) == toset(["origination", "claims", "partners", "audit", "notifications", "payment-gateway"]) &&
+      local.lb_stubs["payment-gateway"].paths == ["/tokens"] &&
+      local.lb_stubs["payment-gateway"].priority == 6
+    )
+    error_message = "The payment gateway stub gets its own target group, routed only on /tokens."
+  }
+
+  assert {
+    condition     = length(local.lb_stubs) == 1
+    error_message = "No other stub is reachable through the ALB."
+  }
+
+  assert {
+    condition     = module.apigateway.payment_tokenization_path == "/pasarela/tokens"
+    error_message = "The platform publishes the public card tokenization."
+  }
+
+  assert {
+    condition     = local.service_environment.origination.PAYMENT_GATEWAY_URL == "http://payment-gateway.solventa-test.local:9040"
+    error_message = "Origination keeps charging through Cloud Map."
+  }
+}
+
+# Decision D-3 of T5: CloudFront sends the key of a demonstration partner with
+# its own usage plan, never the key of a real partner.
+run "portal_partner_has_its_own_usage_plan" {
+  command = plan
+
+  assert {
+    condition = (
+      contains(keys(module.apigateway.usage_plan_ids), "portal-embebido") &&
+      var.partners["portal-embebido"].rate_limit == 10 &&
+      var.partners["portal-embebido"].burst_limit == 20 &&
+      var.portal_partner == "portal-embebido"
+    )
+    error_message = "portal-embebido has its own API key and usage plan (10 req/s, burst 20)."
+  }
+}
+
+run "portal_partner_must_be_a_partner" {
+  command = plan
+
+  variables {
+    portal_partner = "socio-z"
+  }
+
+  expect_failures = [output.portal_partner_api_key]
+}
+
+run "api_origin_matches_the_stage" {
+  command = plan
+
+  override_resource {
+    target          = module.apigateway.aws_api_gateway_rest_api.this
+    override_during = plan
+    values = {
+      id = "abc123"
+    }
+  }
+
+  override_resource {
+    target          = module.apigateway.aws_api_gateway_stage.this
+    override_during = plan
+    values = {
+      invoke_url = "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    }
+  }
+
+  assert {
+    condition = (
+      output.api_origin.domain == "abc123.execute-api.us-east-2.amazonaws.com" &&
+      output.api_origin.stage == "staging" &&
+      output.api_origin.invoke_url == "https://${output.api_origin.domain}/${output.api_origin.stage}"
+    )
+    error_message = "The API origin of the portal is the REST API domain with the stage as origin path."
+  }
+}
+
+# Decision D-11 of T5: with the portal, both e-mail links open through it.
+run "portal_links_follow_portal_base_url" {
+  command = plan
+
+  variables {
+    portal_base_url = "https://d1234abcd.cloudfront.net"
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.OFFER_LINK_BASE_URL == "https://d1234abcd.cloudfront.net" &&
+      local.service_environment.origination.DOCUMENTS_PUBLIC_BASE_URL == "https://d1234abcd.cloudfront.net"
+    )
+    error_message = "With portal_base_url, the offer and document links of the e-mails point to the portal."
+  }
+}
+
+run "without_portal_the_links_stay_as_before" {
+  command = plan
+
+  override_resource {
+    target          = module.apigateway.aws_api_gateway_stage.this
+    override_during = plan
+    values = {
+      invoke_url = "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    }
+  }
+
+  assert {
+    condition = (
+      !contains(keys(local.service_environment.origination), "OFFER_LINK_BASE_URL") &&
+      local.service_environment.origination.DOCUMENTS_PUBLIC_BASE_URL == "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
+    )
+    error_message = "Without a portal, origination keeps its default offer link and the document link on the stage."
+  }
+}
+
+run "portal_base_url_is_an_https_origin" {
+  command = plan
+
+  variables {
+    portal_base_url = "https://d1234abcd.cloudfront.net/"
+  }
+
+  expect_failures = [var.portal_base_url]
+}
+
+# --- Consent and personalized offer as partner routes (T5, #70) -----------------------
+
+run "audit_partner_routes_are_published_with_api_key" {
+  command = plan
+
+  assert {
+    condition = (
+      tolist(module.apigateway.partner_paths) == tolist(["/v1/audit/consent-terms/current", "/v1/audit/consents", "/v1/offers"]) &&
+      var.partner_routes["audit/consent-terms/current"].methods == tolist(["GET"]) &&
+      var.partner_routes["audit/consents"].methods == tolist(["POST"]) &&
+      var.partner_routes["offers"].methods == tolist(["POST"])
+    )
+    error_message = "The terms and the consent of HU-W1.2-01 and POST /v1/offers of HU-W1.2-03 are partner routes with API key."
+  }
+}
+
+run "offers_root_is_partner_and_sub_paths_are_human" {
+  command = plan
+
+  assert {
+    condition = (
+      length(var.human_routes["offers"].root_methods) == 0 &&
+      toset(var.human_routes["offers"].methods) == toset(["GET", "POST"]) &&
+      contains(module.apigateway.partner_paths, "/v1/offers")
+    )
+    error_message = "The root /v1/offers belongs to the partner; /v1/offers/{offer_id}, renewal and acceptance keep Cognito."
+  }
+
+  assert {
+    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if k != "offers"])
+    error_message = "Every other human route keeps its root as before."
+  }
+}
+
+run "consent_verifications_is_not_published" {
+  command = plan
+
+  assert {
+    condition = (
+      !contains(module.apigateway.partner_paths, "/v1/audit/consent-verifications") &&
+      !contains(keys(var.human_routes), "audit") &&
+      !contains(keys(var.public_routes), "audit")
+    )
+    error_message = "GET /v1/audit/consent-verifications is internal to the VPC: no partner, human or public route publishes it."
+  }
+}
+
+run "consent_verifications_cannot_become_a_partner_route" {
+  command = plan
+
+  variables {
+    partner_routes = { "audit/consent-verifications" = { methods = ["GET"] } }
+  }
+
+  expect_failures = [var.partner_routes]
+}
+
+# --- Origination reaches audit through Cloud Map (T5, #70, decisions D-21 a and D-23 c) ---
+
+run "audit_is_discoverable_by_origination" {
+  command = plan
+
+  assert {
+    condition = (
+      local.discoverable_services == ["audit"] &&
+      contains(keys(local.services), "audit")
+    )
+    error_message = "audit is registered in Cloud Map (and stays behind the ALB); no other service is."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.AUDIT_URL == "http://audit.solventa-test.local:8080" &&
+      output.audit_url == local.service_environment.origination.AUDIT_URL
+    )
+    error_message = "Origination verifies the consent with audit at http://audit.<name>.local:8080, inside the VPC (HU-W1.2-01)."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_environment.origination), "AUDIT_TIMEOUT_MS")
+    error_message = "AUDIT_TIMEOUT_MS keeps the default of origination (300 ms)."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_environment), "audit")
+    error_message = "D-23 (c): audit gets only PORT, without AUTH_* (that is HU-W4.2-02)."
+  }
+}
+
+run "origination_environment_cannot_override_audit_url" {
+  command = plan
+
+  variables {
+    origination_environment = { AUDIT_URL = "http://elsewhere:8080" }
+  }
+
+  expect_failures = [var.origination_environment]
+}

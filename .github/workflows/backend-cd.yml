@@ -1,0 +1,212 @@
+name: backend-cd
+# Continuous delivery.
+#   develop and main: build the Docker image of every changed service/stub and
+#   push it to ECR tagged with the commit SHA (main rebuilds every image, so the
+#   release commit has all its tags).
+#   main only: record that tag in SSM (/solventa/production-demo/image-tag, read
+#   by scripts/environment/up.sh) and, if production-demo is up, deploy it with
+#   terraform apply after a manual approval (GitHub environment production-demo).
+on:
+  push:
+    branches: [develop, main]
+    paths: ["services/**", "pkg/**", "stubs/**", "go.work", "go.work.sum", ".dockerignore", "scripts/ci/**", ".github/workflows/backend-cd.yml"]
+  workflow_dispatch:
+
+# Concurrency is set per job: a deploy waiting for its approval must not hold
+# back the publishing of the next commits.
+
+permissions:
+  contents: read
+
+# Explicit bash runs with -eo pipefail (the default shell has no pipefail), so a
+# failing script piped to tee fails its step.
+defaults:
+  run:
+    shell: bash
+
+env:
+  AWS_REGION: us-east-2
+  # Created by infra/terraform/bootstrap/cd-ecr.
+  AWS_ROLE_ARN: arn:aws:iam::368083581678:role/solventa-github-actions-ecr
+  AWS_DEPLOY_ROLE_ARN: arn:aws:iam::368083581678:role/solventa-github-actions-deploy
+  ECR_REGISTRY: 368083581678.dkr.ecr.us-east-2.amazonaws.com
+  IMAGE_TAG_PARAMETER: /solventa/production-demo/image-tag
+  # Name of production-demo/platform (main.tf).
+  DEMO_CLUSTER: solventa-demo
+  DEMO_DIR: infra/terraform/environments/production-demo/platform
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.changed.outputs.images }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # An empty base builds every image: always on main, so production-demo can
+      # be deployed with a single image_tag.
+      - id: changed
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && github.event.before || '' }}
+        run: echo "images=$(scripts/ci/changed-images.sh "$BASE_SHA" "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: plan
+    if: needs.plan.outputs.images != '[]'
+    runs-on: ubuntu-latest
+    # Never cancel a publish in flight; queue the next one for the same branch.
+    concurrency:
+      group: backend-cd-publish-${{ github.ref }}-${{ matrix.image }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # OIDC token exchanged for short-lived AWS credentials
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.plan.outputs.images) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - name: Resolve the Dockerfile and tag
+        id: meta
+        run: |
+          if [ -f "services/${{ matrix.image }}/Dockerfile" ]; then
+            echo "dockerfile=services/${{ matrix.image }}/Dockerfile" >> "$GITHUB_OUTPUT"
+          else
+            echo "dockerfile=stubs/${{ matrix.image }}/Dockerfile" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      # Tags are immutable in ECR: a re-run of the same commit must not try to overwrite.
+      - name: Check whether the image already exists
+        id: exists
+        run: |
+          if aws ecr describe-images --repository-name "solventa/${{ matrix.image }}" \
+              --image-ids "imageTag=${{ steps.meta.outputs.tag }}" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and push
+        if: steps.exists.outputs.found == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ steps.meta.outputs.dockerfile }}
+          push: true
+          # One plain manifest per tag: buildx's provenance attestation adds untagged
+          # child manifests that the ECR lifecycle policy (expire untagged) could delete.
+          provenance: false
+          tags: ${{ env.ECR_REGISTRY }}/solventa/${{ matrix.image }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: Summary
+        run: |
+          echo "- \`solventa/${{ matrix.image }}:${{ steps.meta.outputs.tag }}\` (already existed: ${{ steps.exists.outputs.found }})" >> "$GITHUB_STEP_SUMMARY"
+
+  # main only, once every image of the commit is in ECR.
+  release:
+    needs: publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Serialized so an older run never overwrites the tag of a newer one.
+    concurrency:
+      group: backend-cd-release-main
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      demo_up: ${{ steps.cluster.outputs.up }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Record the release tag
+        id: tag
+        run: |
+          tag="${GITHUB_SHA::12}"
+          aws ssm put-parameter --name "$IMAGE_TAG_PARAMETER" --value "$tag" --overwrite >/dev/null
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release tag \`$tag\` recorded in \`$IMAGE_TAG_PARAMETER\`." >> "$GITHUB_STEP_SUMMARY"
+      # production-demo is off most of the time (cost). Off (no cluster, or its
+      # services at 0 tasks while up.sh prepares the database), nothing is
+      # applied: up.sh deploys this tag later.
+      - name: Check whether production-demo is up
+        id: cluster
+        run: |
+          state=$(scripts/ci/demo-status.sh "$DEMO_CLUSTER")
+          if [ "$state" = "up" ]; then
+            echo "up=true" >> "$GITHUB_OUTPUT"
+            echo "production-demo is up: the deploy waits for approval in the production-demo environment." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "up=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::production-demo is ${state}. Images published, nothing deployed; scripts/environment/up.sh production-demo deploys this tag."
+            echo "production-demo is ${state}. Images published, nothing deployed; \`scripts/environment/up.sh production-demo\` deploys this tag." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  deploy:
+    needs: release
+    if: needs.release.outputs.demo_up == 'true'
+    runs-on: ubuntu-latest
+    # Manual approval: reviewers of the production-demo environment. Do not
+    # approve while someone runs scripts/environment/up.sh or down.sh.
+    environment: production-demo
+    # One deploy at a time; a newer pending deploy replaces an older pending one.
+    concurrency:
+      group: backend-cd-deploy-production-demo
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      IMAGE_TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+          terraform_wrapper: false
+      # The environment may have been turned off while the deploy waited.
+      - name: Check that production-demo is still up
+        id: cluster
+        run: |
+          state=$(scripts/ci/demo-status.sh "$DEMO_CLUSTER")
+          echo "up=$([ "$state" = "up" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [ "$state" != "up" ]; then
+            echo "::notice::production-demo is ${state} (changed while the deploy waited): nothing applied."
+          fi
+      - name: Terraform plan
+        if: steps.cluster.outputs.up == 'true'
+        working-directory: ${{ env.DEMO_DIR }}
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -lock-timeout=5m -var "image_tag=$IMAGE_TAG" -out=tfplan
+      - name: Check that the plan only changes ECS
+        if: steps.cluster.outputs.up == 'true'
+        working-directory: ${{ env.DEMO_DIR }}
+        run: |
+          terraform show -json tfplan | "$GITHUB_WORKSPACE/scripts/ci/check-deploy-plan.sh" | tee plan-check.txt
+          { echo "### Plan of \`$IMAGE_TAG\`"; echo '```'; cat plan-check.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Terraform apply
+        if: steps.cluster.outputs.up == 'true'
+        working-directory: ${{ env.DEMO_DIR }}
+        run: terraform apply -input=false -lock-timeout=5m tfplan
+      - name: Verify the services
+        if: steps.cluster.outputs.up == 'true'
+        run: |
+          scripts/ci/verify-ecs-deploy.sh "$DEMO_CLUSTER" "$IMAGE_TAG" | tee verify.txt
+          { echo "### Services"; echo '```'; cat verify.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
