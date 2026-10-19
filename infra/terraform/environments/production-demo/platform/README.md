@@ -58,7 +58,7 @@ corre una persona desde su terminal, con credenciales de la cuenta `368083581678
 
 ```
 Prerrequisitos (una vez): bootstrap/identity aplicado (pool permanente) · develop → main integrado en backend y front ·
-  el CD de main publicó las imágenes y el parámetro /solventa/production-demo/image-tag · un checkout limpio del front
+  el CD de main publicó las imágenes y el parámetro /solventa/production-demo/image-tag con el SHA (no "none") · un checkout limpio del front
   en origin/main (FRONT_DIR), con Node 24 y npm, si se va a publicar el front con el comando
 Encender:
   FRONT_DIR=<checkout del front> scripts/environment/up.sh production-demo --confirm-production-demo          (planifica y se detiene)
@@ -74,8 +74,9 @@ Apagar (al terminar la demo, el mismo día):
 - **Variables que pasan los comandos:** en production-demo solo `image_tag` (del parámetro SSM) y `services_enabled` por fase, y en
   `down.sh` además `deletion_protection=false` y `ephemeral=true`. **Nunca** `nat_mode`, `rds_multi_az` ni `redis_multi_az`: quedan los
   valores por defecto de esta composición, los mismos que usa el CD de `main` (#69).
-- **Sin etiqueta no se enciende:** si el parámetro no existe o está vacío, `up.sh` se detiene con «falta que el CD de `main` publique la
-  etiqueta en /solventa/production-demo/image-tag». No busca «la más reciente».
+- **Sin etiqueta no se enciende:** el parámetro lo crea el Terraform del CD de `main` con el valor inicial **`none`** (SSM no admite un
+  valor vacío). Con `none`, vacío o sin parámetro, `up.sh` se detiene con «falta correr el CD de main»; con cualquier valor que no sea un
+  SHA de 12 caracteres hexadecimales, se detiene con error. No busca «la más reciente».
 - **Coordinación con el CD de `main` (pipeline de Maycol, #68 y #69):** ese pipeline construye y publica las imágenes y la etiqueta
   **siempre**; solo aplica Terraform si el ambiente está encendido; y su aprobación **no se da mientras corre `up.sh` o `down.sh`** (los
   dos aplicarían el mismo estado; el bloqueo nativo del estado remoto impide dos `apply` a la vez, pero el segundo fallaría a medias).
