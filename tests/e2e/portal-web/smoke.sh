@@ -601,9 +601,12 @@ phase_internal() { # W-10
 
   task="$(aws_ro ecs list-tasks --region "$REGION" --cluster "$CLUSTER" --service-name origination --desired-status RUNNING \
     --query 'taskArns[0]' --output text 2>&1 | tr -d '\r' || true)"
-  started="$(aws_ro ecs describe-tasks --region "$REGION" --cluster "$CLUSTER" --tasks "$task" \
-    --query 'tasks[0].startedAt' --output text 2>&1 | tr -d '\r' || true)"
-  started_ms="$(( $(date -d "$started" +%s 2>/dev/null || echo 0) * 1000 ))"
+  # Search from the first event of the task's log stream, not from startedAt: the service logs its startup lines a few
+  # seconds before ECS reports the task as started (window of 2026-10-18, H-V-1).
+  started="$(aws_ro logs describe-log-streams --region "$REGION" --log-group-name "$LOG_GROUP" \
+    --log-stream-name-prefix "origination/origination/${task##*/}" --query 'logStreams[0].firstEventTimestamp' \
+    --output text 2>&1 | tr -d '\r' || true)"
+  started_ms="$([[ "$started" =~ ^[0-9]+$ ]] && echo "$started" || echo 0)"
   if [[ "$task" == arn:* && "$started_ms" -gt 0 ]]; then
     verified="$(logs_of "origination/origination/${task##*/}" '"verified with audit at"' "$started_ms" | head -n 1 || true)"
     unset_line="$(logs_of "origination/origination/${task##*/}" '"AUDIT_URL is not set"' "$started_ms" | head -n 1 || true)"
@@ -611,7 +614,7 @@ phase_internal() { # W-10
       "$([[ "$verified" == *"consent (HU-W1.2-01): verified with audit at "* ]]; echo $?)" "task ${task##*/}, ${verified:0:110}"
     check "… and no line \"AUDIT_URL is not set\"" "$([[ -z "$unset_line" ]]; echo $?)" "${unset_line:0:110}"
   else
-    fail "Running task of origination and its start" "task '${task##*/}', startedAt '$started'"
+    fail "Running task of origination and its start" "task '${task##*/}', first log event '$started'"
   fi
 
   namespace="${url#http://audit.}"
