@@ -49,6 +49,11 @@ output "cognito" {
   }
 }
 
+output "audit_url" {
+  description = "AUDIT_URL of the origination task definition: audit through Cloud Map inside the VPC, for the consent verification of HU-W1.2-01 (T5, decision D-21 a)."
+  value       = local.service_environment.origination.AUDIT_URL
+}
+
 output "alb_dns_name" {
   description = "Internal DNS name of the ALB (reachable only through the VPC link)."
   value       = module.alb.dns_name

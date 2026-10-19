@@ -241,3 +241,14 @@ run "staging_keeps_cors_open" {
     error_message = "Staging keeps CORS on * (decision D-12 b of T5)."
   }
 }
+
+# T5 (#70, decision D-21 a): origination verifies the consent with audit
+# through Cloud Map, inside the VPC.
+run "origination_reaches_audit_through_cloud_map" {
+  command = plan
+
+  assert {
+    condition     = module.platform.audit_url == "http://audit.solventa-stg.local:8080"
+    error_message = "The origination task definition carries AUDIT_URL=http://audit.solventa-stg.local:8080 (HU-W1.2-01)."
+  }
+}

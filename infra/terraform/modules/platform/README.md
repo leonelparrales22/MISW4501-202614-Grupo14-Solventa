@@ -18,6 +18,7 @@ cliente ──HTTPS──▶ API Gateway REST (stage = ambiente; todos los tipos
                           ├─▶ ElastiCache Redis
                           ├─▶ SNS (un tópico por dominio) ─▶ SQS por consumidor + DLQ
                           ├─▶ S3 (documents, evidence)
+                          ├─Cloud Map─▶ audit (origination verifica el consentimiento, HU-W1.2-01, T5)
                           └─Cloud Map─▶ stubs openfinance · opendata · kyc · email · payment-gateway
 ```
 
@@ -119,6 +120,8 @@ El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/
 | Socio `portal-embebido` | API key y usage plan propios (10 req/s, ráfaga 20). CloudFront agrega su key a las rutas de socio de las pantallas públicas; el navegador nunca la ve (D-3 de T5) |
 | Salida `api_origin` | Dominio del REST API, stage (el *origin path* de CloudFront) e `invoke_url` |
 | Salida `portal_partner_api_key` | Key del socio `portal_partner` (sensible); solo la lee la composición `web` para el encabezado de origen de CloudFront |
+| `audit` en Cloud Map | `audit` se registra también en Cloud Map (`local.discoverable_services`) sin dejar el ALB, para que originación verifique el consentimiento dentro de la VPC (`AUDIT_URL`, D-21 a de T5); el módulo `ecs` abre el 8080 entre las tareas. `audit` sigue sin `AUTH_*`: su autorización y la ruta de evidencia son de HU-W4.2-02 (D-23 c) |
+| Salida `audit_url` | El `AUDIT_URL` de la definición de tarea de originación (`http://audit.<nombre>.local:8080`); lo comprueban las pruebas de las composiciones |
 | Variable `portal_base_url` | Origen del portal (`https://<distribución>.cloudfront.net`). Con ella, los dos enlaces de los correos de originación apuntan al portal (D-11 de T5). La composición del ambiente la toma del parámetro SSM `/solventa/<ambiente>/web/url` |
 
 ## Imágenes
@@ -138,6 +141,7 @@ El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/
 | `OPEN_FINANCE_URL`, `OPEN_DATA_URL`, `KYC_URL` | Stubs por Cloud Map (9000, 9010, 9020) | Perfilamiento en paralelo (HA-L01) |
 | `EMAIL_URL` | Stub `email` por Cloud Map (9030) | Correo de emisión y de la bandeja; con él se enciende el documento contractual (HU-W1.3-03) |
 | `PAYMENT_GATEWAY_URL` | Stub `payment-gateway` por Cloud Map (9040) | Enciende el cobro de la prima (HA-D02); exige `DATABASE_URL`, `EMAIL_URL` y `AUTH_ISSUER` |
+| `AUDIT_URL` | `audit` por Cloud Map: `http://audit.<nombre>.local:8080` (T5, D-21 a) | Verificación del consentimiento antes del perfilamiento (HU-W1.2-01) y de la oferta personalizada (HU-W1.2-03). Si `audit` no responde en `AUDIT_TIMEOUT_MS` (300 ms por defecto, no se cambia) originación falla cerrado; sin la variable no verifica ni genera ofertas personalizadas |
 | `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_CLIENT_IDS` | User pool del ambiente: el permanente de `bootstrap/identity` (`existing_cognito`) o el que crea el módulo | Rutas humanas (HA-S01) |
 | `DOCUMENTS_BUCKET` | Bucket `documents` del ambiente | Repositorio del documento contractual en S3 (HA-D02, fase AWS); el servicio comprueba el bucket al arrancar |
 | `DOCUMENTS_PUBLIC_BASE_URL` | `portal_base_url` si existe (T5, D-11); si no, `invoke_url` del stage de API Gateway | Base del enlace firmado del correo: `<base>/v1/documents/<token>`; con el portal, el PDF se abre por CloudFront |
@@ -192,7 +196,7 @@ el estado remoto cifrado del bucket de T4.
 | `ephemeral` | `false` | Sin snapshot final, buckets con `force_destroy`, secretos sin ventana de recuperación |
 
 Salidas: `invoke_url`, `api_key_ids`, `api_key_values` (sensible), `usage_plan_ids`, `api_origin` (T5), `portal_partner_api_key`
-(sensible, T5), `cognito`, `alb_dns_name`, `ecs_cluster`, `log_group`, `service_sizing`, `desired_counts`, `database_users`, `images`,
+(sensible, T5), `cognito`, `audit_url` (T5), `alb_dns_name`, `ecs_cluster`, `log_group`, `service_sizing`, `desired_counts`, `database_users`, `images`,
 `rds_address`, `redis_endpoint`, `database_secret_arns`, `topic_arns`, `queue_urls`, `dlq_urls`, `buckets`, `nat_gateway_ids` y
 `db_init_command`.
 
@@ -209,4 +213,6 @@ terraform test
 `cognito`; y la variable rechaza usuarios semilla junto a un pool externo y un ARN que no sea de Cognito.
 Desde T5 comprueba también que el stub de la
 pasarela queda detrás del ALB solo en `/tokens`, que `portal-embebido` tiene su propio usage plan, que `api_origin` corresponde al
-stage y que, con `portal_base_url`, los enlaces de los correos apuntan al portal (sin él, quedan como antes).
+stage y que, con `portal_base_url`, los enlaces de los correos apuntan al portal (sin él, quedan como antes). Y que `audit` es el
+único servicio registrado en Cloud Map, que originación recibe su `AUDIT_URL` sin `AUDIT_TIMEOUT_MS` ni `AUTH_*` para `audit`, y que
+`origination_environment` no puede reemplazarlo.

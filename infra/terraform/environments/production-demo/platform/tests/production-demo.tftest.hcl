@@ -243,3 +243,14 @@ run "shutdown_variables_can_be_turned_around" {
     error_message = "The switch-off plan keeps every service at 0 tasks."
   }
 }
+
+# T5 (#70, decision D-21 a): origination verifies the consent with audit
+# through Cloud Map, inside the VPC.
+run "origination_reaches_audit_through_cloud_map" {
+  command = plan
+
+  assert {
+    condition     = module.platform.audit_url == "http://audit.solventa-demo.local:8080"
+    error_message = "The origination task definition carries AUDIT_URL=http://audit.solventa-demo.local:8080 (HU-W1.2-01)."
+  }
+}

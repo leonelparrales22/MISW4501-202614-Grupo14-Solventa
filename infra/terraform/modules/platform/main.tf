@@ -96,6 +96,12 @@ locals {
     "payment-gateway" = { priority = 6, paths = ["/tokens"] }
   }
 
+  # Services that another service calls directly inside the VPC, so they are
+  # also registered in Cloud Map without leaving the ALB: only audit, whose
+  # consent verification origination asks before profiling (HU-W1.2-01) and
+  # before a personalized offer (HU-W1.2-03). T5, decision D-21 (a).
+  discoverable_services = ["audit"]
+
   images = setunion(keys(local.services), keys(local.stubs))
 
   # Events of docs/events/README.md: one topic per publishing domain and one
@@ -407,6 +413,12 @@ locals {
       AUTH_ISSUER         = local.cognito.issuer
       AUTH_JWKS_URL       = local.cognito.jwks_url
       AUTH_CLIENT_IDS     = join(",", values(local.cognito.client_ids))
+      # Consent verification of HU-W1.2-01 (and of the personalized offer of
+      # HU-W1.2-03): audit through Cloud Map, never through the API Gateway,
+      # where GET /v1/audit/consent-verifications is not published. If audit
+      # does not answer within AUDIT_TIMEOUT_MS (300 ms by default) origination
+      # fails closed. T5, decision D-21 (a).
+      AUDIT_URL = "http://audit.${local.namespace}:${local.service_port}"
       # Contractual document (HU-W1.3-03) in AWS (HA-D02): the PDF goes to the
       # documents bucket, and the e-mail links open it through the public
       # GET /v1/documents/{token}: through the web portal when it exists (its
@@ -454,6 +466,7 @@ module "ecs" {
         max_count            = var.services_enabled ? var.service_sizing[k].max_count : 0
         load_balanced        = true
         target_group_arn     = module.alb.target_group_arns[k]
+        discovery_name       = contains(local.discoverable_services, k) ? k : null
         environment          = lookup(local.service_environment, k, { PORT = tostring(local.service_port) })
         secrets              = local.service_secrets[k]
         task_role_statements = local.task_role_statements[k]

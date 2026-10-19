@@ -638,3 +638,45 @@ run "consent_verifications_cannot_become_a_partner_route" {
 
   expect_failures = [var.partner_routes]
 }
+
+# --- Origination reaches audit through Cloud Map (T5, #70, decisions D-21 a and D-23 c) ---
+
+run "audit_is_discoverable_by_origination" {
+  command = plan
+
+  assert {
+    condition = (
+      local.discoverable_services == ["audit"] &&
+      contains(keys(local.services), "audit")
+    )
+    error_message = "audit is registered in Cloud Map (and stays behind the ALB); no other service is."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.origination.AUDIT_URL == "http://audit.solventa-test.local:8080" &&
+      output.audit_url == local.service_environment.origination.AUDIT_URL
+    )
+    error_message = "Origination verifies the consent with audit at http://audit.<name>.local:8080, inside the VPC (HU-W1.2-01)."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_environment.origination), "AUDIT_TIMEOUT_MS")
+    error_message = "AUDIT_TIMEOUT_MS keeps the default of origination (300 ms)."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_environment), "audit")
+    error_message = "D-23 (c): audit gets only PORT, without AUTH_* (that is HU-W4.2-02)."
+  }
+}
+
+run "origination_environment_cannot_override_audit_url" {
+  command = plan
+
+  variables {
+    origination_environment = { AUDIT_URL = "http://elsewhere:8080" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
