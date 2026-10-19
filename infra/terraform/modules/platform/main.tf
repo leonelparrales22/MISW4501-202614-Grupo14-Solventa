@@ -235,7 +235,9 @@ locals {
 # (decision D-7: 100 req/s, burst 200). Human routes go through the Cognito
 # authorizer, which validates the JWT before the request reaches the service.
 # The public routes (the signed link of the contractual document, HA-D02) ask
-# for neither and are throttled at the stage. Every media type passes as binary
+# for neither and are throttled at the stage. The consent of HU-W1.2-01 and
+# POST /v1/offers of HU-W1.2-03 are partner routes on exact paths (T5); the
+# consent verification of audit is never published. Every media type passes as binary
 # (decision D-4), so the PDF reaches the browser, curl and the web client
 # intact; JSON goes through the HTTP_PROXY integrations unchanged. The card
 # tokenization of the payment gateway (T5) is public too: POST /pasarela/tokens
@@ -252,6 +254,7 @@ module "apigateway" {
   partners               = var.partners
   cognito_user_pool_arns = [local.cognito.user_pool_arn]
   human_routes           = var.human_routes
+  partner_routes         = var.partner_routes
   public_routes          = var.public_routes
   binary_media_types     = ["*/*"]
   cors_allow_origin      = var.cors_allow_origin

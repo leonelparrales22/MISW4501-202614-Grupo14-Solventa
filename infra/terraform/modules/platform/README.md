@@ -93,7 +93,11 @@ cuando esos datos estén en PostgreSQL. Un reinicio de la tarea borra lo que est
 | `claims`, `partners`, `audit`, `notifications` | `/v1/claims*`, `/v1/partners*`, `/v1/audit*`, `/v1/notifications*` | Reservados (solo `GET /health`); un target group necesita al menos una regla |
 | stub `payment-gateway` | `/tokens` (prioridad 6) | Tokenización de la tarjeta desde el navegador (T5, `local.lb_stubs`); el resto del simulador no se alcanza por el ALB |
 
-En API Gateway las rutas de socio son las de cotización (`/v1/risk-profiles/...`, API key) y las humanas por defecto son `offers`,
+En API Gateway las rutas de socio son las de cotización (`/v1/risk-profiles/...`, API key) y, desde T5 (variable `partner_routes`), el
+consentimiento de HU-W1.2-01 (`GET /v1/audit/consent-terms/current` y `POST /v1/audit/consents`) y la oferta personalizada de HU-W1.2-03
+(`POST /v1/offers`), también con la API key del socio y nunca con el authorizer. La verificación del consentimiento
+(`GET /v1/audit/consent-verifications`) es interna de la VPC y **no se publica** (la variable lo rechaza). Las humanas por defecto son
+`offers` (solo sus subrutas: `GET /v1/offers/{offer_id}`, `…/renewal` y `…/acceptance`; la raíz es del socio, `root_methods = []`),
 `acceptances` (`GET` y `POST`: medio de pago y reanudación del cobro), `assisted-quotes`, `customers`, `policies`, `review-requests`
 (bandeja del asesor, HU-W1.1-02: `GET` y `POST`) e `issuance-exceptions` (excepciones de emisión de operaciones, HA-D02: `GET`), con el
 authorizer de Cognito (variable `human_routes`).
@@ -177,7 +181,8 @@ el estado remoto cifrado del bucket de T4.
 | `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) y `portal-embebido` (10 req/s, ráfaga 20, T5) | Usage plans (D-7; el socio de demostración del portal, D-3 de T5) |
 | `portal_partner` | `"portal-embebido"` | Socio cuya key recibe CloudFront (salida `portal_partner_api_key`, T5) |
 | `portal_base_url` | `null` | Origen `https://` del portal web; apunta los enlaces de los correos al portal (T5, D-11) |
-| `human_routes` | rutas de `origination` | Rutas detrás de Cognito |
+| `human_routes` | rutas de `origination` | Rutas detrás de Cognito; `offers` con `root_methods = []` (la raíz es del socio, T5) |
+| `partner_routes` | `offers` (`POST`), `audit/consent-terms/current` (`GET`), `audit/consents` (`POST`) | Rutas de socio en rutas exactas, con API key (T5); `audit/consent-verifications` está prohibida |
 | `public_routes` | `documents` (`GET`, 10 req/s, ráfaga 20) | Rutas sin sesión ni API key (enlace firmado del documento, HA-D02) |
 | `existing_cognito` | `null` | User pool externo (`user_pool_id`, `user_pool_arn`, `issuer`, `jwks_url`, `client_ids`); `null` crea uno propio. Ver «User pool propio o externo» |
 | `seed_users` / `seed_user_password` | `{}` / `null` | Usuarios de prueba del pool que crea la plataforma, solo con `existing_cognito = null` (contraseña solo por `TF_VAR_seed_user_password`); las composiciones del repositorio usan los usuarios permanentes de `bootstrap/identity` |

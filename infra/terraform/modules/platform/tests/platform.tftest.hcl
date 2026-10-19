@@ -581,3 +581,60 @@ run "portal_base_url_is_an_https_origin" {
 
   expect_failures = [var.portal_base_url]
 }
+
+# --- Consent and personalized offer as partner routes (T5, #70) -----------------------
+
+run "audit_partner_routes_are_published_with_api_key" {
+  command = plan
+
+  assert {
+    condition = (
+      tolist(module.apigateway.partner_paths) == tolist(["/v1/audit/consent-terms/current", "/v1/audit/consents", "/v1/offers"]) &&
+      var.partner_routes["audit/consent-terms/current"].methods == tolist(["GET"]) &&
+      var.partner_routes["audit/consents"].methods == tolist(["POST"]) &&
+      var.partner_routes["offers"].methods == tolist(["POST"])
+    )
+    error_message = "The terms and the consent of HU-W1.2-01 and POST /v1/offers of HU-W1.2-03 are partner routes with API key."
+  }
+}
+
+run "offers_root_is_partner_and_sub_paths_are_human" {
+  command = plan
+
+  assert {
+    condition = (
+      length(var.human_routes["offers"].root_methods) == 0 &&
+      toset(var.human_routes["offers"].methods) == toset(["GET", "POST"]) &&
+      contains(module.apigateway.partner_paths, "/v1/offers")
+    )
+    error_message = "The root /v1/offers belongs to the partner; /v1/offers/{offer_id}, renewal and acceptance keep Cognito."
+  }
+
+  assert {
+    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if k != "offers"])
+    error_message = "Every other human route keeps its root as before."
+  }
+}
+
+run "consent_verifications_is_not_published" {
+  command = plan
+
+  assert {
+    condition = (
+      !contains(module.apigateway.partner_paths, "/v1/audit/consent-verifications") &&
+      !contains(keys(var.human_routes), "audit") &&
+      !contains(keys(var.public_routes), "audit")
+    )
+    error_message = "GET /v1/audit/consent-verifications is internal to the VPC: no partner, human or public route publishes it."
+  }
+}
+
+run "consent_verifications_cannot_become_a_partner_route" {
+  command = plan
+
+  variables {
+    partner_routes = { "audit/consent-verifications" = { methods = ["GET"] } }
+  }
+
+  expect_failures = [var.partner_routes]
+}
