@@ -1,4 +1,4 @@
-# Permanent user pool of the human channels (T4, decision #60): the portal web
+# Permanent user pool of the human channels (T4): the portal web
 # and the mobile app sign in against the same pool and app clients in every
 # environment, so their IDs never change between staging windows.
 #

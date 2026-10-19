@@ -186,7 +186,9 @@ module "cognito" {
   name                = var.name
   deletion_protection = var.deletion_protection
 
-  # Test users of a staging window (empty by default; production-demo never sets them).
+  # Test users, only when the platform creates its own user pool (existing_cognito
+  # = null); empty by default. staging and production-demo never set them: they
+  # use the permanent test users of bootstrap/identity.
   seed_users         = var.seed_users
   seed_user_password = var.seed_user_password
 }
