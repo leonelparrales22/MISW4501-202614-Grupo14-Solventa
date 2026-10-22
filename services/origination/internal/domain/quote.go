@@ -37,7 +37,15 @@ type Customer struct {
 	FullName   string
 	Email      string
 	BirthDate  time.Time
+	// CognitoSub is the subject of the account in the user pool. Empty while
+	// the registration has not created it (HU-M1.1-01).
+	CognitoSub string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
+
+// Registered tells whether the customer already has an account to sign in with.
+func (c Customer) Registered() bool { return c.CognitoSub != "" }
 
 // Applicant returns the customer data shown to an advisor reviewing a request.
 func (c Customer) Applicant() Applicant {

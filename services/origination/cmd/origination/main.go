@@ -32,6 +32,7 @@ import (
 	odadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/opendata"
 	ofadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/openfinance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/pdf"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
 	redisadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/redis"
 	s3adapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/s3"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
@@ -102,6 +103,7 @@ func main() {
 		// HA-D02: with a payment gateway, an approved acceptance is charged and
 		// only a confirmed charge activates the coverage (CA-4); without it,
 		// the issuance start is only recorded.
+		customers := ports.CustomerRepository(memory.NewCustomerStore())
 		if cfg.billing.enabled {
 			charges, err := newBilling(context.Background(), cfg.billing, activations...)
 			if err != nil {
@@ -109,15 +111,27 @@ func main() {
 			}
 			starter = charges.starter
 			opts = append(opts, httpadapter.WithCharges(charges.service, verifier))
+			// The customer shares origination's database, already open and
+			// migrated here (HU-M1.1-01).
+			customers = postgres.NewCustomerStore(charges.db)
+			log.Print("customers: PostgreSQL")
 		} else {
 			logWithoutBilling(cfg.contracts.enabled)
+			log.Print("customers: in-memory store; they are lost when the service restarts")
 		}
 		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
 			httpadapter.WithAcceptances(acceptances, verifier),
 			httpadapter.WithOffers(offers.service, verifier),
-			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver), verifier),
+			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver, customers), verifier),
 			httpadapter.WithReviews(reviews, verifier))
+		// Sign-up of the insured (HU-M1.1-01). It needs the user pool: the
+		// account is created from here, never by the client.
+		if registration, err := newRegistrationService(context.Background(), cfg.registration, customers); err != nil {
+			log.Fatalf("could not set up the registration of the insured: %v", err)
+		} else if registration != nil {
+			opts = append(opts, httpadapter.WithRegistrations(registration))
+		}
 	} else {
 		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01, contract documents HU-W1.3-03, advisor inbox HU-W1.1-02, offer read and renewal HU-W1.2-03) are not mounted", security.EnvIssuer)
 	}
@@ -180,6 +194,9 @@ type config struct {
 
 	// Contractual document and notification (HU-W1.3-03).
 	contracts contractConfig
+
+	// Sign-up of the insured (HU-M1.1-01).
+	registration registrationConfig
 
 	// Premium charge (HA-D02).
 	billing billingConfig
@@ -326,11 +343,12 @@ func newDocumentStore(ctx context.Context, cfg contractConfig) (ports.DocumentSt
 }
 
 // newAssistedQuoteService wires the advisor quote (HU-W1.1-01) over the
-// in-memory customer and quote stores (PENDING: PostgreSQL), the shared
-// profiling Resolver and the rating engine.
-func newAssistedQuoteService(resolver *profiling.Resolver) *orchestrator.AssistedQuoteService {
-	log.Printf("assisted quote: in-memory customer and quote stores (pending PostgreSQL), rating %s", rating.Version)
-	return orchestrator.NewAssistedQuoteService(memory.NewCustomerStore(), memory.NewQuoteStore(), resolver, rating.New(), systemClock{})
+// customer repository it receives, the in-memory quote store (PENDING:
+// PostgreSQL), the shared profiling Resolver and the rating engine.
+func newAssistedQuoteService(resolver *profiling.Resolver,
+	customers ports.CustomerRepository) *orchestrator.AssistedQuoteService {
+	log.Printf("assisted quote: in-memory quote store (pending PostgreSQL), rating %s", rating.Version)
+	return orchestrator.NewAssistedQuoteService(customers, memory.NewQuoteStore(), resolver, rating.New(), systemClock{})
 }
 
 // newHTTPClient builds the client shared by the external-source adapters: one
@@ -456,6 +474,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadContractConfig(getenv, cfg.port, &cfg.contracts); err != nil {
+		return config{}, err
+	}
+	if err := loadRegistrationConfig(getenv, &cfg.registration); err != nil {
 		return config{}, err
 	}
 	if err := loadBillingConfig(getenv, &cfg.billing); err != nil {

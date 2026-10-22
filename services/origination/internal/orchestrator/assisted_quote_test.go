@@ -257,6 +257,9 @@ type brokenCustomers struct{ err error }
 func (b brokenCustomers) GetByDocument(context.Context, string) (domain.Customer, error) {
 	return domain.Customer{}, b.err
 }
+func (b brokenCustomers) GetByEmail(context.Context, string) (domain.Customer, error) {
+	return domain.Customer{}, b.err
+}
 func (b brokenCustomers) Save(context.Context, domain.Customer) (domain.Customer, error) {
 	return domain.Customer{}, b.err
 }

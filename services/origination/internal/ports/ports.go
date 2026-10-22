@@ -119,9 +119,26 @@ var ErrCustomerNotFound = errors.New("customer not found")
 type CustomerRepository interface {
 	// GetByDocument returns ErrCustomerNotFound when the document is unknown.
 	GetByDocument(ctx context.Context, documentID string) (domain.Customer, error)
+	// GetByEmail returns ErrCustomerNotFound when the email is unknown. The
+	// comparison ignores case: the email is the username in the user pool.
+	GetByEmail(ctx context.Context, email string) (domain.Customer, error)
 	// Save creates the customer, or updates the one with the same document id
 	// keeping its ID, and returns the stored customer.
 	Save(ctx context.Context, c domain.Customer) (domain.Customer, error)
+}
+
+// ErrAccountExists is returned by an IdentityProvider when the email already
+// has an account in the user pool.
+var ErrAccountExists = errors.New("the email already has an account")
+
+// IdentityProvider creates the accounts the insured signs in with
+// (HU-M1.1-01). The user pool only accepts accounts created from the server,
+// so this service decides who gets one.
+type IdentityProvider interface {
+	// CreateAccount creates the account with the password the person chose,
+	// leaves it usable right away and returns its subject. It returns
+	// ErrAccountExists when the email is taken.
+	CreateAccount(ctx context.Context, email, password, fullName string) (subject string, err error)
 }
 
 // QuoteRepository persists the assisted quotes (HU-W1.1-01).

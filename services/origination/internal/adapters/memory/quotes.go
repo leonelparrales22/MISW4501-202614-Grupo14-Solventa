@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
@@ -33,12 +34,28 @@ func (s *CustomerStore) GetByDocument(_ context.Context, documentID string) (dom
 	return c, nil
 }
 
+// GetByEmail returns ErrCustomerNotFound when the email is unknown.
+func (s *CustomerStore) GetByEmail(_ context.Context, email string) (domain.Customer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.byDocument {
+		if strings.EqualFold(c.Email, email) {
+			return c, nil
+		}
+	}
+	return domain.Customer{}, ports.ErrCustomerNotFound
+}
+
 // Save stores the customer under its document id, replacing the previous data.
 func (s *CustomerStore) Save(_ context.Context, c domain.Customer) (domain.Customer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.byDocument[c.DocumentID]; ok {
 		c.ID = existing.ID
+		c.CreatedAt = existing.CreatedAt
+		if c.CognitoSub == "" {
+			c.CognitoSub = existing.CognitoSub
+		}
 	}
 	s.byDocument[c.DocumentID] = c
 	return c, nil
