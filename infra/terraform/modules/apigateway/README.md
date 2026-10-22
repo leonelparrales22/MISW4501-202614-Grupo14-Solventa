@@ -48,12 +48,12 @@ module "apigateway" {
 | `public_routes` | `{}` | Rutas de solo lectura sin sesión ni API key, con límite opcional por método (HA-D02) |
 | `binary_media_types` | `[]` | Tipos de contenido que la API trata como binarios (HA-D02) |
 | `payment_tokenization` | `null` | Ruta pública `POST /pasarela/tokens` de la pasarela simulada, con `backend_path` (`/tokens`), `rate_limit` (5) y `burst_limit` (10) (T5) |
-| `registration_route` | `null` | Ruta pública `POST /v1/registrations` del alta del asegurado, con `backend_path` (`/v1/registrations`), `rate_limit` (2) y `burst_limit` (5) (HU-M1.1-01) |
+| `registration_route` | `null` | Ruta pública `POST /v1/registrations` del registro del asegurado, con `backend_path` (`/v1/registrations`), `rate_limit` (2) y `burst_limit` (5) (HU-M1.1-01) |
 | `partner_routes` | `{}` | Rutas de socio en rutas exactas bajo `/v1` (1 a 3 segmentos), con API key y sin authorizer (T5) |
 
 Salidas: `rest_api_id`, `stage_name`, `invoke_url`, `usage_plan_ids`, `api_key_ids`, `api_key_values` (sensible; claves de
 prueba para los guiones k6 de la ventana), `public_paths` (HA-D02), `cognito_authorizer_id` (HA-S01; `null` sin user pool) y
-`payment_tokenization_path` (T5; `null` sin la tokenización pública), `registration_path` (HU-M1.1-01; `null` sin la ruta de alta) y `partner_paths` (T5; rutas de socio en rutas exactas).
+`payment_tokenization_path` (T5; `null` sin la tokenización pública), `registration_path` (HU-M1.1-01; `null` sin la ruta de registro) y `partner_paths` (T5; rutas de socio en rutas exactas).
 
 ## Canales humanos: authorizer de Cognito (HA-S01)
 
@@ -131,11 +131,11 @@ payment_tokenization = {} # POST /pasarela/tokens → <ALB>/tokens, 5 req/s, rá
 
 Con `payment_tokenization = null` (defecto) no se crea nada, la API queda igual y el *hash* de redespliegue no cambia.
 
-## Alta pública del asegurado (HU-M1.1-01)
+## Registro público del asegurado (HU-M1.1-01)
 
-El registro ocurre **antes de que exista la cuenta**, así que quien llama no tiene token que enviar. El *user pool* crea las
-cuentas de forma administrativa (`allow_admin_create_user_only`), de modo que es originación —y no el cliente— quien decide si
-se crea una cuenta: la ruta es pública, pero el alta no.
+El registro ocurre **antes de que exista la cuenta**, así que quien llama no tiene token que enviar. El *user pool* solo
+permite crear cuentas desde el servidor (`allow_admin_create_user_only`), de modo que es originación —y no el cliente— quien
+decide si se crea una cuenta: la ruta es pública, pero la decisión de crearla no.
 
 | Elemento | Configuración |
 |---|---|
@@ -148,7 +148,7 @@ se crea una cuenta: la ruta es pública, pero el alta no.
 registration_route = {} # POST /v1/registrations → <ALB>/v1/registrations, 2 req/s, ráfaga 5
 ```
 
-El límite es **más bajo que el de la tokenización** porque un alta ocurre una vez por persona, mientras que una tokenización
+El límite es **más bajo que el de la tokenización** porque alguien se registra una sola vez, mientras que una tokenización
 ocurre en cada compra.
 
 Es la **única ruta pública de escritura bajo `/v1`**. `public_routes` sigue siendo de solo lectura y su validación no cambia:
