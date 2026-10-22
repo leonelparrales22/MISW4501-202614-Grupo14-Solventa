@@ -44,6 +44,11 @@ output "payment_tokenization_path" {
   value       = local.payment_tokenization_enabled ? "/pasarela/tokens" : null
 }
 
+output "registration_path" {
+  description = "Path of the public sign-up route (HU-M1.1-01; null without registration_route)."
+  value       = local.registration_enabled ? "/v1/registrations" : null
+}
+
 output "partner_paths" {
   description = "Paths of the partner routes on explicit paths, with API key (T5)."
   value       = [for k in sort(keys(var.partner_routes)) : "/v1/${k}"]

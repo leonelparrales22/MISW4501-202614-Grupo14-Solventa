@@ -11,6 +11,7 @@ cliente ──HTTPS──▶ API Gateway REST (stage = ambiente; todos los tipos
    │  rutas humanas: authorizer de Cognito (valida el JWT)
    │  ruta pública: GET /v1/documents/{token} (enlace firmado del correo; 10 req/s, ráfaga 20, D-5)
    │  ruta pública: POST /pasarela/tokens (tokenización de la tarjeta en E4; 5 req/s, ráfaga 10, T5)
+   │  ruta pública: POST /v1/registrations (alta del asegurado; 2 req/s, ráfaga 5, HU-M1.1-01)
    └──VPC Link V2──▶ ALB interno (health check EXP-D03, deregistration delay 30 s)
         ├──/tokens──▶ stub payment-gateway (solo la tokenización, T5)
         └──por ruta──▶ ECS Fargate: origination · claims · partners · audit · notifications
@@ -116,6 +117,7 @@ El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/
 
 | Pieza | Qué hace |
 |---|---|
+| Alta pública del asegurado | `POST /v1/registrations` en el gateway (sin sesión ni API key, 2 req/s, ráfaga 5) → ALB → originación. Es pública porque la cuenta todavía no existe y quien llama no tiene token; el *user pool* crea las cuentas de forma administrativa, así que el alta la decide originación (HU-M1.1-01) |
 | Tokenización pública | `POST /pasarela/tokens` en el gateway (sin sesión ni API key, 5 req/s, ráfaga 10) → ALB `/tokens` → stub `payment-gateway`, que sigue también en Cloud Map para el cobro de originación (D-4 de T5). Su *target group* es `<nombre>-payment-gateway` (29 caracteres en `solventa-demo`) y el puerto 9040 se abre solo al ALB |
 | Socio `portal-embebido` | API key y usage plan propios (10 req/s, ráfaga 20). CloudFront agrega su key a las rutas de socio de las pantallas públicas; el navegador nunca la ve (D-3 de T5) |
 | Salida `api_origin` | Dominio del REST API, stage (el *origin path* de CloudFront) e `invoke_url` |

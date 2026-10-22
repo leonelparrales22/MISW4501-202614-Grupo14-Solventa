@@ -361,6 +361,100 @@ run "defaults_change_nothing" {
 
 # --- Public card tokenization (T5) -------------------------------------------------------
 
+run "registration_is_public_post_only" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { policies = { methods = ["GET"] } }
+    registration_route     = {}
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_resource.registrations[0].parent_id == aws_api_gateway_resource.v1.id &&
+      aws_api_gateway_resource.registrations[0].path_part == "registrations"
+    )
+    error_message = "The sign-up route is /v1/registrations."
+  }
+
+  assert {
+    condition = (
+      length(aws_api_gateway_method.registrations_post) == 1 &&
+      aws_api_gateway_method.registrations_post[0].http_method == "POST" &&
+      aws_api_gateway_method.registrations_post[0].authorization == "NONE" &&
+      aws_api_gateway_method.registrations_post[0].api_key_required == false &&
+      aws_api_gateway_method.registrations_post[0].authorizer_id == null
+    )
+    error_message = "Sign-up is a single POST without session and without API key: the account does not exist yet."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_integration.registrations_post[0].type == "HTTP_PROXY" &&
+      aws_api_gateway_integration.registrations_post[0].integration_http_method == "POST" &&
+      aws_api_gateway_integration.registrations_post[0].uri == "http://internal-alb.example.com/v1/registrations" &&
+      aws_api_gateway_integration.registrations_post[0].timeout_milliseconds == 5000
+    )
+    error_message = "The route is proxied to /v1/registrations of origination behind the load balancer."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_method_settings.registrations[0].method_path == "v1/registrations/POST" &&
+      aws_api_gateway_method_settings.registrations[0].settings[0].throttling_rate_limit == 2 &&
+      aws_api_gateway_method_settings.registrations[0].settings[0].throttling_burst_limit == 5 &&
+      aws_api_gateway_method_settings.registrations[0].settings[0].caching_enabled == false
+    )
+    error_message = "The route is throttled at the stage (2 req/s, burst 5) and never cached."
+  }
+
+  assert {
+    condition     = output.registration_path == "/v1/registrations"
+    error_message = "The module exposes the sign-up path."
+  }
+
+  assert {
+    condition     = alltrue([for m in aws_api_gateway_method.human : m.authorization == "COGNITO_USER_POOLS"])
+    error_message = "The human routes keep the Cognito authorizer next to the public sign-up."
+  }
+}
+
+run "registration_defaults_change_nothing" {
+  command = plan
+
+  assert {
+    condition = (
+      length(aws_api_gateway_resource.registrations) == 0 &&
+      length(aws_api_gateway_method.registrations_post) == 0 &&
+      length(aws_api_gateway_integration.registrations_post) == 0 &&
+      length(aws_api_gateway_method_settings.registrations) == 0 &&
+      output.registration_path == null
+    )
+    error_message = "Without registration_route nothing of the sign-up route is created."
+  }
+}
+
+run "registration_rejects_relative_backend_path" {
+  command = plan
+
+  variables {
+    registration_route = { backend_path = "v1/registrations" }
+  }
+
+  expect_failures = [var.registration_route]
+}
+
+run "registration_rejects_a_throttle_of_zero" {
+  command = plan
+
+  variables {
+    registration_route = { rate_limit = 0 }
+  }
+
+  expect_failures = [var.registration_route]
+}
+
 run "payment_tokenization_is_public_post_only" {
   command = apply
 
