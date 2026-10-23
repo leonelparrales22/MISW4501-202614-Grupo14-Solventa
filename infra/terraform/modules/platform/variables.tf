@@ -201,6 +201,10 @@ variable "human_routes" {
     # operations; their resumption is POST /v1/acceptances/{id}/charge/resume.
     review-requests     = { methods = ["GET", "POST"] }
     issuance-exceptions = { methods = ["GET"] }
+    # Filing of the claim from the guided assistant of the mobile app
+    # (HU-M2.2-01). It is a write of the insured on their own behalf, so it
+    # only needs POST; the reads of the case come with HU-M2.4-01.
+    claims = { methods = ["POST"] }
   }
 }
 

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.1.0
+  version: 0.2.0
 paths:
   /health:
     get:
@@ -9,3 +9,171 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/claims:
+    post:
+      summary: File a claim (HU-M2.2-01)
+      description: >-
+        Creates the case with its filing number. The case belongs to the
+        subject of the token. The filing is identified by Idempotency-Key:
+        repeating the call with the same key and the same body answers 200
+        with the case that already exists.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Identifier of the filing; the mobile app sends its draft id.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FilingRequest"
+      responses:
+        "201":
+          description: The case was created
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Claim"
+        "200":
+          description: The same filing key had already created this case
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Claim"
+        "400":
+          description: invalid_request - the body is not valid JSON, or the key is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed or idempotency_key_reused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "503":
+          description: filing_unavailable - retry with the same key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    cognitoJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: ID token of the Cognito user pool (HA-S01).
+  schemas:
+    FilingRequest:
+      type: object
+      required: [policy_id, incident_type, occurred_at, place, description, declaration_accepted]
+      properties:
+        policy_id:
+          type: string
+          pattern: '^[A-Za-z0-9-]{3,40}$'
+          example: AU-2025-118204
+        incident_type:
+          type: string
+          enum: [collision, theft, third_party_damage, other]
+        occurred_at:
+          type: string
+          format: date-time
+          description: Not in the future, and no older than five years.
+        place:
+          type: string
+          minLength: 3
+          maxLength: 160
+        description:
+          type: string
+          minLength: 10
+          maxLength: 1000
+        details:
+          type: object
+          description: >-
+            Answers to the questions that depend on the incident type: up to
+            20 keys of 1 to 40 characters, with values of up to 200.
+          maxProperties: 20
+          additionalProperties:
+            type: string
+            maxLength: 200
+        declaration_accepted:
+          type: boolean
+          description: The declaration under oath. It must be true.
+    Claim:
+      type: object
+      required: [claim_id, filing_number, status, policy_id, incident_type, occurred_at, filed_at]
+      properties:
+        claim_id:
+          type: string
+          example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
+        filing_number:
+          type: string
+          description: SIN-<year>-<five digits>, unique in the platform.
+          example: SIN-2026-01877
+        status:
+          type: string
+          enum: [active]
+        policy_id:
+          type: string
+        incident_type:
+          type: string
+          enum: [collision, theft, third_party_damage, other]
+        occurred_at:
+          type: string
+          format: date-time
+        filed_at:
+          type: string
+          format: date-time
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+    ValidationError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed, idempotency_key_reused]
+        message:
+          type: string
+        fields:
+          type: array
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+              code:
+                type: string
+                enum: [required, invalid_format, out_of_range]
