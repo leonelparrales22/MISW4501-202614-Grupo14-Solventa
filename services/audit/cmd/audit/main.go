@@ -3,22 +3,33 @@
 // It always exposes GET /health (ADR-02). With DATABASE_URL it also owns the
 // explicit consent of the customer (HU-W1.2-01): the partner channel records
 // it and origination verifies it before it queries any source. The human
-// evidence lookup is mounted when the Cognito verification (AUTH_*) is set.
+// evidence lookup and the insured's own consents (HU-M1.3-01) are mounted when
+// the Cognito verification (AUTH_*) is set. With EVENTS_QUEUE_URL it consumes
+// the CustomerLinked events that tell it who the holder of the consents is.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
+
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/events"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/events/sqsconsumer"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/observability"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/http"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/messaging"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/consents"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/domain"
 )
 
 const serviceName = "audit"
@@ -26,8 +37,20 @@ const serviceName = "audit"
 // version is stamped on the telemetry; the build can set it with -ldflags.
 var version = "dev"
 
-// envDatabaseURL names the variable that turns the consent routes on.
-const envDatabaseURL = "DATABASE_URL"
+// Environment variables of the service.
+const (
+	// envDatabaseURL turns the consent routes on.
+	envDatabaseURL = "DATABASE_URL"
+	// envEventsQueueURL is the SQS queue of audit (modules/messaging); with it
+	// the CustomerLinked events are consumed (HU-M1.3-01).
+	envEventsQueueURL = "EVENTS_QUEUE_URL"
+	// envPartnerDisplayNames is the JSON catalog of the display names of the
+	// entities, by partner code (decision D-2 a).
+	envPartnerDisplayNames = "PARTNER_DISPLAY_NAMES"
+)
+
+// noQueueNotice is logged when EVENTS_QUEUE_URL is empty.
+const noQueueNotice = envEventsQueueURL + " is not set: account links (CustomerLinked) are not consumed; insured users get 403 holder_not_linked"
 
 func main() {
 	// JSON logs with correlation and trace ids, plus OpenTelemetry traces and
@@ -54,20 +77,29 @@ func main() {
 		if err := postgres.Migrate(context.Background(), db); err != nil {
 			log.Fatalf("could not migrate the database: %v", err)
 		}
-		svc := consents.NewService(postgres.NewConsentStore(db), systemClock{})
-		opts = append(opts, httpadapter.WithConsents(svc))
+		consentStore := postgres.NewConsentStore(db)
+		svc := consents.NewService(consentStore, systemClock{})
+		holders := consents.NewHolderService(consentStore, postgres.NewConsentEventStore(db), postgres.NewHolderLinkStore(db),
+			systemClock{}, cfg.partnerNames)
 		log.Printf("consents (HU-W1.2-01): append-only records in PostgreSQL; terms %s", svc.CurrentTerms().Version)
+		var verifier security.Verifier
 		if cfg.auth.enabled {
-			verifier, err := security.NewJWKSVerifier(context.Background(), cfg.auth.config)
+			jwks, err := security.NewJWKSVerifier(context.Background(), cfg.auth.config)
 			if err != nil {
 				log.Fatalf("could not load the user pool keys: %v", err)
 			}
-			opts = append(opts, httpadapter.WithConsentReads(svc, verifier))
-		} else {
-			log.Printf("%s is not set: the consent evidence lookup (operations, advisor) is not mounted", security.EnvIssuer)
+			verifier = jwks
+		}
+		opts = append(opts, consentOptions(svc, holders, verifier)...)
+		consumer, err := newEventConsumer(context.Background(), cfg, holders)
+		if err != nil {
+			log.Fatalf("could not set up the consumer of the audit queue: %v", err)
+		}
+		if consumer != nil {
+			go consumer.Run(context.Background())
 		}
 	} else {
-		log.Printf("%s is not set: the consent routes (HU-W1.2-01) are not mounted", envDatabaseURL)
+		log.Printf("%s is not set: the consent routes (HU-W1.2-01, HU-M1.3-01) are not mounted and no event is consumed", envDatabaseURL)
 	}
 
 	srv := &http.Server{
@@ -85,6 +117,45 @@ func main() {
 	log.Fatal(err)
 }
 
+// consentOptions mounts the consent routes: always the partner channel and the
+// internal verification (HU-W1.2-01); with a verifier, also the human routes:
+// the evidence lookup (operations, advisor) and the insured's own consents
+// (HU-M1.3-01).
+func consentOptions(svc *consents.Service, holders *consents.HolderService, verifier security.Verifier) []httpadapter.Option {
+	opts := []httpadapter.Option{httpadapter.WithConsents(svc)}
+	if verifier == nil {
+		log.Printf("%s is not set: the human consent routes (evidence lookup HU-W1.2-01, insured consents HU-M1.3-01) are not mounted", security.EnvIssuer)
+		return opts
+	}
+	log.Printf("insured consents (HU-M1.3-01): GET /v1/consents and GET /v1/consents/{consent_id} for the insured role")
+	return append(opts, httpadapter.WithConsentReads(svc, verifier), httpadapter.WithHolderConsents(holders, verifier))
+}
+
+// newEventConsumer builds the consumer of the audit queue with the
+// credentials and the region of the environment (the task role and
+// AWS_REGION in ECS; AWS_ENDPOINT_URL_SQS points to LocalStack in local runs).
+// It returns nil, and logs a notice, without EVENTS_QUEUE_URL.
+func newEventConsumer(ctx context.Context, cfg config, holders *consents.HolderService) (*sqsconsumer.Consumer, error) {
+	if cfg.eventsQueueURL == "" {
+		log.Print(noQueueNotice)
+		return nil, nil
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load the AWS configuration for %s: %w", envEventsQueueURL, err)
+	}
+	router := events.NewRouter()
+	if err := router.Register(messaging.EventTypeCustomerLinked, messaging.NewCustomerLinkedHandler(holders)); err != nil {
+		return nil, err
+	}
+	consumer, err := sqsconsumer.New(sqs.NewFromConfig(awsCfg), cfg.eventsQueueURL, router, sqsconsumer.Options{})
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("domain events: consuming %s from %s", messaging.EventTypeCustomerLinked, cfg.eventsQueueURL)
+	return consumer, nil
+}
+
 type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
@@ -96,6 +167,10 @@ type config struct {
 	// consent routes out.
 	databaseURL string
 	auth        authConfig
+	// eventsQueueURL is the SQS queue of audit; empty leaves the consumer out.
+	eventsQueueURL string
+	// partnerNames are the display names of the entities (decision D-2 a).
+	partnerNames domain.EntityNames
 }
 
 // authConfig is the Cognito verification of the human routes.
@@ -104,12 +179,16 @@ type authConfig struct {
 	config  security.Config
 }
 
+// partnerCodePattern is the shape of a partner code in the catalog.
+var partnerCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 // loadConfig reads the configuration from environment variables. Everything is
 // optional: without DATABASE_URL only /health is served, and without
-// AUTH_ISSUER the human evidence lookup is not mounted. When AUTH_ISSUER is
-// set the rest of AUTH_* must be valid too.
+// AUTH_ISSUER the human routes are not mounted. When AUTH_ISSUER is set the
+// rest of AUTH_* must be valid too, and PARTNER_DISPLAY_NAMES, when set, must
+// be a JSON object of partner code to name.
 func loadConfig(getenv func(string) string) (config, error) {
-	cfg := config{port: getenv("PORT"), databaseURL: getenv(envDatabaseURL)}
+	cfg := config{port: getenv("PORT"), databaseURL: getenv(envDatabaseURL), eventsQueueURL: getenv(envEventsQueueURL)}
 	if cfg.port == "" {
 		cfg.port = "8080"
 	}
@@ -120,5 +199,29 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		cfg.auth = authConfig{enabled: true, config: auth}
 	}
+	names, err := parsePartnerNames(getenv(envPartnerDisplayNames))
+	if err != nil {
+		return config{}, err
+	}
+	cfg.partnerNames = names
 	return cfg, nil
+}
+
+// parsePartnerNames reads the catalog of display names; empty is an empty
+// catalog (the codes are shown as they are).
+func parsePartnerNames(raw string) (domain.EntityNames, error) {
+	names := domain.EntityNames{}
+	if raw == "" {
+		return names, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &names); err != nil {
+		return nil, fmt.Errorf("%s must be a JSON object of partner code to display name: %w", envPartnerDisplayNames, err)
+	}
+	for code, name := range names {
+		if !partnerCodePattern.MatchString(code) || name == "" {
+			return nil, fmt.Errorf("%s has an invalid entry for %q: codes are letters, digits, '-' or '_' and names are not empty",
+				envPartnerDisplayNames, code)
+		}
+	}
+	return names, nil
 }
