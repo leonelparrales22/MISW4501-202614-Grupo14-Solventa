@@ -6,6 +6,8 @@
 // evidence lookup and the insured's own consents (HU-M1.3-01) are mounted when
 // the Cognito verification (AUTH_*) is set. With EVENTS_QUEUE_URL it consumes
 // the CustomerLinked events that tell it who the holder of the consents is.
+// HU-M1.3-02: the insured revokes a consent (with AUTH_*) and, with
+// OPEN_FINANCE_URL, a worker notifies every entity within the deadline.
 package main
 
 import (
@@ -16,20 +18,26 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
+	ofclient "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/openfinance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/events"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/events/sqsconsumer"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/observability"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/resilience"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/http"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/messaging"
+	openfinanceadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/openfinance"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/pdf"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/consents"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/ports"
 )
 
 const serviceName = "audit"
@@ -47,10 +55,32 @@ const (
 	// envPartnerDisplayNames is the JSON catalog of the display names of the
 	// entities, by partner code (decision D-2 a).
 	envPartnerDisplayNames = "PARTNER_DISPLAY_NAMES"
+	// envOpenFinanceURL is the Open Finance provider (the stub in local and
+	// staging); with it the revocation notices are sent (HU-M1.3-02).
+	envOpenFinanceURL = "OPEN_FINANCE_URL"
+	// envOpenFinanceTimeoutMS is the hard cut of one call, in milliseconds.
+	envOpenFinanceTimeoutMS = "OPEN_FINANCE_TIMEOUT_MS"
+	// envNoticeDeadlineSeconds is how long the entities have to confirm a
+	// revocation (RN-02: 300); the tests shorten it.
+	envNoticeDeadlineSeconds = "REVOCATION_NOTICE_DEADLINE_SECONDS"
+	// envNoticePollIntervalMS is how often the notice worker looks for due
+	// notices, besides being woken up by each revocation.
+	envNoticePollIntervalMS = "REVOCATION_NOTICE_POLL_INTERVAL_MS"
+)
+
+// Defaults of the revocation (HU-M1.3-02).
+const (
+	defaultOpenFinanceTimeout = 700 * time.Millisecond
+	defaultNoticeDeadline     = 300 * time.Second
+	defaultNoticePollInterval = time.Second
 )
 
 // noQueueNotice is logged when EVENTS_QUEUE_URL is empty.
 const noQueueNotice = envEventsQueueURL + " is not set: account links (CustomerLinked) are not consumed; insured users get 403 holder_not_linked"
+
+// noOpenFinanceNotice is logged when OPEN_FINANCE_URL is empty.
+const noOpenFinanceNotice = envOpenFinanceURL + " is not set: revocations are recorded and block the queries, but no entity is " +
+	"notified; their notices end as not confirmed when the deadline passes"
 
 func main() {
 	// JSON logs with correlation and trace ids, plus OpenTelemetry traces and
@@ -64,6 +94,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid configuration: %v", err)
 	}
+
+	// The background work (consumer, notice worker) stops with this context.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// WithObservability must come first: chi only accepts middlewares before
 	// the routes are registered.
@@ -83,6 +117,19 @@ func main() {
 		svc := consents.NewService(consentStore, systemClock{}, consents.WithEvents(eventStore))
 		holders := consents.NewHolderService(consentStore, eventStore, postgres.NewHolderLinkStore(db),
 			systemClock{}, cfg.partnerNames)
+		noticeStore := postgres.NewNoticeStore(db)
+		revocations := consents.NewRevocationService(consents.RevocationDeps{
+			Consents: consentStore, Events: eventStore, Revocations: postgres.NewRevocationStore(db), Notices: noticeStore,
+			Receipts: pdf.New(), Clock: systemClock{}, Names: cfg.partnerNames, NoticeDeadline: cfg.noticeDeadline,
+		})
+		worker, err := newNoticeWorker(cfg, noticeStore)
+		if err != nil {
+			log.Fatalf("could not set up the revocation notice worker: %v", err)
+		}
+		if worker != nil {
+			revocations.OnNewNotices(worker.Wake)
+			go worker.Run(ctx)
+		}
 		log.Printf("consents (HU-W1.2-01): append-only records in PostgreSQL; terms %s", svc.CurrentTerms().Version)
 		var verifier security.Verifier
 		if cfg.auth.enabled {
@@ -92,13 +139,13 @@ func main() {
 			}
 			verifier = jwks
 		}
-		opts = append(opts, consentOptions(svc, holders, verifier)...)
-		consumer, err := newEventConsumer(context.Background(), cfg, holders)
+		opts = append(opts, consentOptions(svc, holders, revocations, verifier)...)
+		consumer, err := newEventConsumer(ctx, cfg, holders)
 		if err != nil {
 			log.Fatalf("could not set up the consumer of the audit queue: %v", err)
 		}
 		if consumer != nil {
-			go consumer.Run(context.Background())
+			go consumer.Run(ctx)
 		}
 	} else {
 		log.Printf("%s is not set: the consent routes (HU-W1.2-01, HU-M1.3-01) are not mounted and no event is consumed", envDatabaseURL)
@@ -114,23 +161,51 @@ func main() {
 	}
 	log.Printf("audit listening on %s", srv.Addr)
 	err = srv.ListenAndServe()
-	// Flush the telemetry before exiting: log.Fatal would skip the deferred calls.
+	// Stop the background work and flush the telemetry before exiting:
+	// log.Fatal would skip the deferred calls.
+	cancel()
 	_ = shutdownTelemetry(context.Background())
 	log.Fatal(err)
 }
 
 // consentOptions mounts the consent routes: always the partner channel and the
 // internal verification (HU-W1.2-01); with a verifier, also the human routes:
-// the evidence lookup (operations, advisor) and the insured's own consents
-// (HU-M1.3-01).
-func consentOptions(svc *consents.Service, holders *consents.HolderService, verifier security.Verifier) []httpadapter.Option {
+// the evidence lookup (operations, advisor), the insured's own consents
+// (HU-M1.3-01) and their revocation with its receipt (HU-M1.3-02).
+func consentOptions(svc *consents.Service, holders *consents.HolderService, revocations *consents.RevocationService,
+	verifier security.Verifier) []httpadapter.Option {
 	opts := []httpadapter.Option{httpadapter.WithConsents(svc)}
 	if verifier == nil {
-		log.Printf("%s is not set: the human consent routes (evidence lookup HU-W1.2-01, insured consents HU-M1.3-01) are not mounted", security.EnvIssuer)
+		log.Printf("%s is not set: the human consent routes (evidence lookup HU-W1.2-01, insured consents HU-M1.3-01, "+
+			"revocation HU-M1.3-02) are not mounted", security.EnvIssuer)
 		return opts
 	}
 	log.Printf("insured consents (HU-M1.3-01): GET /v1/consents and GET /v1/consents/{consent_id} for the insured role")
-	return append(opts, httpadapter.WithConsentReads(svc, verifier), httpadapter.WithHolderConsents(holders, verifier))
+	log.Printf("revocation (HU-M1.3-02): POST /v1/consents/{consent_id}/revocations and GET /v1/consents/{consent_id}/revocation-receipt " +
+		"for the insured role")
+	return append(opts, httpadapter.WithConsentReads(svc, verifier), httpadapter.WithHolderConsents(holders, verifier),
+		httpadapter.WithHolderRevocations(holders, revocations, verifier))
+}
+
+// newNoticeWorker builds the worker that notifies the entities of each
+// revocation through the Open Finance provider (HU-M1.3-02). It returns nil,
+// and logs a notice, without OPEN_FINANCE_URL.
+func newNoticeWorker(cfg config, store ports.NoticeStore) (*consents.NoticeWorker, error) {
+	if cfg.openFinanceURL == "" {
+		log.Print(noOpenFinanceNotice)
+		return nil, nil
+	}
+	client := ofclient.NewClient(ofclient.Config{
+		BaseURL: cfg.openFinanceURL, Timeout: cfg.openFinanceTimeout, Breaker: resilience.DefaultConfig(),
+	})
+	worker, err := consents.NewNoticeWorker(store, openfinanceadapter.NewNotifier(client),
+		consents.NoticeWorkerConfig{PollInterval: cfg.noticePollInterval})
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("revocation notices (HU-M1.3-02): to %s within %s, polling every %s", cfg.openFinanceURL, cfg.noticeDeadline,
+		cfg.noticePollInterval)
+	return worker, nil
 }
 
 // newEventConsumer builds the consumer of the audit queue with the
@@ -173,6 +248,12 @@ type config struct {
 	eventsQueueURL string
 	// partnerNames are the display names of the entities (decision D-2 a).
 	partnerNames domain.EntityNames
+	// openFinanceURL is the provider the revocation notices go to; empty
+	// leaves the notice worker out (HU-M1.3-02).
+	openFinanceURL     string
+	openFinanceTimeout time.Duration
+	noticeDeadline     time.Duration
+	noticePollInterval time.Duration
 }
 
 // authConfig is the Cognito verification of the human routes.
@@ -206,7 +287,36 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	cfg.partnerNames = names
+	cfg.openFinanceURL = getenv(envOpenFinanceURL)
+	for _, d := range []struct {
+		name string
+		unit time.Duration
+		def  time.Duration
+		dst  *time.Duration
+	}{
+		{envOpenFinanceTimeoutMS, time.Millisecond, defaultOpenFinanceTimeout, &cfg.openFinanceTimeout},
+		{envNoticeDeadlineSeconds, time.Second, defaultNoticeDeadline, &cfg.noticeDeadline},
+		{envNoticePollIntervalMS, time.Millisecond, defaultNoticePollInterval, &cfg.noticePollInterval},
+	} {
+		v, err := positiveDuration(getenv(d.name), d.unit, d.def)
+		if err != nil {
+			return config{}, fmt.Errorf("%s: %w", d.name, err)
+		}
+		*d.dst = v
+	}
 	return cfg, nil
+}
+
+// positiveDuration reads a positive integer count of unit; empty is def.
+func positiveDuration(raw string, unit, def time.Duration) (time.Duration, error) {
+	if raw == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("must be a positive integer, got %q", raw)
+	}
+	return time.Duration(n) * unit, nil
 }
 
 // parsePartnerNames reads the catalog of display names; empty is an empty

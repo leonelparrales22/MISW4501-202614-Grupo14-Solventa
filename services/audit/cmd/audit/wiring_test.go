@@ -95,20 +95,26 @@ func TestTheHumanRoutesAreMountedOnlyWithAVerifier(t *testing.T) {
 	clk := clockAt{t: time.Date(2026, 10, 24, 20, 0, 0, 0, time.UTC)}
 	svc := consents.NewService(nil, clk)
 	holders := consents.NewHolderService(nil, nil, nil, clk, nil)
+	revocations := consents.NewRevocationService(consents.RevocationDeps{Clock: clk})
 
-	without := httpadapter.NewRouter(consentOptions(svc, holders, nil)...)
+	without := httpadapter.NewRouter(consentOptions(svc, holders, revocations, nil)...)
 	assert.Equal(t, http.StatusNotFound, status(t, without, http.MethodGet, "/v1/consents", ""), "not mounted")
 	assert.Equal(t, http.StatusNotFound, status(t, without, http.MethodGet, "/v1/audit/consents/cns-1", ""))
 	assert.Equal(t, http.StatusOK, status(t, without, http.MethodGet, "/v1/audit/consent-terms/current", ""), "the partner routes always")
 	assert.Contains(t, buf.String(), "AUTH_ISSUER is not set: the human consent routes")
 
-	with := httpadapter.NewRouter(consentOptions(svc, holders, staticVerifier{
+	with := httpadapter.NewRouter(consentOptions(svc, holders, revocations, staticVerifier{
 		"ops": {Subject: "u-ops", Roles: []security.Role{security.RoleOperations}},
 	})...)
 	assert.Equal(t, http.StatusUnauthorized, status(t, with, http.MethodGet, "/v1/consents", ""), "mounted behind Cognito")
 	assert.Equal(t, http.StatusForbidden, status(t, with, http.MethodGet, "/v1/consents", "ops"), "only the insured role")
 	assert.Equal(t, http.StatusUnauthorized, status(t, with, http.MethodGet, "/v1/audit/consents/cns-1", ""))
 	assert.Contains(t, buf.String(), "insured consents (HU-M1.3-01)")
+	assert.Equal(t, http.StatusNotFound, status(t, without, http.MethodPost, "/v1/consents/cns-1/revocations", ""), "not mounted")
+	assert.Equal(t, http.StatusUnauthorized, status(t, with, http.MethodPost, "/v1/consents/cns-1/revocations", ""),
+		"HU-M1.3-02: mounted behind Cognito")
+	assert.Equal(t, http.StatusForbidden, status(t, with, http.MethodGet, "/v1/consents/cns-1/revocation-receipt", "ops"))
+	assert.Contains(t, buf.String(), "revocation (HU-M1.3-02)")
 }
 
 func TestWithoutAQueueNoEventIsConsumed(t *testing.T) {
