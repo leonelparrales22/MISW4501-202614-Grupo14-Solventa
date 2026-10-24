@@ -1,11 +1,14 @@
 openapi: 3.0.3
 info:
   title: Solventa - audit service
-  version: 0.2.0
+  version: 0.3.0
   description: >
     Audit and consents. HU-W1.2-01: the explicit, immutable consent of the
-    customer to be profiled. The consent routes are mounted only when the
-    service has its DATABASE_URL; the evidence lookup also needs AUTH_*.
+    customer to be profiled. HU-M1.3-01: the insured reads their own consents
+    under /v1/consents (one prefix per resource, plural noun; people use
+    /v1/consents with Cognito, banks use /v1/audit/* with an API key). The
+    consent routes are mounted only when the service has its DATABASE_URL;
+    the evidence lookup and the holder's routes also need AUTH_*.
 paths:
   /health:
     get:
@@ -226,6 +229,112 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/consents:
+    get:
+      operationId: listHolderConsents
+      summary: The consents of the insured (HU-M1.3-01 CA-1, CA-3, CA-5)
+      description: >
+        Every consent granted with the document linked to the account of the
+        token, the current ones first (by granted_at, newest first) and then
+        the revoked or expired ones (by ended_at, newest first). Each item
+        carries its detail and history, so the mobile client keeps a complete
+        offline copy with one call; there is no pagination. Human route: only
+        the insured role reads it, and the holder is always the account of the
+        token. The account is recognized by the CustomerLinked event
+        origination publishes at the end of the registration; until it
+        arrives the answer is 403 holder_not_linked. Read-only: no other
+        method exists (CA-4). The response never repeats the holder's
+        document nor name.
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The consents of the holder
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HolderConsentList"
+        "401":
+          description: Missing, invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            forbidden when the role is not insured; holder_not_linked when the
+            account has no link to a document yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The consents could not be read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/consents/{consent_id}:
+    get:
+      operationId: getHolderConsent
+      summary: One consent of the insured (HU-M1.3-01 CA-2, CA-6)
+      description: >
+        The detail of a consent of the holder of the token, with its history.
+        A consent that does not exist and a consent of another holder get the
+        same 404, so the ids of others are never revealed (CA-6).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: consent_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      responses:
+        "200":
+          description: The consent of the holder
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HolderConsent"
+        "401":
+          description: Missing, invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            forbidden when the role is not insured; holder_not_linked when the
+            account has no link to a document yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: There is no consent with that id for this holder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The consent could not be read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   securitySchemes:
     cognitoJwt:
@@ -244,6 +353,8 @@ components:
             - invalid_request
             - terms_outdated
             - consent_not_found
+            - not_found
+            - holder_not_linked
             - service_unavailable
             - unauthorized
             - forbidden
@@ -449,5 +560,111 @@ components:
           type: string
           format: date-time
         expires_at:
+          type: string
+          format: date-time
+    Entity:
+      type: object
+      description: The financial entity the consent authorizes (the partner it was granted through).
+      required: [code, name]
+      properties:
+        code:
+          type: string
+          example: aliado-banco-1
+        name:
+          type: string
+          description: Display name from PARTNER_DISPLAY_NAMES; the code when it has none.
+          example: Banco Aliado
+    HolderConsentHistoryEntry:
+      type: object
+      required: [status, occurred_at, receipt_id, channel, entity_code]
+      properties:
+        status:
+          type: string
+          description: >
+            granted and expired are synthetic (granted_at, expires_at);
+            revocation_requested and revoked come from HU-M1.3-02.
+          example: granted
+        occurred_at:
+          type: string
+          format: date-time
+        receipt_id:
+          type: string
+          nullable: true
+        channel:
+          type: string
+          nullable: true
+        entity_code:
+          type: string
+          nullable: true
+          description: Null for a change of the whole consent.
+    HolderConsent:
+      type: object
+      required:
+        - consent_id
+        - status
+        - current
+        - entities
+        - purpose
+        - channel
+        - terms_version
+        - scope
+        - granted_at
+        - expires_at
+        - ended_at
+        - revocation_receipt_id
+        - history
+      properties:
+        consent_id:
+          type: string
+        status:
+          type: string
+          enum: [active, expired, revoked, revocation_pending, partially_revoked]
+          description: >
+            Derived from the record and its append-only events. Only active is
+            current; revocation_pending and partially_revoked are reserved for
+            HU-M1.3-02 and HU-W4.2-02.
+        current:
+          type: boolean
+        entities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Entity"
+        purpose:
+          type: string
+        channel:
+          type: string
+        terms_version:
+          type: string
+        scope:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceTerm"
+        granted_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When it stopped covering the holder; null while current.
+        revocation_receipt_id:
+          type: string
+          nullable: true
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/HolderConsentHistoryEntry"
+    HolderConsentList:
+      type: object
+      required: [items, generated_at]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/HolderConsent"
+        generated_at:
           type: string
           format: date-time
