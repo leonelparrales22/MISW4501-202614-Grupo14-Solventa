@@ -86,8 +86,13 @@ móvil ──GET /v1/consents (token)──▶ sub ──holder_link──▶ do
 - **CA-6:** el documento se compara normalizado (recorte y mayúsculas) y un id ajeno responde `404`; la respuesta no repite documento ni
   nombre del titular.
 - `consent_event` no tiene llave foránea a `consent_record` a propósito: PostgreSQL rechazaría el `TRUNCATE` de `consent_record` por la
-  llave antes de su disparador y cambiaría el error *append-only* de HU-W1.2-01; quien agregue eventos (HU-M1.3-02) comprueba que el
-  consentimiento exista en la misma sentencia.
+  llave antes de su disparador y cambiaría el error *append-only* de HU-W1.2-01. La referencia la hace cumplir el disparador
+  `consent_event_requires_consent` (`BEFORE INSERT … FOR EACH ROW`, migración `0002`) con la función genérica
+  `require_existing_consent()`: un hecho cuyo `consent_id` no existe en `consent_record` se rechaza con `23503`
+  (`foreign_key_violation`, el mismo error de una llave foránea) y, si la sentencia trae varias filas, no se guarda ninguna. No toma
+  bloqueo de fila porque `consent_record` no admite borrados. **Regla para tablas nuevas de esta base:** las tablas *append-only* no se
+  referencian entre sí con llaves foráneas; la referencia se valida con un disparador `BEFORE INSERT` (para un `consent_id`, con
+  `require_existing_consent()`).
 - Pruebas: `internal/domain/consent_view_test.go`, `internal/consents/holder_test.go`, `internal/adapters/http/holder_consents_test.go`,
   `tests/integration/holder_consents_test.go` y `customer_linked_test.go` (LocalStack: duplicados, conflicto, tipo desconocido y DLQ), el
   contrato con un token de asegurado y [`tests/e2e/hu-m1.3`](../../tests/e2e/hu-m1.3/README.md).
@@ -107,7 +112,8 @@ móvil ──GET /v1/consents (token)──▶ sub ──holder_link──▶ do
 ## Datos y eventos
 
 - **BD propia:** PostgreSQL (auditoría, append-only); hoy las tablas `consent_record` (HU-W1.2-01), `consent_event` y `holder_link`
-  (HU-M1.3-01, migraciones `0002` y `0003`, con la función genérica `forbid_append_only_mutation()`), en `migrations/`.
+  (HU-M1.3-01, migraciones `0002` y `0003`, con las funciones genéricas `forbid_append_only_mutation()` y
+  `require_existing_consent()`), en `migrations/`.
 - **Consume:** `CustomerLinked` de originación (HU-M1.3-01) desde su cola, idempotente por `subject`; los demás tipos que llegan a la cola
   se descartan hasta que una historia los consuma. Ver [catálogo de eventos](../../docs/events/README.md). No publica eventos.
 

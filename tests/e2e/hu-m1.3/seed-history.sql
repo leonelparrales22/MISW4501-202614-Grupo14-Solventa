@@ -1,6 +1,8 @@
 -- History of a holder for HU-M1.3-01 (CA-3): one expired consent and one
 -- revoked consent with its receipt, as the revocation of HU-M1.3-02 will
--- write it. Only inserts: the audit tables are append-only.
+-- write it. Only inserts: the audit tables are append-only. The consents go
+-- first: the trigger consent_event_requires_consent refuses an event whose
+-- consent does not exist (23503).
 --
 -- Usage (psql variables):
 --   psql -v holder_document=1020304050 -v suffix=r123 -f seed-history.sql

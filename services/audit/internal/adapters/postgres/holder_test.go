@@ -2,9 +2,11 @@ package postgres_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -107,6 +109,69 @@ func TestListByConsentsReadsTheEventsInOrder(t *testing.T) {
 	empty, err := events.ListByConsents(ctx, nil)
 	require.NoError(t, err)
 	assert.Empty(t, empty)
+}
+
+// sqlState returns the SQLSTATE of a PostgreSQL error.
+func sqlState(t *testing.T, err error) string {
+	t.Helper()
+	var pgErr *pgconn.PgError
+	require.ErrorAs(t, err, &pgErr)
+	return pgErr.Code
+}
+
+// countEvents counts the rows of consent_event with the given ids.
+func countEvents(t *testing.T, db *sql.DB, ids ...string) int {
+	t.Helper()
+	var n int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM consent_event WHERE event_id = ANY($1::text[])`, ids).Scan(&n))
+	return n
+}
+
+// The trigger consent_event_requires_consent acts as the foreign key to
+// consent_record (decision #89): a foreign key would preempt the append-only
+// error of TRUNCATE consent_record that HU-W1.2-01 expects.
+func TestAnEventNeedsAnExistingConsent(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	_, _, err := postgres.NewConsentStore(db).Create(ctx, holderConsent("cns-1", "1020304050", base))
+	require.NoError(t, err)
+	const insert = `INSERT INTO consent_event (event_id, consent_id, status, occurred_at) VALUES `
+
+	t.Run("a consent that does not exist is refused", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, insert+`('e-missing', 'cns-missing', 'revoked', $1)`, base)
+
+		require.Error(t, err)
+		assert.Equal(t, "23503", sqlState(t, err), "foreign_key_violation, as a foreign key")
+		assert.Contains(t, err.Error(), "cns-missing")
+		assert.Zero(t, countEvents(t, db, "e-missing"), "nothing is stored")
+	})
+
+	t.Run("an existing consent is accepted", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, insert+`('e-1', 'cns-1', 'revoked', $1)`, base)
+		require.NoError(t, err)
+
+		got, err := postgres.NewConsentEventStore(db).ListByConsents(ctx, []string{"cns-1"})
+		require.NoError(t, err)
+		require.Len(t, got["cns-1"], 1)
+		assert.Equal(t, "e-1", got["cns-1"][0].EventID)
+	})
+
+	t.Run("one missing consent refuses every row of the statement", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, insert+`('e-2', 'cns-1', 'revocation_requested', $1), ('e-3', 'cns-missing', 'revoked', $1)`, base)
+
+		require.Error(t, err)
+		assert.Equal(t, "23503", sqlState(t, err))
+		assert.Zero(t, countEvents(t, db, "e-2", "e-3"), "neither row is stored")
+	})
+
+	t.Run("a NULL consent is refused by NOT NULL", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, insert+`('e-null', NULL, 'revoked', $1)`, base)
+
+		require.Error(t, err)
+		assert.Equal(t, "23502", sqlState(t, err), "not_null_violation, as with a foreign key")
+	})
+
+	assert.Equal(t, 1, countEvents(t, db, "e-missing", "e-1", "e-2", "e-3", "e-null"))
 }
 
 func TestHolderLinkIsInsertedOnceAndRead(t *testing.T) {
