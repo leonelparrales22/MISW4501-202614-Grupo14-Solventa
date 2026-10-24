@@ -19,6 +19,12 @@
 #   HU-W1.3-03 (GET /v1/documents/{token}); each method can be throttled at the
 #   stage, since no usage plan covers it. binary_media_types lets a PDF through
 #   intact. Without them nothing of this is created and nothing changes.
+# - Public sign-up of the insured (HU-M1.1-01, optional): with
+#   registration_route, POST /v1/registrations reaches origination without
+#   session or API key, throttled at the stage. It is public because the
+#   account does not exist yet, so the caller has no token; it is the only
+#   public write route under /v1. Without it nothing of this is created and
+#   nothing changes.
 # - Public card tokenization (T5, optional): with payment_tokenization,
 #   POST /pasarela/tokens (outside /v1; the name is fixed by the HU-W1.3-02
 #   contract) reaches the simulated payment gateway behind the load balancer
@@ -182,6 +188,11 @@ resource "aws_api_gateway_deployment" "this" {
         aws_api_gateway_resource.partner_l3,
         aws_api_gateway_method.partner,
         aws_api_gateway_integration.partner,
+      ])] : [],
+      local.registration_enabled ? [jsonencode([
+        aws_api_gateway_resource.registrations,
+        aws_api_gateway_method.registrations_post,
+        aws_api_gateway_integration.registrations_post,
       ])] : [],
       local.payment_tokenization_enabled ? [jsonencode([
         aws_api_gateway_resource.payment_gateway,
@@ -575,6 +586,71 @@ resource "aws_api_gateway_method_settings" "public" {
     caching_enabled        = false
     throttling_rate_limit  = coalesce(var.public_routes[each.value.route].rate_limit, -1)
     throttling_burst_limit = coalesce(var.public_routes[each.value.route].burst_limit, -1)
+  }
+
+  depends_on = [aws_api_gateway_method_settings.all]
+}
+
+# --- Public sign-up of the insured (HU-M1.1-01) -----------------------------------
+
+locals {
+  registration_enabled = var.registration_route != null
+}
+
+# The only public write route under /v1. It has to be public because the
+# account does not exist yet: the caller has no token to send. The user pool
+# creates accounts administratively, so the service behind this route is what
+# decides whether an account is created at all.
+resource "aws_api_gateway_resource" "registrations" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.v1.id
+  path_part   = "registrations"
+}
+
+# Only POST: reading a registration needs a session and goes through the
+# human routes.
+resource "aws_api_gateway_method" "registrations_post" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id      = aws_api_gateway_rest_api.this.id
+  resource_id      = aws_api_gateway_resource.registrations[0].id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "registrations_post" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.registrations[0].id
+  http_method             = aws_api_gateway_method.registrations_post[0].http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "POST"
+  uri                     = "${local.backend}${var.registration_route.backend_path}"
+  connection_type         = local.connection_type
+  connection_id           = var.vpc_link_v2_id
+  integration_target      = local.private_integration ? var.integration_target_arn : null
+  timeout_milliseconds    = var.integration_timeout_ms
+}
+
+# No usage plan covers a route without API key: the throttle lives at the
+# stage. It is lower than the tokenization one because a sign-up happens once
+# per person, while a tokenization happens on every purchase.
+resource "aws_api_gateway_method_settings" "registrations" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "v1/registrations/POST"
+
+  settings {
+    metrics_enabled        = true
+    caching_enabled        = false
+    throttling_rate_limit  = var.registration_route.rate_limit
+    throttling_burst_limit = var.registration_route.burst_limit
   }
 
   depends_on = [aws_api_gateway_method_settings.all]

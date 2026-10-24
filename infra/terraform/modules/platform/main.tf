@@ -265,6 +265,7 @@ module "apigateway" {
   binary_media_types     = ["*/*"]
   cors_allow_origin      = var.cors_allow_origin
   payment_tokenization   = {}
+  registration_route     = {}
 }
 
 # --- Data -----------------------------------------------------------------------------------

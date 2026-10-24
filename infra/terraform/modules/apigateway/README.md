@@ -48,11 +48,12 @@ module "apigateway" {
 | `public_routes` | `{}` | Rutas de solo lectura sin sesión ni API key, con límite opcional por método (HA-D02) |
 | `binary_media_types` | `[]` | Tipos de contenido que la API trata como binarios (HA-D02) |
 | `payment_tokenization` | `null` | Ruta pública `POST /pasarela/tokens` de la pasarela simulada, con `backend_path` (`/tokens`), `rate_limit` (5) y `burst_limit` (10) (T5) |
+| `registration_route` | `null` | Ruta pública `POST /v1/registrations` del registro del asegurado, con `backend_path` (`/v1/registrations`), `rate_limit` (2) y `burst_limit` (5) (HU-M1.1-01) |
 | `partner_routes` | `{}` | Rutas de socio en rutas exactas bajo `/v1` (1 a 3 segmentos), con API key y sin authorizer (T5) |
 
 Salidas: `rest_api_id`, `stage_name`, `invoke_url`, `usage_plan_ids`, `api_key_ids`, `api_key_values` (sensible; claves de
 prueba para los guiones k6 de la ventana), `public_paths` (HA-D02), `cognito_authorizer_id` (HA-S01; `null` sin user pool) y
-`payment_tokenization_path` (T5; `null` sin la tokenización pública) y `partner_paths` (T5; rutas de socio en rutas exactas).
+`payment_tokenization_path` (T5; `null` sin la tokenización pública), `registration_path` (HU-M1.1-01; `null` sin la ruta de registro) y `partner_paths` (T5; rutas de socio en rutas exactas).
 
 ## Canales humanos: authorizer de Cognito (HA-S01)
 
@@ -129,6 +130,31 @@ payment_tokenization = {} # POST /pasarela/tokens → <ALB>/tokens, 5 req/s, rá
 ```
 
 Con `payment_tokenization = null` (defecto) no se crea nada, la API queda igual y el *hash* de redespliegue no cambia.
+
+## Registro público del asegurado (HU-M1.1-01)
+
+El registro ocurre **antes de que exista la cuenta**, así que quien llama no tiene token que enviar. El *user pool* solo
+permite crear cuentas desde el servidor (`allow_admin_create_user_only`), de modo que es originación —y no el cliente— quien
+decide si se crea una cuenta: la ruta es pública, pero la decisión de crearla no.
+
+| Elemento | Configuración |
+|---|---|
+| Recurso | `/v1/registrations`, colgado de `/v1` |
+| Método | Solo `POST`, con `authorization = "NONE"` y `api_key_required = false`. Leer un registro exige sesión y va por las rutas humanas |
+| Integración | `HTTP_PROXY` (mismo VPC link y *timeout*) a `<backend_base_url><backend_path>` |
+| Límite | `rate_limit` / `burst_limit` (req/s; 2 y 5 por defecto) en el *stage*, porque ningún *usage plan* cubre una ruta sin API key; sin caché |
+
+```hcl
+registration_route = {} # POST /v1/registrations → <ALB>/v1/registrations, 2 req/s, ráfaga 5
+```
+
+El límite es **más bajo que el de la tokenización** porque alguien se registra una sola vez, mientras que una tokenización
+ocurre en cada compra.
+
+Es la **única ruta pública de escritura bajo `/v1`**. `public_routes` sigue siendo de solo lectura y su validación no cambia:
+exponer una escritura pública exige declararla aquí, con su límite, y no se puede hacer por descuido.
+
+Con `registration_route = null` (defecto) no se crea nada, la API queda igual y el *hash* de redespliegue no cambia.
 
 ## Rutas de socio en rutas exactas (T5)
 
