@@ -129,6 +129,36 @@ func TestOfferStubServesTheDemoScenariosToTheirFirstCaller(t *testing.T) {
 	assert.ErrorIs(t, err, ports.ErrOfferNotFound, "a new demo offer needs a caller")
 }
 
+// CF-10 (fix C5, decision #75): the staff never own an offer. A lookup with an
+// advisor or operations token never creates a demo offer, so after a restart it
+// cannot be created again in their name; an existing one is still readable.
+func TestOfferStubNeverCreatesADemoOfferForStaff(t *testing.T) {
+	s := memory.NewOfferStub(&fixedClock{now: t0})
+	for _, role := range []security.Role{security.RoleAdvisor, security.RoleOperations} {
+		staff := security.WithClaims(context.Background(), security.Claims{
+			Subject: "staff-" + string(role), Email: "staff@example.com", Roles: []security.Role{role},
+		})
+		_, err := s.Get(staff, "demo-review-"+string(role))
+		assert.ErrorIs(t, err, ports.ErrOfferNotFound, role)
+		_, err = s.Get(context.Background(), "demo-review-"+string(role))
+		assert.ErrorIs(t, err, ports.ErrOfferNotFound, "%s: nothing was stored", role)
+	}
+
+	insured := security.WithClaims(context.Background(), security.Claims{
+		Subject: "cust-1", Email: "cust-1@example.com", Roles: []security.Role{security.RoleInsured},
+	})
+	created, err := s.Get(insured, "demo-review-1")
+	require.NoError(t, err)
+	assert.Equal(t, "cust-1", created.CustomerID)
+
+	advisor := security.WithClaims(context.Background(), security.Claims{
+		Subject: "adv-1", Roles: []security.Role{security.RoleAdvisor},
+	})
+	read, err := s.Get(advisor, "demo-review-1")
+	require.NoError(t, err)
+	assert.Equal(t, created, read, "the advisor reads the customer's offer and never becomes its owner")
+}
+
 func TestOfferStubFallsBackToTheEmailAsName(t *testing.T) {
 	s := memory.NewOfferStub(&fixedClock{now: t0})
 	ctx := security.WithClaims(context.Background(), security.Claims{Subject: "s", Email: "s@example.com"})

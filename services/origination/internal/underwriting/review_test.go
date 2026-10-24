@@ -208,6 +208,40 @@ func TestAdjustCreatesTheNewOfferAndSchedulesTheNotice(t *testing.T) {
 	assert.Zero(t, e.resumed.count())
 }
 
+// CF-10 (fix C5, decision #75): the adjusted offer belongs to the customer of
+// the request that underwriting routed, with its applicant; never to the
+// advisor who decided, who only appears as decided_by.
+func TestTheAdjustedOfferBelongsToTheCustomerOfTheRequest(t *testing.T) {
+	e := newEnv(t, true)
+	offer, err := e.offers.OfferStub.Get(as(security.RoleInsured, "cust-1"), "demo-review-1")
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, _, err = e.acceptances.Create(ctx, domain.Acceptance{
+		ID: "acc-1", OfferID: offer.ID, CustomerID: "cust-1", Channel: domain.ChannelWeb, AcceptedAt: t0,
+		Status:   domain.AcceptanceInReview,
+		Decision: &domain.UnderwritingDecision{Outcome: domain.UnderwritingHumanReview, Reason: domain.ReviewReasonProvisionalOffer, DecidedAt: t0},
+	})
+	require.NoError(t, err)
+	// The request carries the customer data underwriting saw; it differs from
+	// the demo applicant of the stub on purpose, to tell where it comes from.
+	applicant := domain.Applicant{FullName: "Ana María Pérez", DocumentID: "1020304050", Email: "ana@example.com"}
+	require.NoError(t, e.reviews.Enqueue(ctx, domain.ReviewRequest{
+		AcceptanceID: "acc-1", OfferID: offer.ID, CustomerID: "cust-1", Applicant: applicant,
+		Premium: offer.Premium, Currency: offer.Currency, Reason: domain.ReviewReasonProvisionalOffer, ReceivedAt: t0,
+	}))
+
+	c, err := e.svc.Decide(as(security.RoleAdvisor, "adv-9"), "acc-1", adjust(10, "Recargo"))
+	require.NoError(t, err)
+
+	stored, err := e.offers.OfferStub.Get(ctx, "adj-acc-1")
+	require.NoError(t, err)
+	assert.Equal(t, "cust-1", stored.CustomerID)
+	assert.Equal(t, applicant, stored.Applicant)
+	assert.NotEqual(t, "adv-9", stored.CustomerID)
+	assert.Equal(t, domain.Advisor{ID: "adv-9", Email: "adv-9@example.com"}, c.Decision.Advisor, "the advisor is only decided_by")
+	assert.Equal(t, "cust-1", e.acceptance(t, "acc-1").CustomerID)
+}
+
 // CA-3 reject: the case is closed and the customer notified.
 func TestRejectClosesTheCaseAndSchedulesTheNotice(t *testing.T) {
 	e := newEnv(t, true)

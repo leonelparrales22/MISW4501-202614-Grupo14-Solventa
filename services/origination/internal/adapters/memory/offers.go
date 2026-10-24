@@ -44,6 +44,12 @@ var demoOfferID = regexp.MustCompile(`^demo-(active|review|highrisk|expired|flak
 // authenticated caller of that lookup (the subject of its token), with its
 // validity counted from that moment. Ids outside the demo form are not found
 // unless they were stored with Create.
+//
+// The staff (an advisor or an operations analyst) never own an offer: a
+// lookup with their token reads an existing demo offer but never creates one,
+// the same rule as the personalized offers, which the staff never claim. An
+// advisor is only the one who decided a case (decided_by), never the owner nor
+// the applicant of an offer, an acceptance or a policy (fix C5, decision #75).
 type OfferStub struct {
 	clock  ports.Clock
 	mu     sync.Mutex
@@ -64,7 +70,7 @@ func (s *OfferStub) Get(ctx context.Context, offerID string) (domain.Offer, erro
 	}
 	m := demoOfferID.FindStringSubmatch(offerID)
 	caller, ok := security.ClaimsFromContext(ctx)
-	if m == nil || !ok || caller.Subject == "" {
+	if m == nil || !ok || caller.Subject == "" || caller.HasAnyRole(security.RoleAdvisor, security.RoleOperations) {
 		return domain.Offer{}, ports.ErrOfferNotFound
 	}
 

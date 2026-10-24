@@ -196,9 +196,13 @@ func (s *ReviewService) adjustedTerms(ctx context.Context, a domain.Acceptance, 
 }
 
 // createAdjustedOffer stores the offer of a recorded adjust decision with
-// exactly its terms, and the owner, applicant, mode and score of the routed
-// offer. Create is idempotent by id, so a retry or the losing advisor's request
-// completes it without creating a second offer.
+// exactly its terms, the mode and score of the routed offer, and the customer
+// and applicant of the request that underwriting routed. The customer and the
+// applicant always come from the request, never from the routed offer read
+// again nor from the token of the advisor who decided: the advisor is never the
+// owner nor the applicant of an offer (fix C5, decision #75). Create is
+// idempotent by id, so a retry or the losing advisor's request completes it
+// without creating a second offer.
 func (s *ReviewService) createAdjustedOffer(ctx context.Context, c domain.ReviewCase) error {
 	terms := c.Decision.AdjustedOffer
 	routed, err := s.d.Offers.Get(ctx, c.Request.OfferID)
@@ -207,8 +211,8 @@ func (s *ReviewService) createAdjustedOffer(ctx context.Context, c domain.Review
 	}
 	if err := s.d.OfferWriter.Create(ctx, domain.Offer{
 		ID:           terms.ID,
-		CustomerID:   routed.CustomerID,
-		Applicant:    routed.Applicant,
+		CustomerID:   c.Request.CustomerID,
+		Applicant:    c.Request.Applicant,
 		Premium:      terms.Premium,
 		Currency:     terms.Currency,
 		Mode:         routed.Mode,
