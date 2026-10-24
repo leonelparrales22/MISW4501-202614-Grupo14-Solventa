@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -122,7 +123,7 @@ func getHolderConsent(svc HolderConsentService) http.HandlerFunc {
 			return
 		}
 		id := chi.URLParam(req, "consent_id")
-		if id == "" || len(id) > maxConsentIDLength {
+		if len(id) > maxConsentIDLength || !consentIDPattern.MatchString(id) {
 			writeError(w, http.StatusNotFound, "not_found", "there is no consent with that id")
 			return
 		}
@@ -162,6 +163,11 @@ func holderConsentFrom(v domain.ConsentView) holderConsentBody {
 	}
 	return out
 }
+
+// consentIDPattern is the shape of a consent id ("cns-" plus hex today); an id
+// outside it cannot exist and never reaches the database (a NUL byte, for
+// example, is not valid text for PostgreSQL).
+var consentIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // optional turns an empty string into a JSON null.
 func optional(s string) *string {

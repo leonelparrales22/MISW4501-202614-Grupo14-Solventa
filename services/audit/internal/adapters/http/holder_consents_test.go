@@ -180,6 +180,11 @@ func TestAConsentOfAnotherHolderIsNotFound(t *testing.T) {
 
 	rec = call(h, http.MethodGet, "/v1/consents/"+strings.Repeat("x", 65), "insured-b")
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+
+	rec = call(h, http.MethodGet, "/v1/consents/%00", "insured-a")
+	assert.Equal(t, http.StatusNotFound, rec.Code, "an id that cannot exist never reaches the store")
+	rec = call(h, http.MethodGet, "/v1/consents/cns%20a", "insured-a")
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestTheHolderRoutesNeedATokenAndTheInsuredRole(t *testing.T) {

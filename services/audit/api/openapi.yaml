@@ -297,6 +297,7 @@ paths:
             type: string
             minLength: 1
             maxLength: 64
+            pattern: "^[A-Za-z0-9_-]+$"
       responses:
         "200":
           description: The consent of the holder

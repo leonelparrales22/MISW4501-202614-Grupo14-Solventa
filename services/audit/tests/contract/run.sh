@@ -2,8 +2,10 @@
 # Contract test of the audit service (HU-W1.2-01, OBJ 05): starts audit over
 # PostgreSQL and Moto in Docker and runs Schemathesis against
 # ../../api/openapi.yaml with every check, once as an operations user (who can
-# read the evidence) and, for the routes that need no token, with no
-# credentials at all. The script exits with a non-zero code if any check
+# read the evidence), once as an insured user over their own consents
+# (HU-M1.3-01: the link of the account and a consent are seeded first, as
+# test data only) and, for the routes that need no token, with no credentials
+# at all. The script exits with a non-zero code if any check
 # fails. The environment is always removed at the end (down -v).
 #
 # Requirements: Docker (compose v2), curl, jq and the AWS CLI (only to seed the
@@ -75,6 +77,19 @@ TOKEN="$(curl -sf -X POST "http://localhost:$MOTO_PORT/" -H 'Content-Type: appli
 echo "== Schemathesis as an operations user (all routes)"
 $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://audit:8080 \
   -H "Authorization: Bearer $TOKEN" --checks=all --hypothesis-max-examples=100 --hypothesis-seed=1
+
+echo "== Seeding the holder of the insured user (link by SQL, consent by the partner route)"
+INSURED_TOKEN="$(curl -sf -X POST "http://localhost:$MOTO_PORT/" -H 'Content-Type: application/x-amz-json-1.1'   -H 'X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth'   -d "{\"AuthFlow\":\"USER_PASSWORD_AUTH\",\"ClientId\":\"$WEB_CLIENT_ID\",\"AuthParameters\":{\"USERNAME\":\"asegurado.local@example.com\",\"PASSWORD\":\"$MOTO_USER_PASSWORD\"}}" |
+  tr -d '' | jq -r '.AuthenticationResult.IdToken')"
+# The subject is the "sub" claim of the token (base64url payload).
+PAYLOAD="$(cut -d. -f2 <<<"$INSURED_TOKEN" | tr '_-' '/+')"
+while (( ${#PAYLOAD} % 4 )); do PAYLOAD="$PAYLOAD="; done
+INSURED_SUB="$(base64 -d <<<"$PAYLOAD" | jq -r .sub)"
+$COMPOSE exec -T postgres psql -U audit -d audit -v ON_ERROR_STOP=1 -q -c   "INSERT INTO holder_link (subject, document_id, customer_id, linked_at, event_id) VALUES ('$INSURED_SUB', '1020304050', 'cus-contract', now(), 'customer-linked-cus-contract')"
+curl -sf -o /dev/null -X POST "http://localhost:$AUDIT_PORT/v1/audit/consents" -H 'Content-Type: application/json'   -d '{"customer_id":"cus-contract","document_id":"1020304050","full_name":"Asegurado Contrato","terms_version":"v1","accepted_sources":["open_finance","open_data","kyc"],"accepted_data_policy":true,"channel":"embedded","partner_id":"aliado-banco-1","application_id":"app-contract"}'
+
+echo "== Schemathesis as an insured user (their own consents, HU-M1.3-01)"
+$COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://audit:8080   -H "Authorization: Bearer $INSURED_TOKEN" --include-path-regex='^/v1/consents'   --checks=all --hypothesis-max-examples=100 --hypothesis-seed=3
 
 echo "== Schemathesis with no credentials (the routes that need none)"
 $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://audit:8080 \
