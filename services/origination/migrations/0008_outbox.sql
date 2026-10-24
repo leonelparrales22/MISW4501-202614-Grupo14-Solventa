@@ -33,3 +33,29 @@ CREATE TABLE IF NOT EXISTS outbox_event (
 -- El relevo solo mira lo pendiente.
 CREATE INDEX IF NOT EXISTS outbox_event_pending_idx
     ON outbox_event (next_attempt_at) WHERE published_at IS NULL;
+
+-- Relleno: quien se registró antes de esta historia ya tiene sub pero nunca
+-- tuvo su evento, y auditoría lo vería para siempre como «cuenta sin
+-- vincular». Se encola un CustomerLinked por cada cliente con sub, con el
+-- mismo id determinista y el mismo sobre que arma el servicio en Go
+-- (internal/domain/customer_linked.go); el instante del vínculo es su
+-- updated_at. Si el evento ya existe no se toca.
+INSERT INTO outbox_event (event_id, event_type, payload, occurred_at, next_attempt_at)
+SELECT 'customer-linked-' || c.id,
+       'CustomerLinked',
+       jsonb_build_object(
+           'event_id',      'customer-linked-' || c.id,
+           'event_type',    'CustomerLinked',
+           'event_version', 1,
+           'source',        'origination',
+           'occurred_at',   to_char(c.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+           'payload',       jsonb_build_object(
+               'customer_id', c.id,
+               'subject',     c.cognito_sub,
+               'document_id', c.document_id,
+               'linked_at',   to_char(c.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))),
+       c.updated_at,
+       now()
+FROM customer c
+WHERE c.cognito_sub IS NOT NULL
+ON CONFLICT (event_id) DO NOTHING;
