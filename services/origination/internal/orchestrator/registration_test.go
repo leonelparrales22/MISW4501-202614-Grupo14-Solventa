@@ -1,7 +1,9 @@
 package orchestrator_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"sync"
 	"testing"
@@ -43,22 +45,81 @@ func (p *proveedorFalso) CreateAccount(_ context.Context, email, password, fullN
 	return p.sub, nil
 }
 
+// almacenFalso es el repositorio documental: guarda lo que recibe, o falla
+// con el error que se le fije.
+type almacenFalso struct {
+	mu         sync.Mutex
+	objetos    map[string][]byte
+	tipos      map[string]string
+	escrituras int
+	err        error
+}
+
+func nuevoAlmacen() *almacenFalso {
+	return &almacenFalso{objetos: map[string][]byte{}, tipos: map[string]string{}}
+}
+
+func (a *almacenFalso) Put(_ context.Context, key string, content []byte, contentType string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.escrituras++
+	if a.err != nil {
+		return a.err
+	}
+	a.objetos[key] = content
+	a.tipos[key] = contentType
+	return nil
+}
+
+func (a *almacenFalso) Get(_ context.Context, key string) ([]byte, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	contenido, ok := a.objetos[key]
+	if !ok {
+		return nil, ports.ErrDocumentNotFound
+	}
+	return contenido, nil
+}
+
+func (a *almacenFalso) guardados() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.objetos)
+}
+
 type relojFijo struct{ t time.Time }
 
 func (r relojFijo) Now() time.Time { return r.t }
 
 func servicioDeRegistro(p *proveedorFalso) (*memory.CustomerStore, *orchestrator.RegistrationService) {
+	clientes, _, svc := servicioConAlmacen(p, nuevoAlmacen())
+	return clientes, svc
+}
+
+func servicioConAlmacen(p *proveedorFalso, almacen *almacenFalso) (*memory.CustomerStore, *almacenFalso,
+	*orchestrator.RegistrationService) {
 	clientes := memory.NewCustomerStore()
-	return clientes, orchestrator.NewRegistrationService(clientes, p, relojFijo{t: registroEn})
+	return clientes, almacen,
+		orchestrator.NewRegistrationService(clientes, almacen, p, relojFijo{t: registroEn})
+}
+
+// jpegEnBase64 arma una cara del documento: la firma de un JPEG y el tamaño
+// mínimo que el registro acepta.
+func jpegEnBase64(relleno byte) string {
+	contenido := append([]byte{0xFF, 0xD8, 0xFF, 0xE0},
+		bytes.Repeat([]byte{relleno}, domain.MinIdentityDocumentBytes)...)
+	return base64.StdEncoding.EncodeToString(contenido)
 }
 
 func solicitudValida() domain.RegistrationRequest {
 	return domain.RegistrationRequest{
-		DocumentID: "1020345678",
-		FullName:   "Carolina Pérez Ruiz",
-		Email:      "carolina.perez@example.com",
-		BirthDate:  "1992-04-18",
-		Password:   "Solventa2026!",
+		DocumentID:    "1020345678",
+		FullName:      "Carolina Pérez Ruiz",
+		Email:         "carolina.perez@example.com",
+		BirthDate:     "1992-04-18",
+		Password:      "Solventa2026!",
+		DocumentFront: jpegEnBase64(0x11),
+		DocumentBack:  jpegEnBase64(0x22),
 	}
 }
 
@@ -179,4 +240,79 @@ func TestSiFallaLaCuentaElClienteQuedaSinSubYSePuedeReintentar(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, c.Registered())
 	assert.Equal(t, aMedias.ID, c.ID, "es el mismo cliente, no uno nuevo")
+}
+
+// El documento de identidad es la razón de ser de la verificación: las dos
+// caras quedan en el repositorio documental y el cliente guarda su llave.
+func TestElRegistroGuardaLasDosCarasDelDocumento(t *testing.T) {
+	proveedor := &proveedorFalso{}
+	clientes, almacen, svc := servicioConAlmacen(proveedor, nuevoAlmacen())
+
+	c, err := svc.Register(context.Background(), solicitudValida())
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, almacen.guardados(), "el frente y el reverso")
+	assert.NotEmpty(t, c.DocumentFrontKey)
+	assert.NotEmpty(t, c.DocumentBackKey)
+	for _, llave := range []string{c.DocumentFrontKey, c.DocumentBackKey} {
+		contenido, err := almacen.Get(context.Background(), llave)
+		require.NoError(t, err, "la llave %s apunta a un objeto escrito", llave)
+		assert.Equal(t, []byte{0xFF, 0xD8, 0xFF}, contenido[:3], "se guardó el JPEG tal cual")
+		assert.Equal(t, "image/jpeg", almacen.tipos[llave])
+	}
+
+	guardado, err := clientes.GetByDocument(context.Background(), "1020345678")
+	require.NoError(t, err)
+	assert.Equal(t, c.DocumentFrontKey, guardado.DocumentFrontKey, "las llaves quedan persistidas")
+	assert.Equal(t, c.DocumentBackKey, guardado.DocumentBackKey)
+}
+
+// Sin el documento guardado no hay registro: ni cliente, ni cuenta. Un cliente
+// que apunte a un objeto que nunca se escribió es una verificación que nadie
+// puede revisar después.
+func TestSiFallaElRepositorioDocumentalNoHayClienteNiCuenta(t *testing.T) {
+	proveedor := &proveedorFalso{}
+	almacen := nuevoAlmacen()
+	almacen.err = errors.New("el bucket no responde")
+	clientes, _, svc := servicioConAlmacen(proveedor, almacen)
+
+	_, err := svc.Register(context.Background(), solicitudValida())
+
+	require.Error(t, err)
+	assert.Zero(t, proveedor.llamadas, "no se crea la cuenta")
+	_, err = clientes.GetByDocument(context.Background(), "1020345678")
+	assert.ErrorIs(t, err, ports.ErrCustomerNotFound, "no se guarda el cliente")
+}
+
+// La llave sale del contenido de la imagen, así que reintentar el registro con
+// las mismas fotos no deja una segunda copia.
+func TestUnReintentoNoDuplicaLasImagenes(t *testing.T) {
+	proveedor := &proveedorFalso{err: errors.New("el user pool no responde")}
+	_, almacen, svc := servicioConAlmacen(proveedor, nuevoAlmacen())
+	_, err := svc.Register(context.Background(), solicitudValida())
+	require.Error(t, err)
+
+	proveedor.mu.Lock()
+	proveedor.err = nil
+	proveedor.mu.Unlock()
+
+	_, err = svc.Register(context.Background(), solicitudValida())
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, almacen.guardados(), "las mismas dos caras, no cuatro")
+}
+
+// Una solicitud sin las caras del documento se rechaza antes de escribir nada.
+func TestSinElDocumentoNoSeEscribeNada(t *testing.T) {
+	proveedor := &proveedorFalso{}
+	_, almacen, svc := servicioConAlmacen(proveedor, nuevoAlmacen())
+	r := solicitudValida()
+	r.DocumentFront = ""
+
+	_, err := svc.Register(context.Background(), r)
+
+	var invalid *domain.ValidationError
+	assert.ErrorAs(t, err, &invalid)
+	assert.Zero(t, almacen.escrituras)
+	assert.Zero(t, proveedor.llamadas)
 }

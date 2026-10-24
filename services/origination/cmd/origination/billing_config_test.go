@@ -118,7 +118,7 @@ func TestBillingWithTheDocumentsInS3KeepsItsRequirements(t *testing.T) {
 	cfg, err := loadConfig(env(inS3()))
 	require.NoError(t, err)
 	assert.True(t, cfg.billing.enabled)
-	assert.Equal(t, "solventa-stg-documents-368083581678", cfg.contracts.documentsBucket)
+	assert.Equal(t, "solventa-stg-documents-368083581678", cfg.documents.bucket)
 
 	for missing, want := range map[string]string{
 		"DATABASE_URL": "DATABASE_URL is required",

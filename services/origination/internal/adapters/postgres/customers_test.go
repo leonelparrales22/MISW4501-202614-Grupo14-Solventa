@@ -134,3 +134,53 @@ func TestDosClientesNoPuedenCompartirElCorreo(t *testing.T) {
 
 	assert.Error(t, err, "el índice único del correo lo impide")
 }
+
+// Las llaves de las dos caras del documento viajan con el cliente: la imagen
+// vive en el repositorio documental y aquí queda con qué recuperarla.
+func TestLasLlavesDelDocumentoSeGuardanYSeLeen(t *testing.T) {
+	s := postgres.NewCustomerStore(newDB(t))
+	ctx := context.Background()
+	c := cliente("cus-1", "1020345678", "carolina@example.com")
+	c.DocumentFrontKey = "identity-documents/aaaa1111.jpg"
+	c.DocumentBackKey = "identity-documents/bbbb2222.jpg"
+
+	_, err := s.Save(ctx, c)
+	require.NoError(t, err)
+
+	leido, err := s.GetByDocument(ctx, "1020345678")
+	require.NoError(t, err)
+	assert.Equal(t, "identity-documents/aaaa1111.jpg", leido.DocumentFrontKey)
+	assert.Equal(t, "identity-documents/bbbb2222.jpg", leido.DocumentBackKey)
+}
+
+// El cliente que cotizó un asesor (HU-W1.1-01) nunca capturó un documento.
+func TestUnClienteSinDocumentoCapturadoNoTieneLlaves(t *testing.T) {
+	s := postgres.NewCustomerStore(newDB(t))
+	ctx := context.Background()
+
+	_, err := s.Save(ctx, cliente("cus-1", "1020345678", "carolina@example.com"))
+	require.NoError(t, err)
+
+	leido, err := s.GetByDocument(ctx, "1020345678")
+	require.NoError(t, err)
+	assert.Empty(t, leido.DocumentFrontKey)
+	assert.Empty(t, leido.DocumentBackKey)
+}
+
+// Volver a guardar el cliente no puede borrar el documento que ya capturó: el
+// asesor que lo actualiza por documento no envía ninguna imagen.
+func TestGuardarDeNuevoConservaLasLlavesDelDocumento(t *testing.T) {
+	s := postgres.NewCustomerStore(newDB(t))
+	ctx := context.Background()
+	c := cliente("cus-1", "1020345678", "carolina@example.com")
+	c.DocumentFrontKey = "identity-documents/aaaa1111.jpg"
+	c.DocumentBackKey = "identity-documents/bbbb2222.jpg"
+	_, err := s.Save(ctx, c)
+	require.NoError(t, err)
+
+	guardado, err := s.Save(ctx, cliente("cus-1", "1020345678", "carolina@example.com"))
+
+	require.NoError(t, err)
+	assert.Equal(t, "identity-documents/aaaa1111.jpg", guardado.DocumentFrontKey)
+	assert.Equal(t, "identity-documents/bbbb2222.jpg", guardado.DocumentBackKey)
+}

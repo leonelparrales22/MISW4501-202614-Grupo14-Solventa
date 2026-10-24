@@ -30,14 +30,24 @@ func WithRegistrations(svc RegistrationService) Option {
 	}
 }
 
+// maxRegistrationBodyBytes bounds the sign-up body, which carries the two
+// faces of the identity document. Each face is capped at
+// domain.MaxIdentityDocumentBytes, and base64 adds a third; the rest of the
+// body is a few hundred bytes.
+const maxRegistrationBodyBytes = 4 << 20
+
 // registrationRequest is the body of the sign-up. The password travels to the
-// user pool and is not stored.
+// user pool and is not stored; the faces of the document go to the document
+// store, and only their keys stay with the customer.
 type registrationRequest struct {
 	DocumentID string `json:"document_id"`
 	FullName   string `json:"full_name"`
 	Email      string `json:"email"`
 	BirthDate  string `json:"birth_date"`
 	Password   string `json:"password"`
+	// DocumentFront and DocumentBack are base64 of the JPEG of each face.
+	DocumentFront string `json:"document_front"`
+	DocumentBack  string `json:"document_back"`
 }
 
 type registrationResponse struct {
@@ -50,12 +60,21 @@ type registrationResponse struct {
 	// carries once the person signs in.
 	Subject      string `json:"subject"`
 	RegisteredAt string `json:"registered_at"`
+	// IdentityDocuments are the faces that were kept, front first. They let
+	// the caller name the object of each one without reading it back.
+	IdentityDocuments []storedIdentityDocument `json:"identity_documents"`
+}
+
+// storedIdentityDocument is one face of the document in the document store.
+type storedIdentityDocument struct {
+	Face      string `json:"face"`
+	ObjectKey string `json:"object_key"`
 }
 
 func register(svc RegistrationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		var in registrationRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, maxBodyBytes)).Decode(&in); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, maxRegistrationBodyBytes)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
 			return
 		}
@@ -63,6 +82,7 @@ func register(svc RegistrationService) http.HandlerFunc {
 		c, err := svc.Register(req.Context(), domain.RegistrationRequest{
 			DocumentID: in.DocumentID, FullName: in.FullName, Email: in.Email,
 			BirthDate: in.BirthDate, Password: in.Password,
+			DocumentFront: in.DocumentFront, DocumentBack: in.DocumentBack,
 		})
 
 		var invalid *domain.ValidationError
@@ -92,6 +112,10 @@ func register(svc RegistrationService) http.HandlerFunc {
 			BirthDate:    c.BirthDate.Format("2006-01-02"),
 			Subject:      c.CognitoSub,
 			RegisteredAt: c.CreatedAt.UTC().Format(time.RFC3339Nano),
+			IdentityDocuments: []storedIdentityDocument{
+				{Face: string(domain.FaceFront), ObjectKey: c.DocumentFrontKey},
+				{Face: string(domain.FaceBack), ObjectKey: c.DocumentBackKey},
+			},
 		})
 	}
 }

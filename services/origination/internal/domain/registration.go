@@ -19,14 +19,32 @@ type RegistrationRequest struct {
 	// BirthDate is YYYY-MM-DD.
 	BirthDate string
 	Password  string
+	// DocumentFront and DocumentBack are the two faces of the identity
+	// document the person captured, as base64 of their JPEG.
+	DocumentFront string
+	DocumentBack  string
 }
 
-// Validate checks the request at the given time and returns the customer it
-// describes, or a *ValidationError naming every invalid field.
+// Registration is what a valid request describes: the customer and the two
+// faces of the document that back the sign-up.
+type Registration struct {
+	Customer Customer
+	Front    IdentityDocument
+	Back     IdentityDocument
+}
+
+// Documents returns the two faces, the front first.
+func (r Registration) Documents() []IdentityDocument {
+	return []IdentityDocument{r.Front, r.Back}
+}
+
+// Validate checks the request at the given time and returns the registration
+// it describes, or a *ValidationError naming every invalid field.
 //
 // The password is never part of the customer: it travels to the user pool and
-// is not stored.
-func (r RegistrationRequest) Validate(now time.Time) (Customer, error) {
+// is not stored. The faces are not part of it either: the customer only keeps
+// the key each one got in the document store.
+func (r RegistrationRequest) Validate(now time.Time) (Registration, error) {
 	var fields []FieldError
 	bad := func(field, code string) { fields = append(fields, FieldError{Field: field, Code: code}) }
 
@@ -68,10 +86,35 @@ func (r RegistrationRequest) Validate(now time.Time) (Customer, error) {
 		bad("password", CodeInvalidFormat)
 	}
 
-	if len(fields) > 0 {
-		return Customer{}, &ValidationError{Fields: fields}
+	front, frontCode := decodeIdentityDocument(FaceFront, r.DocumentFront)
+	if frontCode != "" {
+		bad("document_front", frontCode)
 	}
-	return Customer{DocumentID: doc, FullName: name, Email: email, BirthDate: birth}, nil
+	back, backCode := decodeIdentityDocument(FaceBack, r.DocumentBack)
+	switch {
+	case backCode != "":
+		bad("document_back", backCode)
+	// The same image under both faces would store one object and claim two:
+	// the sign-up asks for the front and the back of the document.
+	case frontCode == "" && back.SHA256 == front.SHA256:
+		bad("document_back", CodeInvalidFormat)
+	}
+
+	if len(fields) > 0 {
+		return Registration{}, &ValidationError{Fields: fields}
+	}
+	return Registration{
+		Customer: Customer{
+			DocumentID:       doc,
+			FullName:         name,
+			Email:            email,
+			BirthDate:        birth,
+			DocumentFrontKey: front.Key(),
+			DocumentBackKey:  back.Key(),
+		},
+		Front: front,
+		Back:  back,
+	}, nil
 }
 
 // meetsPasswordPolicy mirrors the policy of the user pool: lowercase,

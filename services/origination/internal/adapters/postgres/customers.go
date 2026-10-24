@@ -12,7 +12,8 @@ import (
 )
 
 // customerColumns is the projection of the customer table.
-const customerColumns = `id, document_id, full_name, email, birth_date, cognito_sub, created_at, updated_at`
+const customerColumns = `id, document_id, full_name, email, birth_date, cognito_sub,
+	document_front_key, document_back_key, created_at, updated_at`
 
 // CustomerStore is the ports.CustomerRepository over PostgreSQL (HU-M1.1-01).
 // The customer the insured registers from the mobile client and the one the
@@ -28,14 +29,16 @@ var _ ports.CustomerRepository = (*CustomerStore)(nil)
 
 func scanCustomer(s scanner) (domain.Customer, error) {
 	var (
-		c   domain.Customer
-		sub sql.NullString
+		c           domain.Customer
+		sub         sql.NullString
+		front, back sql.NullString
 	)
 	if err := s.Scan(&c.ID, &c.DocumentID, &c.FullName, &c.Email, &c.BirthDate,
-		&sub, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		&sub, &front, &back, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return domain.Customer{}, err
 	}
 	c.CognitoSub = sub.String
+	c.DocumentFrontKey, c.DocumentBackKey = front.String, back.String
 	c.BirthDate = c.BirthDate.UTC()
 	c.CreatedAt, c.UpdatedAt = c.CreatedAt.UTC(), c.UpdatedAt.UTC()
 	return c, nil
@@ -80,23 +83,27 @@ func (s *CustomerStore) GetByEmail(ctx context.Context, email string) (domain.Cu
 // Save creates the customer, or updates the one with the same document id
 // keeping its id and the instant it was created.
 //
-// cognito_sub is only written when it comes with a value, so saving the
-// customer again does not erase the account it already has.
+// cognito_sub and the keys of the identity document are only written when they
+// come with a value, so saving the customer again does not erase the account it
+// already has nor the faces it already captured.
 func (s *CustomerStore) Save(ctx context.Context, c domain.Customer) (domain.Customer, error) {
 	now := time.Now().UTC()
 	if c.CreatedAt.IsZero() {
 		c.CreatedAt = now
 	}
 	stored, _, err := s.one(ctx, `INSERT INTO customer (`+customerColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
 		ON CONFLICT (document_id) DO UPDATE SET
 			full_name = EXCLUDED.full_name,
 			email = EXCLUDED.email,
 			birth_date = EXCLUDED.birth_date,
 			cognito_sub = COALESCE(EXCLUDED.cognito_sub, customer.cognito_sub),
+			document_front_key = COALESCE(EXCLUDED.document_front_key, customer.document_front_key),
+			document_back_key = COALESCE(EXCLUDED.document_back_key, customer.document_back_key),
 			updated_at = EXCLUDED.updated_at
 		RETURNING `+customerColumns,
-		c.ID, c.DocumentID, c.FullName, c.Email, c.BirthDate.UTC(), nullString(c.CognitoSub), c.CreatedAt.UTC())
+		c.ID, c.DocumentID, c.FullName, c.Email, c.BirthDate.UTC(), nullString(c.CognitoSub),
+		nullString(c.DocumentFrontKey), nullString(c.DocumentBackKey), c.CreatedAt.UTC())
 	if err != nil {
 		return domain.Customer{}, fmt.Errorf("save the customer with document %s: %w", c.DocumentID, err)
 	}

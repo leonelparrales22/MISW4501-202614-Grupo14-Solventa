@@ -89,8 +89,20 @@ func main() {
 		// customer through the same provider client, so it keeps a single
 		// circuit breaker.
 		var reviewNotifier ports.ReviewOutcomeNotifier
+		// One repository for every document of the service: the contractual
+		// PDF (HU-W1.3-03) and the faces of the identity document of the
+		// sign-up (HU-M1.1-01) go to the same bucket, so they share one client.
+		var documents ports.DocumentStore
+		var documentsAt string
+		if cfg.documents.configured() {
+			store, where, err := newDocumentStore(context.Background(), cfg.documents)
+			if err != nil {
+				log.Fatalf("could not open the document repository: %v", err)
+			}
+			documents, documentsAt = store, where
+		}
 		if cfg.contracts.enabled {
-			contract, err := newContractWiring(context.Background(), cfg.contracts)
+			contract, err := newContractWiring(context.Background(), cfg.contracts, documents, documentsAt)
 			if err != nil {
 				log.Fatalf("could not set up the contractual document: %v", err)
 			}
@@ -127,7 +139,8 @@ func main() {
 			httpadapter.WithReviews(reviews, verifier))
 		// Sign-up of the insured (HU-M1.1-01). It needs the user pool: the
 		// account is created from here, never by the client.
-		if registration, err := newRegistrationService(context.Background(), cfg.registration, customers); err != nil {
+		if registration, err := newRegistrationService(context.Background(), cfg.registration, customers,
+			documents, documentsAt); err != nil {
 			log.Fatalf("could not set up the registration of the insured: %v", err)
 		} else if registration != nil {
 			opts = append(opts, httpadapter.WithRegistrations(registration))
@@ -191,6 +204,10 @@ type config struct {
 
 	// Offer acceptance (HU-W1.3-01).
 	acceptances acceptanceConfig
+
+	// Document repository, shared by the contractual document (HU-W1.3-03)
+	// and the identity documents of the sign-up (HU-M1.1-01).
+	documents documentsConfig
 
 	// Contractual document and notification (HU-W1.3-03).
 	contracts contractConfig
@@ -278,15 +295,12 @@ type contractWiring struct {
 }
 
 // newContractWiring wires the contractual issuance (HU-W1.3-03): the PDF
-// generator, the document store (S3 in AWS or a local directory, HA-D02), the
-// signed links, the e-mail provider and the in-memory repository and audit log
-// (PENDING: PostgreSQL and the audit service). It starts the worker that
-// issues the documents.
-func newContractWiring(ctx context.Context, cfg contractConfig) (contractWiring, error) {
-	store, where, err := newDocumentStore(ctx, cfg)
-	if err != nil {
-		return contractWiring{}, err
-	}
+// generator, the document store it receives (S3 in AWS or a local directory,
+// HA-D02), the signed links, the e-mail provider and the in-memory repository
+// and audit log (PENDING: PostgreSQL and the audit service). It starts the
+// worker that issues the documents.
+func newContractWiring(ctx context.Context, cfg contractConfig, store ports.DocumentStore,
+	where string) (contractWiring, error) {
 	signer, err := links.NewSigner(cfg.linkSecret)
 	if err != nil {
 		return contractWiring{}, err
@@ -313,14 +327,15 @@ func newContractWiring(ctx context.Context, cfg contractConfig) (contractWiring,
 // documentStoreCheckTimeout bounds the check of the documents bucket at start.
 const documentStoreCheckTimeout = 10 * time.Second
 
-// newDocumentStore opens the document repository of the contractual issuance
-// (decision D-3 a of HA-D02): the S3 bucket of DOCUMENTS_BUCKET, with the
-// credentials and the region of the environment (the task role and AWS_REGION
-// in ECS) and checked before serving, or the directory of DOCUMENTS_DIR. It
-// returns where the documents go, for the log.
-func newDocumentStore(ctx context.Context, cfg contractConfig) (ports.DocumentStore, string, error) {
-	if cfg.documentsBucket == "" {
-		store, err := filestore.New(cfg.documentsDir)
+// newDocumentStore opens the document repository (decision D-3 a of HA-D02):
+// the S3 bucket of DOCUMENTS_BUCKET, with the credentials and the region of
+// the environment (the task role and AWS_REGION in ECS) and checked before
+// serving, or the directory of DOCUMENTS_DIR. The contractual document
+// (HU-W1.3-03) and the identity documents of the sign-up (HU-M1.1-01) share
+// it. It returns where the documents go, for the log.
+func newDocumentStore(ctx context.Context, cfg documentsConfig) (ports.DocumentStore, string, error) {
+	if cfg.bucket == "" {
+		store, err := filestore.New(cfg.dir)
 		if err != nil {
 			return nil, "", err
 		}
@@ -330,7 +345,7 @@ func newDocumentStore(ctx context.Context, cfg contractConfig) (ports.DocumentSt
 	if err != nil {
 		return nil, "", fmt.Errorf("could not load the AWS configuration for %s: %w", envDocumentsBucket, err)
 	}
-	store, err := s3adapter.New(awss3.NewFromConfig(awsCfg), cfg.documentsBucket)
+	store, err := s3adapter.New(awss3.NewFromConfig(awsCfg), cfg.bucket)
 	if err != nil {
 		return nil, "", err
 	}
@@ -473,11 +488,27 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if err := loadAcceptanceConfig(getenv, &cfg.acceptances); err != nil {
 		return config{}, err
 	}
+	if err := loadDocumentsConfig(getenv, &cfg.documents); err != nil {
+		return config{}, err
+	}
 	if err := loadContractConfig(getenv, cfg.port, &cfg.contracts); err != nil {
 		return config{}, err
 	}
 	if err := loadRegistrationConfig(getenv, &cfg.registration); err != nil {
 		return config{}, err
+	}
+	// The contractual document (HU-W1.3-03) and the sign-up of the insured
+	// (HU-M1.1-01) both write to the document repository: whoever is wired
+	// needs it, and the service does not start without it.
+	if !cfg.documents.configured() {
+		switch {
+		case cfg.contracts.enabled:
+			return config{}, fmt.Errorf("%s (an S3 bucket, in AWS) or %s (a local directory) is required when %s is set",
+				envDocumentsBucket, envDocumentsDir, envEmailURL)
+		case cfg.registration.enabled:
+			return config{}, fmt.Errorf("%s (an S3 bucket, in AWS) or %s (a local directory) is required when %s is set: the faces of the identity document are kept there",
+				envDocumentsBucket, envDocumentsDir, envCognitoUserPoolID)
+		}
 	}
 	if err := loadBillingConfig(getenv, &cfg.billing); err != nil {
 		return config{}, err
@@ -545,18 +576,39 @@ const (
 	envDocumentsDir    = "DOCUMENTS_DIR"
 )
 
+// documentsConfig is the document repository: an S3 bucket in AWS (bucket) or
+// a directory locally (dir), never both. The contractual document
+// (HU-W1.3-03) and the identity documents of the sign-up (HU-M1.1-01) share
+// it, so it is read whether or not the contractual document is wired.
+type documentsConfig struct {
+	bucket string
+	dir    string
+}
+
+// configured reports whether a repository was named.
+func (c documentsConfig) configured() bool { return c.bucket != "" || c.dir != "" }
+
+// loadDocumentsConfig reads the repository of the documents. Naming both is an
+// error; naming neither is one only for whoever needs it.
+func loadDocumentsConfig(getenv func(string) string, cfg *documentsConfig) error {
+	cfg.bucket = getenv(envDocumentsBucket)
+	cfg.dir = getenv(envDocumentsDir)
+	if cfg.bucket != "" && cfg.dir != "" {
+		return fmt.Errorf("%s and %s are both set: set only one, the S3 bucket in AWS or the local directory",
+			envDocumentsBucket, envDocumentsDir)
+	}
+	return nil
+}
+
 // contractConfig configures the contractual document and its notification
 // (HU-W1.3-03). It is enabled when EMAIL_URL is set; then the signing secret
-// and exactly one document repository are required too: an S3 bucket in AWS
-// (documentsBucket) or a directory locally (documentsDir).
+// and the document repository (documentsConfig) are required too.
 type contractConfig struct {
-	enabled         bool
-	emailURL        string
-	emailTimeout    time.Duration
-	documentsBucket string
-	documentsDir    string
-	linkSecret      string
-	service         issuance.ContractConfig
+	enabled      bool
+	emailURL     string
+	emailTimeout time.Duration
+	linkSecret   string
+	service      issuance.ContractConfig
 }
 
 // loadContractConfig reads the HU-W1.3-03 variables. publicPort is the port of
@@ -567,17 +619,7 @@ func loadContractConfig(getenv func(string) string, publicPort string, cfg *cont
 		return nil
 	}
 	cfg.enabled = true
-	cfg.documentsBucket = getenv(envDocumentsBucket)
-	cfg.documentsDir = getenv(envDocumentsDir)
 	cfg.linkSecret = getenv("DOCUMENT_LINK_SECRET")
-	switch {
-	case cfg.documentsBucket == "" && cfg.documentsDir == "":
-		return fmt.Errorf("%s (an S3 bucket, in AWS) or %s (a local directory) is required when %s is set",
-			envDocumentsBucket, envDocumentsDir, envEmailURL)
-	case cfg.documentsBucket != "" && cfg.documentsDir != "":
-		return fmt.Errorf("%s and %s are both set: set only one, the S3 bucket in AWS or the local directory",
-			envDocumentsBucket, envDocumentsDir)
-	}
 	if len(cfg.linkSecret) < links.MinSecretLength {
 		return fmt.Errorf("DOCUMENT_LINK_SECRET (at least %d characters) is required when %s is set", links.MinSecretLength, envEmailURL)
 	}
