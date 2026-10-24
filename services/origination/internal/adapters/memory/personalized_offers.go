@@ -152,23 +152,33 @@ func (s *PersonalizedOfferStore) joinLocked(o domain.PersonalizedOffer) domain.P
 
 // OfferRouter is the ports.OfferRepository and ports.OfferWriter that the
 // acceptance, the advisor inbox and the charge share (HU-W1.2-03). The ids of
-// the demo (demo-*) and adjusted (adj-*) offers of other stories go to the
-// OfferStub; any other id is a personalized offer. A personalized offer is
-// read through AsOffer, so the flows that consume it do not know the
-// difference.
+// the demo offers (demo-*) go to the OfferStub, those of the adjusted offers
+// (adj-*) to the store of adjusted offers (the OfferStub itself, or the
+// PostgreSQL one with DATABASE_URL, decision D-1 a of the fix C5); any other
+// id is a personalized offer. A personalized offer is read through AsOffer, so
+// the flows that consume it do not know the difference.
 type OfferRouter struct {
 	stub     *OfferStub
 	personal ports.PersonalizedOfferStore
+	adjusted ports.AdjustedOfferStore
 }
 
 var (
-	_ ports.OfferRepository = (*OfferRouter)(nil)
-	_ ports.OfferWriter     = (*OfferRouter)(nil)
+	_ ports.OfferRepository    = (*OfferRouter)(nil)
+	_ ports.OfferWriter        = (*OfferRouter)(nil)
+	_ ports.AdjustedOfferStore = (*OfferStub)(nil)
 )
 
-// NewOfferRouter builds an OfferRouter.
+// NewOfferRouter builds an OfferRouter whose adjusted offers live in the stub,
+// in memory.
 func NewOfferRouter(stub *OfferStub, personal ports.PersonalizedOfferStore) *OfferRouter {
-	return &OfferRouter{stub: stub, personal: personal}
+	return NewOfferRouterWithAdjusted(stub, personal, stub)
+}
+
+// NewOfferRouterWithAdjusted builds an OfferRouter whose adjusted offers live
+// in the given store (decision D-1 a of the fix C5).
+func NewOfferRouterWithAdjusted(stub *OfferStub, personal ports.PersonalizedOfferStore, adjusted ports.AdjustedOfferStore) *OfferRouter {
+	return &OfferRouter{stub: stub, personal: personal, adjusted: adjusted}
 }
 
 // IsStubOffer tells whether the id belongs to the offers of the OfferStub.
@@ -178,7 +188,10 @@ func IsStubOffer(offerID string) bool {
 
 // Get returns the offer with the given id.
 func (r *OfferRouter) Get(ctx context.Context, offerID string) (domain.Offer, error) {
-	if IsStubOffer(offerID) {
+	switch {
+	case strings.HasPrefix(offerID, domain.AdjustedOfferIDPrefix):
+		return r.adjusted.Get(ctx, offerID)
+	case IsStubOffer(offerID):
 		return r.stub.Get(ctx, offerID)
 	}
 	o, err := r.personal.Get(ctx, offerID)
@@ -189,7 +202,10 @@ func (r *OfferRouter) Get(ctx context.Context, offerID string) (domain.Offer, er
 }
 
 // Create stores the adjusted offer of an advisor decision (HU-W1.1-02) in the
-// OfferStub, as before.
+// store of adjusted offers; any other id goes to the OfferStub, as before.
 func (r *OfferRouter) Create(ctx context.Context, offer domain.Offer) error {
+	if strings.HasPrefix(offer.ID, domain.AdjustedOfferIDPrefix) {
+		return r.adjusted.Create(ctx, offer)
+	}
 	return r.stub.Create(ctx, offer)
 }
