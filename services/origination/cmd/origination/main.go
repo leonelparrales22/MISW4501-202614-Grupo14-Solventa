@@ -32,7 +32,6 @@ import (
 	odadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/opendata"
 	ofadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/openfinance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/pdf"
-	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
 	redisadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/redis"
 	s3adapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/s3"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
@@ -69,11 +68,15 @@ func main() {
 		resolverOptions(cfg)...,
 	)
 
-	offers, err := newOfferWiring(context.Background(), cfg, resolver)
+	// One switch and one pool (fix C5, decisions D-2 a and D-4 a): with
+	// DATABASE_URL every store of origination is in PostgreSQL, over a single
+	// pool opened and migrated here; without it every store is in memory.
+	st, err := newStores(context.Background(), cfg.offers.databaseURL, systemClock{})
 	if err != nil {
-		log.Fatalf("could not set up the personalized offers: %v", err)
+		log.Fatalf("could not set up origination's database: %v", err)
 	}
-	cfg.acceptances.offers, cfg.acceptances.acceptanceStore = offers.router, offers.acceptances
+	offers := newOfferWiring(context.Background(), cfg, resolver, st)
+	cfg.acceptances.offers, cfg.acceptances.acceptanceStore, cfg.acceptances.reviewStore = offers.router, offers.acceptances, offers.reviews
 
 	// WithObservability must come first: chi only accepts middlewares before
 	// the routes are registered.
@@ -103,21 +106,18 @@ func main() {
 		// HA-D02: with a payment gateway, an approved acceptance is charged and
 		// only a confirmed charge activates the coverage (CA-4); without it,
 		// the issuance start is only recorded.
-		customers := ports.CustomerRepository(memory.NewCustomerStore())
+		// The customers (HU-M1.1-01) are in origination's stores: PostgreSQL
+		// with DATABASE_URL, with or without the payment gateway.
+		customers := st.customers
 		if cfg.billing.enabled {
-			charges, err := newBilling(context.Background(), cfg.billing, activations...)
+			charges, err := newBilling(context.Background(), cfg.billing, st.db, activations...)
 			if err != nil {
 				log.Fatalf("could not set up the premium charge: %v", err)
 			}
 			starter = charges.starter
 			opts = append(opts, httpadapter.WithCharges(charges.service, verifier))
-			// The customer shares origination's database, already open and
-			// migrated here (HU-M1.1-01).
-			customers = postgres.NewCustomerStore(charges.db)
-			log.Print("customers: PostgreSQL")
 		} else {
 			logWithoutBilling(cfg.contracts.enabled)
-			log.Print("customers: in-memory store; they are lost when the service restarts")
 		}
 		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
@@ -220,17 +220,26 @@ type acceptanceConfig struct {
 	// underwriting routes a normal offer to the advisor (decision #40).
 	reviewScoreThreshold float64
 	// offers serves the offers of the acceptance, the advisor inbox and the
-	// charge (HU-W1.2-03); acceptanceStore is where acceptances are written. The
-	// personalized offer service and the requote worker share them. When nil,
-	// newAcceptanceService builds its own in-memory ones.
-	offers          *memory.OfferRouter
-	acceptanceStore *memory.AcceptanceStore
+	// charge (HU-W1.2-03); acceptanceStore is where acceptances are written and
+	// reviewStore is the advisor inbox (HU-W1.1-02). The personalized offer
+	// service and the requote worker share them; with DATABASE_URL they are in
+	// PostgreSQL (newStores). When nil, newAcceptanceService builds its own
+	// in-memory ones.
+	offers          offerStore
+	acceptanceStore ports.AcceptanceRepository
+	reviewStore     ports.ReviewRepository
+}
+
+// offerStore reads every offer and writes the adjusted ones (the OfferRouter).
+type offerStore interface {
+	ports.OfferRepository
+	ports.OfferWriter
 }
 
 // newAcceptanceService wires the offer acceptance (HU-W1.3-01) and the advisor
-// inbox (HU-W1.1-02) over one set of in-memory adapters (PENDING: PostgreSQL,
-// HU-W1.2-03 offers and the underwriting engine) and starts the processor that
-// runs underwriting asynchronously and resumes failed acceptances. The
+// inbox (HU-W1.1-02) over the stores it is given (PostgreSQL with DATABASE_URL,
+// memory otherwise; PENDING: the underwriting engine) and starts the processor
+// that runs underwriting asynchronously and resumes failed acceptances. The
 // underwriting approves the offers an advisor adjusted (decision D-5 a). When
 // notifier is not nil, a worker e-mails the adjust and reject decisions to the
 // customer (decision D-3 c); otherwise no notice is sent.
@@ -245,12 +254,15 @@ func newAcceptanceService(ctx context.Context, cfg acceptanceConfig, starter por
 	if acceptances == nil {
 		acceptances = memory.NewAcceptanceStore()
 	}
-	reviews := memory.NewReviewQueueStub()
+	reviews := cfg.reviewStore
+	if reviews == nil {
+		reviews = memory.NewReviewQueueStub()
+	}
 	underwriter := underwriting.NewHumanAdjustedUnderwriter(reviews,
 		memory.NewUnderwriterStub(clock, cfg.flakyFailures, cfg.reviewScoreThreshold), clock)
 	processor := issuance.NewProcessor(offers, acceptances, underwriter, reviews, starter, clock, cfg.processor)
 	go processor.Run(ctx)
-	log.Printf("offer acceptance: in-memory adapters (pending PostgreSQL and the real dependencies), poll every %s, retry from %s up to %s, profile scores above %g go to the advisor",
+	log.Printf("offer acceptance: poll every %s, retry from %s up to %s, profile scores above %g go to the advisor (provisional underwriting rules)",
 		cfg.processor.PollInterval, cfg.processor.RetryBase, cfg.processor.RetryMax, cfg.reviewScoreThreshold)
 
 	deps := underwriting.ReviewDeps{
@@ -261,7 +273,7 @@ func newAcceptanceService(ctx context.Context, cfg acceptanceConfig, starter por
 		worker := underwriting.NewReviewNotificationWorker(reviews, notifier, clock, underwriting.NotificationConfig{})
 		go worker.Run(ctx)
 		deps.NotificationScheduled = worker.Notify
-		log.Printf("advisor inbox: in-memory requests and decisions (pending PostgreSQL); the adjust and reject decisions are e-mailed to the customer")
+		log.Printf("advisor inbox: the adjust and reject decisions are e-mailed to the customer")
 	} else {
 		log.Printf("%s is not set: the review outcome e-mails (HU-W1.1-02) are not sent", envEmailURL)
 	}

@@ -116,21 +116,16 @@ func loadBillingConfig(getenv func(string) string, cfg *billingConfig) error {
 type billingWiring struct {
 	starter *billing.Starter
 	service *billing.Service
-	db      *sql.DB
 }
 
-// newBilling wires the premium charge (HA-D02): it opens origination's
-// PostgreSQL database and applies its migrations, builds the payment gateway
-// client and starts the worker that charges and publishes every activation to
-// the given consumers (the contractual document of HU-W1.3-03).
-func newBilling(ctx context.Context, cfg billingConfig, handlers ...ports.CoverageActivationHandler) (billingWiring, error) {
-	db, err := postgres.Open(ctx, cfg.databaseURL)
-	if err != nil {
-		return billingWiring{}, err
-	}
-	if err := postgres.Migrate(ctx, db); err != nil {
-		_ = db.Close()
-		return billingWiring{}, err
+// newBilling wires the premium charge (HA-D02) over the single pool of
+// origination's PostgreSQL database, already open and migrated by newStores
+// (decision D-4 a of the fix C5): it builds the payment gateway client and
+// starts the worker that charges and publishes every activation to the given
+// consumers (the contractual document of HU-W1.3-03).
+func newBilling(ctx context.Context, cfg billingConfig, db *sql.DB, handlers ...ports.CoverageActivationHandler) (billingWiring, error) {
+	if db == nil {
+		return billingWiring{}, fmt.Errorf("the premium charge needs origination's database (%s): it is always persisted (HA-D02)", envDatabaseURL)
 	}
 	repo := postgres.NewChargeStore(db)
 	gateway := paymentsadapter.NewGateway(payments.NewClient(payments.Config{
@@ -139,16 +134,14 @@ func newBilling(ctx context.Context, cfg billingConfig, handlers ...ports.Covera
 	clock := systemClock{}
 	worker, err := billing.NewWorker(repo, gateway, clock, cfg.worker, handlers...)
 	if err != nil {
-		_ = db.Close()
 		return billingWiring{}, err
 	}
 	go worker.Run(ctx)
-	log.Printf("premium charge: PostgreSQL migrated, gateway %s (timeout %s), retries from %s up to %s within %s, poll every %s, claim lease %s",
+	log.Printf("premium charge: PostgreSQL, gateway %s (timeout %s), retries from %s up to %s within %s, poll every %s, claim lease %s",
 		cfg.gatewayURL, cfg.gatewayTimeout, cfg.retry.Base, cfg.retry.Max, cfg.retry.Window, cfg.worker.PollInterval, cfg.worker.ClaimLease)
 	return billingWiring{
 		starter: billing.NewStarter(repo, billing.OfferTerms(demoCoverageTerms()), clock, cfg.retry, worker.Notify),
 		service: billing.NewService(repo, clock, cfg.retry, worker.Notify),
-		db:      db,
 	}, nil
 }
 

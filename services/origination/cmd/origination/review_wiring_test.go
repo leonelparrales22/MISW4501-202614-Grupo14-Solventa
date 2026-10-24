@@ -72,6 +72,24 @@ func TestNewAcceptanceServiceWiresTheInbox(t *testing.T) {
 	assert.True(t, issued.Started(adjusted.ID))
 }
 
+// Fix C5: the inbox is the one newStores gives (PostgreSQL with DATABASE_URL),
+// shared by the processor that enqueues and the advisor who decides.
+func TestNewAcceptanceServiceUsesTheInboxItIsGiven(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inbox := memory.NewReviewQueueStub()
+	cfg := acceptanceConfig{reviewScoreThreshold: memory.DefaultReviewScoreThreshold, reviewStore: inbox}
+	acceptances, _ := newAcceptanceService(ctx, cfg, memory.NewIssuanceStub(), nil)
+	insured := security.WithClaims(ctx, security.Claims{Subject: "cust-1", Roles: []security.Role{security.RoleInsured}})
+
+	a, _, err := acceptances.Accept(insured, "demo-review-given", domain.ChannelWeb)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		c, err := inbox.Get(ctx, a.ID)
+		return err == nil && c.Status == domain.ReviewPending
+	}, 3*time.Second, 10*time.Millisecond, "the processor enqueues in the given inbox")
+}
+
 func TestNewAcceptanceServiceWithoutEmailSendsNoNotice(t *testing.T) {
 	var buf bytes.Buffer
 	prev := log.Writer()
