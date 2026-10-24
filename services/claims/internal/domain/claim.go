@@ -41,6 +41,9 @@ const (
 	CodeRequired      = "required"
 	CodeInvalidFormat = "invalid_format"
 	CodeOutOfRange    = "out_of_range"
+	// CodeNotStored is the key of an evidence that is not in the store, or
+	// that belongs to somebody else (HU-M2.1-01).
+	CodeNotStored = "not_stored"
 )
 
 // FieldError tells which field failed and why. Field is the JSON name.
@@ -91,6 +94,9 @@ type FilingRequest struct {
 	Details map[string]string
 	// DeclarationAccepted is the declaration under oath that closes the filing.
 	DeclarationAccepted bool
+	// Evidence is what was captured in the place and already uploaded to the
+	// evidence store (HU-M2.1-01).
+	Evidence []EvidenceRequest
 }
 
 // Claim is the filed case. The repository assigns FilingNumber.
@@ -108,8 +114,10 @@ type Claim struct {
 	Place        string
 	Description  string
 	Details      map[string]string
-	Status       Status
-	FiledAt      time.Time
+	// Evidence is what documents the case, in the order it was captured.
+	Evidence []Evidence
+	Status   Status
+	FiledAt  time.Time
 }
 
 // FilingNumber builds the number the insured sees and quotes to support:
@@ -135,6 +143,11 @@ func (c Claim) Fingerprint() string {
 	b.WriteString(c.Description + "\n")
 	for _, k := range keys {
 		b.WriteString(k + "=" + c.Details[k] + "\n")
+	}
+	// The evidence is part of what was filed: the same key with other
+	// photographs is another filing, not a retry of this one.
+	for _, e := range c.Evidence {
+		b.WriteString(e.ObjectKey + "\n")
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
@@ -181,6 +194,7 @@ func (r FilingRequest) Validate(now time.Time) (Claim, error) {
 	}
 
 	details := normalizeDetails(r.Details, bad)
+	evidence := validateEvidence(r.Evidence, occurredAt, now, bad)
 
 	// The declaration under oath is a requirement of the filing, not a
 	// preference: without it there is nothing to file.
@@ -198,6 +212,7 @@ func (r FilingRequest) Validate(now time.Time) (Claim, error) {
 		Place:        place,
 		Description:  description,
 		Details:      details,
+		Evidence:     evidence,
 		Status:       StatusActive,
 	}, nil
 }

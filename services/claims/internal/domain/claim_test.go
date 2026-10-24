@@ -24,9 +24,37 @@ func validRequest() domain.FilingRequest {
 		Place:               "Calle 80 con Carrera 15, Bogotá",
 		Description:         "Choque por alcance en el semáforo.",
 		Details:             map[string]string{"third_party": "yes"},
+		Evidence:            validEvidence(),
 		DeclarationAccepted: true,
 	}
 }
+
+// validEvidence is the minimum a filing needs: four photographs of the place,
+// already uploaded to the store.
+func validEvidence() []domain.EvidenceRequest {
+	out := make([]domain.EvidenceRequest, 0, domain.MinPhotos)
+	for i := 0; i < domain.MinPhotos; i++ {
+		out = append(out, photo(byte('a'+i)))
+	}
+	return out
+}
+
+func photo(seed byte) domain.EvidenceRequest {
+	digest := strings.Repeat(string(seed), 64)
+	return domain.EvidenceRequest{
+		ObjectKey:       "evidence/" + subject + "/" + digest + ".jpg",
+		Kind:            "photo",
+		CapturedAt:      "2026-10-20T23:32:14Z",
+		Latitude:        4.7712,
+		Longitude:       -74.0452,
+		AccuracyM:       8,
+		LocationTrusted: true,
+		SHA256:          digest,
+		ByteSize:        312044,
+	}
+}
+
+const subject = "9f4ce9cd-85c7-4603-b8e9-0def7c3e1ddd"
 
 func codes(t *testing.T, err error) map[string]string {
 	t.Helper()

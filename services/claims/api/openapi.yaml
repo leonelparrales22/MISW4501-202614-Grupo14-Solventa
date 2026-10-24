@@ -1,9 +1,16 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.3.0
+  version: 0.4.0
   description: >-
-    0.3.0 (HU-W2.1-01): filing of the claim with supports from the web portal
+    0.4.0 (HU-M2.1-01): the evidence of the claim. POST
+    /v1/claims/evidence/upload-url issues the signed URL with which the phone
+    uploads a photograph or a video straight to the evidence bucket, and the
+    mobile filing of POST /v1/claims carries the evidence array, which is now
+    required: between 4 and 6 photographs and up to one video. The filing
+    checks every key against the store, so a key that is not there answers 422
+    with the field code not_stored, and the answer counts what ended up with
+    the case. 0.3.0 (HU-W2.1-01): filing of the claim with supports from the web portal
     (filing options, upload of a support, web filing), the insured's list of
     claims, the detail of a claim and the filing receipt in PDF. 0.2.0
     (HU-M2.2-01): filing of the claim from the guided assistant of the mobile
@@ -165,6 +172,67 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/evidence/upload-url:
+    post:
+      summary: Sign the upload of one evidence (HU-M2.1-01)
+      description: >-
+        Issues the URL with which the client uploads one evidence. The file
+        never passes through this service: it goes from the phone to the
+        evidence bucket, which is what lets a video of 30 seconds fit. The
+        signature fixes the media type, the size and the SHA-256 digest, and
+        the key is derived from the subject of the token and the digest, so
+        one insured cannot write in the directory of another. Asking twice for
+        the same file answers the same key.
+      security:
+        - cognitoJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadRequest"
+      responses:
+        "201":
+          description: The signed upload
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignedUpload"
+        "400":
+          description: invalid_request - the body is not valid JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - the declaration breaks its rules
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "503":
+          description: evidence_unavailable - the upload could not be prepared; retry
           content:
             application/json:
               schema:
@@ -500,7 +568,7 @@ components:
   schemas:
     FilingRequest:
       type: object
-      required: [policy_id, incident_type, occurred_at, place, description, declaration_accepted]
+      required: [policy_id, incident_type, occurred_at, place, description, evidence, declaration_accepted]
       properties:
         policy_id:
           type: string
@@ -530,6 +598,16 @@ components:
           additionalProperties:
             type: string
             maxLength: 200
+        evidence:
+          type: array
+          description: >-
+            What was captured at the place, already uploaded to the evidence
+            bucket (HU-M2.1-01): between 4 and 6 photographs and up to one
+            video. The video does not count towards the minimum.
+          minItems: 4
+          maxItems: 7
+          items:
+            $ref: "#/components/schemas/EvidenceItem"
         declaration_accepted:
           type: boolean
           description: The declaration under oath. It must be true.
@@ -558,6 +636,8 @@ components:
         filed_at:
           type: string
           format: date-time
+        evidence_count:
+          $ref: "#/components/schemas/EvidenceCount"
     Error:
       type: object
       required: [error, message]
@@ -585,7 +665,123 @@ components:
                 type: string
               code:
                 type: string
-                enum: [required, invalid_format, out_of_range]
+                description: >-
+                  not_stored is the key that is not in the evidence bucket, is
+                  not the token subject's, or whose size or digest is not the
+                  declared one (HU-M2.1-01).
+                enum: [required, invalid_format, out_of_range, not_stored]
+    UploadRequest:
+      type: object
+      required: [kind, content_type, byte_size, sha256]
+      description: What the insured declares before uploading one evidence.
+      properties:
+        kind:
+          $ref: "#/components/schemas/EvidenceKind"
+        content_type:
+          type: string
+          description: image/jpeg for a photo, video/mp4 for a video.
+          enum: [image/jpeg, video/mp4]
+        byte_size:
+          type: integer
+          format: int64
+          description: >-
+            1 KiB to 2 MB in a photograph; 1 KiB to 60 MB in a video.
+          minimum: 1024
+          maximum: 60000000
+        sha256:
+          $ref: "#/components/schemas/SHA256"
+    SignedUpload:
+      type: object
+      required: [object_key, upload_url, upload_headers, expires_at]
+      properties:
+        object_key:
+          type: string
+          description: >-
+            Key of the object in the evidence bucket, derived from the subject
+            of the token and the digest. It is the one that travels with the
+            filing.
+          example: evidence/9f4ce9cd-85c7-4603-b8e9-0def7c3e1ddd/9f2c4a1e8b0d6f35.jpg
+        upload_url:
+          type: string
+          format: uri
+          description: Signed URL of the PUT. It expires in 10 minutes.
+        upload_headers:
+          type: object
+          description: >-
+            The headers the PUT has to carry, exactly these: the signature
+            covers them. The set is decided by the signature, so the client
+            sends them as they arrive. Authorization is not one of them.
+          additionalProperties:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+    EvidenceItem:
+      type: object
+      required: [object_key, kind, captured_at, latitude, longitude, accuracy_m, location_trusted, sha256, byte_size]
+      description: >-
+        One capture that travels with the filing: its key and its capture.
+      properties:
+        object_key:
+          type: string
+          description: >-
+            The key the signed upload answered. It has to exist in the bucket
+            and belong to the subject of the token.
+        kind:
+          $ref: "#/components/schemas/EvidenceKind"
+        captured_at:
+          type: string
+          format: date-time
+          description: Not in the future and not before the incident happened.
+        latitude:
+          type: number
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          minimum: -180
+          maximum: 180
+        altitude_m:
+          type: number
+          description: Optional. Metres above sea level.
+        accuracy_m:
+          type: number
+          description: Accuracy of the location, in metres.
+          minimum: 0
+        location_trusted:
+          type: boolean
+          description: >-
+            False when the accuracy is worse than 50 m or there was no recent
+            reading. The service downgrades it when the accuracy does not
+            support it, whatever the client says.
+        sha256:
+          $ref: "#/components/schemas/SHA256"
+        byte_size:
+          type: integer
+          format: int64
+        duration_s:
+          type: integer
+          description: Only in a video. Up to 30 seconds.
+          minimum: 1
+          maximum: 30
+    EvidenceCount:
+      type: object
+      description: What ended up associated with the case.
+      required: [photos, videos]
+      properties:
+        photos:
+          type: integer
+        videos:
+          type: integer
+    EvidenceKind:
+      type: string
+      enum: [photo, video]
+    SHA256:
+      type: string
+      description: >-
+        Digest of the file, in lowercase hexadecimal. It has to match the one
+        of the stored object.
+      pattern: '^[0-9a-f]{64}$'
     IncidentType:
       type: string
       description: >-

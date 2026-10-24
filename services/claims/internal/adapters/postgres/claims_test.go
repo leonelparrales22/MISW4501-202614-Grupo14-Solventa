@@ -219,3 +219,101 @@ func TestAFilingWithoutDetailsReadsBackEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, again.Details)
 }
+
+// The evidence of the case (HU-M2.1-01) travels with it: the file stays in
+// the evidence store and here lives what lets anyone find and check it.
+
+func conEvidencia(c domain.Claim) domain.Claim {
+	altitud := 2601.0
+	c.Evidence = []domain.Evidence{
+		{
+			ObjectKey:       "evidence/" + c.Subject + "/" + strings.Repeat("a", 64) + ".jpg",
+			Kind:            domain.KindPhoto,
+			CapturedAt:      time.Date(2026, 10, 20, 23, 32, 14, 0, time.UTC),
+			Latitude:        4.7712,
+			Longitude:       -74.0452,
+			AltitudeM:       &altitud,
+			AccuracyM:       8,
+			LocationTrusted: true,
+			SHA256:          strings.Repeat("a", 64),
+			ByteSize:        312044,
+		},
+		{
+			ObjectKey:       "evidence/" + c.Subject + "/" + strings.Repeat("b", 64) + ".mp4",
+			Kind:            domain.KindVideo,
+			CapturedAt:      time.Date(2026, 10, 20, 23, 33, 40, 0, time.UTC),
+			Latitude:        4.7712,
+			Longitude:       -74.0452,
+			AccuracyM:       120,
+			LocationTrusted: false,
+			SHA256:          strings.Repeat("b", 64),
+			ByteSize:        18_000_000,
+			DurationS:       22,
+		},
+	}
+	return c
+}
+
+func TestTheEvidenceIsStoredWithTheCase(t *testing.T) {
+	s := postgres.NewClaimStore(newDB(t))
+	ctx := context.Background()
+	_, created, err := s.Create(ctx, conEvidencia(claim("cl-1", "sub-carolina", "draft-1")))
+	require.NoError(t, err)
+	require.True(t, created)
+
+	// The retry reads the case back, evidence included.
+	again, created, err := s.Create(ctx, conEvidencia(claim("cl-1", "sub-carolina", "draft-1")))
+
+	require.NoError(t, err)
+	assert.False(t, created)
+	require.Len(t, again.Evidence, 2)
+
+	foto := again.Evidence[0]
+	assert.Equal(t, domain.KindPhoto, foto.Kind, "the order of capture is kept")
+	assert.Equal(t, 4.7712, foto.Latitude)
+	require.NotNil(t, foto.AltitudeM)
+	assert.Equal(t, 2601.0, *foto.AltitudeM)
+	assert.True(t, foto.LocationTrusted)
+	assert.Equal(t, time.Date(2026, 10, 20, 23, 32, 14, 0, time.UTC), foto.CapturedAt)
+
+	video := again.Evidence[1]
+	assert.Equal(t, domain.KindVideo, video.Kind)
+	assert.Nil(t, video.AltitudeM, "the video came without altitude")
+	assert.False(t, video.LocationTrusted, "it was captured with a poor precision")
+	assert.Equal(t, 22, video.DurationS)
+	assert.Equal(t, int64(18_000_000), video.ByteSize)
+}
+
+// The evidence is part of what was filed: the same key with other
+// photographs is another filing, not a retry of this one.
+func TestTheSameKeyWithOtherEvidenceIsAnotherFiling(t *testing.T) {
+	s := postgres.NewClaimStore(newDB(t))
+	ctx := context.Background()
+	_, _, err := s.Create(ctx, conEvidencia(claim("cl-1", "sub-carolina", "draft-1")))
+	require.NoError(t, err)
+
+	otra := conEvidencia(claim("cl-1", "sub-carolina", "draft-1"))
+	otra.Evidence[0].ObjectKey = "evidence/sub-carolina/" + strings.Repeat("c", 64) + ".jpg"
+
+	_, _, err = s.Create(ctx, otra)
+
+	assert.ErrorIs(t, err, ports.ErrFilingKeyReused)
+}
+
+// A filing that fails leaves nothing behind: neither the case nor its
+// evidence.
+func TestAFilingThatFailsLeavesNoEvidenceBehind(t *testing.T) {
+	db := newDB(t)
+	s := postgres.NewClaimStore(db)
+	roto := conEvidencia(claim("cl-1", "sub-carolina", "draft-1"))
+	roto.Evidence[0].Kind = domain.EvidenceKind(strings.Repeat("x", 300))
+
+	_, _, err := s.Create(context.Background(), roto)
+	require.Error(t, err)
+
+	var casos, evidencias int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM claim`).Scan(&casos))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM claim_evidence`).Scan(&evidencias))
+	assert.Zero(t, casos)
+	assert.Zero(t, evidencias)
+}
