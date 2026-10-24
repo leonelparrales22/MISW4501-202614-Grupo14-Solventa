@@ -13,8 +13,13 @@ import (
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/http"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/memory"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/postgres"
+	s3adapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/s3"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/evidence"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/filing"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 const serviceName = "claims"
@@ -25,6 +30,16 @@ var version = "dev"
 // envDatabaseURL is the service's own database. Without it the filed claims
 // live in memory and are lost when the service restarts.
 const envDatabaseURL = "DATABASE_URL"
+
+// Variables of the evidence store (HU-M2.1-01): the bucket of the environment
+// and, only for a local run, the endpoint of an S3 emulator.
+const (
+	envEvidenceBucket = "EVIDENCE_BUCKET"
+	envEvidenceURL    = "EVIDENCE_ENDPOINT_URL"
+)
+
+// evidenceCheckTimeout bounds the check of the evidence bucket at start.
+const evidenceCheckTimeout = 10 * time.Second
 
 func main() {
 	// JSON logs with correlation and trace ids, plus OpenTelemetry traces and
@@ -48,8 +63,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("could not set up the token verification: %v", err)
 		}
-		opts = append(opts, httpadapter.WithFilings(
-			filing.NewService(claimStore(context.Background()), systemClock{}), verifier))
+		store := evidenceStore(context.Background())
+		opts = append(opts,
+			httpadapter.WithFilings(
+				filing.NewService(claimStore(context.Background()), store, systemClock{}), verifier),
+			httpadapter.WithEvidence(evidence.NewService(store, systemClock{}), verifier))
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)
 	}
@@ -88,6 +106,40 @@ func claimStore(ctx context.Context) ports.ClaimRepository {
 	}
 	log.Print("claims: PostgreSQL")
 	return postgres.NewClaimStore(db)
+}
+
+// evidenceStore opens the bucket where the captured evidence goes. The
+// filing checks every key against it, so the service does not start without
+// it: a case that names evidence nobody can open is not a filing.
+func evidenceStore(ctx context.Context) ports.EvidenceStore {
+	bucket := os.Getenv(envEvidenceBucket)
+	if bucket == "" {
+		log.Fatalf("%s is required when %s is set: the evidence of the claim is kept there",
+			envEvidenceBucket, security.EnvIssuer)
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		log.Fatalf("could not load the AWS configuration for %s: %v", envEvidenceBucket, err)
+	}
+	client := awss3.NewFromConfig(cfg, func(o *awss3.Options) {
+		// Only a local run points somewhere else; an emulator addresses the
+		// bucket by path, not by subdomain.
+		if endpoint := os.Getenv(envEvidenceURL); endpoint != "" {
+			o.BaseEndpoint = &endpoint
+			o.UsePathStyle = true
+		}
+	})
+	store, err := s3adapter.New(client, bucket)
+	if err != nil {
+		log.Fatalf("could not open the evidence store: %v", err)
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, evidenceCheckTimeout)
+	defer cancel()
+	if err := store.Check(checkCtx); err != nil {
+		log.Fatalf("could not reach the evidence store: %v", err)
+	}
+	log.Printf("evidence: s3://%s", store.Bucket())
+	return store
 }
 
 type systemClock struct{}

@@ -443,6 +443,19 @@ locals {
       # without a portal the service keeps its own default.
       var.portal_base_url != null ? { OFFER_LINK_BASE_URL = var.portal_base_url } : {}
     )
+
+    # Claims serves the filing of the mobile assistant (HU-M2.2-01), which is
+    # a human route: without the user pool there is no way to tell whose claim
+    # it is and the route is not mounted. The evidence of HU-M2.1-01 goes to
+    # the evidence bucket, and the service signs the upload with the task role.
+    claims = {
+      PORT            = tostring(local.service_port)
+      AUTH_ISSUER     = local.cognito.issuer
+      AUTH_JWKS_URL   = local.cognito.jwks_url
+      AUTH_CLIENT_IDS = join(",", values(local.cognito.client_ids))
+      EVIDENCE_BUCKET = module.buckets["evidence"].bucket
+      AWS_REGION      = data.aws_region.current.region
+    }
   }
 
   # Secrets Manager values of each service (the ECS secrets field): its

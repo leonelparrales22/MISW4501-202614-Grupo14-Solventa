@@ -2,7 +2,7 @@
 
 Recibe, prioriza, evalúa y resuelve siniestros, incluidos los paramétricos que se pagan automáticamente.
 
-**Estado:** `GET /health` y **HU-M2.2-01:** `POST /v1/claims` (radicación del siniestro desde el asistente guiado del móvil), con autenticación Cognito (`pkg/security`) y los casos en **PostgreSQL** (`DATABASE_URL`); sin base de datos quedan en memoria. El resto de módulos sigue reservado.
+**Estado:** `GET /health`, **HU-M2.2-01:** `POST /v1/claims` (radicación del siniestro desde el asistente guiado del móvil), con autenticación Cognito (`pkg/security`) y los casos en **PostgreSQL** (`DATABASE_URL`); sin base de datos quedan en memoria. **HU-M2.1-01:** `POST /v1/claims/evidence/upload-url` (URL firmada con la que el teléfono sube la evidencia directamente al *bucket* `EVIDENCE_BUCKET`), y la evidencia asociada al caso con su ubicación, su instante de captura y su resumen de integridad. El resto de módulos sigue reservado.
 
 ## Responsabilidades
 
@@ -31,7 +31,24 @@ Recibe, prioriza, evalúa y resuelve siniestros, incluidos los paramétricos que
 - **La declaración bajo gravedad de juramento** cierra la radicación: sin ella la solicitud se rechaza.
 - Las respuestas de las preguntas que dependen del tipo viajan en `details` y se guardan como JSON.
 
-Los soportes y la evidencia multimedia **no entran por esta ruta**: son HU-M2.1-01, con el binario en S3.
+La evidencia no viaja en este cuerpo: ya está en el repositorio cuando se radica, y aquí van sus llaves y sus
+metadatos. Entre 4 y 6 fotografías y hasta un video.
+
+## Evidencia del siniestro (HU-M2.1-01)
+
+`POST /v1/claims/evidence/upload-url` emite la URL con la que el teléfono sube una evidencia. Contrato:
+[`docs/contratos/HU-M2.1-01-api.md`](../../docs/contratos/HU-M2.1-01-api.md).
+
+- **El archivo nunca cruza el servicio.** Va del teléfono al *bucket*; el servicio solo firma la subida y
+  después comprueba lo que llegó. Así cabe un video de 30 segundos, que no pasaría por el API Gateway.
+- **La firma fija el objeto:** tipo, tamaño y resumen SHA-256. S3 rechaza un cuerpo cuyo resumen no coincida,
+  de modo que la integridad no depende de que el cliente diga la verdad. La URL vence a los 10 minutos.
+- **La llave sale del `sub` y del resumen:** `evidence/<sub>/<sha256>.jpg`. Un insured no puede escribir en el
+  directorio de otro, ni radicar con una evidencia ajena aunque conozca su llave.
+- **Al radicar se comprueba cada llave** contra el repositorio: existe, es suya, y su tamaño y su resumen son
+  los declarados. Si no, `422` con el código `not_stored` y el caso no se crea.
+- **La ubicación poco precisa no se descarta:** la evidencia queda marcada con `location_trusted` en falso
+  cuando la precisión supera los 50 m.
 
 ## Requisitos de calidad que gobiernan el servicio
 
@@ -62,6 +79,9 @@ Variables que el servicio lee:
 | `PORT` | Escucha en el 8080 |
 | `AUTH_ISSUER`, `AUTH_CLIENT_IDS` | La radicación no se monta: sin *user pool* no hay de quién es el caso |
 | `DATABASE_URL` | Los casos quedan en memoria y se pierden al reiniciar |
+| `EVIDENCE_BUCKET` | **Obligatoria con `AUTH_ISSUER`:** sin el repositorio de evidencia el servicio no arranca, porque la radicación no podría comprobar lo que declara |
+| `EVIDENCE_ENDPOINT_URL` | Solo para una corrida local contra un emulador de S3 (LocalStack); vacía en AWS, donde se usa el servicio real y el rol de la tarea |
+| `AWS_REGION` | Región del SDK de AWS (la plataforma la fija, `us-east-2`) |
 
 El `AUTH_ISSUER` del *user pool* permanente es
 `https://cognito-idp.us-east-2.amazonaws.com/us-east-2_EWwg8NL2C`. Las migraciones se aplican solas al arrancar.

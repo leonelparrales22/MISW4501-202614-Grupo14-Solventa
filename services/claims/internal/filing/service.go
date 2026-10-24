@@ -5,7 +5,9 @@ package filing
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
@@ -14,14 +16,15 @@ import (
 // Service files the claim of an insured: it validates what the assistant
 // collected and stores the case with its filing number.
 type Service struct {
-	claims ports.ClaimRepository
-	clock  ports.Clock
-	newID  func() (string, error)
+	claims   ports.ClaimRepository
+	evidence ports.EvidenceStore
+	clock    ports.Clock
+	newID    func() (string, error)
 }
 
 // NewService builds the service.
-func NewService(claims ports.ClaimRepository, clock ports.Clock) *Service {
-	return &Service{claims: claims, clock: clock, newID: newID}
+func NewService(claims ports.ClaimRepository, evidence ports.EvidenceStore, clock ports.Clock) *Service {
+	return &Service{claims: claims, evidence: evidence, clock: clock, newID: newID}
 }
 
 // File stores the case for the given subject and filing key, and returns it
@@ -31,6 +34,9 @@ func (s *Service) File(ctx context.Context, subject, key string,
 	r domain.FilingRequest) (domain.Claim, bool, error) {
 	c, err := r.Validate(s.clock.Now().UTC())
 	if err != nil {
+		return domain.Claim{}, false, err
+	}
+	if err := s.checkEvidence(ctx, subject, c.Evidence); err != nil {
 		return domain.Claim{}, false, err
 	}
 
@@ -46,6 +52,37 @@ func (s *Service) File(ctx context.Context, subject, key string,
 		return domain.Claim{}, false, err
 	}
 	return stored, created, nil
+}
+
+// checkEvidence confronts every key with the evidence store: the object
+// exists, belongs to whoever is filing, and is the size and the content that
+// were declared. A case that names evidence nobody can open would be a
+// verification impossible to review afterwards.
+func (s *Service) checkEvidence(ctx context.Context, subject string, evidence []domain.Evidence) error {
+	var fields []domain.FieldError
+	for i, e := range evidence {
+		field := domain.FieldError{
+			Field: "evidence." + strconv.Itoa(i) + ".object_key",
+			Code:  domain.CodeNotStored,
+		}
+		if !domain.OwnedBy(e.ObjectKey, subject) {
+			fields = append(fields, field)
+			continue
+		}
+		stored, err := s.evidence.Stat(ctx, e.ObjectKey)
+		switch {
+		case errors.Is(err, ports.ErrEvidenceNotFound):
+			fields = append(fields, field)
+		case err != nil:
+			return fmt.Errorf("read the evidence %s: %w", e.ObjectKey, err)
+		case stored.ByteSize != e.ByteSize, stored.SHA256 != e.SHA256:
+			fields = append(fields, field)
+		}
+	}
+	if len(fields) > 0 {
+		return &domain.ValidationError{Fields: fields}
+	}
+	return nil
 }
 
 // newID returns a random UUID (version 4).

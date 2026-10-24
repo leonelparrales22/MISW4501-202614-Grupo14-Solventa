@@ -29,6 +29,19 @@ al confirmar la declaración.
     "third_party": "yes",
     "police_report": "no"
   },
+  "evidence": [
+    {
+      "object_key": "evidence/9f4ce9cd-85c7-4603-b8e9-0def7c3e1ddd/9f2c4a1e8b0d6f35.jpg",
+      "kind": "photo",
+      "captured_at": "2026-10-20T23:32:14Z",
+      "latitude": 4.7712,
+      "longitude": -74.0452,
+      "accuracy_m": 8,
+      "location_trusted": true,
+      "sha256": "9f2c4a1e8b0d6f35c7a9e1b4d8f0a2c6e4b8d1f3a7c9e5b2d4f6a8c0e2b4d6f8",
+      "byte_size": 312044
+    }
+  ],
   "declaration_accepted": true
 }
 ```
@@ -41,6 +54,7 @@ al confirmar la declaración.
 | `place` | string | 3 a 160 caracteres |
 | `description` | string | 10 a 1000 caracteres |
 | `details` | objeto | Opcional. Las respuestas de las preguntas que dependen del tipo de incidente: hasta 20 claves de 1 a 40 caracteres, con valores de hasta 200 |
+| `evidence` | arreglo | Entre 4 y 6 fotografías y hasta un video, ya subidos al repositorio de evidencia. Cada uno con su llave, su captura, su ubicación y su resumen de integridad: [contrato de HU-M2.1-01](HU-M2.1-01-api.md), sección 3 |
 | `declaration_accepted` | booleano | `true`. La declaración bajo gravedad de juramento es la que cierra la radicación |
 
 ### Respuesta `201`
@@ -53,7 +67,8 @@ al confirmar la declaración.
   "policy_id": "AU-2025-118204",
   "incident_type": "collision",
   "occurred_at": "2026-10-20T23:30:00Z",
-  "filed_at": "2026-10-23T03:10:00Z"
+  "filed_at": "2026-10-23T03:10:00Z",
+  "evidence_count": { "photos": 4, "videos": 1 }
 }
 ```
 
@@ -63,6 +78,7 @@ al confirmar la declaración.
 | `filing_number` | string | Número de radicado: `SIN-<año>-<cinco dígitos>`. Es el que se le muestra al asegurado |
 | `status` | string | `active` al crearse |
 | `filed_at` | RFC 3339, UTC | Instante de la radicación |
+| `evidence_count` | objeto | Lo que quedó asociado al caso: `photos` y `videos` |
 
 ---
 
@@ -91,7 +107,7 @@ al confirmar la declaración.
 }
 ```
 
-Códigos de campo: `required`, `invalid_format`, `out_of_range`.
+Códigos de campo: `required`, `invalid_format`, `out_of_range` y `not_stored`, que es la llave de una evidencia que no está en el repositorio o no pertenece a quien radica.
 
 ---
 
@@ -112,3 +128,6 @@ El caso queda asociado al `sub` del token, no al correo ni al documento. El luga
 asegurado y se guardan tal como llegan, con los espacios de los extremos recortados.
 
 El número de radicado es único en la plataforma y no se reutiliza.
+
+Las evidencias no viajan en este cuerpo: ya están en el repositorio de evidencia cuando se radica, y aquí solo van
+sus llaves y sus metadatos.

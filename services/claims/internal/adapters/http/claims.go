@@ -49,7 +49,24 @@ type filingRequest struct {
 	Place               string            `json:"place"`
 	Description         string            `json:"description"`
 	Details             map[string]string `json:"details"`
+	Evidence            []evidenceBody    `json:"evidence"`
 	DeclarationAccepted bool              `json:"declaration_accepted"`
+}
+
+// evidenceBody is one capture already uploaded to the evidence store: here
+// travel its key and what was true when it was taken (HU-M2.1-01).
+type evidenceBody struct {
+	ObjectKey       string   `json:"object_key"`
+	Kind            string   `json:"kind"`
+	CapturedAt      string   `json:"captured_at"`
+	Latitude        float64  `json:"latitude"`
+	Longitude       float64  `json:"longitude"`
+	AltitudeM       *float64 `json:"altitude_m"`
+	AccuracyM       float64  `json:"accuracy_m"`
+	LocationTrusted bool     `json:"location_trusted"`
+	SHA256          string   `json:"sha256"`
+	ByteSize        int64    `json:"byte_size"`
+	DurationS       int      `json:"duration_s"`
 }
 
 type filingResponse struct {
@@ -60,6 +77,13 @@ type filingResponse struct {
 	IncidentType string `json:"incident_type"`
 	OccurredAt   string `json:"occurred_at"`
 	FiledAt      string `json:"filed_at"`
+	// EvidenceCount is what ended up associated with the case.
+	EvidenceCount evidenceCount `json:"evidence_count"`
+}
+
+type evidenceCount struct {
+	Photos int `json:"photos"`
+	Videos int `json:"videos"`
 }
 
 func fileClaim(svc FilingService) http.HandlerFunc {
@@ -81,6 +105,7 @@ func fileClaim(svc FilingService) http.HandlerFunc {
 		c, created, err := svc.File(req.Context(), claims.Subject, key, domain.FilingRequest{
 			PolicyID: in.PolicyID, IncidentType: in.IncidentType, OccurredAt: in.OccurredAt,
 			Place: in.Place, Description: in.Description, Details: in.Details,
+			Evidence:            evidenceOf(in.Evidence),
 			DeclarationAccepted: in.DeclarationAccepted,
 		})
 
@@ -108,13 +133,41 @@ func fileClaim(svc FilingService) http.HandlerFunc {
 				"claim_id", c.ID, "filing_number", c.FilingNumber)
 		}
 		writeJSON(w, status, filingResponse{
-			ClaimID:      c.ID,
-			FilingNumber: c.FilingNumber,
-			Status:       string(c.Status),
-			PolicyID:     c.PolicyID,
-			IncidentType: string(c.IncidentType),
-			OccurredAt:   c.OccurredAt.UTC().Format(time.RFC3339),
-			FiledAt:      c.FiledAt.UTC().Format(time.RFC3339Nano),
+			ClaimID:       c.ID,
+			FilingNumber:  c.FilingNumber,
+			Status:        string(c.Status),
+			PolicyID:      c.PolicyID,
+			IncidentType:  string(c.IncidentType),
+			OccurredAt:    c.OccurredAt.UTC().Format(time.RFC3339),
+			FiledAt:       c.FiledAt.UTC().Format(time.RFC3339Nano),
+			EvidenceCount: countOf(c.Evidence),
 		})
 	}
+}
+
+// evidenceOf translates the body into what the domain validates.
+func evidenceOf(in []evidenceBody) []domain.EvidenceRequest {
+	out := make([]domain.EvidenceRequest, 0, len(in))
+	for _, e := range in {
+		out = append(out, domain.EvidenceRequest{
+			ObjectKey: e.ObjectKey, Kind: e.Kind, CapturedAt: e.CapturedAt,
+			Latitude: e.Latitude, Longitude: e.Longitude, AltitudeM: e.AltitudeM,
+			AccuracyM: e.AccuracyM, LocationTrusted: e.LocationTrusted,
+			SHA256: e.SHA256, ByteSize: e.ByteSize, DurationS: e.DurationS,
+		})
+	}
+	return out
+}
+
+// countOf summarizes the evidence of the case for the answer.
+func countOf(evidence []domain.Evidence) evidenceCount {
+	var out evidenceCount
+	for _, e := range evidence {
+		if e.Kind == domain.KindVideo {
+			out.Videos++
+			continue
+		}
+		out.Photos++
+	}
+	return out
 }
