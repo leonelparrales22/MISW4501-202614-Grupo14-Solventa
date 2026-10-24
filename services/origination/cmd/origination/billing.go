@@ -26,8 +26,9 @@ const (
 // Demonstration coverage terms: the values the contractual document used
 // before the real charge existed. Since HU-W1.2-03 a personalized offer carries
 // its own insured amount, term and coverages, and its charge activates them
-// (decision D-16 of HA-D02); only the demo (demo-…) and adjusted (adj-…)
-// offers, which carry none, keep these.
+// (decision D-16 of HA-D02), and so does the adjusted offer (adj-…) of a
+// personalized offer (decision D-5 a of the fix C5); only the demo (demo-…)
+// offers and their adjusted offers, which carry none, keep these.
 const (
 	demoInsuredAmount = 250_000_000
 	demoTermMonths    = 120

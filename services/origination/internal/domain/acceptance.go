@@ -14,10 +14,13 @@ type Offer struct {
 	Mode         OfferMode
 	ProfileScore float64
 	ExpiresAt    time.Time
-	// Terms are the coverage terms the offer activates once it is paid. Only
-	// a personalized offer carries them (HU-W1.2-03, priced by the rating
-	// engine); the demo and adjusted offers leave them empty and their charge
-	// activates the demonstration terms (HA-D02, decision D-16).
+	// Terms are the coverage terms the offer activates once it is paid. A
+	// personalized offer carries them (HU-W1.2-03, priced by the rating
+	// engine) and so does the adjusted offer of a personalized offer, which
+	// keeps the terms of the offer it adjusts (decision D-5 a of the fix C5);
+	// the demo offers, and the adjusted offers of a demo offer, leave them
+	// empty and their charge activates the demonstration terms (HA-D02,
+	// decision D-16).
 	Terms CoverageTerms
 }
 

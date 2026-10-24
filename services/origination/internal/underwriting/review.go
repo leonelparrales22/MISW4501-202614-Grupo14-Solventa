@@ -184,14 +184,19 @@ func adjustedTerms(req domain.ReviewRequest, pct float64, now time.Time) *domain
 }
 
 // createAdjustedOffer stores the offer of a recorded adjust decision with
-// exactly its terms, and the customer, applicant, mode and score of the request
-// that underwriting routed (its snapshot of the routed offer, decision D-7 a).
-// Nothing comes from the routed offer read again nor from the token of the
-// advisor who decided: the advisor is never the owner nor the applicant of an
-// offer (fix C5, decision #75). Create is idempotent by id, so a retry or the
-// losing advisor's request completes it without creating a second offer.
+// exactly its terms, and the customer, applicant, mode, score and coverage
+// terms of the request that underwriting routed (its snapshot of the routed
+// offer, decision D-7 a). The coverage terms (insured amount, term and
+// coverages) are those of the routed offer, so the charge of the adjusted offer
+// activates them (decision D-5 a); they are empty when the routed offer carried
+// none. Nothing comes from the routed offer read again nor from the token of
+// the advisor who decided: the advisor is never the owner nor the applicant of
+// an offer (fix C5, decision #75). Create is idempotent by id, so a retry or
+// the losing advisor's request completes it without creating a second offer.
 func (s *ReviewService) createAdjustedOffer(ctx context.Context, c domain.ReviewCase) error {
 	terms := c.Decision.AdjustedOffer
+	coverage := c.Request.Terms
+	coverage.Coverages = append([]domain.Coverage(nil), coverage.Coverages...)
 	if err := s.d.OfferWriter.Create(ctx, domain.Offer{
 		ID:           terms.ID,
 		CustomerID:   c.Request.CustomerID,
@@ -201,6 +206,7 @@ func (s *ReviewService) createAdjustedOffer(ctx context.Context, c domain.Review
 		Mode:         c.Request.OfferMode,
 		ProfileScore: c.Request.ProfileScore,
 		ExpiresAt:    terms.ExpiresAt,
+		Terms:        coverage,
 	}); err != nil {
 		return fmt.Errorf("could not create the adjusted offer: %w", err)
 	}

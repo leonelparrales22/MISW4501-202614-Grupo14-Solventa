@@ -383,6 +383,43 @@ func TestAdjustUsesTheSnapshotAndNeverReadsTheRoutedOffer(t *testing.T) {
 	assert.Equal(t, domain.AcceptanceAdjusted, e.acceptance(t, "acc-1").Status)
 }
 
+// D-5 a (fix C5): the adjusted offer keeps the coverage terms of the routed
+// offer (insured amount, term and coverages), from the snapshot of the request.
+func TestTheAdjustedOfferKeepsTheTermsOfTheRoutedOffer(t *testing.T) {
+	e := newEnv(t, true)
+	ctx := context.Background()
+	terms := domain.CoverageTerms{InsuredAmount: 180_000_000, TermMonths: 60, Coverages: []domain.Coverage{
+		{Code: domain.CoverageDeath, InsuredAmount: 180_000_000},
+		{Code: domain.CoverageDisability, InsuredAmount: 90_000_000},
+	}}
+	_, _, err := e.acceptances.Create(ctx, domain.Acceptance{
+		ID: "acc-1", OfferID: "off-1", CustomerID: "cust-1", Channel: domain.ChannelWeb, AcceptedAt: t0,
+		Status:   domain.AcceptanceInReview,
+		Decision: &domain.UnderwritingDecision{Outcome: domain.UnderwritingHumanReview, Reason: domain.ReviewReasonHighRiskScore, DecidedAt: t0},
+	})
+	require.NoError(t, err)
+	require.NoError(t, e.reviews.Enqueue(ctx, domain.ReviewRequest{
+		AcceptanceID: "acc-1", OfferID: "off-1", CustomerID: "cust-1",
+		Applicant: domain.Applicant{FullName: "Ana", DocumentID: "1020304050", Email: "ana@example.com"},
+		Premium:   137_600, Currency: "COP", Reason: domain.ReviewReasonHighRiskScore, ReceivedAt: t0,
+		OfferMode: domain.ModeNormal, ProfileScore: 0.9, OfferExpiresAt: t0.Add(24 * time.Hour), Terms: terms,
+	}))
+
+	_, err = e.svc.Decide(advisor, "acc-1", adjust(10, "Recargo"))
+	require.NoError(t, err)
+
+	stored, err := e.offers.OfferStub.Get(ctx, "adj-acc-1")
+	require.NoError(t, err)
+	assert.Equal(t, terms, stored.Terms)
+	assert.InDelta(t, 151_360.0, stored.Premium, 1e-9)
+	c, err := e.reviews.ReviewQueueStub.Get(ctx, "acc-1")
+	require.NoError(t, err)
+	c.Request.Terms.Coverages[0].InsuredAmount = 1
+	again, err := e.offers.OfferStub.Get(ctx, "adj-acc-1")
+	require.NoError(t, err)
+	assert.InDelta(t, 180_000_000, again.Terms.Coverages[0].InsuredAmount, 0.001, "the offer never shares the request coverages")
+}
+
 // B14: applying again the decision of a completed case answers that it is
 // already decided without touching the offers, even when they fail: it never
 // becomes a 503.
