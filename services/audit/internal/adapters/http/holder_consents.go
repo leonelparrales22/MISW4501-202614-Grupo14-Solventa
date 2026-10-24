@@ -28,6 +28,7 @@ type HolderConsentService interface {
 // Cognito JWT is verified with pkg/security, only the insured role reads them
 // and the holder is always the account of the token, never a parameter
 // (criterion 6). Only GET exists: the routes are read-only (criterion 4).
+// The revocation of HU-M1.3-02 is mounted apart, by WithHolderRevocations.
 func WithHolderConsents(svc HolderConsentService, verifier security.Verifier) Option {
 	return func(r chi.Router) {
 		r.Group(func(r chi.Router) {
@@ -66,7 +67,13 @@ type holderConsentBody struct {
 	ExpiresAt           time.Time        `json:"expires_at"`
 	EndedAt             *time.Time       `json:"ended_at"`
 	RevocationReceiptID *string          `json:"revocation_receipt_id"`
-	History             []historyBody    `json:"history"`
+	// Revocable tells the app whether to offer the revocation (HU-M1.3-02
+	// criterion 6): only an active consent can be revoked.
+	Revocable bool `json:"revocable"`
+	// Revocation is the revocation that ended the consent, with the state of
+	// the notice to each entity; null when it was not revoked.
+	Revocation *revocationBody `json:"revocation"`
+	History    []historyBody   `json:"history"`
 }
 
 type holderConsentList struct {
@@ -155,6 +162,7 @@ func holderConsentFrom(v domain.ConsentView) holderConsentBody {
 		out.EndedAt = &ended
 	}
 	out.RevocationReceiptID = optional(v.RevocationReceiptID)
+	out.Revocable, out.Revocation = v.Revocable, revocationFrom(c.ID, v.Revocation)
 	for _, h := range v.History {
 		out.History = append(out.History, historyBody{
 			Status: h.Status, OccurredAt: h.OccurredAt.UTC(), ReceiptID: optional(h.ReceiptID),

@@ -7,9 +7,12 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,7 +23,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/idempotency"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
+	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/http"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/pdf"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/postgres"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/consents"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/ports"
 )
@@ -321,4 +328,108 @@ func TestAConsentIsNotVerifiedAsActiveRightAfterItsRevocation(t *testing.T) {
 	status, other := e.do(http.MethodGet, "/v1/audit/consent-verifications?customer_id=cust-b", "", "")
 	require.Equal(t, http.StatusOK, status)
 	assert.Equal(t, true, other["active"], "the consent of another customer is not affected")
+}
+
+// holderRouter mounts the holder's routes of HU-M1.3-01 and HU-M1.3-02 over
+// the real stores, as cmd/audit does, with A (sub-a) and B (sub-b) linked.
+func (e *env) holderRouter(t *testing.T) http.Handler {
+	t.Helper()
+	ctx := context.Background()
+	links := postgres.NewHolderLinkStore(e.db)
+	for _, l := range []domain.HolderLink{
+		{Subject: "sub-a", DocumentID: "1020304050", CustomerID: "cus-a", LinkedAt: e.clock.Now(), EventID: "customer-linked-cus-a"},
+		{Subject: "sub-b", DocumentID: "9988776655", CustomerID: "cus-b", LinkedAt: e.clock.Now(), EventID: "customer-linked-cus-b"},
+	} {
+		_, _, err := links.Link(ctx, l)
+		require.NoError(t, err)
+	}
+	consentStore, events := postgres.NewConsentStore(e.db), postgres.NewConsentEventStore(e.db)
+	names := domain.EntityNames{"aliado-banco-1": "Banco Aliado"}
+	holders := consents.NewHolderService(consentStore, events, links, e.clock, names)
+	revocations := consents.NewRevocationService(consents.RevocationDeps{
+		Consents: consentStore, Events: events, Revocations: postgres.NewRevocationStore(e.db), Notices: postgres.NewNoticeStore(e.db),
+		Receipts: pdf.NewUncompressed(), Clock: e.clock, Names: names,
+	})
+	verifier := tokenVerifier{
+		"insured-a": {Subject: "sub-a", Roles: []security.Role{security.RoleInsured}},
+		"insured-b": {Subject: "sub-b", Roles: []security.Role{security.RoleInsured}},
+	}
+	return httpadapter.NewRouter(httpadapter.WithHolderConsents(holders, verifier),
+		httpadapter.WithHolderRevocations(holders, revocations, verifier))
+}
+
+func send(h http.Handler, method, target, token, key, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// CA-3, CA-4 and CA-6 over HTTP against PostgreSQL: the record exists when the
+// 201 arrives, the consent shows revoked and not revocable, the same key
+// returns the same revocation, another key is a conflict, the receipt is a
+// PDF and B never reaches A's consent.
+func TestTheHolderRevokesOverHTTPAgainstTheRealStores(t *testing.T) {
+	e := newEnv(t)
+	id := e.grantFor(t, "cust-a", "app-a", "1020304050")
+	h := e.holderRouter(t)
+	e.clock.set(e.clock.Now().Add(time.Hour))
+	key := "0b7e3f5a-2c1d-4e8f-9a6b-1c2d3e4f5a6b"
+	requested := e.clock.Now().Add(-3 * time.Second).Format(time.RFC3339)
+	body := `{"requested_at":"` + requested + `","device":"Google Pixel 8","confirmation_method":"biometric"}`
+
+	rec := send(h, http.MethodPost, "/v1/consents/"+id+"/revocations", "insured-a", key, body)
+
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	assert.Equal(t, 1, e.count(t, `SELECT count(*) FROM consent_revocation WHERE consent_id = $1 AND requested_at = $2
+		AND channel = 'mobile_app' AND device = 'Google Pixel 8' AND actor_type = 'holder' AND actor_id = 'sub-a'
+		AND request_id = $3`, id, requested, key), "recorded with every field of CA-4 before the answer")
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Equal(t, "revoked", out["status"])
+	assert.True(t, domain.ValidReceiptNumber(out["receipt_number"].(string)))
+	assert.Equal(t, "in_progress", out["notice_status"])
+
+	detail := send(h, http.MethodGet, "/v1/consents/"+id, "insured-a", "", "")
+	require.Equal(t, http.StatusOK, detail.Code)
+	var consent map[string]any
+	require.NoError(t, json.Unmarshal(detail.Body.Bytes(), &consent))
+	assert.Equal(t, "revoked", consent["status"])
+	assert.Equal(t, false, consent["revocable"])
+	assert.Equal(t, out["receipt_number"], consent["revocation_receipt_id"])
+
+	again := send(h, http.MethodPost, "/v1/consents/"+id+"/revocations", "insured-a", key, body)
+	assert.Equal(t, http.StatusOK, again.Code)
+	assert.JSONEq(t, rec.Body.String(), again.Body.String(), "the same revocation")
+	other := send(h, http.MethodPost, "/v1/consents/"+id+"/revocations", "insured-a", "1b7e3f5a-2c1d-4e8f-9a6b-1c2d3e4f5a6b", body)
+	assert.Equal(t, http.StatusConflict, other.Code)
+	assert.Equal(t, 1, e.count(t, "SELECT count(*) FROM consent_revocation"))
+
+	receipt := send(h, http.MethodGet, "/v1/consents/"+id+"/revocation-receipt", "insured-a", "", "")
+	require.Equal(t, http.StatusOK, receipt.Code)
+	assert.Equal(t, "application/pdf", receipt.Header().Get("Content-Type"))
+	assert.Contains(t, receipt.Body.String(), out["receipt_number"].(string))
+	assert.Contains(t, receipt.Body.String(), "******4050")
+
+	assert.Equal(t, http.StatusNotFound, send(h, http.MethodGet, "/v1/consents/"+id+"/revocation-receipt", "insured-b", "", "").Code)
+	assert.Equal(t, http.StatusNotFound, send(h, http.MethodPost, "/v1/consents/"+id+"/revocations", "insured-b",
+		"2b7e3f5a-2c1d-4e8f-9a6b-1c2d3e4f5a6b", body).Code)
+}
+
+func TestAnExpiredConsentCannotBeRevokedOverHTTP(t *testing.T) {
+	e := newEnv(t)
+	id := e.grantFor(t, "cust-a", "app-a", "1020304050")
+	h := e.holderRouter(t)
+	e.clock.set(e.clock.Now().AddDate(1, 0, 0))
+
+	rec := send(h, http.MethodPost, "/v1/consents/"+id+"/revocations", "insured-a", "0b7e3f5a-2c1d-4e8f-9a6b-1c2d3e4f5a6b",
+		`{"requested_at":"`+e.clock.Now().Format(time.RFC3339)+`","device":"Pixel","confirmation_method":"password"}`)
+
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Contains(t, rec.Body.String(), "consent_not_active")
+	assert.Equal(t, 0, e.count(t, "SELECT count(*) FROM consent_revocation"))
 }
