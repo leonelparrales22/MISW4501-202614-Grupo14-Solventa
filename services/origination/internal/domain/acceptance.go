@@ -116,6 +116,15 @@ type Acceptance struct {
 
 // ReviewRequest is what the advisor inbox (HU-W1.1-02) receives when
 // underwriting routes an acceptance to a human decision (CA-3).
+//
+// It keeps a snapshot of the routed offer (decision D-7 a of the fix C5): its
+// premium and currency, its mode, profile score, validity and coverage terms,
+// taken by the acceptance processor from the offer it already read. The inbox
+// opens and decides a case from the snapshot and never reads the routed offer
+// again, so a case is complete by itself: it is opened and decided the same
+// way after a restart, whatever kind of offer was routed. The snapshot is
+// exact, because an offer with an acceptance is never replaced and offers are
+// immutable.
 type ReviewRequest struct {
 	AcceptanceID string
 	OfferID      string
@@ -125,4 +134,11 @@ type ReviewRequest struct {
 	Currency     string
 	Reason       string
 	ReceivedAt   time.Time
+
+	// OfferMode, ProfileScore, OfferExpiresAt and Terms are the snapshot of
+	// the routed offer. Terms are empty when the routed offer carries none.
+	OfferMode      OfferMode
+	ProfileScore   float64
+	OfferExpiresAt time.Time
+	Terms          CoverageTerms
 }
