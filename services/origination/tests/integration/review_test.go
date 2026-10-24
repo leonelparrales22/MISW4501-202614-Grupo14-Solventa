@@ -111,7 +111,7 @@ func newReviewEnv(t *testing.T, failFirst int) *reviewEnv {
 	go worker.Run(ctx)
 
 	svc := underwriting.NewReviewService(underwriting.ReviewDeps{
-		Reviews: reviews, Acceptances: acceptances, Offers: offers, OfferWriter: offers, Clock: clock,
+		Reviews: reviews, Acceptances: acceptances, OfferWriter: offers, Clock: clock,
 		AcceptanceResumed: processor.Notify, NotificationScheduled: worker.Notify,
 	})
 	srv := httptest.NewServer(httpadapter.NewRouter(profiling.NewResolver(nil, nil, clock),

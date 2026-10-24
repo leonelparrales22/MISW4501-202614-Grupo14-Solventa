@@ -10,7 +10,6 @@ import (
 	auditadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/audit"
 	emailadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/email"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/memory"
-	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/orchestrator"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/profiling"
@@ -53,39 +52,26 @@ func loadOfferConfig(getenv func(string) string, cfg *offerConfig) error {
 // offerWiring is the personalized offer (HU-W1.2-03), ready to serve.
 type offerWiring struct {
 	// router serves every offer id to the acceptance, the advisor inbox and the
-	// charge: the demo and adjusted offers from the stub, the rest from the store.
+	// charge: the demo offers from the stub, the adjusted offers from their
+	// store and the rest from the personalized offers.
 	router  *memory.OfferRouter
 	service *orchestrator.OfferService
 	// acceptances is the store the acceptance service writes and the requote
-	// worker reads.
-	acceptances *memory.AcceptanceStore
+	// worker reads; reviews is the advisor inbox over the same database.
+	acceptances ports.AcceptanceRepository
+	reviews     ports.ReviewRepository
 }
 
-// newOfferWiring builds the personalized offer service over PostgreSQL (its own
-// pool, with the migrations applied) or, without DATABASE_URL, over memory. It
-// starts the requote worker when the consent can be verified (AUDIT_URL), since
-// a provisional offer must not be replaced for a customer whose consent is
+// newOfferWiring builds the personalized offer service over origination's
+// stores (newStores: PostgreSQL with DATABASE_URL, memory otherwise). It starts
+// the requote worker when the consent can be verified (AUDIT_URL), since a
+// provisional offer must not be replaced for a customer whose consent is
 // unknown.
-func newOfferWiring(ctx context.Context, cfg config, resolver *profiling.Resolver) (offerWiring, error) {
+func newOfferWiring(ctx context.Context, cfg config, resolver *profiling.Resolver, st stores) offerWiring {
 	clock := systemClock{}
-	var store ports.PersonalizedOfferStore = memory.NewPersonalizedOfferStore()
-	if cfg.offers.databaseURL != "" {
-		db, err := postgres.Open(ctx, cfg.offers.databaseURL)
-		if err != nil {
-			return offerWiring{}, err
-		}
-		if err := postgres.Migrate(ctx, db); err != nil {
-			_ = db.Close()
-			return offerWiring{}, err
-		}
-		store = postgres.NewOfferStore(db)
-		log.Printf("personalized offers (HU-W1.2-03): PostgreSQL migrated, immutable offer table")
-	} else {
-		log.Printf("%s is not set: personalized offers are kept in memory and lost on restart (HU-W1.2-03)", envDatabaseURL)
-	}
-
-	router := memory.NewOfferRouter(memory.NewOfferStub(clock), store)
-	acceptances := memory.NewAcceptanceStore()
+	store := st.offers
+	router := st.router()
+	acceptances := st.acceptances
 
 	var consents ports.ConsentVerifier
 	if cfg.audit.url != "" {
@@ -110,7 +96,7 @@ func newOfferWiring(ctx context.Context, cfg config, resolver *profiling.Resolve
 	} else {
 		log.Printf("AUDIT_URL is not set: the requote of provisional offers is not running (HU-W1.2-03)")
 	}
-	return offerWiring{router: router, service: service, acceptances: acceptances}, nil
+	return offerWiring{router: router, service: service, acceptances: acceptances, reviews: st.reviews}
 }
 
 // newRequoteNotifier returns the e-mail notice of the requote, or nil without

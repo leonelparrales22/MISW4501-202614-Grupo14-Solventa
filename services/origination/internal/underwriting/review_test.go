@@ -42,7 +42,7 @@ func newEnv(t *testing.T, withNotices bool) *env {
 		scheduled:   &counter{},
 	}
 	deps := underwriting.ReviewDeps{
-		Reviews: e.reviews, Acceptances: e.acceptances, Offers: e.offers, OfferWriter: e.offers, Clock: clock,
+		Reviews: e.reviews, Acceptances: e.acceptances, OfferWriter: e.offers, Clock: clock,
 		AcceptanceResumed: e.resumed.inc,
 	}
 	if withNotices {
@@ -69,6 +69,7 @@ func (e *env) route(t *testing.T, acceptanceID, offerID, reason string) domain.O
 	require.NoError(t, e.reviews.Enqueue(ctx, domain.ReviewRequest{
 		AcceptanceID: acceptanceID, OfferID: offerID, CustomerID: "cust-1", Applicant: offer.Applicant,
 		Premium: offer.Premium, Currency: offer.Currency, Reason: reason, ReceivedAt: now,
+		OfferMode: offer.Mode, ProfileScore: offer.ProfileScore, OfferExpiresAt: offer.ExpiresAt, Terms: offer.Terms,
 	}))
 	return offer
 }
@@ -129,16 +130,22 @@ func TestListAndGetShowTheRoutedRequest(t *testing.T) {
 	assert.ErrorIs(t, err, ports.ErrReviewRequestNotFound)
 }
 
-func TestGetLeavesTheOfferFieldsEmptyWhenTheOfferCannotBeRead(t *testing.T) {
+// D-7 a (fix C5): the detail takes the mode and the validity from the snapshot
+// of the request, so it is complete even when the routed offer is gone (a demo
+// offer after a restart); the routed offer is never read.
+func TestGetTakesTheOfferFieldsFromTheSnapshotWithoutReadingTheOffer(t *testing.T) {
 	e := newEnv(t, true)
-	e.route(t, "acc-1", "demo-review-1", domain.ReviewReasonProvisionalOffer)
+	offer := e.route(t, "acc-1", "demo-review-1", domain.ReviewReasonProvisionalOffer)
 	e.offers.getErr = errors.New("offers down")
+	before, _ := e.offers.calls()
 
 	got, err := e.svc.Get(advisor, "acc-1")
 	require.NoError(t, err)
 	assert.Equal(t, "acc-1", got.Case.Request.AcceptanceID)
-	assert.Empty(t, got.OfferMode)
-	assert.True(t, got.OfferExpiresAt.IsZero())
+	assert.Equal(t, domain.ModeProvisional, got.OfferMode)
+	assert.Equal(t, offer.ExpiresAt, got.OfferExpiresAt)
+	after, _ := e.offers.calls()
+	assert.Equal(t, before, after, "the routed offer is never read")
 }
 
 // CA-3 accept + CA-4: the acceptance goes back to the processor, approved.
@@ -206,6 +213,41 @@ func TestAdjustCreatesTheNewOfferAndSchedulesTheNotice(t *testing.T) {
 		*c.Notification)
 	assert.Equal(t, 1, e.scheduled.count())
 	assert.Zero(t, e.resumed.count())
+}
+
+// CF-10 (fix C5, decision #75): the adjusted offer belongs to the customer of
+// the request that underwriting routed, with its applicant; never to the
+// advisor who decided, who only appears as decided_by.
+func TestTheAdjustedOfferBelongsToTheCustomerOfTheRequest(t *testing.T) {
+	e := newEnv(t, true)
+	offer, err := e.offers.OfferStub.Get(as(security.RoleInsured, "cust-1"), "demo-review-1")
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, _, err = e.acceptances.Create(ctx, domain.Acceptance{
+		ID: "acc-1", OfferID: offer.ID, CustomerID: "cust-1", Channel: domain.ChannelWeb, AcceptedAt: t0,
+		Status:   domain.AcceptanceInReview,
+		Decision: &domain.UnderwritingDecision{Outcome: domain.UnderwritingHumanReview, Reason: domain.ReviewReasonProvisionalOffer, DecidedAt: t0},
+	})
+	require.NoError(t, err)
+	// The request carries the customer data underwriting saw; it differs from
+	// the demo applicant of the stub on purpose, to tell where it comes from.
+	applicant := domain.Applicant{FullName: "Ana María Pérez", DocumentID: "1020304050", Email: "ana@example.com"}
+	require.NoError(t, e.reviews.Enqueue(ctx, domain.ReviewRequest{
+		AcceptanceID: "acc-1", OfferID: offer.ID, CustomerID: "cust-1", Applicant: applicant,
+		Premium: offer.Premium, Currency: offer.Currency, Reason: domain.ReviewReasonProvisionalOffer, ReceivedAt: t0,
+		OfferMode: offer.Mode, ProfileScore: offer.ProfileScore, OfferExpiresAt: offer.ExpiresAt,
+	}))
+
+	c, err := e.svc.Decide(as(security.RoleAdvisor, "adv-9"), "acc-1", adjust(10, "Recargo"))
+	require.NoError(t, err)
+
+	stored, err := e.offers.OfferStub.Get(ctx, "adj-acc-1")
+	require.NoError(t, err)
+	assert.Equal(t, "cust-1", stored.CustomerID)
+	assert.Equal(t, applicant, stored.Applicant)
+	assert.NotEqual(t, "adv-9", stored.CustomerID)
+	assert.Equal(t, domain.Advisor{ID: "adv-9", Email: "adv-9@example.com"}, c.Decision.Advisor, "the advisor is only decided_by")
+	assert.Equal(t, "cust-1", e.acceptance(t, "acc-1").CustomerID)
 }
 
 // CA-3 reject: the case is closed and the customer notified.
@@ -314,16 +356,92 @@ func TestAFailedRecordLeavesTheCasePending(t *testing.T) {
 	assert.Equal(t, "adj-acc-1", c.Decision.AdjustedOffer.ID)
 }
 
-// To adjust, the routed offer must be readable before the claim: nothing is
-// recorded otherwise.
-func TestTheRoutedOfferMustBeReadableToAdjust(t *testing.T) {
+// D-7 a (fix C5): to adjust, the routed offer is not read. The adjusted offer is
+// built from the snapshot of the request, so a demo case whose offer was lost
+// (a restart) is adjusted all the same, and the offer belongs to the customer.
+func TestAdjustUsesTheSnapshotAndNeverReadsTheRoutedOffer(t *testing.T) {
+	e := newEnv(t, true)
+	routed := e.route(t, "acc-1", "demo-highrisk-1", domain.ReviewReasonHighRiskScore)
+	// The demo offer is gone, as after a restart, and reading it fails.
+	e.offers.OfferStub = memory.NewOfferStub(e.clock)
+	e.offers.getErr = errors.New("offers down")
+	before, _ := e.offers.calls()
+
+	c, err := e.svc.Decide(advisor, "acc-1", adjust(10, "Recargo"))
+	require.NoError(t, err)
+
+	after, _ := e.offers.calls()
+	assert.Equal(t, before, after, "the routed offer is never read")
+	assert.InDelta(t, 98450.0, c.Decision.AdjustedOffer.Premium, 1e-9, "the premium of the snapshot with the surcharge")
+	e.offers.getErr = nil
+	stored, err := e.offers.OfferStub.Get(context.Background(), "adj-acc-1")
+	require.NoError(t, err)
+	assert.Equal(t, "cust-1", stored.CustomerID)
+	assert.Equal(t, routed.Applicant, stored.Applicant)
+	assert.Equal(t, routed.Mode, stored.Mode)
+	assert.InDelta(t, routed.ProfileScore, stored.ProfileScore, 1e-9)
+	assert.Equal(t, domain.AcceptanceAdjusted, e.acceptance(t, "acc-1").Status)
+}
+
+// D-5 a (fix C5): the adjusted offer keeps the coverage terms of the routed
+// offer (insured amount, term and coverages), from the snapshot of the request.
+func TestTheAdjustedOfferKeepsTheTermsOfTheRoutedOffer(t *testing.T) {
+	e := newEnv(t, true)
+	ctx := context.Background()
+	terms := domain.CoverageTerms{InsuredAmount: 180_000_000, TermMonths: 60, Coverages: []domain.Coverage{
+		{Code: domain.CoverageDeath, InsuredAmount: 180_000_000},
+		{Code: domain.CoverageDisability, InsuredAmount: 90_000_000},
+	}}
+	_, _, err := e.acceptances.Create(ctx, domain.Acceptance{
+		ID: "acc-1", OfferID: "off-1", CustomerID: "cust-1", Channel: domain.ChannelWeb, AcceptedAt: t0,
+		Status:   domain.AcceptanceInReview,
+		Decision: &domain.UnderwritingDecision{Outcome: domain.UnderwritingHumanReview, Reason: domain.ReviewReasonHighRiskScore, DecidedAt: t0},
+	})
+	require.NoError(t, err)
+	require.NoError(t, e.reviews.Enqueue(ctx, domain.ReviewRequest{
+		AcceptanceID: "acc-1", OfferID: "off-1", CustomerID: "cust-1",
+		Applicant: domain.Applicant{FullName: "Ana", DocumentID: "1020304050", Email: "ana@example.com"},
+		Premium:   137_600, Currency: "COP", Reason: domain.ReviewReasonHighRiskScore, ReceivedAt: t0,
+		OfferMode: domain.ModeNormal, ProfileScore: 0.9, OfferExpiresAt: t0.Add(24 * time.Hour), Terms: terms,
+	}))
+
+	_, err = e.svc.Decide(advisor, "acc-1", adjust(10, "Recargo"))
+	require.NoError(t, err)
+
+	stored, err := e.offers.OfferStub.Get(ctx, "adj-acc-1")
+	require.NoError(t, err)
+	assert.Equal(t, terms, stored.Terms)
+	assert.InDelta(t, 151_360.0, stored.Premium, 1e-9)
+	c, err := e.reviews.ReviewQueueStub.Get(ctx, "acc-1")
+	require.NoError(t, err)
+	c.Request.Terms.Coverages[0].InsuredAmount = 1
+	again, err := e.offers.OfferStub.Get(ctx, "adj-acc-1")
+	require.NoError(t, err)
+	assert.InDelta(t, 180_000_000, again.Terms.Coverages[0].InsuredAmount, 0.001, "the offer never shares the request coverages")
+}
+
+// B14: applying again the decision of a completed case answers that it is
+// already decided without touching the offers, even when they fail: it never
+// becomes a 503.
+func TestReapplyingACompletedAdjustNeverTouchesTheOffers(t *testing.T) {
 	e := newEnv(t, true)
 	e.route(t, "acc-1", "demo-review-1", domain.ReviewReasonProvisionalOffer)
-	e.offers.getErr = errors.New("offers down")
+	first, err := e.svc.Decide(advisor, "acc-1", adjust(10, "Recargo"))
+	require.NoError(t, err)
+	gets, creates := e.offers.calls()
+	e.offers.getErr, e.offers.createErr = errors.New("offers down"), errors.New("offers down")
 
-	_, err := e.svc.Decide(advisor, "acc-1", adjust(10, "x"))
-	assert.ErrorIs(t, err, underwriting.ErrDecisionNotRegistered)
-	assert.Len(t, e.reviews.Pending(), 1, "nothing was recorded")
+	for _, in := range []domain.DecisionInput{adjust(10, "Recargo"), adjust(30, "Otro"), accept, reject} {
+		c, err := e.svc.Decide(as(security.RoleAdvisor, "adv-2"), "acc-1", in)
+		require.ErrorIs(t, err, ports.ErrReviewAlreadyDecided, in.Type)
+		assert.NotErrorIs(t, err, underwriting.ErrContinuationPending, in.Type)
+		assert.Equal(t, first.Decision, c.Decision, in.Type)
+	}
+	g, cr := e.offers.calls()
+	assert.Equal(t, gets, g, "no read of the offers")
+	assert.Equal(t, creates, cr, "the adjusted offer is not created again")
+	assert.Equal(t, domain.AcceptanceAdjusted, e.acceptance(t, "acc-1").Status)
+	assert.Equal(t, 1, e.scheduled.count(), "the notice is scheduled once")
 }
 
 // B-1: the offer is created after the claim. If creating it fails, the
@@ -536,7 +654,7 @@ func TestTheDecisionIsReturnedWhenTheRefreshFails(t *testing.T) {
 	reads := 0
 	failing := &refreshFailing{reviews: e.reviews, failOn: 1, reads: &reads}
 	svc := underwriting.NewReviewService(underwriting.ReviewDeps{
-		Reviews: failing, Acceptances: e.acceptances, Offers: e.offers, OfferWriter: e.offers, Clock: e.clock,
+		Reviews: failing, Acceptances: e.acceptances, OfferWriter: e.offers, Clock: e.clock,
 	})
 
 	c, err := svc.Decide(advisor, "acc-1", reject)

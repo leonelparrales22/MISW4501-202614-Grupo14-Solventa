@@ -60,11 +60,13 @@ func TestNewOfferWiringWithoutDatabaseOrAuditKeepsOffersInMemoryAndFailsClosed(t
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	w, err := newOfferWiring(ctx, cfg, profiling.NewResolver(nil, nil, systemClock{}))
-
+	st, err := newStores(ctx, cfg.offers.databaseURL, systemClock{})
 	require.NoError(t, err)
+	w := newOfferWiring(ctx, cfg, profiling.NewResolver(nil, nil, systemClock{}), st)
+
 	require.NotNil(t, w.router)
 	require.NotNil(t, w.acceptances)
+	require.NotNil(t, w.reviews)
 	_, genErr := w.service.Generate(ctx, domain.EmbeddedOfferRequest{
 		CustomerID: "c1", ConsentID: "cns-1", PartnerID: "p", ApplicationID: "a", DocumentID: "1020304050",
 		FullName: "Ana Pérez", Email: "ana@example.com", BirthDate: "1985-03-14", InsuredAmount: 250_000_000, TermMonths: 120,
@@ -80,24 +82,12 @@ func TestNewOfferWiringWithAuditStartsTheRequoteWorker(t *testing.T) {
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	w, err := newOfferWiring(ctx, cfg, profiling.NewResolver(nil, nil, systemClock{}))
+	st, err := newStores(ctx, cfg.offers.databaseURL, systemClock{})
+	require.NoError(t, err)
+	w := newOfferWiring(ctx, cfg, profiling.NewResolver(nil, nil, systemClock{}), st)
 	cancel()
 
-	require.NoError(t, err)
 	assert.NotNil(t, w.service)
-}
-
-func TestNewOfferWiringFailsWithAnUnreachableDatabase(t *testing.T) {
-	m := requiredEnv()
-	m["DATABASE_URL"] = "postgres://o:x@127.0.0.1:1/origination?sslmode=disable&connect_timeout=1"
-	cfg, err := loadConfig(env(m))
-	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	_, err = newOfferWiring(ctx, cfg, profiling.NewResolver(nil, nil, systemClock{}))
-
-	assert.Error(t, err)
 }
 
 func TestRequoteNotifierNeedsTheEmailProvider(t *testing.T) {

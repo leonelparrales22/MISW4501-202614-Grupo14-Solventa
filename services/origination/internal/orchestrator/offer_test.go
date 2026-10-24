@@ -355,6 +355,24 @@ func TestGetServesAdjustedAndDemoOffersWithAReducedView(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// CF-10 (fix C5, decision #75): reading a demo offer that does not exist with an
+// advisor or operations token finds nothing and creates nothing in their name.
+func TestGetOfADemoOfferThatDoesNotExistNeverCreatesItForStaff(t *testing.T) {
+	e := newOfferEnv()
+	for _, role := range []security.Role{security.RoleAdvisor, security.RoleOperations} {
+		_, err := e.svc.Get(as(role, "staff"), "demo-review-staff")
+		assert.ErrorIs(t, err, ports.ErrOfferNotFound, role)
+	}
+	_, err := e.router.Get(context.Background(), "demo-review-staff")
+	assert.ErrorIs(t, err, ports.ErrOfferNotFound, "no demo offer was stored")
+
+	_, err = e.svc.Get(as(security.RoleInsured, "sub-a"), "demo-review-staff")
+	require.NoError(t, err, "the insured still gets it")
+	v, err := e.svc.Get(as(security.RoleAdvisor, "adv"), "demo-review-staff")
+	require.NoError(t, err)
+	assert.Equal(t, "sub-a", v.Reduced.CustomerID, "the owner stays the insured")
+}
+
 func TestRenewRequiresAnExpiredOffer(t *testing.T) {
 	e := newOfferEnv()
 	o := generated(t, e)

@@ -129,13 +129,20 @@ func (a *acceptances) Update(ctx context.Context, acc domain.Acceptance) error {
 	return a.AcceptanceStore.Update(ctx, acc)
 }
 
-// offers wraps the in-memory offers to inject failures.
+// offers wraps the in-memory offers to inject failures and count the calls.
+// The review service only writes through it: since the snapshot of D-7 a it
+// never reads an offer, and gets counts any read that would happen.
 type offers struct {
 	*memory.OfferStub
 	getErr, createErr error
+	mu                sync.Mutex
+	gets, creates     int
 }
 
 func (o *offers) Get(ctx context.Context, id string) (domain.Offer, error) {
+	o.mu.Lock()
+	o.gets++
+	o.mu.Unlock()
 	if o.getErr != nil {
 		return domain.Offer{}, o.getErr
 	}
@@ -143,10 +150,19 @@ func (o *offers) Get(ctx context.Context, id string) (domain.Offer, error) {
 }
 
 func (o *offers) Create(ctx context.Context, offer domain.Offer) error {
+	o.mu.Lock()
+	o.creates++
+	o.mu.Unlock()
 	if o.createErr != nil {
 		return o.createErr
 	}
 	return o.OfferStub.Create(ctx, offer)
+}
+
+func (o *offers) calls() (gets, creates int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.gets, o.creates
 }
 
 // recordingNotifier records the notices and fails while errs has elements.
