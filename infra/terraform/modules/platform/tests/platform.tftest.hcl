@@ -311,6 +311,29 @@ run "inbox_and_exceptions_are_routed" {
   }
 }
 
+# HU-M2.2-01: the mobile app files the claim through the gateway.
+run "the_claim_filing_is_a_human_route" {
+  command = plan
+
+  assert {
+    condition = (
+      toset(var.human_routes["claims"].methods) == toset(["POST"]) &&
+      var.human_routes["claims"].root_methods == null
+    )
+    error_message = "POST /v1/claims is a human route: the insured files on their own behalf."
+  }
+
+  assert {
+    condition     = !contains(keys(var.public_routes), "claims")
+    error_message = "The filing needs a session: it is never a public route."
+  }
+
+  assert {
+    condition     = contains(local.services.claims.paths, "/v1/claims*")
+    error_message = "The ALB sends /v1/claims* to the claims service."
+  }
+}
+
 # HA-D02: the signed link of the e-mail opens the document without a session.
 run "the_document_link_is_public" {
   command = plan
