@@ -40,8 +40,13 @@ type Customer struct {
 	// CognitoSub is the subject of the account in the user pool. Empty while
 	// the registration has not created it (HU-M1.1-01).
 	CognitoSub string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// DocumentFrontKey and DocumentBackKey are where the two faces of the
+	// identity document went in the document store (HU-M1.1-01). Both are
+	// empty for a customer an advisor quoted for, who captured no document.
+	DocumentFrontKey string
+	DocumentBackKey  string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // Registered tells whether the customer already has an account to sign in with.

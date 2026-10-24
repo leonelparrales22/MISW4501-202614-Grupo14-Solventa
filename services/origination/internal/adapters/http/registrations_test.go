@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,18 +34,28 @@ func rutaDeRegistro(svc httpadapter.RegistrationService) http.Handler {
 	return httpadapter.NewRouter(&fakeResolver{}, httpadapter.WithRegistrations(svc))
 }
 
+// Las caras del documento viajan en base64. Quien juzga la imagen es el
+// dominio, así que aquí basta con que el campo llegue.
+const (
+	frenteEnBase64  = "ZnJlbnRlLWRlbC1kb2N1bWVudG8="
+	reversoEnBase64 = "cmV2ZXJzby1kZWwtZG9jdW1lbnRv"
+)
+
 const cuerpoDeRegistro = `{"document_id":"1020345678","full_name":"Carolina Pérez Ruiz",` +
-	`"email":"carolina.perez@example.com","birth_date":"1992-04-18","password":"Solventa2026!"}`
+	`"email":"carolina.perez@example.com","birth_date":"1992-04-18","password":"Solventa2026!",` +
+	`"document_front":"` + frenteEnBase64 + `","document_back":"` + reversoEnBase64 + `"}`
 
 func clienteRegistrado() domain.Customer {
 	return domain.Customer{
-		ID:         "cus-1",
-		DocumentID: "1020345678",
-		FullName:   "Carolina Pérez Ruiz",
-		Email:      "carolina.perez@example.com",
-		BirthDate:  time.Date(1992, 4, 18, 0, 0, 0, 0, time.UTC),
-		CognitoSub: "sub-carolina",
-		CreatedAt:  issuedAt,
+		ID:               "cus-1",
+		DocumentID:       "1020345678",
+		FullName:         "Carolina Pérez Ruiz",
+		Email:            "carolina.perez@example.com",
+		BirthDate:        time.Date(1992, 4, 18, 0, 0, 0, 0, time.UTC),
+		CognitoSub:       "sub-carolina",
+		DocumentFrontKey: "identity-documents/aaaa.jpg",
+		DocumentBackKey:  "identity-documents/bbbb.jpg",
+		CreatedAt:        issuedAt,
 	}
 }
 
@@ -61,8 +72,30 @@ func TestElRegistroDevuelveElClienteCreado(t *testing.T) {
 	assert.Equal(t, "sub-carolina", body["subject"])
 	assert.Equal(t, "carolina.perez@example.com", body["email"])
 
-	// El cuerpo llega completo al caso de uso.
+	// El cuerpo llega completo al caso de uso, las dos caras incluidas.
 	assert.Equal(t, "Solventa2026!", svc.recibida.Password)
+	assert.Equal(t, frenteEnBase64, svc.recibida.DocumentFront)
+	assert.Equal(t, reversoEnBase64, svc.recibida.DocumentBack)
+}
+
+// La respuesta nombra el objeto de cada cara: con eso se ubica la imagen en el
+// repositorio documental sin tener que leerla de vuelta.
+func TestLaRespuestaNombraElObjetoDeCadaCara(t *testing.T) {
+	rec, body := callQuotes(rutaDeRegistro(&registroFalso{cliente: clienteRegistrado()}),
+		http.MethodPost, "/v1/registrations", "", cuerpoDeRegistro)
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+	caras, _ := body["identity_documents"].([]any)
+	require.Len(t, caras, 2)
+	frente, _ := caras[0].(map[string]any)
+	reverso, _ := caras[1].(map[string]any)
+	assert.Equal(t, "front", frente["face"])
+	assert.Equal(t, "identity-documents/aaaa.jpg", frente["object_key"])
+	assert.Equal(t, "back", reverso["face"])
+	assert.Equal(t, "identity-documents/bbbb.jpg", reverso["object_key"])
+
+	// La imagen entra, pero no vuelve a salir: lo que se devuelve es su llave.
+	assert.NotContains(t, rec.Body.String(), frenteEnBase64)
 }
 
 // La ruta es pública: no se exige encabezado de autorización.
@@ -87,6 +120,18 @@ func TestUnCuerpoQueNoEsJSONSeRechaza(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Equal(t, "invalid_request", body["error"])
+}
+
+// El tope del cuerpo deja holgura para las dos caras y nada más.
+func TestUnCuerpoMasGrandeQueElTopeSeRechaza(t *testing.T) {
+	svc := &registroFalso{cliente: clienteRegistrado()}
+	enorme := `{"document_front":"` + strings.Repeat("A", 5<<20) + `"}`
+
+	rec, body := callQuotes(rutaDeRegistro(svc), http.MethodPost, "/v1/registrations", "", enorme)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "invalid_request", body["error"])
+	assert.Empty(t, svc.recibida.DocumentFront, "no llega al caso de uso")
 }
 
 func TestLosCamposInvalidosSeDevuelvenTodosJuntos(t *testing.T) {

@@ -19,6 +19,9 @@ func solicitud() domain.RegistrationRequest {
 		Email:      "carolina.perez@example.com",
 		BirthDate:  "1992-04-18",
 		Password:   "Solventa2026!",
+		// Las dos caras del documento, como las envía el cliente móvil.
+		DocumentFront: jpegEnBase64(0x11),
+		DocumentBack:  jpegEnBase64(0x22),
 	}
 }
 
@@ -34,9 +37,10 @@ func camposInvalidos(t *testing.T, err error) []string {
 }
 
 func TestUnaSolicitudCompletaProduceElCliente(t *testing.T) {
-	c, err := solicitud().Validate(registeredAt)
+	registro, err := solicitud().Validate(registeredAt)
 
 	require.NoError(t, err)
+	c := registro.Customer
 	assert.Equal(t, "1020345678", c.DocumentID)
 	assert.Equal(t, "Carolina Pérez Ruiz", c.FullName)
 	assert.Equal(t, "carolina.perez@example.com", c.Email)
@@ -50,7 +54,8 @@ func TestUnaSolicitudVaciaInformaTodosLosCampos(t *testing.T) {
 	_, err := domain.RegistrationRequest{}.Validate(registeredAt)
 
 	assert.ElementsMatch(t,
-		[]string{"document_id", "full_name", "email", "birth_date", "password"},
+		[]string{"document_id", "full_name", "email", "birth_date", "password",
+			"document_front", "document_back"},
 		camposInvalidos(t, err))
 }
 
@@ -60,9 +65,10 @@ func TestLosCamposSeNormalizanAntesDeValidarse(t *testing.T) {
 	r.FullName = "  Carolina   Pérez   Ruiz "
 	r.Email = " carolina.perez@example.com "
 
-	c, err := r.Validate(registeredAt)
+	registro, err := r.Validate(registeredAt)
 
 	require.NoError(t, err)
+	c := registro.Customer
 	assert.Equal(t, "1020345678", c.DocumentID)
 	assert.Equal(t, "Carolina Pérez Ruiz", c.FullName, "los espacios internos se colapsan")
 	assert.Equal(t, "carolina.perez@example.com", c.Email)

@@ -14,33 +14,43 @@ import (
 // an account.
 var ErrAlreadyRegistered = errors.New("the person already has an account")
 
-// RegistrationService signs up an insured: it stores the customer and creates
-// the account they sign in with.
+// RegistrationService signs up an insured: it keeps the two faces of their
+// identity document, stores the customer and creates the account they sign in
+// with.
 type RegistrationService struct {
 	customers ports.CustomerRepository
+	documents ports.DocumentStore
 	identity  ports.IdentityProvider
 	clock     ports.Clock
 	newID     func() (string, error)
 }
 
 // NewRegistrationService builds the service.
-func NewRegistrationService(customers ports.CustomerRepository, identity ports.IdentityProvider,
-	clock ports.Clock) *RegistrationService {
-	return &RegistrationService{customers: customers, identity: identity, clock: clock, newID: newID}
+func NewRegistrationService(customers ports.CustomerRepository, documents ports.DocumentStore,
+	identity ports.IdentityProvider, clock ports.Clock) *RegistrationService {
+	return &RegistrationService{
+		customers: customers, documents: documents, identity: identity, clock: clock, newID: newID,
+	}
 }
 
-// Register stores the customer, creates the account and returns the customer
-// with its subject.
+// Register keeps the identity document, stores the customer, creates the
+// account and returns the customer with its subject.
 //
-// The customer is written before the account exists. A failure creating the
+// The order is the one that leaves no claim without its backing: the faces go
+// to the document store first, because the customer records the key of each
+// one; then the customer, before the account exists. A failure creating the
 // account leaves a customer without a subject, which is a registration that
 // can be retried; the opposite order would leave an account nobody owns.
 func (s *RegistrationService) Register(ctx context.Context, r domain.RegistrationRequest) (domain.Customer, error) {
-	c, err := r.Validate(s.clock.Now().UTC())
+	registration, err := r.Validate(s.clock.Now().UTC())
 	if err != nil {
 		return domain.Customer{}, err
 	}
+	c := registration.Customer
 	if err := s.free(ctx, c.DocumentID, c.Email); err != nil {
+		return domain.Customer{}, err
+	}
+	if err := s.keep(ctx, registration); err != nil {
 		return domain.Customer{}, err
 	}
 
@@ -72,8 +82,22 @@ func (s *RegistrationService) Register(ctx context.Context, r domain.Registratio
 	if err != nil {
 		return domain.Customer{}, err
 	}
-	slog.InfoContext(ctx, "insured registered", "customer_id", registered.ID)
+	slog.InfoContext(ctx, "insured registered", "customer_id", registered.ID,
+		"document_front_key", registered.DocumentFrontKey, "document_back_key", registered.DocumentBackKey)
 	return registered, nil
+}
+
+// keep writes the two faces of the identity document. The key of each one is
+// derived from its content, so writing the same face again is the same object:
+// a retried sign-up neither duplicates the image nor collides with the
+// immutability of the store.
+func (s *RegistrationService) keep(ctx context.Context, registration domain.Registration) error {
+	for _, d := range registration.Documents() {
+		if err := s.documents.Put(ctx, d.Key(), d.Content, d.ContentType()); err != nil {
+			return fmt.Errorf("store the %s of the identity document: %w", d.Face, err)
+		}
+	}
+	return nil
 }
 
 // free reports ErrAlreadyRegistered when the document or the email belongs to
