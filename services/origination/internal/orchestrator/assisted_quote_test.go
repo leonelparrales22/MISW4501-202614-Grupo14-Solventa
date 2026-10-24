@@ -263,6 +263,9 @@ func (b brokenCustomers) GetByEmail(context.Context, string) (domain.Customer, e
 func (b brokenCustomers) Save(context.Context, domain.Customer) (domain.Customer, error) {
 	return domain.Customer{}, b.err
 }
+func (b brokenCustomers) Link(context.Context, domain.Customer, domain.CustomerLinked) (domain.Customer, error) {
+	return domain.Customer{}, b.err
+}
 
 type brokenRater struct{}
 

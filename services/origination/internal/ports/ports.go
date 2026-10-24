@@ -125,6 +125,12 @@ type CustomerRepository interface {
 	// Save creates the customer, or updates the one with the same document id
 	// keeping its ID, and returns the stored customer.
 	Save(ctx context.Context, c domain.Customer) (domain.Customer, error)
+	// Link saves the customer with its account subject, as Save does, and
+	// writes the CustomerLinked event to the outbox in the same transaction
+	// (HU-M1.3-01): the subject is never stored without its event, nor the
+	// event without the subject. It is idempotent by the event id: linking
+	// the same customer again writes no second event.
+	Link(ctx context.Context, c domain.Customer, e domain.CustomerLinked) (domain.Customer, error)
 }
 
 // ErrAccountExists is returned by an IdentityProvider when the email already

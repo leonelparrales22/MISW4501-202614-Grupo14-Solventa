@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/events"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/memory"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/orchestrator"
@@ -315,4 +317,63 @@ func TestSinElDocumentoNoSeEscribeNada(t *testing.T) {
 	assert.ErrorAs(t, err, &invalid)
 	assert.Zero(t, almacen.escrituras)
 	assert.Zero(t, proveedor.llamadas)
+}
+
+// HU-M1.3-01: the subject and the CustomerLinked event are written together,
+// so audit can recognize the holder of the consents.
+func TestRegisterLinksTheAccountAndWritesTheEventToTheOutbox(t *testing.T) {
+	proveedor := &proveedorFalso{sub: "sub-carolina"}
+	clientes, svc := servicioDeRegistro(proveedor)
+
+	c, err := svc.Register(context.Background(), solicitudValida())
+	require.NoError(t, err)
+
+	pending := clientes.Outbox().Pending()
+	require.Len(t, pending, 1)
+	assert.Equal(t, "customer-linked-"+c.ID, pending[0].EventID)
+	assert.Equal(t, domain.EventTypeCustomerLinked, pending[0].EventType)
+	e, err := events.Decode(pending[0].Body)
+	require.NoError(t, err)
+	assert.Equal(t, registroEn, e.OccurredAt)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(e.Payload, &payload))
+	assert.Equal(t, map[string]any{
+		"customer_id": c.ID, "subject": "sub-carolina", "document_id": "1020345678", "linked_at": "2026-10-22T15:00:00Z",
+	}, payload)
+}
+
+func TestRegisterWritesNoEventWhenTheAccountIsNotCreated(t *testing.T) {
+	proveedor := &proveedorFalso{err: errors.New("the user pool does not answer")}
+	clientes, svc := servicioDeRegistro(proveedor)
+
+	_, err := svc.Register(context.Background(), solicitudValida())
+
+	require.Error(t, err)
+	assert.Empty(t, clientes.Outbox().Pending(), "no subject, no link")
+}
+
+// failingLink is the customer repository whose Link fails, as when the
+// database is down after the account was created.
+type failingLink struct {
+	*memory.CustomerStore
+	err error
+}
+
+func (f failingLink) Link(context.Context, domain.Customer, domain.CustomerLinked) (domain.Customer, error) {
+	return domain.Customer{}, f.err
+}
+
+func TestRegisterLinkFailureLeavesTheCustomerWithoutSubjectAsBefore(t *testing.T) {
+	boom := errors.New("the database is down")
+	store := memory.NewCustomerStore()
+	repo := failingLink{CustomerStore: store, err: boom}
+	svc := orchestrator.NewRegistrationService(repo, nuevoAlmacen(), &proveedorFalso{}, relojFijo{t: registroEn})
+
+	_, err := svc.Register(context.Background(), solicitudValida())
+
+	assert.ErrorIs(t, err, boom)
+	stored, err := store.GetByDocument(context.Background(), "1020345678")
+	require.NoError(t, err)
+	assert.False(t, stored.Registered(), "the customer stays without subject and the registration can be retried")
+	assert.Empty(t, store.Outbox().Pending())
 }

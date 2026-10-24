@@ -80,18 +80,12 @@ func (s *CustomerStore) GetByEmail(ctx context.Context, email string) (domain.Cu
 	return c, nil
 }
 
-// Save creates the customer, or updates the one with the same document id
-// keeping its id and the instant it was created.
-//
-// cognito_sub and the keys of the identity document are only written when they
-// come with a value, so saving the customer again does not erase the account it
-// already has nor the faces it already captured.
-func (s *CustomerStore) Save(ctx context.Context, c domain.Customer) (domain.Customer, error) {
-	now := time.Now().UTC()
-	if c.CreatedAt.IsZero() {
-		c.CreatedAt = now
-	}
-	stored, _, err := s.one(ctx, `INSERT INTO customer (`+customerColumns+`)
+// upsertCustomer is the write of Save and Link: it creates the customer, or
+// updates the one with the same document id keeping its id and the instant it
+// was created. cognito_sub and the keys of the identity document are only
+// written when they come with a value, so saving the customer again does not
+// erase the account it already has nor the faces it already captured.
+const upsertCustomer = `INSERT INTO customer (` + customerColumns + `)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
 		ON CONFLICT (document_id) DO UPDATE SET
 			full_name = EXCLUDED.full_name,
@@ -101,11 +95,63 @@ func (s *CustomerStore) Save(ctx context.Context, c domain.Customer) (domain.Cus
 			document_front_key = COALESCE(EXCLUDED.document_front_key, customer.document_front_key),
 			document_back_key = COALESCE(EXCLUDED.document_back_key, customer.document_back_key),
 			updated_at = EXCLUDED.updated_at
-		RETURNING `+customerColumns,
+		RETURNING ` + customerColumns
+
+// queryRower is a *sql.DB or a *sql.Tx.
+type queryRower interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func upsert(ctx context.Context, q queryRower, c domain.Customer) (domain.Customer, error) {
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = time.Now().UTC()
+	}
+	stored, err := scanCustomer(q.QueryRowContext(ctx, upsertCustomer,
 		c.ID, c.DocumentID, c.FullName, c.Email, c.BirthDate.UTC(), nullString(c.CognitoSub),
-		nullString(c.DocumentFrontKey), nullString(c.DocumentBackKey), c.CreatedAt.UTC())
+		nullString(c.DocumentFrontKey), nullString(c.DocumentBackKey), c.CreatedAt.UTC()))
 	if err != nil {
 		return domain.Customer{}, fmt.Errorf("save the customer with document %s: %w", c.DocumentID, err)
+	}
+	return stored, nil
+}
+
+// Save creates the customer, or updates the one with the same document id
+// keeping its id and the instant it was created (see upsertCustomer).
+func (s *CustomerStore) Save(ctx context.Context, c domain.Customer) (domain.Customer, error) {
+	return upsert(ctx, s.db, c)
+}
+
+// Link saves the customer with its subject and writes the CustomerLinked event
+// to outbox_event in the same transaction (HU-M1.3-01): if either write fails
+// neither stays. The event id is the primary key of the outbox, so linking the
+// same customer again writes no second event.
+func (s *CustomerStore) Link(ctx context.Context, c domain.Customer, e domain.CustomerLinked) (domain.Customer, error) {
+	env, err := e.Envelope()
+	if err != nil {
+		return domain.Customer{}, fmt.Errorf("build the CustomerLinked event: %w", err)
+	}
+	body, err := env.Encode()
+	if err != nil {
+		return domain.Customer{}, fmt.Errorf("encode the CustomerLinked event: %w", err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Customer{}, fmt.Errorf("link the customer with document %s: %w", c.DocumentID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stored, err := upsert(ctx, tx, c)
+	if err != nil {
+		return domain.Customer{}, err
+	}
+	if stored.ID != e.CustomerID {
+		return domain.Customer{}, fmt.Errorf("link the customer with document %s: the event is for customer %s, not %s",
+			c.DocumentID, e.CustomerID, stored.ID)
+	}
+	if err := insertOutboxEvent(ctx, tx, env.EventID, env.EventType, body, env.OccurredAt); err != nil {
+		return domain.Customer{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Customer{}, fmt.Errorf("link the customer with document %s: %w", c.DocumentID, err)
 	}
 	return stored, nil
 }
