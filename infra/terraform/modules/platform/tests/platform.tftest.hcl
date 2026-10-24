@@ -671,6 +671,58 @@ run "audit_is_discoverable_by_origination" {
   }
 }
 
+run "only_origination_creates_accounts_in_the_user_pool" {
+  command = plan
+
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+
+  assert {
+    condition = anytrue([
+      for st in local.task_role_statements.origination : (
+        st.sid == "CreateInsuredAccounts" &&
+        length(st.actions) == 3 &&
+        contains(st.actions, "cognito-idp:AdminCreateUser") &&
+        contains(st.actions, "cognito-idp:AdminSetUserPassword") &&
+        contains(st.actions, "cognito-idp:AdminAddUserToGroup") &&
+        st.resources == ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"]
+      )
+    ])
+    error_message = "Origination can only create the account, set its password and add it to its group, on that user pool (HU-M1.1-01)."
+  }
+
+  assert {
+    condition = alltrue([
+      for k, sts in local.task_role_statements : k == "origination" || alltrue([
+        for st in sts : st.sid != "CreateInsuredAccounts"
+      ])
+    ])
+    error_message = "No other service touches the user pool."
+  }
+
+  assert {
+    condition     = local.service_environment.origination.COGNITO_USER_POOL_ID == "us-east-2_PermTest1"
+    error_message = "Origination receives the user pool it creates the accounts in."
+  }
+}
+
+run "origination_environment_cannot_override_the_user_pool" {
+  command = plan
+
+  variables {
+    origination_environment = { COGNITO_USER_POOL_ID = "us-east-2_Otro" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
+
 run "origination_environment_cannot_override_audit_url" {
   command = plan
 

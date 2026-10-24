@@ -396,6 +396,14 @@ locals {
         actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"]
         resources = [for q in s.consumes : module.messaging.queue_arns[q]]
       }],
+      # The sign-up of the insured creates the account (HU-M1.1-01). Only
+      # origination, only on this user pool, and only the three actions the
+      # sign-up performs: it cannot read, list or delete users.
+      k != "origination" ? [] : [{
+        sid       = "CreateInsuredAccounts"
+        actions   = ["cognito-idp:AdminCreateUser", "cognito-idp:AdminSetUserPassword", "cognito-idp:AdminAddUserToGroup"]
+        resources = [local.cognito.user_pool_arn]
+      }],
     )
   }
 
@@ -411,9 +419,11 @@ locals {
       EMAIL_URL        = "http://email.${local.namespace}:${local.stubs.email}"
       # Setting this is what enables the premium charge (HA-D02).
       PAYMENT_GATEWAY_URL = "http://payment-gateway.${local.namespace}:${local.stubs["payment-gateway"]}"
-      AUTH_ISSUER         = local.cognito.issuer
-      AUTH_JWKS_URL       = local.cognito.jwks_url
-      AUTH_CLIENT_IDS     = join(",", values(local.cognito.client_ids))
+      # Setting this is what mounts the sign-up of the insured (HU-M1.1-01).
+      COGNITO_USER_POOL_ID = local.cognito.user_pool_id
+      AUTH_ISSUER          = local.cognito.issuer
+      AUTH_JWKS_URL        = local.cognito.jwks_url
+      AUTH_CLIENT_IDS      = join(",", values(local.cognito.client_ids))
       # Consent verification of HU-W1.2-01 (and of the personalized offer of
       # HU-W1.2-03): audit through Cloud Map, never through the API Gateway,
       # where GET /v1/audit/consent-verifications is not published. If audit
