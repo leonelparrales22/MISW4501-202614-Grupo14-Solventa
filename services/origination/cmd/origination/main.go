@@ -75,6 +75,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("could not set up origination's database: %v", err)
 	}
+	// HU-M1.3-01: the relay publishes the outbox (CustomerLinked) to the
+	// topic of origination; without EVENTS_TOPIC_ARN the events stay there.
+	relay, err := newEventRelay(context.Background(), cfg.events, st.outbox)
+	if err != nil {
+		log.Fatalf("could not set up the domain events: %v", err)
+	}
+	if relay != nil {
+		go relay.Run(context.Background())
+	}
 	offers := newOfferWiring(context.Background(), cfg, resolver, st)
 	cfg.acceptances.offers, cfg.acceptances.acceptanceStore, cfg.acceptances.reviewStore = offers.router, offers.acceptances, offers.reviews
 
@@ -220,6 +229,9 @@ type config struct {
 
 	// Explicit consent verified with the audit service (HU-W1.2-01).
 	audit auditConfig
+
+	// Domain events published from the outbox (HU-M1.3-01).
+	events eventsConfig
 
 	// Personalized offer (HU-W1.2-03).
 	offers offerConfig
@@ -529,6 +541,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadOfferConfig(getenv, &cfg.offers); err != nil {
+		return config{}, err
+	}
+	if err := loadEventsConfig(getenv, &cfg.events); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
