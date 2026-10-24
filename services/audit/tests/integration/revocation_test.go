@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -292,4 +293,32 @@ func TestARecordAfterTheLeaseExpiredAndAnotherClaimIsLost(t *testing.T) {
 	_, err = store.Confirm(ctx, fresh, now.Add(1700*time.Millisecond), idempotency.Outcome{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, e.count(t, "SELECT count(*) FROM consent_event WHERE status = 'revocation_confirmed'"))
+}
+
+// Criterion 3: the verification origination asks before any query answers
+// active=false as soon as the revocation is recorded; another customer's
+// consent is not affected.
+func TestAConsentIsNotVerifiedAsActiveRightAfterItsRevocation(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	id := e.grantFor(t, "cust-a", "app-a", "1020304050")
+	e.grantFor(t, "cust-b", "app-b", "9988776655")
+
+	status, before := e.do(http.MethodGet, "/v1/audit/consent-verifications?customer_id=cust-a", "", "")
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, true, before["active"])
+
+	rev, notices := revocationFor(t, e, id, "req-1", "aliado-banco-1")
+	_, _, err := postgres.NewRevocationStore(e.db).Record(ctx, rev, notices)
+	require.NoError(t, err)
+
+	status, after := e.do(http.MethodGet, "/v1/audit/consent-verifications?customer_id=cust-a", "", "")
+	require.Equal(t, http.StatusOK, status)
+	assert.Equal(t, false, after["active"], "inactive at once, with no wait for the entities")
+	assert.Equal(t, id, after["consent_id"])
+	assert.Equal(t, []any{}, after["sources"])
+
+	status, other := e.do(http.MethodGet, "/v1/audit/consent-verifications?customer_id=cust-b", "", "")
+	require.Equal(t, http.StatusOK, status)
+	assert.Equal(t, true, other["active"], "the consent of another customer is not affected")
 }

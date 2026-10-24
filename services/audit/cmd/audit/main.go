@@ -77,9 +77,11 @@ func main() {
 		if err := postgres.Migrate(context.Background(), db); err != nil {
 			log.Fatalf("could not migrate the database: %v", err)
 		}
-		consentStore := postgres.NewConsentStore(db)
-		svc := consents.NewService(consentStore, systemClock{})
-		holders := consents.NewHolderService(consentStore, postgres.NewConsentEventStore(db), postgres.NewHolderLinkStore(db),
+		consentStore, eventStore := postgres.NewConsentStore(db), postgres.NewConsentEventStore(db)
+		// Verify answers with the derived status: a revoked consent is not
+		// active from the instant it is recorded (HU-M1.3-02 criterion 3).
+		svc := consents.NewService(consentStore, systemClock{}, consents.WithEvents(eventStore))
+		holders := consents.NewHolderService(consentStore, eventStore, postgres.NewHolderLinkStore(db),
 			systemClock{}, cfg.partnerNames)
 		log.Printf("consents (HU-W1.2-01): append-only records in PostgreSQL; terms %s", svc.CurrentTerms().Version)
 		var verifier security.Verifier
