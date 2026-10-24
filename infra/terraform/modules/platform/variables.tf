@@ -217,9 +217,11 @@ variable "human_routes" {
     # only needs POST; the reads of the case come with HU-M2.4-01.
     claims = { methods = ["POST"] }
     # The insured reads their own consents from the mobile app (HU-M1.3-01):
-    # GET /v1/consents and GET /v1/consents/{consent_id}, read-only. The
-    # revocation of HU-M1.3-02 adds POST.
-    consents = { methods = ["GET"] }
+    # GET /v1/consents and GET /v1/consents/{consent_id}. The revocation of
+    # HU-M1.3-02 adds POST under the consent (POST
+    # /v1/consents/{consent_id}/revocations; GET .../revocation-receipt is a
+    # GET); the root /v1/consents stays read-only.
+    consents = { methods = ["GET", "POST"], root_methods = ["GET"] }
   }
 }
 

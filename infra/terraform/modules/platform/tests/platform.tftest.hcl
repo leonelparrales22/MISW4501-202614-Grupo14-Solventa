@@ -633,8 +633,9 @@ run "offers_root_is_partner_and_sub_paths_are_human" {
     error_message = "The root /v1/offers belongs to the partner; /v1/offers/{offer_id}, renewal and acceptance keep Cognito."
   }
 
+  # consents sets its root to GET only (HU-M1.3-02); it has its own test.
   assert {
-    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if k != "offers"])
+    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents"], k)])
     error_message = "Every other human route keeps its root as before."
   }
 }
@@ -758,17 +759,19 @@ run "origination_environment_cannot_override_audit_url" {
 
 # --- HU-M1.3-01: the insured reads their consents; origination and audit talk by events ---
 
-run "consents_are_a_read_only_human_route_of_audit" {
+run "consents_are_a_human_route_of_audit" {
   command = plan
 
+  # HU-M1.3-01 made it read-only; HU-M1.3-02 adds POST under the consent for
+  # the revocation, and the root /v1/consents stays read-only.
   assert {
     condition = (
-      toset(var.human_routes["consents"].methods) == toset(["GET"]) &&
-      var.human_routes["consents"].root_methods == null &&
+      toset(var.human_routes["consents"].methods) == toset(["GET", "POST"]) &&
+      toset(var.human_routes["consents"].root_methods) == toset(["GET"]) &&
       !contains(keys(var.partner_routes), "consents") &&
       !contains(keys(var.public_routes), "consents")
     )
-    error_message = "GET /v1/consents and /v1/consents/{consent_id} are human routes behind the Cognito authorizer, read-only (CA-4)."
+    error_message = "GET /v1/consents* and POST /v1/consents/{consent_id}/revocations are human routes behind the Cognito authorizer; the root /v1/consents is GET only."
   }
 
   assert {
@@ -880,4 +883,28 @@ run "origination_environment_cannot_replace_the_events_topic" {
   }
 
   expect_failures = [var.origination_environment]
+}
+
+# --- HU-M1.3-02: the insured revokes a consent; audit notifies the entities ---
+
+run "audit_notifies_the_entities_through_the_open_finance_stub" {
+  command = plan
+
+  assert {
+    condition = (
+      local.service_environment.audit.OPEN_FINANCE_URL == "http://openfinance.${local.namespace}:9000" &&
+      local.service_environment.audit.OPEN_FINANCE_URL == local.service_environment.origination.OPEN_FINANCE_URL
+    )
+    error_message = "audit reaches the Open Finance stub by Cloud Map, at the same address as origination (decision D-2 a)."
+  }
+
+  assert {
+    condition     = local.service_environment.audit.REVOCATION_NOTICE_DEADLINE_SECONDS == "300"
+    error_message = "Every entity has 5 minutes to confirm a revocation (RN-02)."
+  }
+
+  assert {
+    condition     = contains(keys(local.stubs), "openfinance")
+    error_message = "The Open Finance stub keeps running behind Cloud Map."
+  }
 }
