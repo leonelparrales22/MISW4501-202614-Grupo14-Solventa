@@ -71,6 +71,22 @@ func (m *memStore) LatestByCustomer(_ context.Context, customerID string) (domai
 	return own[0], nil
 }
 
+func (m *memStore) ListByHolder(_ context.Context, document string) ([]domain.Consent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return nil, m.err
+	}
+	var own []domain.Consent
+	for _, r := range m.rows {
+		if domain.NormalizeDocument(r.Holder.DocumentID) == document {
+			own = append(own, r)
+		}
+	}
+	sort.Slice(own, func(i, j int) bool { return own[i].GrantedAt.After(own[j].GrantedAt) })
+	return own, nil
+}
+
 type fakeClock struct{ now time.Time }
 
 func (c *fakeClock) Now() time.Time { return c.now }

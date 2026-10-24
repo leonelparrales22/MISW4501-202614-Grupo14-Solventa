@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"io/fs"
 	"os"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/ports"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/migrations"
 )
 
 // One PostgreSQL container for the package, started by the first test that
@@ -247,7 +249,9 @@ func TestMigrateTwiceChangesNothing(t *testing.T) {
 
 	var n int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&n))
-	assert.Equal(t, 1, n)
+	files, err := fs.Glob(migrations.FS, "*.sql")
+	require.NoError(t, err)
+	assert.Equal(t, len(files), n, "each embedded migration once")
 }
 
 func TestMigrateRunsOnceWhenSeveralTasksStartAtOnce(t *testing.T) {

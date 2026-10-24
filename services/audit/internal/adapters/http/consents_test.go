@@ -70,6 +70,21 @@ func (m *memStore) LatestByCustomer(_ context.Context, customerID string) (domai
 	return domain.Consent{}, ports.ErrConsentNotFound
 }
 
+func (m *memStore) ListByHolder(_ context.Context, document string) ([]domain.Consent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return nil, m.err
+	}
+	var own []domain.Consent
+	for i := len(m.rows) - 1; i >= 0; i-- {
+		if domain.NormalizeDocument(m.rows[i].Holder.DocumentID) == domain.NormalizeDocument(document) {
+			own = append(own, m.rows[i])
+		}
+	}
+	return own, nil
+}
+
 type fixedClock struct{ now time.Time }
 
 func (c fixedClock) Now() time.Time { return c.now }
