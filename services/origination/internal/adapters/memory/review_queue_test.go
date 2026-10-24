@@ -168,6 +168,27 @@ func TestReviewQueueReturnsCopies(t *testing.T) {
 	assert.Zero(t, again.Notification.Attempts)
 }
 
+// D-7 a (fix C5): the inbox keeps its own copy of the snapshot of the routed
+// offer, like the PostgreSQL one.
+func TestReviewQueueKeepsACopyOfTheOfferSnapshot(t *testing.T) {
+	q := memory.NewReviewQueueStub()
+	ctx := context.Background()
+	req := routed("a-1", domain.ReviewReasonProvisionalOffer, t0)
+	req.OfferMode, req.ProfileScore, req.OfferExpiresAt = domain.ModeProvisional, 0.5, t0.Add(24*time.Hour)
+	req.Terms = domain.CoverageTerms{InsuredAmount: 100, TermMonths: 12, Coverages: []domain.Coverage{{Code: domain.CoverageDeath, InsuredAmount: 100}}}
+	require.NoError(t, q.Enqueue(ctx, req))
+
+	req.Terms.Coverages[0].InsuredAmount = 1
+	c, err := q.Get(ctx, "a-1")
+	require.NoError(t, err)
+	assert.InDelta(t, 100, c.Request.Terms.Coverages[0].InsuredAmount, 1e-9)
+	assert.Equal(t, domain.ModeProvisional, c.Request.OfferMode)
+	c.Request.Terms.Coverages[0].InsuredAmount = 2
+	again, err := q.Get(ctx, "a-1")
+	require.NoError(t, err)
+	assert.InDelta(t, 100, again.Request.Terms.Coverages[0].InsuredAmount, 1e-9)
+}
+
 // EC-D02 claim: twenty advisors decide the same case at once, one wins.
 func TestReviewQueueConcurrentDecisionsRecordExactlyOne(t *testing.T) {
 	q := inbox(t)
