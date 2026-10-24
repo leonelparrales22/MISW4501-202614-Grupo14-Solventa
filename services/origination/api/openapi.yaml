@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.10.0
+  version: 0.10.1
 paths:
   /health:
     get:
@@ -318,9 +318,9 @@ paths:
         opened it (GET /v1/offers/{offer_id}); an unclaimed one answers 403.
         A provisional offer that a normal one replaced is no longer
         acceptable: it answers 422 offer_expired, with expires_at the moment it
-        was replaced. Underwriting, the advisor inbox, issuance and the
-        acceptance storage are in-memory stand-ins for now (PENDING: the
-        underwriting engine and PostgreSQL).
+        was replaced. With DATABASE_URL the acceptance and the advisor inbox
+        are stored in PostgreSQL and survive a restart; underwriting still
+        applies provisional rules (PENDING: the underwriting engine).
       security:
         - cognitoJwt: []
       parameters:
@@ -644,8 +644,9 @@ paths:
         with the cached profile or the base actuarial profile) and says so in
         mode, source and notice. Every invalid field is reported at once and no
         quote is generated. consent_active is affirmed by the caller while the
-        audit service does not expose the consent query. Customers and quotes
-        are in-memory for now (PENDING: PostgreSQL).
+        audit service does not expose the consent query. With DATABASE_URL the
+        customers are stored in PostgreSQL; the quotes are in-memory for now
+        (PENDING: PostgreSQL).
       security:
         - cognitoJwt: []
       requestBody:

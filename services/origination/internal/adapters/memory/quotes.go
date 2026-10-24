@@ -10,9 +10,10 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 )
 
-// CustomerStore is an in-memory ports.CustomerRepository. PENDING: the
-// PostgreSQL repository; until then the customers an advisor registered are
-// lost when the service restarts.
+// CustomerStore is an in-memory ports.CustomerRepository, the one the service
+// uses without DATABASE_URL: the customers are lost when the service
+// restarts. With DATABASE_URL the service uses postgres.CustomerStore
+// instead, with or without a payment gateway (fix C5).
 type CustomerStore struct {
 	mu         sync.Mutex
 	byDocument map[string]domain.Customer

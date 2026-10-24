@@ -10,9 +10,10 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 )
 
-// AcceptanceStore is an in-memory ports.AcceptanceRepository. PENDING: the
-// PostgreSQL repository; until then an acceptance survives dependency
-// failures but not a restart of the service.
+// AcceptanceStore is an in-memory ports.AcceptanceRepository, the one the
+// service uses without DATABASE_URL: an acceptance survives dependency
+// failures but not a restart of the service. With DATABASE_URL the service
+// uses postgres.AcceptanceStore instead (fix C5).
 type AcceptanceStore struct {
 	mu      sync.Mutex
 	byID    map[string]domain.Acceptance

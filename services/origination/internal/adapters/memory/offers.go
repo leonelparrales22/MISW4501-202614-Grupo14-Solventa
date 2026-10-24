@@ -37,8 +37,10 @@ const OfferValidity = 24 * time.Hour
 var demoOfferID = regexp.MustCompile(`^demo-(active|review|highrisk|expired|flaky)-[A-Za-z0-9_-]{1,64}$`)
 
 // OfferStub is an in-memory ports.OfferRepository that serves the demo
-// scenarios, and the ports.OfferWriter of the offers an advisor adjusts
-// (HU-W1.1-02). PENDING: the offers generated and persisted by HU-W1.2-03.
+// scenarios, and, without DATABASE_URL, the store of the offers an advisor
+// adjusts (HU-W1.1-02; with it they are in postgres.AdjustedOfferStore). The
+// demo offers stay in memory (fix C5, #77 B): after a restart they are gone
+// until an insured opens them again.
 //
 // A demo offer is created on its first lookup and belongs to the
 // authenticated caller of that lookup (the subject of its token), with its

@@ -14,8 +14,9 @@ import (
 // ReviewQueueStub is an in-memory ports.ReviewRepository: the advisor inbox
 // of HU-W1.1-02 with the requests routed to a human decision, the
 // append-only record of the advisor decisions and the state of the customer
-// notices. PENDING: the PostgreSQL inbox of origination; until then the
-// inbox and its decisions survive dependency failures but not a restart.
+// notices. The service uses it without DATABASE_URL: the inbox and its
+// decisions survive dependency failures but not a restart. With DATABASE_URL
+// it uses postgres.ReviewStore instead (fix C5).
 type ReviewQueueStub struct {
 	mu    sync.Mutex
 	cases map[string]domain.ReviewCase

@@ -4,7 +4,10 @@
 > (`internal/adapters/http/acceptance.go`, `internal/issuance`, `internal/adapters/memory`, `cmd/origination/main.go`) y de
 > respuestas **capturadas del binario en ejecución** el 2026-10-11 (con verificación JWT RS256 real de `pkg/security`). Los
 > identificadores y las fechas de los ejemplos son los que devolvió esa ejecución. Contrato formal: `services/origination/api/openapi.yaml`
-> (versión 0.4.0).
+> (versión 0.4.0; desde el fix C5, 0.10.1, sin cambios de forma).
+>
+> **Fix C5 (2026-10-23):** con `DATABASE_URL` las aceptaciones están en PostgreSQL (`internal/adapters/postgres/acceptances.go`) y
+> **sobreviven a un reinicio** de la plataforma: el trámite se reanuda desde ellas con el mismo `acceptance_id`. La API no cambió.
 >
 > **Corrección del 2026-10-16 (regla provisional del puntaje):** la suscripción simulada enviaba al asesor los puntajes **menores
 > a 0,4**, con el motivo `low_risk_score` y el escenario `demo-lowscore-*`, pero en Solventa el puntaje 0 es el **menor** riesgo.
@@ -44,7 +47,7 @@ Pantalla de estado ◀──GET /v1/acceptances/{acceptance_id} (polling cada 2 
 | CA-2 Suscripción aprueba → emisión inicia sin intervención | Sí | El procesador pasa a `issuance_pending` y llama al inicio de la emisión (simulado, ver §8) |
 | CA-3 Enrutada a decisión humana → bandeja del asesor + cliente ve «en revisión» | Sí | Pasa a `in_review`; la solicitud (solicitante, oferta, motivo) se encola en la bandeja (simulada, ver §8) |
 | CA-4 Oferta vencida → rechazo con motivo y opción de nueva oferta | Parcial | `422 offer_expired` con `expires_at`. **El endpoint para generar la nueva oferta no existe aún** (HU-W1.2-03) |
-| CA-5 Falla posterior → la aceptación no se pierde y se reanuda sin repetir | Sí, salvo reinicio | Reintento automático con espera creciente; la aceptación se recupera por oferta. **Se pierde si el servicio se reinicia** (almacenamiento en memoria, ver §8) |
+| CA-5 Falla posterior → la aceptación no se pierde y se reanuda sin repetir | Sí | Reintento automático con espera creciente; la aceptación se recupera por oferta. Con `DATABASE_URL` también **sobrevive a un reinicio** de la plataforma y se reanuda con el mismo id (fix C5, ver §8); el límite que queda es el de las ofertas de demostración |
 
 **Qué NO cubre:** mostrar el contenido de la oferta (prima, coberturas, vigencia) y generar ofertas (HU-W1.2-03), la decisión
 del asesor sobre la solicitud en revisión (HU-W1.1-02), el cobro y la póliza emitida (HU-W1.3-02 / HA-D02).
@@ -178,14 +181,13 @@ texto a mostrar por `error`**, nunca por `message` (puede cambiar). `offer_expir
 | 401 | `unauthorized` | Sin token (`WWW-Authenticate: Bearer`) o token inválido/vencido (`WWW-Authenticate: Bearer error="invalid_token"`) | `{"error":"unauthorized","message":"a bearer token is required"}` · `{"error":"unauthorized","message":"the token is invalid or expired"}` | Renovar el token (`REFRESH_TOKEN_AUTH`) y reintentar una vez; si vuelve a fallar → pantalla «Sesión expirada» |
 | 403 | `forbidden` | Rol no permitido (p. ej. `advisor` o `partner` en el `POST`, `partner` en los `GET`) u oferta/aceptación de otro cliente | `{"error":"forbidden","message":"the caller is not allowed to perform this operation"}` | Pantalla «Acceso no autorizado»; no reintentar |
 | 404 | `offer_not_found` | La oferta no existe (solo `POST`) | `{"error":"offer_not_found","message":"the offer does not exist"}` | «Esta oferta no existe o ya no está disponible» + volver a cotizar |
-| 404 | `acceptance_not_found` | La aceptación o la oferta consultada no tiene aceptación (solo `GET`) | `{"error":"acceptance_not_found","message":"the acceptance does not exist"}` | En `GET /v1/offers/{id}/acceptance`: la oferta aún no se aceptó → mostrar la oferta con «Aceptar». En `GET /v1/acceptances/{id}`: id desconocido (o el servicio se reinició, §8) → volver a consultar por oferta |
+| 404 | `acceptance_not_found` | La aceptación o la oferta consultada no tiene aceptación (solo `GET`) | `{"error":"acceptance_not_found","message":"the acceptance does not exist"}` | En `GET /v1/offers/{id}/acceptance`: la oferta aún no se aceptó → mostrar la oferta con «Aceptar». En `GET /v1/acceptances/{id}`: id desconocido (o, sin `DATABASE_URL`, el servicio se reinició, §8) → volver a consultar por oferta. Con `DATABASE_URL` la aceptación sobrevive al reinicio (fix C5) |
 | 422 | `offer_expired` | La vigencia de la oferta terminó (`ahora ≥ expires_at`) y no tenía aceptación previa. **No se registra nada** | `{"error":"offer_expired","message":"the offer validity is over; request a new offer","offer_id":"demo-expired-002","expires_at":"2026-10-12T00:54:44.4210077Z"}` | Pantalla «Oferta vencida» con el motivo («La oferta venció el {expires_at}») y botón **«Generar nueva oferta»** (ver §5.3) |
 | 503 | `acceptance_not_registered` | No se pudo guardar la aceptación (falla de almacenamiento) | `{"error":"acceptance_not_registered","message":"the acceptance could not be registered; retrying is safe"}` | «No pudimos registrar tu aceptación, intenta de nuevo» + botón Reintentar (reenviar el mismo `POST`: **es seguro**, nunca duplica) |
 | 503 | `acceptance_unavailable` | No se pudo leer la aceptación | `{"error":"acceptance_unavailable","message":"the acceptance could not be read; retry later"}` | Mantener la última pantalla conocida y seguir con el polling (§6) |
 
-> Con el almacenamiento actual en memoria los dos `503` no ocurren en la práctica, pero el front debe manejarlos: aparecerán
-> cuando la persistencia pase a PostgreSQL. Ante un error de red o `5xx` sin cuerpo JSON (p. ej. del API Gateway), tratarlo como
-> `503` del mismo endpoint.
+> Desde el fix C5 la aceptación está en PostgreSQL con `DATABASE_URL`: los dos `503` aparecen si la base no responde, y el front ya
+> los maneja. Ante un error de red o `5xx` sin cuerpo JSON (p. ej. del API Gateway), tratarlo como `503` del mismo endpoint.
 
 ---
 
@@ -426,11 +428,11 @@ Variables que el front necesita en su `environment`: URL base de la API (o el pr
 
 | Pieza | Estado hoy | Efecto visible para el front | Pendiente de |
 |---|---|---|---|
-| Almacenamiento de aceptaciones | **En memoria** | Sobrevive a fallas de dependencias, pero **se pierde al reiniciar el servicio**: un `acceptance_id` anterior responde `404` y la oferta puede volver a aceptarse | PostgreSQL de origination |
-| Ofertas | **Simuladas** (`demo-<escenario>-<sufijo>`): prima 89 500 COP, vigencia de 24 h desde la **primera consulta**; la oferta pertenece al **primer usuario que la usa**; otros ids → `404 offer_not_found` | No hay endpoint para leer el detalle de la oferta (prima, coberturas, vigencia): la pantalla de oferta debe usar datos de prueba hasta HU-W1.2-03 | HU-W1.2-03 |
+| Almacenamiento de aceptaciones | **PostgreSQL** con `DATABASE_URL` (fix C5); sin ella, en memoria | Sobrevive a fallas de dependencias y a un reinicio de la plataforma: el `acceptance_id` sigue valiendo y el trámite se reanuda (sin `DATABASE_URL` se pierde al reiniciar) | Para varias tareas: escrituras seguras entre tareas (hoy sin condición, una sola tarea) |
+| Ofertas | **Simuladas** (`demo-<escenario>-<sufijo>`, en memoria también con `DATABASE_URL`, decisión #77 B): prima 89 500 COP, vigencia de 24 h desde la **primera consulta**; la oferta pertenece al **primer asegurado que la usa** (un asesor u operaciones nunca la crean); otros ids → `404 offer_not_found`. Las personalizadas de HU-W1.2-03 están en PostgreSQL | **Límite tras un reinicio:** la demo desaparece; `GET /v1/offers/demo-…` da `404` hasta que el asegurado la vuelva a abrir, y una aceptación de demostración que seguía `registered` se queda reintentando. Los casos ya enviados a la bandeja no se afectan | — |
 | Generar nueva oferta | **No existe** | El botón de §5.3 queda sin endpoint | HU-W1.2-03 |
 | Suscripción automática | **Reglas provisionales**: oferta provisional → `in_review` (`provisional_offer`); puntaje mayor al umbral de revisión (`UNDERWRITING_REVIEW_SCORE_THRESHOLD`, 0,8 por defecto; 0 es el menor riesgo) → `in_review` (`high_risk_score`); si no, `approved`. `demo-flaky-*` falla los primeros intentos | Los motivos y las proporciones de revisión cambiarán con el motor real | Motor de suscripción |
-| Bandeja del asesor | **En memoria**; HU-W1.1-02 expone `GET /v1/review-requests`, `GET /v1/review-requests/{acceptance_id}` y `POST …/decision` (solo `advisor`) | `in_review` avanza a `registered`/`issuance_pending`, `adjusted` o `rejected` según el asesor ([`HU-W1.1-02-api.md`](HU-W1.1-02-api.md)) | PostgreSQL de origination |
+| Bandeja del asesor | **PostgreSQL** con `DATABASE_URL` (fix C5); HU-W1.1-02 expone `GET /v1/review-requests`, `GET /v1/review-requests/{acceptance_id}` y `POST …/decision` (solo `advisor`) | `in_review` avanza a `registered`/`issuance_pending`, `adjusted` o `rejected` según el asesor ([`HU-W1.1-02-api.md`](HU-W1.1-02-api.md)); sobrevive a un reinicio | — |
 | Inicio de la emisión | **Simulado**: solo registra que inició | Tras `issuance_pending` no hay cobro ni póliza | HU-W1.3-02, HA-D02 |
 | Eventos | Ninguno publicado | — | HU-W1.3-02 (`PolicyIssued`, `ChargeCompleted`) |
 | Rutas en el API Gateway (AWS) | No registradas | Solo se puede probar en local | Infraestructura |
