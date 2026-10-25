@@ -94,16 +94,16 @@ variable "stub_desired_count_overrides" {
 }
 
 variable "origination_environment" {
-  description = "Extra environment variables of origination, for a test window (for example RETRY_WINDOW_SECONDS and CHARGE_RETRY_MAX_MS, decision D-6 of HA-D02). It cannot replace what the platform sets: PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, any *_URL, AUTH_*, COGNITO_*, DOCUMENTS_* or DOCUMENT_LINK_*."
+  description = "Extra environment variables of origination, for a test window (for example RETRY_WINDOW_SECONDS and CHARGE_RETRY_MAX_MS, decision D-6 of HA-D02). It cannot replace what the platform sets: PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, any *_URL, AUTH_*, COGNITO_*, DOCUMENTS_*, DOCUMENT_LINK_* or EVENTS_*."
   type        = map(string)
   default     = {}
 
   validation {
     condition = alltrue([
       for k in keys(var.origination_environment) :
-      can(regex("^[A-Z][A-Z0-9_]*$", k)) && !can(regex("^(PORT|REDIS_ADDR|AWS_REGION|DATABASE_URL|.*_URL|AUTH_.*|COGNITO_.*|DOCUMENTS_.*|DOCUMENT_LINK_.*)$", k))
+      can(regex("^[A-Z][A-Z0-9_]*$", k)) && !can(regex("^(PORT|REDIS_ADDR|AWS_REGION|DATABASE_URL|.*_URL|AUTH_.*|COGNITO_.*|DOCUMENTS_.*|DOCUMENT_LINK_.*|EVENTS_.*)$", k))
     ])
-    error_message = "origination_environment keys must be UPPER_SNAKE_CASE and cannot replace a value of the platform (PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, *_URL, AUTH_*, COGNITO_*, DOCUMENTS_*, DOCUMENT_LINK_*)."
+    error_message = "origination_environment keys must be UPPER_SNAKE_CASE and cannot replace a value of the platform (PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, *_URL, AUTH_*, COGNITO_*, DOCUMENTS_*, DOCUMENT_LINK_*, EVENTS_*)."
   }
 }
 
@@ -177,6 +177,17 @@ variable "portal_partner" {
   default     = "portal-embebido"
 }
 
+variable "partner_display_names" {
+  description = "Display names of the financial entities the consents authorize, by partner code (HU-M1.3-01, decision D-2 a); audit receives them as PARTNER_DISPLAY_NAMES. A code without a name is shown as it is. Default: the partner of screen E1 of the portal."
+  type        = map(string)
+  default     = { "aliado-banco-1" = "Banco Aliado" }
+
+  validation {
+    condition     = alltrue([for k, v in var.partner_display_names : can(regex("^[A-Za-z0-9_-]+$", k)) && length(trimspace(v)) > 0])
+    error_message = "partner_display_names keys are partner codes (letters, digits, - or _) and the names cannot be empty."
+  }
+}
+
 variable "human_routes" {
   description = "Routes of the portal web and mobile app behind the Cognito authorizer (key: path segment under /v1). Default: the authenticated routes of origination. root_methods (optional) sets the methods of the root /v1/<route> alone; [] gives the root to a partner route (partner_routes)."
   type = map(object({
@@ -205,6 +216,10 @@ variable "human_routes" {
     # (HU-M2.2-01). It is a write of the insured on their own behalf, so it
     # only needs POST; the reads of the case come with HU-M2.4-01.
     claims = { methods = ["POST"] }
+    # The insured reads their own consents from the mobile app (HU-M1.3-01):
+    # GET /v1/consents and GET /v1/consents/{consent_id}, read-only. The
+    # revocation of HU-M1.3-02 adds POST.
+    consents = { methods = ["GET"] }
   }
 }
 

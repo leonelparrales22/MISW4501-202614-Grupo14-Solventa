@@ -70,6 +70,12 @@ Las dos caras van en el mismo cuerpo, que admite **4 MiB**. Un cuerpo mayor resp
 
 Con esas credenciales el cliente inicia sesión de inmediato contra el *user pool*: la cuenta queda confirmada y la contraseña es definitiva.
 
+**Vínculo con los consentimientos (HU-M1.3-01):** al guardar el `subject`, originación escribe en la misma transacción el evento
+`CustomerLinked` (`customer_id`, `subject`, `document_id`, `linked_at`) en su *outbox* y lo publica en su tópico; `audit` lo consume para
+reconocer al titular de los consentimientos otorgados con ese documento (`GET /v1/consents`,
+[`HU-M1.3-01-api.md`](HU-M1.3-01-api.md)). **Esta API no cambia:** ni la petición, ni la respuesta, ni los errores. Ver el
+[catálogo de eventos](../events/README.md#customerlinked-hu-m13-01).
+
 ---
 
 ## 2. Errores

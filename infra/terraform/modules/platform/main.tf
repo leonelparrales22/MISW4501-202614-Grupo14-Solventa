@@ -58,8 +58,10 @@ locals {
       consumes  = []
     }
     audit = {
-      priority  = 4
-      paths     = ["/v1/audit*"]
+      priority = 4
+      # /v1/audit* for the banks (API key) and /v1/consents* for the people
+      # (Cognito, HU-M1.3-01): one prefix per resource (decision D-3 a).
+      paths     = ["/v1/audit*", "/v1/consents*"]
       buckets   = []
       publishes = []
       consumes  = ["audit"]
@@ -438,11 +440,28 @@ locals {
       DOCUMENTS_BUCKET          = module.buckets["documents"].bucket
       DOCUMENTS_PUBLIC_BASE_URL = coalesce(var.portal_base_url, module.apigateway.invoke_url)
       AWS_REGION                = data.aws_region.current.region
+      # Domain events (HU-M1.3-01): the outbox relay publishes CustomerLinked
+      # to the topic of origination; the audit queue is subscribed to it.
+      EVENTS_TOPIC_ARN = module.messaging.topic_arns["origination"]
       },
       # Links of the offer e-mails to the screens of the portal (T5, D-11);
       # without a portal the service keeps its own default.
       var.portal_base_url != null ? { OFFER_LINK_BASE_URL = var.portal_base_url } : {}
     )
+    # HU-M1.3-01: the insured reads their consents (GET /v1/consents*, behind
+    # the Cognito authorizer and verified again in the service) and audit
+    # consumes the CustomerLinked events of its queue to recognize the holder.
+    # With AUTH_* audit also mounts the evidence lookup of HU-W1.2-01, which
+    # the gateway still does not publish (T5, decision D-23 c).
+    audit = {
+      PORT                  = tostring(local.service_port)
+      AWS_REGION            = data.aws_region.current.region
+      AUTH_ISSUER           = local.cognito.issuer
+      AUTH_JWKS_URL         = local.cognito.jwks_url
+      AUTH_CLIENT_IDS       = join(",", values(local.cognito.client_ids))
+      PARTNER_DISPLAY_NAMES = jsonencode(var.partner_display_names)
+      EVENTS_QUEUE_URL      = module.messaging.queue_urls["audit"]
+    }
   }
 
   # Secrets Manager values of each service (the ECS secrets field): its

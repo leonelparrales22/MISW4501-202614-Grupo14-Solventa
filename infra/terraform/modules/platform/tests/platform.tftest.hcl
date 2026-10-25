@@ -689,8 +689,8 @@ run "audit_is_discoverable_by_origination" {
   }
 
   assert {
-    condition     = !contains(keys(local.service_environment), "audit")
-    error_message = "D-23 (c): audit gets only PORT, without AUTH_* (that is HU-W4.2-02)."
+    condition     = !contains(keys(var.human_routes), "audit")
+    error_message = "D-23 (c): the gateway still does not publish the evidence lookup of audit (that is HU-W4.2-02), although audit now gets AUTH_* for HU-M1.3-01."
   }
 }
 
@@ -751,6 +751,132 @@ run "origination_environment_cannot_override_audit_url" {
 
   variables {
     origination_environment = { AUDIT_URL = "http://elsewhere:8080" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
+
+# --- HU-M1.3-01: the insured reads their consents; origination and audit talk by events ---
+
+run "consents_are_a_read_only_human_route_of_audit" {
+  command = plan
+
+  assert {
+    condition = (
+      toset(var.human_routes["consents"].methods) == toset(["GET"]) &&
+      var.human_routes["consents"].root_methods == null &&
+      !contains(keys(var.partner_routes), "consents") &&
+      !contains(keys(var.public_routes), "consents")
+    )
+    error_message = "GET /v1/consents and /v1/consents/{consent_id} are human routes behind the Cognito authorizer, read-only (CA-4)."
+  }
+
+  assert {
+    condition = (
+      contains(local.services.audit.paths, "/v1/consents*") &&
+      contains(local.services.audit.paths, "/v1/audit*") &&
+      !contains(local.services.origination.paths, "/v1/consents*")
+    )
+    error_message = "The ALB sends /v1/consents* to audit, next to /v1/audit* (decision D-3 a)."
+  }
+}
+
+run "audit_gets_the_queue_the_user_pool_and_the_catalog" {
+  command = plan
+
+  # The permanent user pool, so its values are known at plan time.
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+
+  override_resource {
+    target          = module.messaging.aws_sqs_queue.this
+    override_during = plan
+    values = {
+      url = "https://sqs.us-east-2.amazonaws.com/123456789012/solventa-test-audit"
+      arn = "arn:aws:sqs:us-east-2:123456789012:solventa-test-audit"
+    }
+  }
+
+  assert {
+    condition = (
+      local.service_environment.audit.PORT == "8080" &&
+      local.service_environment.audit.AWS_REGION == "us-east-2" &&
+      local.service_environment.audit.AUTH_ISSUER == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1" &&
+      local.service_environment.audit.AUTH_JWKS_URL == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json" &&
+      local.service_environment.audit.AUTH_CLIENT_IDS == "mobile-client-test,web-client-test" &&
+      local.service_environment.audit.AUTH_CLIENT_IDS == local.service_environment.origination.AUTH_CLIENT_IDS
+    )
+    error_message = "audit verifies the Cognito token of the insured with the same user pool and clients as origination."
+  }
+
+  assert {
+    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES) == { "aliado-banco-1" = "Banco Aliado" }
+    error_message = "audit gets the catalog of entity names as JSON (decision D-2 a)."
+  }
+
+  assert {
+    condition     = local.service_environment.audit.EVENTS_QUEUE_URL == module.messaging.queue_urls["audit"]
+    error_message = "audit consumes CustomerLinked from its own queue."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_environment.audit), "DATABASE_URL")
+    error_message = "The database URL of audit stays in Secrets Manager."
+  }
+}
+
+run "origination_publishes_to_its_topic" {
+  command = plan
+
+  override_resource {
+    target          = module.messaging.aws_sns_topic.this
+    override_during = plan
+    values = {
+      arn = "arn:aws:sns:us-east-2:123456789012:solventa-test-origination"
+    }
+  }
+
+  assert {
+    condition     = local.service_environment.origination.EVENTS_TOPIC_ARN == module.messaging.topic_arns["origination"]
+    error_message = "The outbox relay of origination publishes to the origination topic (HU-M1.3-01)."
+  }
+}
+
+run "partner_display_names_can_be_replaced" {
+  command = plan
+
+  variables {
+    partner_display_names = { "aliado-banco-1" = "Banco Aliado", "socio-a" = "Socio A" }
+  }
+
+  assert {
+    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A"
+    error_message = "The catalog follows partner_display_names."
+  }
+}
+
+run "partner_display_names_rejects_invalid_codes" {
+  command = plan
+
+  variables {
+    partner_display_names = { "aliado banco" = "Banco" }
+  }
+
+  expect_failures = [var.partner_display_names]
+}
+
+run "origination_environment_cannot_replace_the_events_topic" {
+  command = plan
+
+  variables {
+    origination_environment = { EVENTS_TOPIC_ARN = "arn:aws:sns:us-east-2:123456789012:elsewhere" }
   }
 
   expect_failures = [var.origination_environment]

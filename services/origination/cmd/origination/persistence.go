@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/outbox"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/memory"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
@@ -15,8 +16,8 @@ import (
 // is a single switch, DATABASE_URL: everything goes to PostgreSQL together or
 // everything stays in memory, never a mix.
 const (
-	storesInPostgres = "origination data in PostgreSQL: personalized and adjusted offers, acceptances, the advisor inbox and its decisions, and customers (HU-W1.2-03, HU-W1.3-01, HU-W1.1-02, HU-M1.1-01)"
-	storesInMemory   = envDatabaseURL + " is not set: personalized and adjusted offers, acceptances, the advisor inbox and its decisions, and customers are kept in memory and lost on restart"
+	storesInPostgres = "origination data in PostgreSQL: personalized and adjusted offers, acceptances, the advisor inbox and its decisions, customers and the outbox of domain events (HU-W1.2-03, HU-W1.3-01, HU-W1.1-02, HU-M1.1-01, HU-M1.3-01)"
+	storesInMemory   = envDatabaseURL + " is not set: personalized and adjusted offers, acceptances, the advisor inbox and its decisions, customers and the outbox of domain events are kept in memory and lost on restart"
 )
 
 // stores are the stores of origination's own data.
@@ -31,21 +32,27 @@ type stores struct {
 	acceptances ports.AcceptanceRepository
 	reviews     ports.ReviewRepository
 	customers   ports.CustomerRepository
+	// outbox holds the domain events written with the customers
+	// (CustomerLinked, HU-M1.3-01); the relay publishes them.
+	outbox outbox.Store
 }
 
 // newStores opens origination's stores. With a database URL it opens a single
 // pool, applies the migrations once and builds every store over it: the
 // personalized offers (HU-W1.2-03), the adjusted offers, the acceptances
 // (HU-W1.3-01), the advisor inbox and its decisions (HU-W1.1-02) and the
-// customers (HU-M1.1-01), which no longer depend on the payment gateway.
-// Without it every store is in memory and a single notice says so.
+// customers (HU-M1.1-01), which no longer depend on the payment gateway, and
+// the outbox of their domain events (HU-M1.3-01). Without it every store is in
+// memory and a single notice says so.
 func newStores(ctx context.Context, databaseURL string, clock ports.Clock) (stores, error) {
 	demo := memory.NewOfferStub(clock)
 	if databaseURL == "" {
 		log.Print(storesInMemory)
+		customers := memory.NewCustomerStore()
 		return stores{
 			demo: demo, offers: memory.NewPersonalizedOfferStore(), adjusted: demo,
-			acceptances: memory.NewAcceptanceStore(), reviews: memory.NewReviewQueueStub(), customers: memory.NewCustomerStore(),
+			acceptances: memory.NewAcceptanceStore(), reviews: memory.NewReviewQueueStub(), customers: customers,
+			outbox: customers.Outbox(),
 		}, nil
 	}
 	db, err := postgres.Open(ctx, databaseURL)
@@ -60,6 +67,7 @@ func newStores(ctx context.Context, databaseURL string, clock ports.Clock) (stor
 	return stores{
 		db: db, demo: demo, offers: postgres.NewOfferStore(db), adjusted: postgres.NewAdjustedOfferStore(db),
 		acceptances: postgres.NewAcceptanceStore(db), reviews: postgres.NewReviewStore(db), customers: postgres.NewCustomerStore(db),
+		outbox: postgres.NewOutboxStore(db),
 	}, nil
 }
 

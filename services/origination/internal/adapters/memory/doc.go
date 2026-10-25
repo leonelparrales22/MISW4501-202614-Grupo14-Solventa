@@ -24,4 +24,7 @@
 //     decision with the snapshot of their offer, the append-only advisor
 //     decisions and the state of the customer notices.
 //   - CustomerStore: the customers of HU-W1.1-01 and HU-M1.1-01.
+//   - Outbox: the outbox of the CustomerLinked events that CustomerStore.Link
+//     writes (HU-M1.3-01); the relay publishes them when EVENTS_TOPIC_ARN is
+//     set.
 package memory

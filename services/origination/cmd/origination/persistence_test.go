@@ -47,7 +47,9 @@ func TestNewStoresWithoutADatabaseKeepsEverythingInMemoryAndSaysSo(t *testing.T)
 	assert.IsType(t, &memory.CustomerStore{}, st.customers)
 	assert.Same(t, st.demo, st.adjusted, "the adjusted offers live in the stub, in memory")
 	assert.Contains(t, buf.String(), "DATABASE_URL is not set: personalized and adjusted offers, acceptances, "+
-		"the advisor inbox and its decisions, and customers are kept in memory and lost on restart")
+		"the advisor inbox and its decisions, customers and the outbox of domain events are kept in memory and lost on restart")
+	assert.IsType(t, &memory.Outbox{}, st.outbox)
+	assert.Same(t, st.customers.(*memory.CustomerStore).Outbox(), st.outbox, "the customers write to the outbox the relay reads")
 	assert.Equal(t, 1, strings.Count(buf.String(), "DATABASE_URL is not set"), "a single notice")
 	assert.NotContains(t, buf.String(), "PostgreSQL")
 	assert.NotNil(t, st.router())
@@ -108,8 +110,9 @@ func TestNewStoresPutsEverythingInPostgresOverASinglePool(t *testing.T) {
 	assert.IsType(t, &postgres.AcceptanceStore{}, first.acceptances)
 	assert.IsType(t, &postgres.ReviewStore{}, first.reviews)
 	assert.IsType(t, &postgres.CustomerStore{}, first.customers)
+	assert.IsType(t, &postgres.OutboxStore{}, first.outbox)
 	assert.Contains(t, buf.String(), "origination data in PostgreSQL: personalized and adjusted offers, acceptances, "+
-		"the advisor inbox and its decisions, and customers (HU-W1.2-03, HU-W1.3-01, HU-W1.1-02, HU-M1.1-01)")
+		"the advisor inbox and its decisions, customers and the outbox of domain events (HU-W1.2-03, HU-W1.3-01, HU-W1.1-02, HU-M1.1-01, HU-M1.3-01)")
 	assert.NotContains(t, buf.String(), "is not set")
 	assert.Equal(t, len(files), strings.Count(buf.String(), "database migration applied"), "every migration applied once")
 

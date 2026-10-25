@@ -76,10 +76,21 @@ func (s *RegistrationService) Register(ctx context.Context, r domain.Registratio
 		return domain.Customer{}, err
 	}
 
+	// The subject and the CustomerLinked event are written together (outbox,
+	// HU-M1.3-01): audit learns who the holder of the consents is without a
+	// call between services. If this write fails the customer stays without
+	// a subject, as before, and the registration can be retried.
+	now = s.clock.Now().UTC()
 	stored.CognitoSub = subject
-	stored.UpdatedAt = s.clock.Now().UTC()
-	registered, err := s.customers.Save(ctx, stored)
+	stored.UpdatedAt = now
+	linked, err := domain.NewCustomerLinked(stored, now)
 	if err != nil {
+		return domain.Customer{}, err
+	}
+	registered, err := s.customers.Link(ctx, stored, linked)
+	if err != nil {
+		slog.ErrorContext(ctx, "the account was created but the customer could not be linked to it",
+			"customer_id", stored.ID, "error", err)
 		return domain.Customer{}, err
 	}
 	slog.InfoContext(ctx, "insured registered", "customer_id", registered.ID,

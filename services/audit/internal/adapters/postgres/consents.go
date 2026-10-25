@@ -86,7 +86,34 @@ func (s *ConsentStore) LatestByCustomer(ctx context.Context, customerID string) 
 	return c, err
 }
 
-func scanConsent(row *sql.Row) (domain.Consent, error) {
+// ListByHolder returns the consents granted with the normalized document, most
+// recently granted first (HU-M1.3-01). It compares upper(holder_document_id),
+// which the index of migration 0002 serves.
+func (s *ConsentStore) ListByHolder(ctx context.Context, document string) ([]domain.Consent, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+consentColumns+` FROM consent_record
+		WHERE upper(holder_document_id) = $1 ORDER BY granted_at DESC, consent_id`, domain.NormalizeDocument(document))
+	if err != nil {
+		return nil, fmt.Errorf("list the consents of the holder: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []domain.Consent
+	for rows.Next() {
+		c, err := scanConsent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read a consent of the holder: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the consents of the holder: %w", err)
+	}
+	return out, nil
+}
+
+// scanner is a *sql.Row or *sql.Rows.
+type scanner interface{ Scan(dest ...any) error }
+
+func scanConsent(row scanner) (domain.Consent, error) {
 	var (
 		c                      domain.Consent
 		terms, channel         string
