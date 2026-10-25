@@ -374,7 +374,7 @@ func TestNewContractWiringStartsTheWorkerAndServesTheDocument(t *testing.T) {
 
 	store, where, err := newDocumentStore(ctx, cfg.documents)
 	require.NoError(t, err)
-	wiring, err := newContractWiring(ctx, cfg.contracts, store, where)
+	wiring, err := newContractWiring(ctx, cfg.contracts, store, where, nil)
 	require.NoError(t, err)
 
 	now := time.Now().UTC()
@@ -406,6 +406,6 @@ func TestNewContractWiringRejectsABadSetup(t *testing.T) {
 	store, where, err := newDocumentStore(context.Background(), documentsConfig{dir: t.TempDir()})
 	require.NoError(t, err)
 
-	_, err = newContractWiring(context.Background(), contractConfig{linkSecret: "short"}, store, where)
+	_, err = newContractWiring(context.Background(), contractConfig{linkSecret: "short"}, store, where, nil)
 	assert.Error(t, err, "short secret")
 }

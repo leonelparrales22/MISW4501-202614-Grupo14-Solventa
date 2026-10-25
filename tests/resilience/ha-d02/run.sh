@@ -9,6 +9,9 @@
 #   6. expired window    origination relaunched with RETRY_WINDOW_SECONDS=10 and the
 #                        gateway down: 5 acceptances -> issuance exceptions (CA-3);
 #                        gateway restored, operations resume them -> confirmed once
+#                        HU-W1.3-04: the monitor lists them as exceptions, with no action yet,
+#                        and after the resumption every one has its action with author and note,
+#                        ends as an issued policy, and retrying it again is a 409
 #   7. contract          Schemathesis on the new routes, as an insured and as operations
 # Every phase checks with k6 thresholds (checks == 1). The environment is always
 # removed at the end (down -v).
@@ -186,6 +189,40 @@ verify "$BASE,$DOWN,$AMB" EXPECTED_TOTAL=80
 curl -sf "http://localhost:$GATEWAY_PORT/debug/charges" | tr -d '\r' |
   sed -n 's/.*"total_real_charges":\([0-9]*\).*"total_requests":\([0-9]*\).*/gateway: real charges \1, requests \2/p;s/.*"total_requests":\([0-9]*\).*"total_real_charges":\([0-9]*\).*/gateway: requests \1, real charges \2/p'
 
+token() { # username
+  curl -sf -X POST "http://localhost:$MOTO_PORT/" -H 'Content-Type: application/x-amz-json-1.1' \
+    -H 'X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth' \
+    -d "{\"AuthFlow\":\"USER_PASSWORD_AUTH\",\"ClientId\":\"$WEB_CLIENT_ID\",\"AuthParameters\":{\"USERNAME\":\"$1\",\"PASSWORD\":\"$MOTO_USER_PASSWORD\"}}" |
+    tr -d '\r' | sed -n 's/.*"IdToken": *"\([^"]*\)".*/\1/p'
+}
+
+# monitor <path>: GET of a monitoring route as an operations analyst.
+monitor() { curl -sf -H "Authorization: Bearer $OPS_TOKEN" "$API$1" | tr -d '\r'; }
+# expect <description> <condition...>: fails the scenario when the condition is false.
+expect() {
+  local what="$1"
+  shift
+  if ! "$@"; then
+    echo "FAILED (HU-W1.3-04): $what" >&2
+    exit 1
+  fi
+  echo "ok: $what"
+}
+has_all() { # <json> <ids> <fragment-with-%s-for-the-id>: every id appears in the json
+  local json="$1" ids="$2" fragment="$3" id
+  for id in ${ids//,/ }; do
+    # shellcheck disable=SC2059
+    grep -q "$(printf "$fragment" "$id")" <<<"$json" || return 1
+  done
+}
+has_none() { # <json> <ids> <fragment>
+  local json="$1" ids="$2" fragment="$3" id
+  for id in ${ids//,/ }; do
+    # shellcheck disable=SC2059
+    ! grep -q "$(printf "$fragment" "$id")" <<<"$json" || return 1
+  done
+}
+
 echo "== [$(stamp)] 6. Expired retry window (origination relaunched with RETRY_WINDOW_SECONDS=10)"
 ./toxiproxy.sh down
 RETRY_WINDOW_SECONDS=10 $COMPOSE up -d --wait --force-recreate --no-deps origination
@@ -193,19 +230,55 @@ wait_healthy
 EXP="$(create expired 5)"
 [[ "$(count "$EXP")" == 5 ]]
 await_state failed "$EXP" TIMEOUT_SECONDS=90
+
+echo "-- HU-W1.3-04: the monitor shows the expired charges as exceptions with nobody having acted yet"
+OPS_TOKEN="$(token operaciones.local@example.com)"
+INSURED_TOKEN="$(token asegurado.local@example.com)"
+EXCEPTIONS="$(monitor '/v1/issuances?status=exception&limit=200')"
+expect "every expired charge is an exception of premium_charge with its reason" \
+  has_all "$EXCEPTIONS" "$EXP" '"acceptance_id":"%s"[^}]*"status":"exception"[^}]*"step":"premium_charge"[^}]*"reason":"retry_window_expired"'
+expect "a fresh exception is not flagged as unattended (30 min have not passed)" \
+  has_none "$EXCEPTIONS" "$EXP" '"acceptance_id":"%s"[^}]*"unattended":true'
+expect "the exceptions are not active issuances" \
+  has_none "$(monitor '/v1/issuances?status=active&limit=200')" "$EXP" '"acceptance_id":"%s"'
+expect "a date range in the past leaves the list empty, not an error" \
+  grep -q '"items":\[\]' <<<"$(monitor '/v1/issuances?from=2020-01-01T00:00:00Z&to=2020-01-02T00:00:00Z')"
+expect "nobody has acted on the first exception yet" \
+  test "$(monitor "/v1/issuances/${EXP%%,*}/actions")" = '{"items":[]}'
+expect "an insured is refused" \
+  test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $INSURED_TOKEN" "$API/v1/issuances")" = 403
+expect "a bad filter is a 400" \
+  test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OPS_TOKEN" "$API/v1/issuances?status=other")" = 400
+
 ./toxiproxy.sh up
 await_state failed "$EXP" RESUME=1
 await_state confirmed "$EXP" TIMEOUT_SECONDS=90
+
+echo "-- HU-W1.3-04: every resumption left its action, and the issuances are active now"
+for id in ${EXP//,/ }; do
+  ACTIONS="$(monitor "/v1/issuances/$id/actions")"
+  expect "acceptance $id has exactly one resume action with author and note" \
+    test "$(grep -o '"action":"resume"' <<<"$ACTIONS" | wc -l)" = 1
+  expect "the action of $id names its author and a note" \
+    grep -qE '"actor":"[^"]+","note":"[^"]+"' <<<"$ACTIONS"
+done
+# Charged again, the e-mail stub answers, so the policies go on to notified.
+expect "the resumed charges are issued policies and no longer exceptions" \
+  has_all "$(monitor '/v1/issuances?limit=200')" "$EXP" '"acceptance_id":"%s"[^}]*"status":"\(active\|notified\)"[^}]*"resume_count":1'
+expect "none of them is an exception any more" \
+  has_none "$(monitor '/v1/issuances?status=exception&limit=200')" "$EXP" '"acceptance_id":"%s"'
+expect "the counts cover every issuance and nothing is an exception" \
+  grep -q '"exceptions":0' <<<"$(monitor '/v1/issuances?status=active&limit=1')"
+expect "retrying something that is not failed is a 409 (idempotent: no double charge or notice)" \
+  test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OPS_TOKEN" -H 'Content-Type: application/json' \
+    -d '{"note":"again"}' "$API/v1/issuances/${EXP%%,*}/retry")" = 409
+expect "an unknown acceptance is a 404" \
+  test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $OPS_TOKEN" -H 'Content-Type: application/json' \
+    -d '{"note":"x"}' "$API/v1/issuances/acc-unknown/retry")" = 404
 verify "$BASE,$DOWN,$AMB,$EXP" EXPECTED_TOTAL=85
 
 echo "== [$(stamp)] 7. Contract (Schemathesis) on the HA-D02 routes"
-token() { # username
-  curl -sf -X POST "http://localhost:$MOTO_PORT/" -H 'Content-Type: application/x-amz-json-1.1' \
-    -H 'X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth' \
-    -d "{\"AuthFlow\":\"USER_PASSWORD_AUTH\",\"ClientId\":\"$WEB_CLIENT_ID\",\"AuthParameters\":{\"USERNAME\":\"$1\",\"PASSWORD\":\"$MOTO_USER_PASSWORD\"}}" |
-    tr -d '\r' | sed -n 's/.*"IdToken": *"\([^"]*\)".*/\1/p'
-}
-ENDPOINTS='^/v1/(acceptances/\{acceptance_id\}/charge|issuance-exceptions)'
+ENDPOINTS='^/v1/(acceptances/\{acceptance_id\}/charge|issuance-exceptions|issuances)'
 for user in asegurado.local@example.com operaciones.local@example.com; do
   echo "-- as $user"
   $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://origination:8080 \

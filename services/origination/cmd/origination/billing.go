@@ -123,7 +123,8 @@ type billingWiring struct {
 // (decision D-4 a of the fix C5): it builds the payment gateway client and
 // starts the worker that charges and publishes every activation to the given
 // consumers (the contractual document of HU-W1.3-03).
-func newBilling(ctx context.Context, cfg billingConfig, db *sql.DB, handlers ...ports.CoverageActivationHandler) (billingWiring, error) {
+func newBilling(ctx context.Context, cfg billingConfig, db *sql.DB, wakeContracts func(),
+	handlers ...ports.CoverageActivationHandler) (billingWiring, error) {
 	if db == nil {
 		return billingWiring{}, fmt.Errorf("the premium charge needs origination's database (%s): it is always persisted (HA-D02)", envDatabaseURL)
 	}
@@ -141,7 +142,8 @@ func newBilling(ctx context.Context, cfg billingConfig, db *sql.DB, handlers ...
 		cfg.gatewayURL, cfg.gatewayTimeout, cfg.retry.Base, cfg.retry.Max, cfg.retry.Window, cfg.worker.PollInterval, cfg.worker.ClaimLease)
 	return billingWiring{
 		starter: billing.NewStarter(repo, billing.OfferTerms(demoCoverageTerms()), clock, cfg.retry, worker.Notify),
-		service: billing.NewService(repo, clock, cfg.retry, worker.Notify),
+		service: billing.NewService(repo, clock, cfg.retry, worker.Notify).
+			WithContractRetry(postgres.NewContractStore(db), wakeContracts),
 	}, nil
 }
 

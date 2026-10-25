@@ -117,7 +117,8 @@ se reanudan como siempre, vencidos de inmediato.
   `policy_id` hoy es `pol-<acceptance_id>` (fijado por HU-W1.3-03). Los eventos `ChargeCompleted` / `PolicyIssued` en SNS con *outbox*
   siguen pendientes de esa historia.
 - HU-W1.3-04 construye O1/O1b sobre las dos rutas de operaciones; el escalamiento a los 30 min, los filtros y otros tipos de excepción
-  son suyos.
+  son suyos. Ya están en [`HU-W1.3-04-api.md`](HU-W1.3-04-api.md): `GET /v1/issuances` (con filtros, conteos y la marca `unattended`),
+  `POST /v1/issuances/{id}/retry` y `GET /v1/issuances/{id}/actions` (historial de acciones).
 
 ## 4. Lo que todavía es provisional
 

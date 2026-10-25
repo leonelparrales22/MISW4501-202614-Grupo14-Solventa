@@ -249,3 +249,165 @@ func TestAChargeThatTakesNoPaymentMethodIsRefused(t *testing.T) {
 
 	assert.ErrorIs(t, err, ports.ErrChargeNotPayable)
 }
+
+func TestOverviewFiltersFlagsTheUnattendedCountsAndIsForOperations(t *testing.T) {
+	repo := newMemRepo()
+	stale := failedCharge("acc-1") // failed at t0+1h
+	repo.put(stale)
+	fresh := failedCharge("acc-2")
+	fresh.LastFailureAt = t0.Add(time.Hour + 45*time.Minute)
+	repo.put(fresh)
+	retrying := domain.NewCharge(acceptance("acc-3"), offer("acc-3"), domain.CoverageTerms{}, t0, time.Time{})
+	retrying.Attempts = 2
+	repo.put(retrying)
+	svc := billing.NewService(repo, &clock{now: t0.Add(2 * time.Hour)}, resilience.DefaultRetryPolicy(), nil)
+	ops := as(security.RoleOperations, "ops-1")
+
+	all, err := svc.Overview(ops, domain.IssuanceFilter{}, t0)
+	require.NoError(t, err)
+	assert.Len(t, all.Items, 3)
+	assert.Equal(t, domain.IssuanceCounts{Charging: 1, ChargingWithRetries: 1, Exceptions: 2, Unattended: 1}, all.Counts)
+
+	got, err := svc.Overview(ops, domain.IssuanceFilter{Status: domain.IssuanceException}, t0)
+	require.NoError(t, err)
+	byID := map[string]domain.Issuance{}
+	for _, i := range got.Items {
+		byID[i.AcceptanceID] = i
+	}
+	require.Len(t, byID, 2)
+	assert.True(t, byID["acc-1"].Unattended, "an hour without an analyst")
+	assert.False(t, byID["acc-2"].Unattended, "15 minutes is within the 30 of the escalation")
+	assert.Equal(t, 3, all.Counts.Charging+all.Counts.Exceptions, "the counts do not depend on the filter")
+	assert.Equal(t, domain.IssuanceCounts{Charging: 1, ChargingWithRetries: 1, Exceptions: 2, Unattended: 1}, got.Counts)
+
+	none, err := svc.Overview(ops, domain.IssuanceFilter{Status: domain.IssuanceActive}, t0)
+	require.NoError(t, err)
+	assert.Empty(t, none.Items)
+	assert.NotNil(t, none.Items, "an empty list, not nil")
+
+	for _, role := range []security.Role{security.RoleInsured, security.RoleAdvisor} {
+		_, err := svc.Overview(as(role, "x"), domain.IssuanceFilter{}, t0)
+		assert.ErrorIs(t, err, security.ErrForbidden, role)
+	}
+}
+
+func TestOverviewRejectsABadFilter(t *testing.T) {
+	svc := billing.NewService(newMemRepo(), &clock{now: t0}, resilience.DefaultRetryPolicy(), nil)
+	ops := as(security.RoleOperations, "ops-1")
+
+	_, err := svc.Overview(ops, domain.IssuanceFilter{Limit: 201}, t0)
+	assert.ErrorIs(t, err, billing.ErrInvalidLimit)
+	_, err = svc.Overview(ops, domain.IssuanceFilter{Status: "other"}, t0)
+	assert.ErrorIs(t, err, billing.ErrInvalidFilter)
+	_, err = svc.Overview(ops, domain.IssuanceFilter{Channel: "fax"}, t0)
+	assert.ErrorIs(t, err, billing.ErrInvalidFilter)
+	_, err = svc.Overview(ops, domain.IssuanceFilter{From: t0.Add(time.Hour), To: t0}, t0)
+	assert.ErrorIs(t, err, billing.ErrInvalidFilter)
+}
+
+// contractRetrier is a ports.ContractRetrier that records what it was asked.
+type contractRetrier struct {
+	err    error
+	got    domain.IssuanceRetry
+	gotID  string
+	woken  int
+	called int
+}
+
+func (c *contractRetrier) ReopenContract(_ context.Context, id string, r domain.IssuanceRetry) (domain.ContractIssuance, error) {
+	c.called++
+	c.gotID, c.got = id, r
+	return domain.ContractIssuance{Event: domain.CoverageActivated{PolicyID: "pol-" + id}}, c.err
+}
+
+func TestRetryIssuanceResumesAFailedChargeAndRecordsTheAction(t *testing.T) {
+	repo := newMemRepo()
+	repo.put(failedCharge("acc-1"))
+	retrier := &contractRetrier{}
+	svc := billing.NewService(repo, &clock{now: t0.Add(2 * time.Hour)}, resilience.DefaultRetryPolicy(), nil).
+		WithContractRetry(retrier, func() { retrier.woken++ })
+
+	action, err := svc.RetryIssuance(as(security.RoleOperations, "ops-1"), "acc-1", " Pasarela restablecida ")
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.IssuanceActionResume, action)
+	assert.Zero(t, retrier.called, "the charge was the failed step")
+	assert.Equal(t, domain.ChargePending, repo.get("acc-1").Status)
+	actions, _ := svc.ListActions(as(security.RoleOperations, "ops-1"), "acc-1")
+	require.Len(t, actions, 1)
+	assert.Equal(t, "Pasarela restablecida", actions[0].Note)
+}
+
+func TestRetryIssuanceRetriesTheContractWhenTheChargeIsDone(t *testing.T) {
+	repo := newMemRepo()
+	confirmed := failedCharge("acc-1")
+	confirmed.Status = domain.ChargeConfirmed
+	repo.put(confirmed)
+	retrier := &contractRetrier{}
+	svc := billing.NewService(repo, &clock{now: t0.Add(2 * time.Hour)}, resilience.DefaultRetryPolicy(), nil).
+		WithContractRetry(retrier, func() { retrier.woken++ })
+
+	action, err := svc.RetryIssuance(as(security.RoleOperations, "ops-7"), "acc-1", "El generador volvió")
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.IssuanceActionRetry, action)
+	assert.Equal(t, "acc-1", retrier.gotID)
+	assert.Equal(t, domain.IssuanceRetry{By: "ops-7", Note: "El generador volvió", At: t0.Add(2 * time.Hour)}, retrier.got)
+	assert.Equal(t, 1, retrier.woken, "the worker of the contractual issuance is woken")
+}
+
+func TestRetryIssuanceErrors(t *testing.T) {
+	ops := as(security.RoleOperations, "ops-1")
+	confirmed := failedCharge("acc-1")
+	confirmed.Status = domain.ChargeConfirmed
+	newSvc := func(retrier *contractRetrier) *billing.Service {
+		repo := newMemRepo()
+		repo.put(confirmed)
+		svc := billing.NewService(repo, &clock{now: t0}, resilience.DefaultRetryPolicy(), nil)
+		if retrier != nil {
+			svc.WithContractRetry(retrier, nil)
+		}
+		return svc
+	}
+
+	_, err := newSvc(&contractRetrier{}).RetryIssuance(ops, "acc-1", "  ")
+	assert.ErrorIs(t, err, billing.ErrInvalidNote, "the note is required")
+	_, err = newSvc(&contractRetrier{}).RetryIssuance(as(security.RoleAdvisor, "adv-1"), "acc-1", "x")
+	assert.ErrorIs(t, err, security.ErrForbidden)
+	_, err = newSvc(&contractRetrier{}).RetryIssuance(ops, "acc-none", "x")
+	assert.ErrorIs(t, err, billing.ErrIssuanceNotFound, "no charge at all")
+	_, err = newSvc(nil).RetryIssuance(ops, "acc-1", "x")
+	assert.ErrorIs(t, err, billing.ErrIssuanceNotRetryable, "no contract retry wired")
+	for _, cause := range []error{ports.ErrContractNotFound, ports.ErrContractNotRetryable} {
+		_, err = newSvc(&contractRetrier{err: cause}).RetryIssuance(ops, "acc-1", "x")
+		assert.ErrorIs(t, err, billing.ErrIssuanceNotRetryable, cause.Error())
+	}
+	boom := errors.New("database down")
+	_, err = newSvc(&contractRetrier{err: boom}).RetryIssuance(ops, "acc-1", "x")
+	assert.ErrorIs(t, err, boom)
+}
+
+func TestEveryResumptionLeavesAnActionWithItsAuthorAndDate(t *testing.T) {
+	repo := newMemRepo()
+	repo.put(failedCharge("acc-1"))
+	svc := billing.NewService(repo, &clock{now: t0.Add(2 * time.Hour)}, resilience.DefaultRetryPolicy(), nil)
+
+	_, err := svc.Resume(as(security.RoleOperations, "ops-1"), "acc-1", "  the customer fixed the card ")
+	require.NoError(t, err)
+
+	got, err := svc.ListActions(as(security.RoleOperations, "ops-2"), "acc-1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, domain.IssuanceActionResume, got[0].Action)
+	assert.Equal(t, "ops-1", got[0].Actor)
+	assert.Equal(t, "the customer fixed the card", got[0].Note)
+	assert.Equal(t, t0.Add(2*time.Hour), got[0].CreatedAt)
+
+	_, err = svc.Resume(as(security.RoleOperations, "ops-2"), "acc-1", "again")
+	require.ErrorIs(t, err, ports.ErrChargeNotResumable)
+	got, _ = svc.ListActions(as(security.RoleOperations, "ops-2"), "acc-1")
+	assert.Len(t, got, 1, "a resumption that was refused leaves no action")
+
+	_, err = svc.ListActions(as(security.RoleAdvisor, "adv-1"), "acc-1")
+	assert.ErrorIs(t, err, security.ErrForbidden)
+}
