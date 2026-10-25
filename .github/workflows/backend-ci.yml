@@ -1,47 +1,110 @@
 name: backend-ci
+
 on:
   pull_request:
     paths: ["services/**", "pkg/**", "stubs/**", "go.work", ".golangci.yml", "Makefile", ".github/workflows/backend-ci.yml"]
   push:
     branches: [develop, main]
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  checks: write
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: "1.23" }
-      - name: Install golangci-lint
-        run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        with:
+          go-version-file: go.work
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.1.6
+          install-only: true
       - run: make lint
+
   build-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: "1.23" }
+        with:
+          go-version-file: go.work
+
+      - name: Install gotestsum
+        run: |
+          go install gotest.tools/gotestsum@v1.13.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - run: make build
-      - run: make test
-      - name: Coverage summary
+
+      - name: Tests
+        run: |
+          gotestsum --format testname --junitfile junit.xml -- \
+            -race -covermode=atomic -coverprofile=coverage.out \
+            ./pkg/... \
+            ./services/origination/... \
+            ./services/claims/... \
+            ./services/partners/... \
+            ./services/audit/... \
+            ./services/notifications/...
+
+      - name: Cobertura en consola y resumen
         if: always()
         run: |
-          if [ -f coverage.out ]; then
-            {
-              echo '### Total coverage (statements)'
-              echo '```'
-              go tool cover -func=coverage.out | tail -n 1
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            go tool cover -func=coverage.out > coverage-func.txt
-          fi
-      - name: Coverage report
+          [ -f coverage.out ] || { echo "::warning::coverage.out no se generó; revisa el paso de tests"; exit 0; }
+          go tool cover -func=coverage.out > coverage-func.txt
+          total=$(awk '/^total:/ {print $3}' coverage-func.txt)
+
+          echo "::group::Cobertura por función"
+          cat coverage-func.txt
+          echo "::endgroup::"
+          echo "COBERTURA TOTAL: ${total}"
+
+          {
+            echo "## 📊 Cobertura total: **${total}**"
+            echo
+            echo "| Paquete | Cobertura | Sentencias |"
+            echo "|---|---|---|"
+            awk 'NR>1 {
+              split($1,a,":"); f=a[1]; sub(/\/[^\/]+$/,"",f)
+              s[f]+=$2; if ($3>0) c[f]+=$2
+            }
+            END {
+              for (p in s) {
+                pct = 100*c[p]/s[p]
+                icon = pct>=80 ? "🟢" : (pct>=60 ? "🟡" : "🔴")
+                printf "| `%s` | %s %.1f%% | %d |\n", p, icon, pct, s[p]
+              }
+            }' coverage.out | sort
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Reporte de tests
+        if: always()
+        continue-on-error: true
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: junit.xml
+          check_name: Resultados de tests
+          detailed_summary: true
+          include_passed: false
+          fail_on_failure: false
+          require_tests: false
+
+      - name: Subir cobertura y resultados
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cobertura-unitarias
+          name: cobertura-y-tests
           path: |
             coverage.out
             coverage-func.txt
-          if-no-files-found: ignore
+            junit.xml
+          if-no-files-found: warn

@@ -5,6 +5,7 @@ _/
 *.out
 coverage.*
 go.work.sum
+junit*.xml
 # Entorno
 .env
 .env.*
