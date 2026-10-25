@@ -84,7 +84,7 @@ consultarla sin conexión (CA-5). No hay paginación.
 
 | Campo | Descripción |
 |---|---|
-| `status` | `active`, `expired`, `revoked`; reservados `revocation_pending` (HU-M1.3-02) y `partially_revoked` (HU-W4.2-02). Se deriva del registro y de sus eventos *append-only*, nunca de una columna que cambie |
+| `status` | `active`, `expired`, `revoked`; `partially_revoked` desde HU-M1.3-02 (un revocado que alguna entidad no confirmó) y `revocation_pending` reservado. Se deriva del registro y de sus eventos *append-only*, nunca de una columna que cambie |
 | `current` | `true` solo para `active`: separa **activos** de **revocados o vencidos** (CA-1, CA-3) |
 | `entities` | Entidad autorizada: el aliado por el que se otorgó, con su nombre visible (`PARTNER_DISPLAY_NAMES`); un código sin nombre se muestra tal cual |
 | `granted_at`, `channel` | Fecha y hora del otorgamiento y canal (CA-2) |
@@ -124,7 +124,7 @@ autorización y caché.
 
 ## 5. Lo que queda para otras historias
 
-- **Revocar** (botón, biometría, cola sin conexión, comprobante): HU-M1.3-02. Hasta entonces el cliente muestra «Revocar
-  consentimiento» deshabilitado en los activos.
+- **Revocar** (botón, biometría, cola sin conexión, comprobante): HU-M1.3-02, con su [contrato](HU-M1.3-02-api.md); cada consentimiento
+  gana `revocable` y `revocation`.
 - Listado y filtros para cumplimiento: HU-W4.2-01 (`/v1/audit/*`, con la misma derivación de estado).
 - «Última consulta realizada» y el comprobante PDF del otorgamiento: sin criterio ni registro de uso todavía.
