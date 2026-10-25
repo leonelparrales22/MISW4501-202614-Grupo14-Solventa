@@ -4,7 +4,7 @@ Utilidades de desarrollo y CI. Cada script debe documentarse aquí al agregarse.
 
 | Script | Uso |
 |---|---|
-| [`ci/changed-images.sh`](ci/changed-images.sh) | `changed-images.sh <sha-base> <sha-head>`: imprime como arreglo JSON las imágenes que `backend-cd` debe construir. Reconstruye la imagen cuyo directorio cambió y **todas** si cambió algo compartido (`pkg/`, `go.work`, `.dockerignore`, el CD) o si no hay base utilizable. Requiere `git` y `jq` |
+| [`ci/changed-images.sh`](ci/changed-images.sh) | `changed-images.sh <sha-base> <sha-head>`: imprime como arreglo JSON las imágenes que se deben construir: la imagen cuyo directorio cambió y **todas** si cambió algo compartido (`pkg/`, `go.work`, `.dockerignore`, el CD) o si no hay base utilizable. `backend-cd` lo llama sin base: construye siempre las 10. Requiere `git` y `jq` |
 | [`ci/environment-status.sh`](ci/environment-status.sh) | `environment-status.sh <cluster>`: imprime `up` si el cluster existe y todos sus servicios tienen tareas, o `off: <motivo>`. `backend-cd` solo despliega con `up`. Requiere `aws` |
 | [`ci/staging-vars.sh`](ci/staging-vars.sh) | `staging-vars.sh <cluster>`: imprime como archivo de variables JSON de Terraform el `ttl` y los `extra_tags` con los que `up.sh` encendió `staging`, leídos de las etiquetas del cluster. Requiere `aws` y `jq` |
 | [`ci/check-deploy-plan.sh`](ci/check-deploy-plan.sh) | `terraform show -json tfplan \| check-deploy-plan.sh`: falla si el plan cambia algo que no sea una *task definition* o un servicio de ECS, o si un servicio pasa de 0 tareas a alguna. Requiere `jq` |
