@@ -58,8 +58,8 @@ var spanish = texts{
 	receipt: "Número de comprobante", consent: "Consentimiento", entity: "Entidad", purpose: "Finalidad",
 	granted: "Otorgado el", requested: "Solicitud de revocación", ended: "Fin de la autorización",
 	channel: "Canal", device: "Dispositivo", method: "Confirmación", name: "Nombre", document: "Documento",
-	channels: map[domain.RevocationChannel]string{domain.RevocationChannelMobileApp: "Aplicación móvil de Solventa"},
-	methods:  map[domain.ConfirmationMethod]string{domain.ConfirmationBiometric: "Biometría", domain.ConfirmationPassword: "Contraseña de Solventa"},
+	channels: map[domain.RevocationChannel]string{domain.RevocationChannelMobileApp: "Aplicación móvil de Solventa", domain.RevocationChannelCompliancePortal: "Portal de cumplimiento de Solventa"},
+	methods:  map[domain.ConfirmationMethod]string{domain.ConfirmationBiometric: "Biometría", domain.ConfirmationPassword: "Contraseña de Solventa", domain.ConfirmationRoleAttestation: "Confirmación del rol de cumplimiento"},
 	sources: map[string]string{
 		domain.SourceOpenFinance: "Open Finance", domain.SourceOpenData: "Datos abiertos", domain.SourceKYC: "Verificación de identidad",
 	},
@@ -81,8 +81,8 @@ var english = texts{
 	receipt: "Receipt number", consent: "Consent", entity: "Entity", purpose: "Purpose",
 	granted: "Granted on", requested: "Revocation requested", ended: "Authorization ended",
 	channel: "Channel", device: "Device", method: "Confirmation", name: "Name", document: "Document",
-	channels: map[domain.RevocationChannel]string{domain.RevocationChannelMobileApp: "Solventa mobile app"},
-	methods:  map[domain.ConfirmationMethod]string{domain.ConfirmationBiometric: "Biometrics", domain.ConfirmationPassword: "Solventa password"},
+	channels: map[domain.RevocationChannel]string{domain.RevocationChannelMobileApp: "Solventa mobile app", domain.RevocationChannelCompliancePortal: "Solventa compliance portal"},
+	methods:  map[domain.ConfirmationMethod]string{domain.ConfirmationBiometric: "Biometrics", domain.ConfirmationPassword: "Solventa password", domain.ConfirmationRoleAttestation: "Compliance role attestation"},
 	sources: map[string]string{
 		domain.SourceOpenFinance: "Open Finance", domain.SourceOpenData: "Open data", domain.SourceKYC: "Identity verification",
 	},

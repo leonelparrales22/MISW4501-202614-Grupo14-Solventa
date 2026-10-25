@@ -82,12 +82,12 @@ func TestTheReceiptInEnglish(t *testing.T) {
 
 func TestTheReceiptOfThePortalWithoutDeviceNorMethod(t *testing.T) {
 	rev, c := revocation()
-	rev.Channel, rev.Device, rev.ConfirmationMethod = "compliance_portal", "", ""
+	rev.Channel, rev.Device, rev.ConfirmationMethod = "kiosk", "", ""
 
 	out, err := pdf.NewUncompressed().Render(rev, c, "es")
 
 	require.NoError(t, err)
-	assert.Contains(t, string(out), "compliance_portal", "an unknown channel is printed as it is")
+	assert.Contains(t, string(out), "kiosk", "an unknown channel is printed as it is")
 	assert.NotContains(t, string(out), "Dispositivo")
 }
 

@@ -2,14 +2,14 @@
 
 Garantiza trazabilidad: cualquier decisión de suscripción o precio debe poder reconstruirse al 100 %, y los consentimientos de Open Finance deben ser verificables y revocables.
 
-**Estado:** `GET /health` y, con `DATABASE_URL`, el módulo `consents` de **HU-W1.2-01** (consentimiento explícito e inmutable del cliente): `GET /v1/audit/consent-terms/current`, `POST /v1/audit/consents`, `GET /v1/audit/consent-verifications` y `GET /v1/audit/consents/{consent_id}`. **HU-M1.3-01:** el asegurado consulta sus propios consentimientos (`GET /v1/consents` y `GET /v1/consents/{consent_id}`, con `AUTH_*`), con el estado y el historial derivados de `consent_event`; `audit` reconoce al titular por el vínculo `sub` ↔ documento que le llega con el evento `CustomerLinked` de originación (`EVENTS_QUEUE_URL`). **HU-M1.3-02:** el asegurado revoca un consentimiento (`POST /v1/consents/{consent_id}/revocations`) y descarga el comprobante en PDF (`GET /v1/consents/{consent_id}/revocation-receipt`); el registro es inmutable y queda antes de responder, el consentimiento deja de verificarse como activo en ese instante y, con `OPEN_FINANCE_URL`, un trabajador avisa a cada entidad dentro de 5 minutos. El módulo `decisions` sigue reservado. Con `DATABASE_URL` también el módulo `decisions` de **HU-W4.1-01** (registro de auditoría de las decisiones de suscripción): `POST /v1/audit/decisions` (interna) y, con `AUTH_ISSUER`, `GET /v1/audit/decisions/{id}` (rol `operations`).
+**Estado:** `GET /health` y, con `DATABASE_URL`, el módulo `consents` de **HU-W1.2-01** (consentimiento explícito e inmutable del cliente): `GET /v1/audit/consent-terms/current`, `POST /v1/audit/consents`, `GET /v1/audit/consent-verifications` y `GET /v1/audit/consents/{consent_id}`. **HU-M1.3-01:** el asegurado consulta sus propios consentimientos (`GET /v1/consents` y `GET /v1/consents/{consent_id}`, con `AUTH_*`), con el estado y el historial derivados de `consent_event`; `audit` reconoce al titular por el vínculo `sub` ↔ documento que le llega con el evento `CustomerLinked` de originación (`EVENTS_QUEUE_URL`). **HU-M1.3-02:** el asegurado revoca un consentimiento (`POST /v1/consents/{consent_id}/revocations`) y descarga el comprobante en PDF (`GET /v1/consents/{consent_id}/revocation-receipt`); el registro es inmutable y queda antes de responder, el consentimiento deja de verificarse como activo en ese instante y, con `OPEN_FINANCE_URL`, un trabajador avisa a cada entidad dentro de 5 minutos. El módulo `decisions` sigue reservado. Con `DATABASE_URL` también el módulo `decisions` de **HU-W4.1-01** (registro de auditoría de las decisiones de suscripción): `POST /v1/audit/decisions` (interna) y, con `AUTH_ISSUER`, `GET /v1/audit/decisions/{id}` (rol `operations`). **HU-W4.2-02:** con `AUTH_ISSUER`, el portal de cumplimiento (rol `operations`) consulta el estado de la revocación de un consentimiento (`GET /v1/audit/consents/{consent_id}/revocation`), lo revoca con motivo y referencia (`POST …/revocations`) y reintenta solo las entidades que no confirmaron (`POST …/revocation-retries`), con el mismo proceso de HU-M1.3-02.
 
 ## Responsabilidades
 
 | Módulo (`internal/`) | Qué hace |
 |---|---|
 | `decisions` | Registro inmutable (*append-only*) de qué datos y reglas llevaron a un precio o decisión de aceptación/rechazo. **HU-W4.1-01:** `decisions.Service` guarda el registro que envía `origination` (idempotente por `offer_id`; `recorded_at` lo pone el servidor) y lo entrega al analista de operaciones |
-| `consents` | Registro, consulta y revocación de consentimientos de datos financieros (revocación efectiva ≤ 5 min). **HU-W1.2-01:** `consents.Service` publica los términos vigentes (`v1`), registra el consentimiento (idempotente por cliente, solicitud y versión; la fecha y hora la pone el servidor), lo consulta como evidencia y lo verifica para `origination`. **HU-M1.3-01:** `consents.HolderService` guarda el vínculo de la cuenta con su documento (idempotente por `subject`; un documento distinto para el mismo `subject` conserva el primero y deja un aviso), resuelve el titular de un token (`ErrHolderNotLinked` sin vínculo) y lista u obtiene sus consentimientos con `domain.View` (estado derivado, entidad del catálogo, fin de vigencia, comprobante e historial); uno ajeno responde como inexistente. **HU-M1.3-02:** `consents.RevocationService` revoca (genérico `Revoke`, el que reutiliza el portal, y `RevokeAsHolder`), genera el comprobante (`Receipt`) y reintenta solo las entidades no confirmadas (`RetryPending`); `consents.NoticeWorker` avisa a cada entidad con `pkg/idempotency` (un reclamo por intento, la misma clave en cada intento, ventana de 5 min); `Service.Verify` responde con el estado derivado (`WithEvents`): revocado o parcial ⇒ `active=false` |
+| `consents` | Registro, consulta y revocación de consentimientos de datos financieros (revocación efectiva ≤ 5 min). **HU-W1.2-01:** `consents.Service` publica los términos vigentes (`v1`), registra el consentimiento (idempotente por cliente, solicitud y versión; la fecha y hora la pone el servidor), lo consulta como evidencia y lo verifica para `origination`. **HU-M1.3-01:** `consents.HolderService` guarda el vínculo de la cuenta con su documento (idempotente por `subject`; un documento distinto para el mismo `subject` conserva el primero y deja un aviso), resuelve el titular de un token (`ErrHolderNotLinked` sin vínculo) y lista u obtiene sus consentimientos con `domain.View` (estado derivado, entidad del catálogo, fin de vigencia, comprobante e historial); uno ajeno responde como inexistente. **HU-M1.3-02:** `consents.RevocationService` revoca (genérico `Revoke`, el que reutiliza el portal, y `RevokeAsHolder`), genera el comprobante (`Receipt`) y reintenta solo las entidades no confirmadas (`RetryPending`); `consents.NoticeWorker` avisa a cada entidad con `pkg/idempotency` (un reclamo por intento, la misma clave en cada intento, ventana de 5 min); `Service.Verify` responde con el estado derivado (`WithEvents`): revocado o parcial ⇒ `active=false`. **HU-W4.2-02:** `consents.ComplianceService` es lo que hace el portal de cumplimiento: `State` (consentimiento, estado derivado, registro de la revocación e historial con actor, motivo y referencia), `Revoke` (valida motivo, referencia y la casilla del rol y llama a `RevocationService.Revoke` con canal `compliance_portal`, actor `operations` y método `role_attestation`) y `Retry` (solo una revocación parcial con una entidad no confirmada; `RetryPending`). `RevokeCommand.validate` elige las reglas por canal |
 
 ## Reglas de diseño
 
@@ -23,10 +23,10 @@ Garantiza trazabilidad: cualquier decisión de suscripción o precio debe poder 
 
 | Adaptador | Qué hace |
 |---|---|
-| `http` | Router `chi`: `GET /health` y, según las opciones, las rutas de consentimiento. `WithConsents`: términos vigentes, registro y verificación (sin token de Cognito: el canal del aliado entra con la API key del API Gateway y la verificación es una llamada entre servicios). `WithConsentReads`: la evidencia, con `security.Authenticate` + `RequireRole(operations, advisor)`, solo si `AUTH_ISSUER` está definido. **HU-M1.3-01:** `WithHolderConsents`: `GET /v1/consents` y `GET /v1/consents/{consent_id}` con `security.Authenticate` + `RequireRole(insured)`; el titular es el `sub` del token (`403 holder_not_linked` sin vínculo, `404 not_found` para lo ajeno), solo `GET`. **HU-M1.3-02:** `WithHolderRevocations`, con los mismos guardias: `POST /v1/consents/{consent_id}/revocations` (`Idempotency-Key` UUID obligatoria) y `GET /v1/consents/{consent_id}/revocation-receipt`; el consentimiento gana `revocable` y `revocation`. Todas responden `Cache-Control: no-store`; `catalog_test.go` tiene la matriz 401/403/200 de todas las rutas humanas |
+| `http` | Router `chi`: `GET /health` y, según las opciones, las rutas de consentimiento. `WithConsents`: términos vigentes, registro y verificación (sin token de Cognito: el canal del aliado entra con la API key del API Gateway y la verificación es una llamada entre servicios). `WithConsentReads`: la evidencia, con `security.Authenticate` + `RequireRole(operations, advisor)`, solo si `AUTH_ISSUER` está definido. **HU-M1.3-01:** `WithHolderConsents`: `GET /v1/consents` y `GET /v1/consents/{consent_id}` con `security.Authenticate` + `RequireRole(insured)`; el titular es el `sub` del token (`403 holder_not_linked` sin vínculo, `404 not_found` para lo ajeno), solo `GET`. **HU-M1.3-02:** `WithHolderRevocations`, con los mismos guardias: `POST /v1/consents/{consent_id}/revocations` (`Idempotency-Key` UUID obligatoria) y `GET /v1/consents/{consent_id}/revocation-receipt`; el consentimiento gana `revocable` y `revocation`. **HU-W4.2-02:** `WithComplianceRevocations`, con `security.Authenticate` + `RequireRole(operations)`: `GET /v1/audit/consents/{consent_id}/revocation`, `POST …/revocations` (`Idempotency-Key` UUID obligatoria) y `POST …/revocation-retries`; el *user agent* del navegador es el dispositivo (recortado a 120 caracteres) y un id imposible responde `404 consent_not_found`. Todas responden `Cache-Control: no-store`; `catalog_test.go` tiene la matriz 401/403/200 de las rutas humanas de HU-W1.2-01, HU-M1.3-01 y HU-M1.3-02, y `compliance_catalog_test.go` la de HU-W4.2-02 |
 | `postgres` | Base de datos propia (`database/sql` + `pgx` v5). `Migrate` aplica al arrancar las migraciones embebidas de `migrations/` con `pg_advisory_lock` y `schema_migrations`. `ConsentStore`: tabla `consent_record` *append-only* (HU-W1.2-01); **HU-M1.3-01:** `ListByHolder` (por `upper(holder_document_id)`), `ConsentEventStore` (lector de `consent_event`, `0002`) y `HolderLinkStore` (`holder_link`, `0003`: `INSERT … ON CONFLICT DO NOTHING` y relectura). **HU-M1.3-02 (`0004`):** `RevocationStore` (registro, eventos y primer paso de cada aviso en una transacción; número de comprobante de una secuencia) y `NoticeStore` (cola de avisos **solo con inserciones**: cada cambio es un paso nuevo y el reclamo es un `INSERT … SELECT … ON CONFLICT DO NOTHING` sobre el último paso; `Confirm` y `Fail` escriben además el evento de la entidad). Ninguno tiene sentencias de modificación |
 | `openfinance` | **HU-M1.3-02:** puente entre `pkg/adapters/openfinance` (`RevokeConsent`) y el puerto `EntityNotifier`: envía solo el consentimiento, la entidad, el cliente del aliado y la hora efectiva, con la clave de idempotencia del aviso |
-| `pdf` | **HU-M1.3-02:** comprobante de la revocación con `go-pdf/fpdf` v0.9.0: número, consentimiento, entidad, titular con el documento enmascarado, alcance, solicitud y fecha y hora exactas de finalización (Colombia y UTC), canal y dispositivo. Determinista; español por defecto e inglés con `Accept-Language: en` |
+| `pdf` | **HU-M1.3-02:** comprobante de la revocación con `go-pdf/fpdf` v0.9.0: número, consentimiento, entidad, titular con el documento enmascarado, alcance, solicitud y fecha y hora exactas de finalización (Colombia y UTC), canal y dispositivo. Determinista; español por defecto e inglés con `Accept-Language: en`. **HU-W4.2-02:** etiqueta también el canal «Portal de cumplimiento de Solventa» y el método «Confirmación del rol de cumplimiento»; un código sin etiqueta se imprime tal cual |
 | `messaging` | **HU-M1.3-01:** manejador idempotente de `CustomerLinked` (decodifica el *payload*, normaliza y valida el vínculo y llama a `HolderService.Link`; un *payload* inválido es error, así que el mensaje termina en la DLQ tras los reintentos; registra «holder linked» con `event_id` y `customer_id`, nunca el documento). Lo sirve `pkg/events/sqsconsumer` desde `cmd/audit` |
 
 ## Consentimiento (HU-W1.2-01)
@@ -73,6 +73,9 @@ familias, un prefijo por recurso (D-3 a, [docs/api](../../docs/api/README.md#con
 ```
 Personas (Cognito):        GET /v1/consents, GET /v1/consents/{id}       (insured, el titular es el sub)
                            GET /v1/audit/consents/{id}                   (operations, advisor; el gateway aún no la publica)
+                           GET /v1/audit/consents/{id}/revocation        (operations; HU-W4.2-02)
+                           POST /v1/audit/consents/{id}/revocations      (operations; HU-W4.2-02)
+                           POST /v1/audit/consents/{id}/revocation-retries (operations; HU-W4.2-02)
 Bancos y aliados (API key): GET /v1/audit/consent-terms/current, POST /v1/audit/consents
 Interna (no se publica):   GET /v1/audit/consent-verifications
 ```
@@ -145,11 +148,57 @@ El portal de cumplimiento solo agrega sus rutas; el proceso ya existe:
    `Actor{Type: "operations", ID: <sub>}`, `Channel` = una constante nueva `compliance_portal` en `domain`, `Reason` y `Reference`
    obligatorios en la ruta, `Request.RequestedAt` = hora del servidor (`ConfirmationMethod` y `Device` pueden ir vacíos) y su
    `RequestID`, y llama a `RevocationService.Revoke`. Recibe la misma vista (`domain.ConsentView` con `Revocation`).
+   (Desde HU-W4.2-02: `Device` y `ConfirmationMethod` no van vacíos para el canal del móvil; el portal registra el *user agent* y
+   `role_attestation`, y `RevokeCommand.validate` aplica las reglas del portal solo al canal `compliance_portal`, ver D3 abajo.)
 2. Una ruta que llama a `RevocationService.RetryPending(consentID, actor)`: inicia una ventana nueva solo para las entidades no
    confirmadas (las confirmadas nunca se vuelven a avisar), deja un evento `revocation_retry_requested` con el actor y despierta al
    trabajador.
 3. El estado por entidad, el resumen (`in_progress`, `completed`, `partial`), la ventana de 5 minutos, la revocación parcial y el
    registro inmutable no cambian. Mostrar «Revocación en curso» en el portal es solo leer `notice_status`.
+
+## Revocación desde el portal de cumplimiento (HU-W4.2-02)
+
+Contrato para el front web: [`docs/contratos/HU-W4.2-02-api.md`](../../docs/contratos/HU-W4.2-02-api.md). **No es un proceso nuevo**: el portal
+llama a `RevocationService.Revoke` y `RetryPending` de HU-M1.3-02. El registro inmutable, los eventos y la cola de avisos se escriben en
+una transacción y antes de responder; el `NoticeWorker`, la ventana de 5 min (RN-02), el estado derivado (`revoked` / `partially_revoked`)
+y el bloqueo de `Verify` no cambian. **Sin migración nueva**: `consent_revocation` ya guarda `actor_type`, `actor_id`, `reason`,
+`reference` y `channel`, y `device` y `confirmation_method` admiten nulos.
+
+```
+portal ──GET  /v1/audit/consents/{id}/revocation──▶ ComplianceService.State: titular (documento enmascarado), alcance, entidades, revocable, registro, historial
+portal ──POST /v1/audit/consents/{id}/revocations (Idempotency-Key, reason, reference, role_confirmed)──▶ Revoke (canal compliance_portal)
+portal ──POST /v1/audit/consents/{id}/revocation-retries──▶ Retry ──▶ RetryPending: ventana nueva solo para las entidades no confirmadas
+```
+
+- **Rol:** solo `operations` (las tres rutas, también la lectura); `advisor`, `insured` y `partner` reciben `403` y no se ejecuta nada.
+  **Riesgo declarado:** cualquier analista de operaciones puede revocar; queda registrado su `sub`. Un grupo `compliance` propio
+  requeriría `pkg/security`, Cognito y el front, y queda fuera de alcance.
+- **Validación por canal (decisión D3):** `RevocationService.revoke` llama a `RevokeCommand.validate`: con `compliance_portal` exige un
+  motivo válido (`customer_request`, `regulatory_order`), una referencia de 3 a 64 caracteres (letras, dígitos, espacio y `- _ . / #`,
+  con los espacios repetidos colapsados) y la hora de la solicitud; con cualquier otro canal aplica `RevokeRequest.Validate` exactamente
+  como antes (el móvil sigue exigiendo `device` y `confirmation_method`). La ruta además exige `role_confirmed: true`. Si falta algo,
+  `400 validation_failed` con **todos** los campos a la vez y no se registra nada.
+- **Quién y desde dónde:** actor `operations` con el `sub` del token (nunca un nombre), canal `compliance_portal`, método
+  `role_attestation` y como dispositivo el *user agent* (recortado a 120 caracteres). `requested_at` y `effective_at` son la hora del
+  servidor: el portal no tiene cola sin conexión.
+- **Reintento:** solo una revocación **parcial** con una entidad `not_confirmed`. Sin revocación, `409 consent_not_revoked`; en curso,
+  completa o con la ventana de reintento ya abierta, `409 nothing_to_retry` (el mensaje lleva el `notice_status`). Un reintento mantiene la
+  revocación parcial hasta que la entidad confirme (`deriveNotices`, HU-M1.3-02): la entidad queda `pending` con su ventana nueva y
+  solo entonces pasa a `revoked` / `completed`. Dos reintentos a la vez abren una sola ventana. No lleva `Idempotency-Key`.
+- **Comprobante al cliente (decisión D5):** es la app móvil, sin cambios: el estado nuevo se ve en `GET /v1/consents/{id}` y el PDF en
+  `GET /v1/consents/{id}/revocation-receipt` (decisión D11: etiquetas del portal). Correo y *push* quedan fuera de alcance: `audit` no
+  conoce el correo del titular y `notifications` es un esqueleto.
+- **Minimización:** las respuestas traen el nombre y el documento enmascarado (`******4050`); el completo sigue solo en la evidencia. Ni
+  la clave de idempotencia ni la referencia aparecen en los logs.
+- **Pendiente de HU-W4.2-01:** el listado, los filtros y el detalle del portal. Esta historia no depende de ella. **Pendiente de la Fase G
+  (PR de infraestructura aparte):** publicar `/v1/audit/consents/{proxy+}` en el API Gateway con Cognito; **nunca** `audit` entero (expondría
+  `GET /v1/audit/consent-verifications` y `POST /v1/audit/decisions`, internas y sin token).
+- Pruebas: `internal/domain/compliance_revocation_test.go`, `internal/consents/compliance_test.go` (incluye el móvil sin `device` que sigue
+  en `400` y dos reintentos simultáneos), `internal/adapters/http/{compliance_revocations_test.go,compliance_catalog_test.go}`,
+  `internal/adapters/pdf/compliance_receipt_test.go`, `cmd/audit/compliance_wiring_test.go`,
+  `tests/integration/compliance_revocation_test.go` (PostgreSQL real, un subtest por criterio, entidades sembradas con dos entidades,
+  carrera portal/móvil y cero filas tras un `403`), el contrato con Schemathesis y
+  [`tests/e2e/hu-w4.2`](../../tests/e2e/hu-w4.2/README.md).
 
 ## Registro de auditoría de decisiones (HU-W4.1-01)
 
