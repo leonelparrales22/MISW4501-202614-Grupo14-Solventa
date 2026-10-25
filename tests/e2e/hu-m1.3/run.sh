@@ -20,6 +20,16 @@
 #              the outbox with attempts; LocalStack back, D is linked
 #   E10        minimization: neither the responses nor the logs of audit carry
 #              a document
+#   R1-R11     HU-M1.3-02, the revocation: R1 the record exists when the 201
+#              arrives; R2 blocked at once (offer 422, no new connection to
+#              the Open Finance proxy nor query to the stub); R3 the entity
+#              confirms within the deadline (5 s here, 300 s in AWS); R4 the
+#              same key returns the same revocation, another key is 409; R5 an
+#              expired consent is 409; R6 isolation and roles; R7 an entity
+#              that never answers leaves it partially revoked; R8 the new
+#              tables are append-only; R9 the receipt in PDF; R10 latency of
+#              the POST (smoke only); R11 the time of a request confirmed
+#              offline is kept
 #   nube.sh    the API checks of the cloud window, rehearsed against audit
 #
 # The script exits with a non-zero code when any check fails. The environment
@@ -42,6 +52,10 @@ done
 COMPOSE="env MSYS_NO_PATHCONV=1 docker compose -f docker-compose.yml"
 export AUDIT_PORT="${AUDIT_PORT:-8390}" ORIGINATION_PORT="${ORIGINATION_PORT:-8391}"
 export LOCALSTACK_PORT="${LOCALSTACK_PORT:-4576}" MOTO_PORT="${MOTO_PORT:-5130}"
+# HU-M1.3-02: the Open Finance stub, the Toxiproxy API and the shortened
+# deadline of the notices to the entities.
+export OPENFINANCE_PORT="${OPENFINANCE_PORT:-9390}" TOXIPROXY_PORT="${TOXIPROXY_PORT:-8394}"
+export REVOCATION_DEADLINE_SECONDS="${REVOCATION_DEADLINE_SECONDS:-5}"
 AUDIT="http://localhost:$AUDIT_PORT"
 ORIGINATION="http://localhost:$ORIGINATION_PORT"
 RUN_ID="r$(date +%s)"
@@ -142,12 +156,55 @@ wait_linked() {
   LINK_SECONDS="$2"
 }
 
-grant_body() { # <customer> <application> <document>
+grant_body() { # <customer> <application> <document> [partner]
   cat <<JSON
 {"customer_id":"$1","document_id":"$3","full_name":"Asegurado De Prueba","terms_version":"v1",
  "accepted_sources":["open_finance","open_data","kyc"],"accepted_data_policy":true,"channel":"embedded",
- "partner_id":"aliado-banco-1","application_id":"$2"}
+ "partner_id":"${4:-aliado-banco-1}","application_id":"$2"}
 JSON
+}
+
+# --- HU-M1.3-02 ---
+
+# uuid: a random UUID (version 4), the Idempotency-Key the app generates.
+uuid() {
+  local hex
+  hex="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  echo "${hex:0:8}-${hex:8:4}-4${hex:13:3}-a${hex:17:3}-${hex:20:12}"
+}
+
+# revoke <consent> <token> <key> <requested_at>: the holder's revocation; sets
+# STATUS, BODY and SECONDS_TAKEN (the time of the request).
+revoke() {
+  local args=(-s -o "$WORK/body" -w '%{http_code} %{time_total}' -X POST "$AUDIT/v1/consents/$1/revocations"
+    -H 'User-Agent: hu-m1.3-e2e' -H 'Content-Type: application/json' -H "Idempotency-Key: $3"
+    -d "{\"requested_at\":\"$4\",\"device\":\"e2e Pixel 8\",\"confirmation_method\":\"biometric\"}")
+  [[ -n "$2" ]] && args+=(-H "Authorization: Bearer $2")
+  local out
+  out="$(curl "${args[@]}")"
+  STATUS="${out%% *}"
+  SECONDS_TAKEN="${out##* }"
+  BODY="$(cat "$WORK/body")"
+  printf '%s\n' "$BODY" >>"$WORK/holder-responses"
+}
+
+# offer_body <customer> <consent> <application>: the personalized offer of
+# the partner (POST /v1/offers, HU-W1.2-03), which verifies the consent first.
+offer_body() {
+  cat <<JSON
+{"customer_id":"$1","consent_id":"$2","partner_id":"aliado-banco-1","application_id":"$3",
+ "document_id":"$DOC_A","full_name":"Asegurado De Prueba","email":"oferta.$RUN_ID@example.com","birth_date":"1985-03-14",
+ "insured_amount":250000000,"term_months":120}
+JSON
+}
+
+# profile_requests <customer>: profile queries of the customer the stub received.
+profile_requests() { $COMPOSE logs --no-log-prefix openfinance 2>/dev/null | grep -c "profile request customer=$1\$" || true; }
+
+# profile_connections: connections origination opened to the Open Finance
+# proxy (the notices of audit go through another proxy).
+profile_connections() {
+  $COMPOSE logs --no-log-prefix toxiproxy 2>/dev/null | grep 'Accepted client' | grep -c '"name":"openfinance"' || true
 }
 
 DOC_A="1020304050"
@@ -367,6 +424,169 @@ else
   check "audit logs each link with its event and customer" yes no
 fi
 
+echo "== [$(stamp)] HU-M1.3-02. Revocation of a consent (R1-R11)"
+# Consents of A for the revocation: R_ONLINE (revoked online, R1-R4, R9,
+# R10), R_MUTE (its entity never answers, R7) and R_OFFLINE (granted a day ago
+# and revoked with the time of a request confirmed two hours ago, R11).
+call POST "$AUDIT/v1/audit/consents" "$(grant_body "cust-r1-$RUN_ID" "app-r1-$RUN_ID" "$DOC_A")"
+check "a consent of A to revoke online" 201 "$STATUS"
+R_ONLINE="$(field .consent_id)"
+call POST "$AUDIT/v1/audit/consents" "$(grant_body "cust-r3-$RUN_ID" "app-r3-$RUN_ID" "$DOC_A" aliado-mudo)"
+check "a consent of A whose entity never answers" 201 "$STATUS"
+R_MUTE="$(field .consent_id)"
+R_OFFLINE="cns-offline-$RUN_ID"
+psql_audit -c "INSERT INTO consent_record (consent_id, customer_id, holder_document_id, holder_full_name, terms_version, scope,
+  purpose, channel, partner_id, application_id, user_agent, granted_at)
+  SELECT '$R_OFFLINE', 'cust-r11-$RUN_ID', holder_document_id, holder_full_name, terms_version, scope, purpose, channel, partner_id,
+    'app-r11-$RUN_ID', 'seed', now() - interval '1 day' FROM consent_record WHERE consent_id = '$R_ONLINE'" >/dev/null
+
+echo "== [$(stamp)] R2 (before). With the consent active the offer queries Open Finance"
+call POST "$ORIGINATION/v1/offers" "$(offer_body "cust-r1-$RUN_ID" "$R_ONLINE" "app-offer1-$RUN_ID")"
+check "POST /v1/offers answers 201 while the consent is active" 201 "$STATUS"
+check "the stub received the profile query of the customer" true \
+  "$([[ "$(profile_requests "cust-r1-$RUN_ID")" -ge 1 ]] && echo true || echo false)"
+
+echo "== [$(stamp)] R1. A revokes online: the record exists when the 201 arrives"
+KEY_1="$(uuid)"
+REQUESTED_1="$(date -u -d '-2 seconds' +%Y-%m-%dT%H:%M:%SZ)"
+revoke "$R_ONLINE" "$TOKEN_A" "$KEY_1" "$REQUESTED_1"
+check "POST /v1/consents/{id}/revocations answers 201" 201 "$STATUS"
+RECEIPT_1="$(field .receipt_number)"
+EFFECTIVE_1="$(field .effective_at)"
+R1_SECONDS="$SECONDS_TAKEN"
+check "the receipt has the shape REV-<year>-<number>" true "$([[ "$RECEIPT_1" =~ ^REV-[0-9]{4}-[0-9]{4,}$ ]] && echo true || echo false)"
+check "status revoked at once, entity pending" "revoked|in_progress|pending" "$(field '"\(.status)|\(.notice_status)|\(.entities[0].status)"')"
+check "requested_at is the time of the device" "$REQUESTED_1" "$(field '.requested_at | sub("\\.[0-9]+";"")')"
+check "the immutable record has every field of CA-4" 1 "$(psql_audit -c "SELECT count(*) FROM consent_revocation
+  WHERE consent_id = '$R_ONLINE' AND receipt_number = '$RECEIPT_1' AND holder_document_id = '$DOC_A' AND jsonb_array_length(scope) = 3
+  AND requested_at = '$REQUESTED_1' AND effective_at >= requested_at AND channel = 'mobile_app' AND device = 'e2e Pixel 8'
+  AND confirmation_method = 'biometric' AND actor_type = 'holder' AND request_id = '$KEY_1'" | tr -d '\r')"
+check "and the two events of the consent" "revocation_requested,revoked" \
+  "$(psql_audit -c "SELECT string_agg(status, ',' ORDER BY occurred_at) FROM consent_event WHERE consent_id = '$R_ONLINE' AND entity_code IS NULL" | tr -d '\r')"
+call GET "$AUDIT/v1/consents/$R_ONLINE" "" "$TOKEN_A"
+check "the consent shows revoked, not revocable, with its receipt" "revoked|false|$RECEIPT_1" \
+  "$(field '"\(.status)|\(.revocable)|\(.revocation_receipt_id)"')"
+
+echo "== [$(stamp)] R2. Blocked at once: no new query reaches Open Finance"
+call GET "$AUDIT/v1/audit/consent-verifications?customer_id=cust-r1-$RUN_ID"
+check "audit verifies the consent as inactive" false "$(field .active)"
+# A fresh origination has no pooled connection to the stub, so any query it
+# made would show up as a new connection of the proxy.
+$COMPOSE restart origination >/dev/null
+wait_healthy "$ORIGINATION"
+CONNECTIONS_BEFORE="$(profile_connections)"
+QUERIES_BEFORE="$(profile_requests "cust-r1-$RUN_ID")"
+call POST "$ORIGINATION/v1/offers" "$(offer_body "cust-r1-$RUN_ID" "$R_ONLINE" "app-offer2-$RUN_ID")"
+check "POST /v1/offers with the revoked consent answers 422" 422 "$STATUS"
+check "the error is consent_required" consent_required "$(field .error)"
+check "no new connection reached the Open Finance proxy" "$CONNECTIONS_BEFORE" "$(profile_connections)"
+check "no new profile query reached the stub" "$QUERIES_BEFORE" "$(profile_requests "cust-r1-$RUN_ID")"
+
+echo "== [$(stamp)] R3. The entity confirms within the deadline"
+for _ in $(seq 1 30); do
+  call GET "$AUDIT/v1/consents/$R_ONLINE" "" "$TOKEN_A"
+  [[ "$(field '.revocation.entities[0].status')" == confirmed ]] && break
+  sleep 0.5
+done
+check "the entity confirmed" "confirmed|completed" "$(field '"\(.revocation.entities[0].status)|\(.revocation.notice_status)"')"
+CONFIRM_SECONDS="$(field '((.revocation.entities[0].confirmed_at | sub("\\.[0-9]+";"") | fromdate) - (.revocation.effective_at | sub("\\.[0-9]+";"") | fromdate))')"
+echo "        confirmed ~${CONFIRM_SECONDS} s after the effective time (deadline ${REVOCATION_DEADLINE_SECONDS} s; 300 s in AWS)"
+check "confirmed_at - effective_at is within the deadline" true \
+  "$([[ "$CONFIRM_SECONDS" -le "$REVOCATION_DEADLINE_SECONDS" ]] && echo true || echo false)"
+check "the history shows the confirmation of the entity" "revocation_confirmed|aliado-banco-1" \
+  "$(field '.history[-1] | "\(.status)|\(.entity_code)"')"
+check "the stub recorded it once, with the key of the notice" 1 \
+  "$(curl -s "http://localhost:$OPENFINANCE_PORT/debug/consent-revocations" | jq --arg k "revocation-$R_ONLINE-aliado-banco-1" '[.revocations[] | select(.idempotency_key == $k)] | length')"
+
+echo "== [$(stamp)] R4. Idempotent: the same key returns the same revocation"
+revoke "$R_ONLINE" "$TOKEN_A" "$KEY_1" "$REQUESTED_1"
+check "the same key answers 200" 200 "$STATUS"
+check "with the same receipt" "$RECEIPT_1" "$(field .receipt_number)"
+revoke "$R_ONLINE" "$TOKEN_A" "$(uuid)" "$REQUESTED_1"
+check "another key on the revoked consent answers 409" 409 "$STATUS"
+check "with consent_already_revoked (CA-6)" consent_already_revoked "$(field .error)"
+check "still one revocation" 1 "$(psql_audit -c "SELECT count(*) FROM consent_revocation WHERE consent_id = '$R_ONLINE'" | tr -d '\r')"
+
+echo "== [$(stamp)] R5. An expired consent cannot be revoked"
+revoke "cns-expired-$RUN_ID" "$TOKEN_A" "$(uuid)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+check "409 consent_not_active" "409|consent_not_active" "$STATUS|$(field .error)"
+call GET "$AUDIT/v1/consents/cns-expired-$RUN_ID" "" "$TOKEN_A"
+check "an expired consent is not revocable" false "$(field .revocable)"
+
+echo "== [$(stamp)] R6. Only the holder revokes; roles"
+revoke "$R_OFFLINE" "$TOKEN_B" "$(uuid)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+check "B revoking A's consent: 404" 404 "$STATUS"
+revoke "$R_OFFLINE" "$OPERATIONS_TOKEN" "$(uuid)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+check "operations: 403" 403 "$STATUS"
+revoke "$R_OFFLINE" "" "$(uuid)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+check "without a token: 401" 401 "$STATUS"
+call GET "$AUDIT/v1/consents/$R_OFFLINE" "" "$TOKEN_A"
+check "A's consent is still active" active "$(field .status)"
+
+echo "== [$(stamp)] R7. An entity that never answers: partial revocation when the deadline passes"
+revoke "$R_MUTE" "$TOKEN_A" "$(uuid)" "$(date -u -d '-1 seconds' +%Y-%m-%dT%H:%M:%SZ)"
+check "the revocation is recorded (201)" 201 "$STATUS"
+for _ in $(seq 1 40); do
+  call GET "$AUDIT/v1/consents/$R_MUTE" "" "$TOKEN_A"
+  [[ "$(field .status)" == partially_revoked ]] && break
+  sleep 0.5
+done
+check "partially revoked after the deadline" "partially_revoked|partial|not_confirmed" \
+  "$(field '"\(.status)|\(.revocation.notice_status)|\(.revocation.entities[0].status)"')"
+check "the worker wrote revocation_not_confirmed" 1 \
+  "$(psql_audit -c "SELECT count(*) FROM consent_event WHERE consent_id = '$R_MUTE' AND entity_code = 'aliado-mudo' AND status = 'revocation_not_confirmed'" | tr -d '\r')"
+check "the stub refused the notices of that entity" true \
+  "$(curl -s "http://localhost:$OPENFINANCE_PORT/debug/consent-revocations" | jq '.failures_injected > 0')"
+call GET "$AUDIT/v1/audit/consent-verifications?customer_id=cust-r3-$RUN_ID"
+check "a partially revoked consent is not verified as active either" false "$(field .active)"
+
+echo "== [$(stamp)] R8. The revocation tables are append-only"
+for stmt in "UPDATE consent_revocation SET device = 'x'" "DELETE FROM consent_revocation" "TRUNCATE consent_revocation" \
+  "UPDATE revocation_notice SET idempotency_key = 'x'" "DELETE FROM revocation_notice" "TRUNCATE revocation_notice" \
+  "UPDATE revocation_notice_step SET status = 'confirmed'" "DELETE FROM revocation_notice_step" "TRUNCATE revocation_notice_step"; do
+  OUT="$(psql_audit -c "$stmt")"
+  if grep -q "append-only" <<<"$OUT"; then
+    check "$stmt is rejected" rejected rejected
+  else
+    check "$stmt is rejected" rejected "accepted: $OUT"
+  fi
+done
+check "the record is intact" 1 "$(psql_audit -c "SELECT count(*) FROM consent_revocation WHERE consent_id = '$R_ONLINE' AND device = 'e2e Pixel 8'" | tr -d '\r')"
+
+echo "== [$(stamp)] R9. The receipt in PDF"
+RECEIPT_OUT="$(curl -s -o "$WORK/receipt.pdf" -w '%{http_code}|%{content_type}' -H "Authorization: Bearer $TOKEN_A" \
+  "$AUDIT/v1/consents/$R_ONLINE/revocation-receipt")"
+check "A downloads the receipt" "200|application/pdf" "$RECEIPT_OUT"
+check "it is a PDF" "%PDF-" "$(head -c 5 "$WORK/receipt.pdf")"
+check "B gets 404 for A's receipt" 404 \
+  "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN_B" "$AUDIT/v1/consents/$R_ONLINE/revocation-receipt")"
+check "an active consent has no receipt" 404 \
+  "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN_A" "$AUDIT/v1/consents/$R_OFFLINE/revocation-receipt")"
+
+echo "== [$(stamp)] R10. Latency of the revocation (smoke only, not evidence)"
+echo "        POST /v1/consents/{id}/revocations took ${R1_SECONDS} s"
+check "the revocation answered in less than 5 s" true "$(awk -v s="$R1_SECONDS" 'BEGIN { print (s < 5) ? "true" : "false" }')"
+
+echo "== [$(stamp)] R11. A request queued offline keeps its time"
+REQUESTED_11="$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
+revoke "$R_OFFLINE" "$TOKEN_A" "$(uuid)" "$REQUESTED_11"
+check "the queued revocation is recorded (201)" 201 "$STATUS"
+check "requested_at is the time of the confirmation, two hours ago" "$REQUESTED_11" "$(field '.requested_at | sub("\\.[0-9]+";"")')"
+check "effective_at is the server time of the upload" true \
+  "$(field '((.effective_at | sub("\\.[0-9]+";"") | fromdate) - (.requested_at | sub("\\.[0-9]+";"") | fromdate)) > 7000')"
+
+echo "== [$(stamp)] Minimization of the revocation"
+$COMPOSE logs --no-log-prefix audit >"$WORK/audit.log" 2>&1 || true
+$COMPOSE logs --no-log-prefix openfinance >"$WORK/openfinance.log" 2>&1 || true
+check "the audit logs never carry the document of A" 0 "$(grep -c -- "$DOC_A" "$WORK/audit.log" || true)"
+check "the notices never carry the document of A" 0 "$(grep -c -- "$DOC_A" "$WORK/openfinance.log" || true)"
+check "no response of /v1/consents carries the document of A" 0 "$(grep -c -- "$DOC_A" "$WORK/holder-responses" || true)"
+if grep -q "consent revocation key=revocation-$R_ONLINE-aliado-banco-1" "$WORK/openfinance.log"; then
+  check "the stub logs each notice on one line (the evidence in CloudWatch)" yes yes
+else
+  check "the stub logs each notice on one line (the evidence in CloudWatch)" yes no
+fi
+
 echo "== [$(stamp)] nube.sh rehearsed against this environment"
 if API_URL="$AUDIT" COGNITO_ENDPOINT="http://localhost:$MOTO_PORT" COGNITO_CLIENT_ID="$WEB_CLIENT_ID" \
   USER_A_EMAIL="$EMAIL_A" USER_A_PASSWORD="$INSURED_PASSWORD" USER_B_EMAIL="$EMAIL_B" USER_B_PASSWORD="$INSURED_PASSWORD" \
@@ -378,7 +598,7 @@ fi
 
 echo
 if [[ "$FAILS" -gt 0 ]]; then
-  echo "== HU-M1.3-01 e2e: $FAILS check(s) failed" >&2
+  echo "== HU-M1.3-01 and HU-M1.3-02 e2e: $FAILS check(s) failed" >&2
   exit 1
 fi
-echo "== HU-M1.3-01 e2e passed."
+echo "== HU-M1.3-01 and HU-M1.3-02 e2e passed."

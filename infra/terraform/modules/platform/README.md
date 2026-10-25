@@ -92,7 +92,7 @@ cuando esos datos estén en PostgreSQL. Un reinicio de la tarea borra lo que est
 | Servicio | Prefijos en el ALB | Estado |
 |---|---|---|
 | `origination` | `/v1/risk-profiles*`, `/v1/offers*`, `/v1/acceptances*`, `/v1/assisted-quotes*`, `/v1/customers*`, `/v1/policies*`, `/v1/documents*`, `/v1/review-requests*`, `/v1/issuance-exceptions*` (9 prefijos, 2 reglas del ALB) | Implementados |
-| `audit` | `/v1/audit*` (bancos, API key) y `/v1/consents*` (personas, Cognito; HU-M1.3-01, D-3 a: un prefijo por recurso) | Consentimiento de HU-W1.2-01 y consulta del asegurado de HU-M1.3-01 |
+| `audit` | `/v1/audit*` (bancos, API key) y `/v1/consents*` (personas, Cognito; HU-M1.3-01, D-3 a: un prefijo por recurso) | Consentimiento de HU-W1.2-01, consulta del asegurado de HU-M1.3-01 y su revocación de HU-M1.3-02 |
 | `claims`, `partners`, `notifications` | `/v1/claims*`, `/v1/partners*`, `/v1/notifications*` | Reservados (solo `GET /health`); un target group necesita al menos una regla |
 | stub `payment-gateway` | `/tokens` (prioridad 6) | Tokenización de la tarjeta desde el navegador (T5, `local.lb_stubs`); el resto del simulador no se alcanza por el ALB |
 
@@ -103,8 +103,9 @@ consentimiento de HU-W1.2-01 (`GET /v1/audit/consent-terms/current` y `POST /v1/
 `offers` (solo sus subrutas: `GET /v1/offers/{offer_id}`, `…/renewal` y `…/acceptance`; la raíz es del socio, `root_methods = []`),
 `acceptances` (`GET` y `POST`: medio de pago y reanudación del cobro), `assisted-quotes`, `customers`, `policies`, `review-requests`
 (bandeja del asesor, HU-W1.1-02: `GET` y `POST`), `issuance-exceptions` (excepciones de emisión de operaciones, HA-D02: `GET`),
-y `consents` (`GET /v1/consents` y `GET /v1/consents/{consent_id}`, solo lectura: el asegurado consulta
-sus consentimientos, HU-M1.3-01; la revocación de HU-M1.3-02 agrega `POST`), con el authorizer de Cognito (variable `human_routes`).
+y `consents` (`GET /v1/consents` y `GET /v1/consents/{consent_id}`: el asegurado consulta sus consentimientos, HU-M1.3-01; desde
+HU-M1.3-02 también `POST /v1/consents/{consent_id}/revocations` y `GET /v1/consents/{consent_id}/revocation-receipt`, con
+`root_methods = ["GET"]`: la raíz `/v1/consents` sigue de solo lectura), con el authorizer de Cognito (variable `human_routes`).
 La caché del gateway está apagada para todo método salvo el `GET` de perfiles, así que `GET /v1/consents` nunca se comparte entre
 titulares.
 
@@ -130,7 +131,7 @@ El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/
 | Salida `audit_url` | El `AUDIT_URL` de la definición de tarea de originación (`http://audit.<nombre>.local:8080`); lo comprueban las pruebas de las composiciones |
 | Variable `portal_base_url` | Origen del portal (`https://<distribución>.cloudfront.net`). Con ella, los dos enlaces de los correos de originación apuntan al portal (D-11 de T5). La composición del ambiente la toma del parámetro SSM `/solventa/<ambiente>/web/url` |
 
-## Variables de entorno de `audit` (HU-M1.3-01)
+## Variables de entorno de `audit` (HU-M1.3-01 y HU-M1.3-02)
 
 | Variable | Valor | Para qué |
 |---|---|---|
@@ -139,6 +140,8 @@ El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/
 | `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_CLIENT_IDS` | El mismo user pool y los mismos clientes de originación | `GET /v1/consents*` del asegurado (y la evidencia de HU-W1.2-01, no publicada) |
 | `PARTNER_DISPLAY_NAMES` | `jsonencode(var.partner_display_names)` | Nombre visible de la entidad de cada consentimiento (D-2 a) |
 | `EVENTS_QUEUE_URL` | Cola `audit` de `modules/messaging` | Consumo de `CustomerLinked`: así `audit` reconoce al titular de los consentimientos |
+| `OPEN_FINANCE_URL` | `http://openfinance.<nombre>.local:9000` (Cloud Map, la misma dirección que usa originación) | Aviso de cada revocación a las entidades (HU-M1.3-02, D-2 a): el trabajador de `audit` llama al stub con la clave de idempotencia del aviso. El grupo de seguridad de las tareas ya abre el 9000 entre tareas: sin tópicos, colas ni reglas nuevas |
+| `REVOCATION_NOTICE_DEADLINE_SECONDS` | `300` | Plazo de RN-02 para que cada entidad confirme; al vencer sin confirmación, la revocación queda parcial |
 | `DATABASE_URL` (secreto) | `<nombre>/audit/database` | Base propia *append-only* |
 
 El rol de la tarea ya tenía `ConsumeItsQueue` sobre la cola `audit` (T4).
@@ -206,7 +209,7 @@ el estado remoto cifrado del bucket de T4.
 | `partners` | `socio-a`, `socio-b` (100 req/s, ráfaga 200) y `portal-embebido` (10 req/s, ráfaga 20, T5) | Usage plans (D-7; el socio de demostración del portal, D-3 de T5) |
 | `portal_partner` | `"portal-embebido"` | Socio cuya key recibe CloudFront (salida `portal_partner_api_key`, T5) |
 | `portal_base_url` | `null` | Origen `https://` del portal web; apunta los enlaces de los correos al portal (T5, D-11) |
-| `human_routes` | rutas de `origination`, `claims` (`POST`) y `consents` (`GET`, HU-M1.3-01) | Rutas detrás de Cognito; `offers` con `root_methods = []` (la raíz es del socio, T5) |
+| `human_routes` | rutas de `origination`, `claims` (`POST`) y `consents` (`GET` y `POST` con `root_methods = ["GET"]`, HU-M1.3-01 y HU-M1.3-02) | Rutas detrás de Cognito; `offers` con `root_methods = []` (la raíz es del socio, T5) |
 | `partner_display_names` | `{ "aliado-banco-1" = "Banco Aliado" }` (el aliado de E1) | Catálogo de nombres visibles de las entidades para `audit` (`PARTNER_DISPLAY_NAMES`, HU-M1.3-01, D-2 a); claves `^[A-Za-z0-9_-]+$` y nombres no vacíos |
 | `partner_routes` | `offers` (`POST`), `audit/consent-terms/current` (`GET`), `audit/consents` (`POST`) | Rutas de socio en rutas exactas, con API key (T5); `audit/consent-verifications` está prohibida |
 | `public_routes` | `documents` (`GET`, 10 req/s, ráfaga 20) | Rutas sin sesión ni API key (enlace firmado del documento, HA-D02) |
@@ -239,6 +242,7 @@ stage y que, con `portal_base_url`, los enlaces de los correos apuntan al portal
 único servicio registrado en Cloud Map, que originación recibe su `AUDIT_URL` sin `AUDIT_TIMEOUT_MS`, y que
 `origination_environment` no puede reemplazarlo. Las rutas de socio: el consentimiento y `POST /v1/offers` se publican con API key, la
 raíz de `/v1/offers` queda sin métodos humanos y sus subrutas con Cognito, y `audit/consent-verifications` no se publica ni puede
-volverse ruta de socio. Desde HU-M1.3-01: `consents` es ruta humana solo `GET`, el ALB lleva `/v1/consents*` a `audit`, `audit`
+volverse ruta de socio. Desde HU-M1.3-01: `consents` es ruta humana (desde HU-M1.3-02, `GET` y `POST` con la raíz solo `GET`), el ALB lleva `/v1/consents*` a `audit`, `audit`
 recibe `AUTH_*` del mismo pool, `AWS_REGION`, el catálogo JSON y `EVENTS_QUEUE_URL` de su cola, originación recibe `EVENTS_TOPIC_ARN`
 de su tópico, el catálogo se puede reemplazar y rechaza códigos inválidos, y `origination_environment` no puede fijar `EVENTS_TOPIC_ARN`.
+Desde HU-M1.3-02: `audit` recibe `OPEN_FINANCE_URL` (la misma dirección del stub que originación) y el plazo de 300 s.

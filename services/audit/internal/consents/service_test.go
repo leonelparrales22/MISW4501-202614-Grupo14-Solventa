@@ -320,3 +320,103 @@ func TestCurrentTermsAreV1(t *testing.T) {
 
 	assert.Equal(t, domain.TermsV1(), svc.CurrentTerms())
 }
+
+// HU-M1.3-02 criterion 3: with the events, a revoked consent stops being
+// active the instant its revocation is recorded.
+
+func newServiceWithEvents(t *testing.T) (*consents.Service, *memEvents, *fakeClock) {
+	t.Helper()
+	events := &memEvents{}
+	clock := &fakeClock{now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
+	return consents.NewService(&memStore{}, clock, consents.WithEvents(events)), events, clock
+}
+
+func TestVerifyWithEventsOfARevokedConsentIsInactiveAtOnce(t *testing.T) {
+	svc, events, clock := newServiceWithEvents(t)
+	c, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+	other := request()
+	other.CustomerID, other.ApplicationID = "cust-2", "app-2"
+	c2, _, err := svc.Grant(context.Background(), other)
+	require.NoError(t, err)
+
+	before, err := svc.Verify(context.Background(), "cust-1")
+	require.NoError(t, err)
+	require.True(t, before.Active)
+
+	revokedAt := clock.now.Add(time.Hour)
+	events.rows = append(events.rows, domain.ConsentEvent{
+		EventID: "e1", ConsentID: c.ID, Status: domain.HistoryRevoked, OccurredAt: revokedAt, RecordedAt: revokedAt,
+	})
+	clock.now = revokedAt
+
+	v, err := svc.Verify(context.Background(), "cust-1")
+	require.NoError(t, err)
+	assert.False(t, v.Active, "inactive from the effective instant of the revocation")
+	assert.Empty(t, v.Sources)
+	assert.NotNil(t, v.Sources, "an empty list, not null")
+	assert.Equal(t, c.ID, v.ConsentID, "the consent is still named")
+
+	v2, err := svc.Verify(context.Background(), "cust-2")
+	require.NoError(t, err)
+	assert.True(t, v2.Active, "the consent of another customer is not affected")
+	assert.Equal(t, c2.ID, v2.ConsentID)
+}
+
+func TestVerifyWithEventsOfAPartiallyRevokedConsentIsInactive(t *testing.T) {
+	svc, events, clock := newServiceWithEvents(t)
+	c, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+	at := clock.now.Add(time.Hour)
+	events.rows = append(events.rows,
+		domain.ConsentEvent{EventID: "e1", ConsentID: c.ID, Status: domain.HistoryRevoked, OccurredAt: at, RecordedAt: at,
+			Details: []byte(`{"entities":[{"code":"partner-1","deadline_at":"2026-10-17T13:05:00Z"}]}`)},
+		domain.ConsentEvent{EventID: "e2", ConsentID: c.ID, EntityCode: "partner-1", Status: domain.HistoryRevocationNotConfirmed,
+			OccurredAt: at.Add(5 * time.Minute), RecordedAt: at.Add(5 * time.Minute)},
+	)
+	clock.now = at.Add(time.Hour)
+
+	v, err := svc.Verify(context.Background(), "cust-1")
+
+	require.NoError(t, err)
+	assert.False(t, v.Active)
+}
+
+func TestVerifyWithEventsKeepsAnActiveConsentActive(t *testing.T) {
+	svc, events, clock := newServiceWithEvents(t)
+	c, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+	events.rows = append(events.rows, domain.ConsentEvent{
+		EventID: "e1", ConsentID: c.ID, EntityCode: "partner-1", Status: domain.HistoryRevoked, OccurredAt: clock.now, RecordedAt: clock.now,
+	})
+
+	v, err := svc.Verify(context.Background(), "cust-1")
+
+	require.NoError(t, err)
+	assert.True(t, v.Active, "an event of one entity does not revoke the consent")
+	assert.Equal(t, []string{"open_finance", "open_data", "kyc"}, v.Sources)
+}
+
+func TestVerifyWithEventsPropagatesAReadFailure(t *testing.T) {
+	svc, events, _ := newServiceWithEvents(t)
+	_, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+	events.err = errors.New("events down")
+
+	_, err = svc.Verify(context.Background(), "cust-1")
+
+	assert.ErrorContains(t, err, "events down")
+}
+
+func TestVerifyWithEventsDoesNotReadThemForAnExpiredConsent(t *testing.T) {
+	svc, events, clock := newServiceWithEvents(t)
+	c, _, err := svc.Grant(context.Background(), request())
+	require.NoError(t, err)
+	events.err = errors.New("must not be read")
+	clock.now = c.ExpiresAt()
+
+	v, err := svc.Verify(context.Background(), "cust-1")
+
+	require.NoError(t, err)
+	assert.False(t, v.Active)
+}

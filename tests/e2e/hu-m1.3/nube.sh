@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # API checks of HU-M1.3-01 for the cloud window (staging or production-demo):
 # CA-1, CA-2, CA-3, CA-4 (methods that are not published) and CA-6, against
-# the API Gateway stage. run.sh rehearses it against the local environment.
+# the API Gateway stage; and of HU-M1.3-02 over the consents A revoked (from
+# the app, in the window): the receipt in PDF, another revocation refused
+# (409, CA-6), isolation and roles. run.sh rehearses it against the local
+# environment.
 #
 # Inputs (environment; the passwords are never printed nor written):
 #   API_URL             base URL of the stage (or of audit in local runs)
@@ -9,6 +12,9 @@
 #   USER_A_EMAIL / USER_A_PASSWORD   insured A, registered from the app, with consents
 #   USER_B_EMAIL / USER_B_PASSWORD   insured B, registered from the app
 #   OPS_EMAIL / OPS_PASSWORD         optional: an operations user (expects 403)
+#   REVOKE_CONSENT_ID   optional: an active consent of A to revoke through the
+#                       API (HU-M1.3-02 R1); without it only the revocations
+#                       already made from the app are checked
 #   AWS_REGION          default us-east-2
 #   COGNITO_ENDPOINT    default https://cognito-idp.<region>.amazonaws.com/
 #                       (a local endpoint only for the rehearsal with Moto)
@@ -106,7 +112,9 @@ else
   echo "  note  A has no revoked or expired consent yet: CA-3 is not demonstrated by this run"
 fi
 
-echo "== CA-4: nothing but GET"
+echo "== CA-4: nothing but GET on the consents"
+# Since HU-M1.3-02 the gateway lets POST through under /v1/consents/{id} (for
+# .../revocations), so a POST on the consent itself reaches audit and gets 405.
 for method in POST PUT PATCH DELETE; do
   for path in /v1/consents "/v1/consents/$FIRST_ID"; do
     call "$method" "$path" "$TOKEN_A"
@@ -135,6 +143,51 @@ if [[ -n "${OPS_EMAIL:-}" && -n "${OPS_PASSWORD:-}" ]]; then
   OPS_TOKEN="$(token "$OPS_EMAIL" "$OPS_PASSWORD")"
   call GET /v1/consents "$OPS_TOKEN"
   check "operations: 403" 403 "$STATUS"
+fi
+
+echo "== HU-M1.3-02: the revocation"
+uuid() {
+  local hex
+  hex="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  echo "${hex:0:8}-${hex:8:4}-4${hex:13:3}-a${hex:17:3}-${hex:20:12}"
+}
+revoke() { # <consent> <token>: a revocation with a new key; sets STATUS and BODY
+  local args=(-s -o "$WORK/body" -w '%{http_code}' -X POST "$API_URL/v1/consents/$1/revocations"
+    -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuid)"
+    -d "{\"requested_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"device\":\"nube.sh\",\"confirmation_method\":\"password\"}")
+  [[ -n "${2:-}" ]] && args+=(-H "Authorization: Bearer $2")
+  STATUS="$(curl "${args[@]}")"
+  BODY="$(cat "$WORK/body")"
+}
+if [[ -n "${REVOKE_CONSENT_ID:-}" ]]; then
+  revoke "$REVOKE_CONSENT_ID" "$TOKEN_A"
+  check "A revokes $REVOKE_CONSENT_ID through the API (201)" 201 "$STATUS"
+  check "revoked at once, with its receipt" true "$(field '.status == "revoked" and (.receipt_number | test("^REV-[0-9]{4}-[0-9]{4,}$"))')"
+fi
+call GET /v1/consents "$TOKEN_A"
+# Only the revocations recorded by HU-M1.3-02 have a receipt REV-<year>-<number> (a seeded history has none).
+REVOKED_IDS="$(field '[.items[] | select(.revocation != null and (.revocation.receipt_number // "" | test("^REV-[0-9]{4}-[0-9]{4,}$"))) | .consent_id] | join(" ")')"
+ACTIVE_ID="$(field '[.items[] | select(.revocable) | .consent_id][0] // empty')"
+check "only the active consents are revocable" true "$(field '[.items[] | select(.revocable)] | all(.status == "active")')"
+if [[ -z "$REVOKED_IDS" ]]; then
+  echo "  note  A has no revocation made by HU-M1.3-02 yet: revoke one from the app (or set REVOKE_CONSENT_ID) and run again"
+fi
+for id in $REVOKED_IDS; do
+  RECEIPT="$(curl -s -o "$WORK/receipt" -w '%{http_code}|%{content_type}' -H "Authorization: Bearer $TOKEN_A" "$API_URL/v1/consents/$id/revocation-receipt")"
+  check "A downloads the receipt of $id" "200|application/pdf" "$RECEIPT"
+  check "the receipt of $id is a PDF" "%PDF-" "$(head -c 5 "$WORK/receipt")"
+  revoke "$id" "$TOKEN_A"
+  check "revoking $id again is 409 consent_already_revoked" "409|consent_already_revoked" "$STATUS|$(field .error)"
+  revoke "$id" "$TOKEN_B"
+  check "B revoking A's $id: 404" 404 "$STATUS"
+done
+if [[ -n "$ACTIVE_ID" ]]; then
+  revoke "$ACTIVE_ID"
+  check "a revocation without a token: 401" 401 "$STATUS"
+  if [[ -n "${OPS_TOKEN:-}" ]]; then
+    revoke "$ACTIVE_ID" "$OPS_TOKEN"
+    check "a revocation by operations: 403" 403 "$STATUS"
+  fi
 fi
 
 if [[ "$FAILS" -gt 0 ]]; then

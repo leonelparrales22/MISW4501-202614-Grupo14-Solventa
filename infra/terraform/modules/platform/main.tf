@@ -453,14 +453,21 @@ locals {
     # consumes the CustomerLinked events of its queue to recognize the holder.
     # With AUTH_* audit also mounts the evidence lookup of HU-W1.2-01, which
     # the gateway still does not publish (T5, decision D-23 c).
+    # HU-M1.3-02: audit notifies each entity of a revocation through the
+    # Open Finance stub, reached by Cloud Map like origination does (the
+    # security group of the tasks already allows its port between tasks),
+    # within the 5 minutes of RN-02. No topic, queue nor rule is added
+    # (decision D-2 a).
     audit = {
-      PORT                  = tostring(local.service_port)
-      AWS_REGION            = data.aws_region.current.region
-      AUTH_ISSUER           = local.cognito.issuer
-      AUTH_JWKS_URL         = local.cognito.jwks_url
-      AUTH_CLIENT_IDS       = join(",", values(local.cognito.client_ids))
-      PARTNER_DISPLAY_NAMES = jsonencode(var.partner_display_names)
-      EVENTS_QUEUE_URL      = module.messaging.queue_urls["audit"]
+      PORT                               = tostring(local.service_port)
+      AWS_REGION                         = data.aws_region.current.region
+      AUTH_ISSUER                        = local.cognito.issuer
+      AUTH_JWKS_URL                      = local.cognito.jwks_url
+      AUTH_CLIENT_IDS                    = join(",", values(local.cognito.client_ids))
+      PARTNER_DISPLAY_NAMES              = jsonencode(var.partner_display_names)
+      EVENTS_QUEUE_URL                   = module.messaging.queue_urls["audit"]
+      OPEN_FINANCE_URL                   = "http://openfinance.${local.namespace}:${local.stubs.openfinance}"
+      REVOCATION_NOTICE_DEADLINE_SECONDS = "300"
     }
   }
 

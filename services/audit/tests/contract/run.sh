@@ -88,7 +88,7 @@ INSURED_SUB="$(base64 -d <<<"$PAYLOAD" | jq -r .sub)"
 $COMPOSE exec -T postgres psql -U audit -d audit -v ON_ERROR_STOP=1 -q -c   "INSERT INTO holder_link (subject, document_id, customer_id, linked_at, event_id) VALUES ('$INSURED_SUB', '1020304050', 'cus-contract', now(), 'customer-linked-cus-contract')"
 curl -sf -o /dev/null -X POST "http://localhost:$AUDIT_PORT/v1/audit/consents" -H 'Content-Type: application/json'   -d '{"customer_id":"cus-contract","document_id":"1020304050","full_name":"Asegurado Contrato","terms_version":"v1","accepted_sources":["open_finance","open_data","kyc"],"accepted_data_policy":true,"channel":"embedded","partner_id":"aliado-banco-1","application_id":"app-contract"}'
 
-echo "== Schemathesis as an insured user (their own consents, HU-M1.3-01)"
+echo "== Schemathesis as an insured user (their own consents, HU-M1.3-01, and their revocation, HU-M1.3-02)"
 $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://audit:8080   -H "Authorization: Bearer $INSURED_TOKEN" --include-path-regex='^/v1/consents'   --checks=all --hypothesis-max-examples=100 --hypothesis-seed=3
 
 echo "== Schemathesis with no credentials (the routes that need none)"
