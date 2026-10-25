@@ -1,7 +1,13 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.2.0
+  version: 0.3.0
+  description: >-
+    0.3.0 (HU-W2.1-01): filing of the claim with supports from the web portal
+    (filing options, upload of a support, web filing), the insured's list of
+    claims, the detail of a claim and the filing receipt in PDF. 0.2.0
+    (HU-M2.2-01): filing of the claim from the guided assistant of the mobile
+    app.
 paths:
   /health:
     get:
@@ -81,7 +87,410 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    get:
+      summary: List the insured's own claims (HU-W2.1-01)
+      description: >-
+        The claims filed by the subject of the token, from both channels
+        (mobile and web), newest first. A claim filed from the mobile app has
+        no policy snapshot, so its policy line, product and insured object are
+        null.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active]
+        - name: policy_id
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9-]{3,40}$'
+        - name: from
+          in: query
+          required: false
+          description: >-
+            Only the claims filed on or after this day, from 00:00 in
+            America/Bogota.
+          schema:
+            type: string
+            format: date
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: page_token
+          in: query
+          required: false
+          description: The next_page_token of the previous page, unchanged.
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        "200":
+          description: One page of the insured's claims
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimList"
+        "400":
+          description: invalid_request - a filter or the page token is not valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/filing-options:
+    get:
+      summary: Policies the insured can file a claim on, with the supports of each type (HU-W2.1-01)
+      description: >-
+        Only the insured's policies that are active now and whose line has
+        claim types that are filed (auto and home; travel is parametric and is
+        not filed). For each policy, the claim types it covers and, for each
+        type, the supports of the catalog with the required ones marked
+        (criterion 1). Mounted only when the policy core is configured
+        (POLICY_CORE_URL).
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The filing options of the insured
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FilingOptions"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: policy_directory_unavailable - the policy core did not answer; retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/supports:
+    post:
+      summary: Upload one support of a claim (HU-W2.1-01)
+      description: >-
+        Uploads one file, before the filing references it by its support_id.
+        The type is told by the content of the file, never by its extension
+        or by the declared Content-Type: JPG, PNG or PDF, of up to 10 MiB
+        (10485760 bytes). A rejected file does not affect the supports already
+        uploaded (criterion 5). The support belongs to the subject of the token
+        and can be attached to one claim only. Mounted only when the policy
+        core is configured (POLICY_CORE_URL). Provisional until HU-M2.1-01: the
+        file goes through the service; it will move to a signed upload URL.
+      security:
+        - cognitoJwt: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Exactly one file part, named "file".
+      responses:
+        "201":
+          description: The support was stored
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportFile"
+        "400":
+          description: invalid_request - the body is not multipart/form-data with exactly one "file" part
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: file_too_large - the file is larger than 10 MiB
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: unsupported_file_type - the content is not JPG, PNG or PDF
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: empty_file - the file has no content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: >-
+            too_many_pending_supports - the insured already has 50 supports
+            not attached to any claim
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: supports_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/web-filings:
+    post:
+      summary: File a claim with its supports from the web portal (HU-W2.1-01)
+      description: >-
+        Creates the case in status active with its filing number, attached to
+        the supports already uploaded (criterion 4). The form is checked first
+        and every missing or invalid field and support is reported at once
+        (criterion 2); then the policy is looked up among the insured's own:
+        it must be active, cover the claim type and the incident must have
+        happened within its validity (criterion 3). A policy of another insured
+        answers as one that does not exist. The filing is identified by
+        Idempotency-Key, as in POST /v1/claims: the same key and the same body
+        answer 200 with the case that already exists. Mounted only when the
+        policy core is configured (POLICY_CORE_URL).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Identifier of the filing; the web portal sends a new UUID per form.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebFilingRequest"
+      responses:
+        "201":
+          description: The case was created
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDetail"
+        "200":
+          description: The same filing key had already created this case
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDetail"
+        "400":
+          description: invalid_request - the body is not valid JSON, or the key is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            validation_failed or idempotency_key_reused (WebValidationError),
+            or policy_not_eligible (PolicyNotEligible)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/WebValidationError"
+                  - $ref: "#/components/schemas/PolicyNotEligible"
+        "503":
+          description: >-
+            policy_directory_unavailable (the policy core did not answer; no
+            case was created) or filing_unavailable - retry with the same key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}:
+    get:
+      summary: Detail of one of the insured's claims (HU-W2.1-01)
+      description: >-
+        What the confirmation of the filing shows: number, status, policy,
+        incident and supports. Only the insured who filed the claim reads it.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The claim
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDetail"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - not an insured, or the claim belongs to another insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/filing-receipt:
+    get:
+      summary: Filing receipt of one of the insured's claims, in PDF (HU-W2.1-01)
+      description: >-
+        The receipt the insured downloads after filing (criterion 4): filing
+        number, status, date and time of the filing, policy, incident and
+        supports. It is built from the stored case on every call.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The receipt
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+            Content-Disposition:
+              schema:
+                type: string
+                example: attachment; filename="radicado-SIN-2026-01712.pdf"
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - not an insured, or the claim belongs to another insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
+  parameters:
+    ClaimID:
+      name: claim_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
   securitySchemes:
     cognitoJwt:
       type: http
@@ -177,3 +586,336 @@ components:
               code:
                 type: string
                 enum: [required, invalid_format, out_of_range]
+    IncidentType:
+      type: string
+      description: >-
+        Every claim type of the platform. The mobile filing (HU-M2.2-01)
+        accepts collision, theft, third_party_damage and other; the web
+        filing (HU-W2.1-01) accepts the types of catalog claim-catalog-v1.
+      enum: [collision, theft, third_party_damage, glass, water_damage, other]
+    PolicyLine:
+      type: string
+      enum: [auto, home]
+    FileFormat:
+      type: string
+      enum: [jpeg, png, pdf]
+    FilingOptions:
+      type: object
+      required: [catalog_version, policies]
+      properties:
+        catalog_version:
+          type: string
+          example: claim-catalog-v1
+        policies:
+          type: array
+          description: Empty when the insured has no active policy with filed claim types.
+          items:
+            $ref: "#/components/schemas/EligiblePolicy"
+    EligiblePolicy:
+      type: object
+      required: [policy_id, line, product, insured_object, valid_from, valid_to, incident_types]
+      properties:
+        policy_id:
+          type: string
+          example: AU-2025-118204
+        line:
+          $ref: "#/components/schemas/PolicyLine"
+        product:
+          type: string
+          example: Autos
+        insured_object:
+          type: string
+          description: What the policy insures, as the core of the policies names it (a plate, an address).
+          example: KJT-482
+        valid_from:
+          type: string
+          format: date-time
+        valid_to:
+          type: string
+          format: date-time
+          description: First instant the policy no longer covers.
+        incident_types:
+          type: array
+          items:
+            $ref: "#/components/schemas/IncidentOption"
+    IncidentOption:
+      type: object
+      required: [code, label, requirements]
+      properties:
+        code:
+          $ref: "#/components/schemas/IncidentType"
+        label:
+          type: string
+          example: Colisión con daños al vehículo
+        requirements:
+          type: array
+          items:
+            $ref: "#/components/schemas/Requirement"
+    Requirement:
+      type: object
+      required: [code, label, required, min_files, max_files, formats]
+      properties:
+        code:
+          type: string
+          example: vehicle_photos
+        label:
+          type: string
+          example: Fotos del vehículo
+        required:
+          type: boolean
+        min_files:
+          type: integer
+          minimum: 0
+          description: 0 when the support is optional.
+        max_files:
+          type: integer
+          minimum: 1
+        formats:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileFormat"
+    SupportFile:
+      type: object
+      required: [support_id, file_name, content_type, byte_size, sha256, uploaded_at]
+      properties:
+        support_id:
+          type: string
+          pattern: '^sup-[0-9a-f]{32}$'
+        file_name:
+          type: string
+          maxLength: 120
+          description: The name the file was uploaded with, without directories or control characters.
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, application/pdf]
+          description: Told by the content of the file.
+        byte_size:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        uploaded_at:
+          type: string
+          format: date-time
+    WebFilingRequest:
+      type: object
+      required: [policy_id, incident_type, occurred_at, place, description, supports]
+      properties:
+        policy_id:
+          type: string
+          pattern: '^[A-Za-z0-9-]{3,40}$'
+          example: AU-2025-118204
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        occurred_at:
+          type: string
+          format: date-time
+          description: >-
+            Not in the future, no older than five years, and within the
+            validity of the policy.
+        place:
+          type: string
+          minLength: 3
+          maxLength: 160
+        description:
+          type: string
+          minLength: 10
+          maxLength: 1000
+        supports:
+          type: array
+          description: >-
+            The uploaded supports, grouped by the requirement of the catalog
+            they answer. At most 20 files in all.
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/SupportGroup"
+    SupportGroup:
+      type: object
+      required: [requirement_code, support_ids]
+      properties:
+        requirement_code:
+          type: string
+          pattern: '^[a-z_]{1,40}$'
+          example: vehicle_photos
+        support_ids:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            pattern: '^sup-[0-9a-f]{32}$'
+    PolicySummary:
+      type: object
+      required: [policy_id, line, product, insured_object]
+      description: >-
+        The policy as it was when the claim was filed. A claim filed from the
+        mobile app has no snapshot: line, product and insured_object are null.
+      properties:
+        policy_id:
+          type: string
+        line:
+          allOf:
+            - $ref: "#/components/schemas/PolicyLine"
+          nullable: true
+        product:
+          type: string
+          nullable: true
+        insured_object:
+          type: string
+          nullable: true
+    AttachedFile:
+      type: object
+      required: [support_id, file_name, content_type, byte_size]
+      properties:
+        support_id:
+          type: string
+        file_name:
+          type: string
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, application/pdf]
+        byte_size:
+          type: integer
+    SupportsSummary:
+      type: object
+      required: [required_total, required_attached, files, items]
+      description: All zero and empty for a claim filed from the mobile app.
+      properties:
+        required_total:
+          type: integer
+          description: Required supports of the claim type.
+        required_attached:
+          type: integer
+          description: Required supports that have their files.
+        files:
+          type: integer
+          description: Files attached to the claim.
+        items:
+          type: array
+          items:
+            type: object
+            required: [requirement_code, label, files]
+            properties:
+              requirement_code:
+                type: string
+              label:
+                type: string
+              files:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttachedFile"
+    ClaimDetail:
+      type: object
+      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, place, description, filed_at, supports]
+      properties:
+        claim_id:
+          type: string
+          example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
+        filing_number:
+          type: string
+          description: SIN-<year>-<five digits>, unique in the platform.
+          example: SIN-2026-01712
+        status:
+          type: string
+          enum: [active]
+        channel:
+          type: string
+          enum: [mobile, web]
+        policy:
+          $ref: "#/components/schemas/PolicySummary"
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        occurred_at:
+          type: string
+          format: date-time
+        place:
+          type: string
+        description:
+          type: string
+        filed_at:
+          type: string
+          format: date-time
+        supports:
+          $ref: "#/components/schemas/SupportsSummary"
+    ClaimSummary:
+      type: object
+      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, filed_at]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+        status:
+          type: string
+          enum: [active]
+        channel:
+          type: string
+          enum: [mobile, web]
+        policy:
+          $ref: "#/components/schemas/PolicySummary"
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        occurred_at:
+          type: string
+          format: date-time
+        filed_at:
+          type: string
+          format: date-time
+    ClaimList:
+      type: object
+      required: [items, next_page_token]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClaimSummary"
+        next_page_token:
+          type: string
+          nullable: true
+          description: Null on the last page.
+    WebValidationError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed, idempotency_key_reused]
+        message:
+          type: string
+        fields:
+          type: array
+          description: >-
+            Every invalid field at once. A support is named
+            supports.<requirement_code>; the list itself, supports.
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                example: supports.traffic_report
+              code:
+                type: string
+                enum: [required, invalid_format, out_of_range, missing, too_few, too_many, not_applicable, not_found]
+    PolicyNotEligible:
+      type: object
+      required: [error, message, reason, valid_from, valid_to]
+      properties:
+        error:
+          type: string
+          enum: [policy_not_eligible]
+        message:
+          type: string
+        reason:
+          type: string
+          enum: [policy_not_found, policy_not_active, incident_not_covered, occurred_outside_validity]
+        valid_from:
+          type: string
+          format: date-time
+          nullable: true
+          description: Validity of the policy; null when the reason is policy_not_found.
+        valid_to:
+          type: string
+          format: date-time
+          nullable: true
