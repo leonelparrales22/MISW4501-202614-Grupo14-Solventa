@@ -8,6 +8,8 @@
 // the CustomerLinked events that tell it who the holder of the consents is.
 // HU-M1.3-02: the insured revokes a consent (with AUTH_*) and, with
 // OPEN_FINANCE_URL, a worker notifies every entity within the deadline.
+// HU-W4.2-02: the compliance portal (operations role) reads, revokes and
+// retries the revocation of a consent with the same process (with AUTH_*).
 package main
 
 import (
@@ -118,9 +120,9 @@ func main() {
 		svc := consents.NewService(consentStore, systemClock{}, consents.WithEvents(eventStore))
 		holders := consents.NewHolderService(consentStore, eventStore, postgres.NewHolderLinkStore(db),
 			systemClock{}, cfg.partnerNames)
-		noticeStore := postgres.NewNoticeStore(db)
+		noticeStore, revocationStore := postgres.NewNoticeStore(db), postgres.NewRevocationStore(db)
 		revocations := consents.NewRevocationService(consents.RevocationDeps{
-			Consents: consentStore, Events: eventStore, Revocations: postgres.NewRevocationStore(db), Notices: noticeStore,
+			Consents: consentStore, Events: eventStore, Revocations: revocationStore, Notices: noticeStore,
 			Receipts: pdf.New(), Clock: systemClock{}, Names: cfg.partnerNames, NoticeDeadline: cfg.noticeDeadline,
 		})
 		worker, err := newNoticeWorker(cfg, noticeStore)
@@ -141,6 +143,11 @@ func main() {
 			verifier = jwks
 		}
 		opts = append(opts, consentOptions(svc, holders, revocations, verifier)...)
+		compliance := consents.NewComplianceService(consents.ComplianceDeps{
+			Revocations: revocations, Consents: consentStore, Events: eventStore, Records: revocationStore,
+			Clock: systemClock{}, Names: cfg.partnerNames,
+		})
+		opts = append(opts, complianceOptions(compliance, verifier)...)
 		opts = append(opts, decisionOptions(decisions.NewService(postgres.NewDecisionStore(db), systemClock{}), verifier)...)
 		consumer, err := newEventConsumer(ctx, cfg, holders)
 		if err != nil {
@@ -187,6 +194,19 @@ func consentOptions(svc *consents.Service, holders *consents.HolderService, revo
 		"for the insured role")
 	return append(opts, httpadapter.WithConsentReads(svc, verifier), httpadapter.WithHolderConsents(holders, verifier),
 		httpadapter.WithHolderRevocations(holders, revocations, verifier))
+}
+
+// complianceOptions mounts the revocation routes of the compliance portal
+// (HU-W4.2-02), human routes for the operations role: they need a verifier, so
+// without AUTH_ISSUER they are not mounted.
+func complianceOptions(svc httpadapter.ComplianceRevocationService, verifier security.Verifier) []httpadapter.Option {
+	if verifier == nil {
+		log.Printf("%s is not set: the revocation routes of the compliance portal (HU-W4.2-02) are not mounted", security.EnvIssuer)
+		return nil
+	}
+	log.Printf("compliance revocation (HU-W4.2-02): GET /v1/audit/consents/{consent_id}/revocation, " +
+		"POST /v1/audit/consents/{consent_id}/revocations and POST /v1/audit/consents/{consent_id}/revocation-retries for the operations role")
+	return []httpadapter.Option{httpadapter.WithComplianceRevocations(svc, verifier)}
 }
 
 // newNoticeWorker builds the worker that notifies the entities of each

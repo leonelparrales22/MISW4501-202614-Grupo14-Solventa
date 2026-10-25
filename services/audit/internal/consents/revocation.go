@@ -136,7 +136,7 @@ func (s *RevocationService) revoke(ctx context.Context, c domain.Consent, cmd Re
 		}
 		return domain.ConsentView{}, false, err
 	}
-	if err := cmd.Request.Validate(c, now); err != nil {
+	if err := cmd.validate(c, now); err != nil {
 		return domain.ConsentView{}, false, err
 	}
 	id, err := newRevocationID()
