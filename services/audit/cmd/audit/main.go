@@ -36,6 +36,7 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/pdf"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/consents"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/decisions"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/ports"
 )
@@ -140,6 +141,7 @@ func main() {
 			verifier = jwks
 		}
 		opts = append(opts, consentOptions(svc, holders, revocations, verifier)...)
+		opts = append(opts, decisionOptions(decisions.NewService(postgres.NewDecisionStore(db), systemClock{}), verifier)...)
 		consumer, err := newEventConsumer(ctx, cfg, holders)
 		if err != nil {
 			log.Fatalf("could not set up the consumer of the audit queue: %v", err)
@@ -206,6 +208,19 @@ func newNoticeWorker(cfg config, store ports.NoticeStore) (*consents.NoticeWorke
 	log.Printf("revocation notices (HU-M1.3-02): to %s within %s, polling every %s", cfg.openFinanceURL, cfg.noticeDeadline,
 		cfg.noticePollInterval)
 	return worker, nil
+}
+
+// decisionOptions mounts the underwriting decision routes (HU-W4.1-01): always
+// the internal recording origination calls; with a verifier, also the analyst's
+// lookup (operations role).
+func decisionOptions(svc *decisions.Service, verifier security.Verifier) []httpadapter.Option {
+	opts := []httpadapter.Option{httpadapter.WithDecisionRecords(svc)}
+	if verifier == nil {
+		log.Printf("%s is not set: the decision lookup (HU-W4.1-01) is not mounted", security.EnvIssuer)
+		return opts
+	}
+	log.Printf("decision audit (HU-W4.1-01): POST /v1/audit/decisions (internal) and GET /v1/audit/decisions/{offer_id} for operations")
+	return append(opts, httpadapter.WithDecisionReads(svc, verifier))
 }
 
 // newEventConsumer builds the consumer of the audit queue with the

@@ -80,7 +80,8 @@ $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=
 
 echo "== Seeding the holder of the insured user (link by SQL, consent by the partner route)"
 INSURED_TOKEN="$(curl -sf -X POST "http://localhost:$MOTO_PORT/" -H 'Content-Type: application/x-amz-json-1.1'   -H 'X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth'   -d "{\"AuthFlow\":\"USER_PASSWORD_AUTH\",\"ClientId\":\"$WEB_CLIENT_ID\",\"AuthParameters\":{\"USERNAME\":\"asegurado.local@example.com\",\"PASSWORD\":\"$MOTO_USER_PASSWORD\"}}" |
-  tr -d '' | jq -r '.AuthenticationResult.IdToken')"
+  tr -d '
+' | jq -r '.AuthenticationResult.IdToken')"
 # The subject is the "sub" claim of the token (base64url payload).
 PAYLOAD="$(cut -d. -f2 <<<"$INSURED_TOKEN" | tr '_-' '/+')"
 while (( ${#PAYLOAD} % 4 )); do PAYLOAD="$PAYLOAD="; done
@@ -93,7 +94,7 @@ $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=
 
 echo "== Schemathesis with no credentials (the routes that need none)"
 $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://audit:8080 \
-  --include-path-regex='^/(health|v1/audit/(consent-terms|consent-verifications|consents$))' \
+  --include-path-regex='^/(health|v1/audit/(consent-terms|consent-verifications|consents$|decisions$))' \
   --checks=all --hypothesis-max-examples=100 --hypothesis-seed=2
 
 echo "== audit contract passed."

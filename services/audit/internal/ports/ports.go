@@ -169,3 +169,18 @@ type EntityNotifier interface {
 type ReceiptRenderer interface {
 	Render(rev domain.Revocation, consent domain.Consent, lang string) ([]byte, error)
 }
+
+// DecisionStore keeps the underwriting decision records (HU-W4.1-01). It is
+// append-only: it has no operation to update or delete a record, and the
+// PostgreSQL adapter also rejects them in the database.
+type DecisionStore interface {
+	// Create stores the record. It is idempotent by offer id: when a record
+	// for that offer exists it returns the stored one with created=false and
+	// writes nothing.
+	Create(ctx context.Context, r domain.DecisionRecord) (stored domain.DecisionRecord, created bool, err error)
+	// Get returns the record of the offer or domain.ErrDecisionNotFound.
+	Get(ctx context.Context, offerID string) (domain.DecisionRecord, error)
+	// GetByApplication returns the most recent record of the application
+	// (the request number of the partner) or domain.ErrDecisionNotFound.
+	GetByApplication(ctx context.Context, applicationID string) (domain.DecisionRecord, error)
+}

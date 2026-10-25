@@ -19,6 +19,8 @@ Los servicios publican hechos de negocio en Amazon SNS (un tópico por dominio) 
 
 **HU-M1.3-02 (revocación del consentimiento) no publica ni consume eventos:** `audit` registra la revocación en su propia base y, en la misma transacción, la cola de avisos a las entidades (decisión D-2 a); un trabajador de `audit` los envía al ecosistema Open Finance por HTTP (`pkg/adapters/openfinance`, `POST /consent-revocations` con clave de idempotencia) y `origination` deja de consultar las fuentes porque la verificación síncrona responde `active=false`. Si el aviso pasa a un consumidor en otro servicio, los eventos `ConsentRevocationRequested` y `ConsentRevocationConfirmed` (con *outbox*) se registrarán aquí.
 
+**HU-W4.1-01 (auditoría de decisiones) no publica ni consume eventos todavía:** origination registra cada decisión de suscripción en `audit` con una llamada HTTP interna e idempotente (`POST /v1/audit/decisions`). `OfferGenerated` y `OfferRequoted` siguen registrados arriba para cuando se migre a *outbox* + SNS/SQS.
+
 **HU-W1.2-03 (oferta personalizada) no publica ni consume eventos todavía:** la oferta se persiste en `origination` y el reemplazo de una oferta provisional y su correo ocurren en proceso. `OfferGenerated` y `OfferRequoted` quedan **registrados** para cuando la auditoría de largo plazo (HU-W4.1-01) los necesite, con `pkg/outbox` y `pkg/events` (se escriben en la misma tabla `outbox_event` de originación). Payload previsto:
 
 | Evento | Campos |

@@ -83,6 +83,17 @@ type SourceOutcome struct {
 	Source  string
 	Status  SourceStatus
 	Latency time.Duration
+	// ConsultedAt is when the call to the source started (zero when unknown).
+	ConsultedAt time.Time
+	// Value is what the source returned: its risk signal. It is nil unless
+	// the source answered (Status ok) (HU-W4.1-01).
+	Value *SourceValue
+}
+
+// SourceValue is the risk signal one external source returned.
+type SourceValue struct {
+	Score    float64
+	Category string
 }
 
 // ProfileResolution is the outcome of resolving a customer's risk profile.
