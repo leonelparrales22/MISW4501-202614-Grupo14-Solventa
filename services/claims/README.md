@@ -2,7 +2,7 @@
 
 Recibe, prioriza, evalúa y resuelve siniestros, incluidos los paramétricos que se pagan automáticamente.
 
-**Estado:** `GET /health` y **HU-M2.2-01:** `POST /v1/claims` (radicación del siniestro desde el asistente guiado del móvil), con autenticación Cognito (`pkg/security`) y los casos en **PostgreSQL** (`DATABASE_URL`); sin base de datos quedan en memoria. **HU-W2.1-01:** radicación del siniestro con soportes desde el portal web (`GET /v1/claims/filing-options`, `POST /v1/claims/supports`, `POST /v1/claims/web-filings`), validada contra el core de pólizas (`POLICY_CORE_URL`), y lectura de los casos propios de los dos canales (`GET /v1/claims`, `GET /v1/claims/{claim_id}` y el comprobante en PDF `GET /v1/claims/{claim_id}/filing-receipt`). El resto de módulos sigue reservado.
+**Estado:** `GET /health` y **HU-M2.2-01:** `POST /v1/claims` (radicación del siniestro desde el asistente guiado del móvil), con autenticación Cognito (`pkg/security`) y los casos en **PostgreSQL** (`DATABASE_URL`); sin base de datos quedan en memoria. **HU-M2.1-01:** `POST /v1/claims/evidence/upload-url` (URL firmada con la que el teléfono sube la evidencia directamente al *bucket* `EVIDENCE_BUCKET`), y la evidencia asociada al caso con su ubicación, su instante de captura y su resumen de integridad. **HU-W2.1-01:** radicación del siniestro con soportes desde el portal web (`GET /v1/claims/filing-options`, `POST /v1/claims/supports`, `POST /v1/claims/web-filings`), validada contra el core de pólizas (`POLICY_CORE_URL`), y lectura de los casos propios de los dos canales (`GET /v1/claims`, `GET /v1/claims/{claim_id}` y el comprobante en PDF `GET /v1/claims/{claim_id}/filing-receipt`). El resto de módulos sigue reservado.
 
 ## Responsabilidades
 
@@ -13,7 +13,7 @@ Recibe, prioriza, evalúa y resuelve siniestros, incluidos los paramétricos que
 | `assessors` | Prestadores (peritos y talleres) y su asignación al caso: elige el más cercano por distancia y especialidad, ampliando el radio si no hay disponibles (HU-W2.3-01). Seguimiento de la intervención y cierre del caso (HU-W2.3-02). Es el único dueño del cálculo de distancia |
 | `assistance` | Asistencia en sitio: recibe las solicitudes del móvil con la ubicación del asegurado (HU-M2.3-01), las muestra en la bandeja de entrantes y gestiona su despacho y cierre con motivo (HU-W2.3-03). Para elegir prestador **llama a `assessors`**; no calcula distancias |
 | `parametric` | Pago automático cuando un evento externo (retraso de vuelo, clima) cruza un umbral |
-| `evidence` | Referencia a fotos/video geoetiquetados; el binario vive en S3 (`s3_key`, tipo, geolocalización) |
+| `evidence` | **HU-M2.1-01:** emite la URL firmada con la que el teléfono sube cada foto o video al *bucket* de evidencia; el binario nunca cruza el servicio y lo que queda con el caso es su llave, su ubicación, su instante de captura y su resumen de integridad |
 
 ## Radicación del siniestro (HU-M2.2-01)
 
@@ -31,7 +31,25 @@ Recibe, prioriza, evalúa y resuelve siniestros, incluidos los paramétricos que
 - **La declaración bajo gravedad de juramento** cierra la radicación: sin ella la solicitud se rechaza.
 - Las respuestas de las preguntas que dependen del tipo viajan en `details` y se guardan como JSON.
 
-Los soportes y la evidencia multimedia **no entran por esta ruta**: son HU-M2.1-01, con el binario en S3.
+La evidencia no viaja en este cuerpo: ya está en el repositorio cuando se radica, y aquí van sus llaves y sus
+metadatos. Entre 4 y 6 fotografías y hasta un video.
+
+## Evidencia del siniestro (HU-M2.1-01)
+
+`POST /v1/claims/evidence/upload-url` emite la URL con la que el teléfono sube una evidencia. Contrato:
+[`docs/contratos/HU-M2.1-01-api.md`](../../docs/contratos/HU-M2.1-01-api.md).
+
+- **El archivo nunca cruza el servicio.** Va del teléfono al *bucket*; el servicio solo firma la subida y
+  después comprueba lo que llegó. Así cabe un video de 30 segundos, que no pasaría por el API Gateway.
+- **La firma fija el objeto:** tipo, tamaño y resumen SHA-256. S3 rechaza un cuerpo cuyo resumen no coincida,
+  de modo que la integridad no depende de que el cliente diga la verdad. La URL vence a los 10 minutos.
+- **La llave sale del `sub` y del resumen:** `evidence/<sub>/<sha256>.jpg`. Un insured no puede escribir en el
+  directorio de otro, ni radicar con una evidencia ajena aunque conozca su llave.
+- **Al radicar se comprueba cada llave** contra el repositorio: existe, es suya y su tamaño es el
+  declarado; el resumen se compara cuando el almacenamiento calcula el suyo. Si no cuadra, `422` con el
+  código `not_stored` y el caso no se crea.
+- **La ubicación poco precisa no se descarta:** la evidencia queda marcada con `location_trusted` en falso
+  cuando la precisión supera los 50 m.
 
 ## Radicación web con soportes (HU-W2.1-01)
 
@@ -119,6 +137,9 @@ Variables que el servicio lee:
 | `PORT` | Escucha en el 8080 |
 | `AUTH_ISSUER`, `AUTH_CLIENT_IDS` | La radicación no se monta: sin *user pool* no hay de quién es el caso (desde HU-W2.1-01: tampoco el listado, el detalle ni el comprobante) |
 | `DATABASE_URL` | Los casos quedan en memoria y se pierden al reiniciar (desde HU-W2.1-01: también los soportes) |
+| `EVIDENCE_BUCKET` | HU-M2.1-01: la URL firmada no se monta y una radicación que declare evidencia se rechaza con `not_stored`; el resto del servicio sigue respondiendo. Un *bucket* configurado que no se alcanza sí impide arrancar: es un error de configuración |
+| `EVIDENCE_ENDPOINT_URL` | Solo para una corrida local contra un emulador de S3 (LocalStack); vacía en AWS, donde se usa el servicio real y el rol de la tarea |
+| `AWS_REGION` | Región del SDK de AWS (la plataforma la fija, `us-east-2`) |
 | `POLICY_CORE_URL` | HU-W2.1-01: las opciones, la subida de soportes y la radicación web no se montan (sin el core no se sabe qué pólizas son del asegurado) |
 | `POLICY_CORE_TIMEOUT_MS` | 700 ms por llamada al core de pólizas |
 

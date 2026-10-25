@@ -60,6 +60,15 @@ func auto(id string) domain.Policy {
 	}
 }
 
+// mobileOf is the mobile filing of HU-M2.2-01 over the store of the fixture,
+// with the evidence of that insured already uploaded: the list, the pages and
+// the filing keys are shared by the two channels.
+func (f *webFixture) mobileOf(subject string, at time.Time) *filing.Service {
+	evidencias := nuevoAlmacenDeEvidencia()
+	evidencias.guardarTodo(requestDe(subject))
+	return filing.NewService(f.store, evidencias, fixedClock{t: at})
+}
+
 type webFixture struct {
 	store    *memory.CaseStore
 	policies *directory
@@ -199,7 +208,7 @@ func TestTheSameKeyWithAnotherWebFilingIsRefused(t *testing.T) {
 
 func TestTheKeyOfAMobileFilingCannotBeReusedOnTheWeb(t *testing.T) {
 	f := newWebFixture()
-	_, _, err := filing.NewService(f.store, fixedClock{t: filedAt}).File(context.Background(), carolina, "key-1", request())
+	_, _, err := f.mobileOf(carolina, filedAt).File(context.Background(), carolina, "key-1", request())
 	require.NoError(t, err)
 
 	_, _, err = f.web.File(context.Background(), carolina, "key-1", f.collision(t))
@@ -536,12 +545,13 @@ func TestAnotherInsuredCannotReadTheClaim(t *testing.T) {
 
 func TestTheListHasTheClaimsOfBothChannelsNewestFirst(t *testing.T) {
 	f := newWebFixture()
-	mobile := filing.NewService(f.store, fixedClock{t: filedAt.Add(-time.Hour)})
+	mobile := f.mobileOf(carolina, filedAt.Add(-time.Hour))
 	m, _, err := mobile.File(context.Background(), carolina, "draft-1", request())
 	require.NoError(t, err)
 	w, _, err := f.web.File(context.Background(), carolina, "form-1", f.collision(t))
 	require.NoError(t, err)
-	_, _, err = filing.NewService(f.store, fixedClock{t: filedAt}).File(context.Background(), "sub-someone", "draft-9", request())
+	_, _, err = f.mobileOf("sub-someone", filedAt).
+		File(context.Background(), "sub-someone", "draft-9", requestDe("sub-someone"))
 	require.NoError(t, err)
 
 	page, err := filing.NewQueryService(f.store, &receipts{}).List(context.Background(), carolina, filing.ClaimQuery{})
@@ -558,7 +568,7 @@ func TestTheListHasTheClaimsOfBothChannelsNewestFirst(t *testing.T) {
 func TestTheListIsPagedAndKeepsItsFilters(t *testing.T) {
 	f := newWebFixture()
 	for i := 0; i < 5; i++ {
-		svc := filing.NewService(f.store, fixedClock{t: filedAt.Add(time.Duration(i) * time.Minute)})
+		svc := f.mobileOf(carolina, filedAt.Add(time.Duration(i)*time.Minute))
 		r := request()
 		if i%2 == 1 {
 			r.PolicyID = "HG-2025-880231"
@@ -591,7 +601,7 @@ func TestTheListFiltersByTheDayInColombia(t *testing.T) {
 		time.Date(2026, 10, 23, 4, 59, 0, 0, time.UTC),
 		time.Date(2026, 10, 23, 5, 0, 0, 0, time.UTC),
 	} {
-		_, _, err := filing.NewService(f.store, fixedClock{t: at}).
+		_, _, err := f.mobileOf(carolina, at).
 			File(context.Background(), carolina, fmt.Sprintf("draft-%d", i), request())
 		require.NoError(t, err)
 	}

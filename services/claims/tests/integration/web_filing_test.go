@@ -2,7 +2,8 @@
 // (filing of the claim with supports from the web portal) over HTTP: the real
 // router and use cases, PostgreSQL in a container and the real policy core
 // client against a policy core of the test. Only what is outside the service
-// is a double: the policy core and the token verification.
+// is a double: the policy core, the token verification and the bucket of the
+// evidence of the phone, which has its own test.
 package integration_test
 
 import (
@@ -10,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -35,7 +37,9 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/pdf"
 	policiesadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/policies"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/postgres"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/filing"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
 )
 
 // requireDocker fails the test when REQUIRE_DOCKER=1 and Docker is not
@@ -169,6 +173,47 @@ type service struct {
 	db *sql.DB
 }
 
+// almacenDeEvidencia stands for the evidence bucket of HU-M2.1-01: the
+// photographs never cross the service, so the filing only needs to find each
+// key with the size it declares. The bucket itself has its own test.
+type almacenDeEvidencia struct{}
+
+func (almacenDeEvidencia) SignUpload(context.Context, string, domain.Upload,
+	time.Duration) (ports.SignedUpload, error) {
+	return ports.SignedUpload{}, errors.New("the signature has its own route")
+}
+
+func (almacenDeEvidencia) Stat(_ context.Context, key string) (ports.StoredEvidence, error) {
+	for _, digest := range digestsDeLaEvidencia {
+		if strings.HasSuffix(key, digest+".jpg") {
+			return ports.StoredEvidence{ByteSize: 312044, SHA256: digest}, nil
+		}
+	}
+	return ports.StoredEvidence{}, ports.ErrEvidenceNotFound
+}
+
+// digestsDeLaEvidencia identify the four photographs of the place that a
+// filing from the phone carries.
+var digestsDeLaEvidencia = []string{
+	strings.Repeat("a", 64), strings.Repeat("b", 64),
+	strings.Repeat("c", 64), strings.Repeat("d", 64),
+}
+
+// evidenciaDeCarolina is the evidence array of a filing of hers, as the phone
+// sends it once every capture is uploaded. Nothing can have been captured
+// before the incident happened, so the instant travels with it.
+func evidenciaDeCarolina(capturadaEn time.Time) string {
+	partes := make([]string, 0, len(digestsDeLaEvidencia))
+	for _, digest := range digestsDeLaEvidencia {
+		partes = append(partes, fmt.Sprintf(
+			`{"object_key":"evidence/sub-carolina/%s.jpg","kind":"photo",`+
+				`"captured_at":"%s","latitude":4.7712,"longitude":-74.0452,`+
+				`"accuracy_m":8,"location_trusted":true,"sha256":"%s","byte_size":312044}`,
+			digest, capturadaEn.Format(time.RFC3339), digest))
+	}
+	return strings.Join(partes, ",")
+}
+
 func start(t *testing.T, url string, core *policyCore) service {
 	t.Helper()
 	ctx := context.Background()
@@ -183,7 +228,7 @@ func start(t *testing.T, url string, core *policyCore) service {
 		Breaker: resilience.Config{ConsecutiveFailures: 100, OpenTimeout: time.Second, HalfOpenSuccesses: 1},
 	}))
 	return service{db: db, Handler: httpadapter.NewRouter(
-		httpadapter.WithFilings(filing.NewService(claims, clock{}), verifier),
+		httpadapter.WithFilings(filing.NewService(claims, almacenDeEvidencia{}, clock{}), verifier),
 		httpadapter.WithClaimReads(filing.NewQueryService(records, pdf.NewReceiptRenderer()), verifier),
 		httpadapter.WithWebFilings(filing.NewWebService(records, supports, directory, clock{}),
 			filing.NewSupportService(supports, clock{}), verifier),
@@ -445,6 +490,7 @@ func TestWebFilingAcceptanceCriteria(t *testing.T) {
 	t.Run("a claim filed from the mobile app is in the same list", func(t *testing.T) {
 		mobile := `{"policy_id":"AU-2025-118204","incident_type":"theft","occurred_at":"` +
 			now.Add(-time.Hour).Format(time.RFC3339) + `","place":"Parqueadero","description":"Se llevaron el carro del parqueadero.",` +
+			`"evidence":[` + evidenciaDeCarolina(now.Add(-50*time.Minute)) + `],` +
 			`"declaration_accepted":true}`
 		rec, m := call(t, svc, http.MethodPost, "/v1/claims", "carolina", strings.NewReader(mobile),
 			map[string]string{"Idempotency-Key": "draft-mobile"})

@@ -332,6 +332,55 @@ run "the_claim_filing_is_a_human_route" {
     condition     = contains(local.services.claims.paths, "/v1/claims*")
     error_message = "The ALB sends /v1/claims* to the claims service."
   }
+
+  # Without the user pool the service does not mount the filing, so the
+  # published route would answer 404 to everybody. The values come from the
+  # pool and are only known after it exists, so what is checked here is that
+  # the three of them reach the service.
+  assert {
+    condition = alltrue([
+      for v in ["AUTH_ISSUER", "AUTH_JWKS_URL", "AUTH_CLIENT_IDS"] :
+      contains(keys(local.service_environment.claims), v)
+    ])
+    error_message = "Claims verifies the token of the insured: it needs the user pool of the environment."
+  }
+}
+
+# HU-M1.1-01: the public route of the sign-up also needs its rule in the load
+# balancer; the API Gateway alone does not know where to send it.
+run "the_sign_up_reaches_origination" {
+  command = plan
+
+  assert {
+    condition     = contains(local.services.origination.paths, "/v1/registrations*")
+    error_message = "The ALB sends /v1/registrations* to origination: without the rule it answers 404."
+  }
+
+  assert {
+    condition     = module.apigateway.registration_path == "/v1/registrations"
+    error_message = "The gateway publishes the sign-up on the same path the balancer routes."
+  }
+}
+
+# HU-M2.1-01: the evidence of the claim goes to the evidence bucket, and the
+# service signs the upload with its own task role.
+run "the_claim_evidence_has_its_bucket" {
+  command = plan
+
+  assert {
+    condition     = local.service_environment.claims.EVIDENCE_BUCKET == module.buckets["evidence"].bucket
+    error_message = "Claims keeps the evidence in the evidence bucket of the environment."
+  }
+
+  assert {
+    condition     = local.services.claims.buckets == ["evidence"]
+    error_message = "Claims reaches its own bucket and no other."
+  }
+
+  assert {
+    condition     = local.service_environment.claims.AWS_REGION == data.aws_region.current.region
+    error_message = "The AWS SDK of claims takes the region of the environment."
+  }
 }
 
 # HA-D02: the signed link of the e-mail opens the document without a session.

@@ -38,6 +38,11 @@ locals {
         "/v1/customers*", "/v1/policies*", "/v1/documents*",
         # Advisor inbox (HU-W1.1-02) and issuance exceptions of operations (HA-D02).
         "/v1/review-requests*", "/v1/issuance-exceptions*",
+        # Sign-up of the insured (HU-M1.1-01). The API Gateway publishes the
+        # route without a session, but the load balancer has to send it
+        # somewhere: without this rule it answers 404 and the mobile sign-up
+        # never reaches the service.
+        "/v1/registrations*",
       ]
       buckets   = ["documents"]
       publishes = ["origination"]
@@ -468,6 +473,22 @@ locals {
       EVENTS_QUEUE_URL                   = module.messaging.queue_urls["audit"]
       OPEN_FINANCE_URL                   = "http://openfinance.${local.namespace}:${local.stubs.openfinance}"
       REVOCATION_NOTICE_DEADLINE_SECONDS = "300"
+    }
+
+    # Claims serves the filing of the mobile assistant (HU-M2.2-01), which is
+    # a human route: without the user pool there is no way to tell whose claim
+    # it is and the route is not mounted. The evidence of HU-M2.1-01 goes to
+    # the evidence bucket, and the service signs the upload with the task role.
+    claims = {
+      PORT            = tostring(local.service_port)
+      AUTH_ISSUER     = local.cognito.issuer
+      AUTH_JWKS_URL   = local.cognito.jwks_url
+      AUTH_CLIENT_IDS = join(",", values(local.cognito.client_ids))
+      EVIDENCE_BUCKET = module.buckets["evidence"].bucket
+      AWS_REGION      = data.aws_region.current.region
+      # PENDING (HU-W2.1-01): the web filing also needs POLICY_CORE_URL. Until
+      # it is set, claims logs that those routes are not mounted and answers
+      # 404 to the portal.
     }
   }
 

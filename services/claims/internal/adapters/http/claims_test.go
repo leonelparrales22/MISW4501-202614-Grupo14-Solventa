@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,10 +72,49 @@ func call(h http.Handler, token, key, body string) (*httptest.ResponseRecorder, 
 	return rec, m
 }
 
-const validBody = `{"policy_id":"AU-2025-118204","incident_type":"collision",` +
+// digestsDeLaEvidencia identify the four photographs of the place: the
+// minimum a filing from the phone carries since HU-M2.1-01.
+var digestsDeLaEvidencia = []string{
+	strings.Repeat("a", 64), strings.Repeat("b", 64),
+	strings.Repeat("c", 64), strings.Repeat("d", 64),
+}
+
+// validBody is a complete filing: its evidence is already in the store.
+var validBody = `{"policy_id":"AU-2025-118204","incident_type":"collision",` +
 	`"occurred_at":"2026-10-20T23:30:00Z","place":"Calle 80 con Carrera 15, Bogotá",` +
 	`"description":"Choque por alcance en el semáforo.","details":{"third_party":"yes"},` +
+	`"evidence":[` + cuerpoDeLaEvidencia() + `],` +
 	`"declaration_accepted":true}`
+
+func cuerpoDeLaEvidencia() string {
+	partes := make([]string, 0, len(digestsDeLaEvidencia))
+	for _, digest := range digestsDeLaEvidencia {
+		partes = append(partes, fmt.Sprintf(
+			`{"object_key":"evidence/sub-carolina/%s.jpg","kind":"photo",`+
+				`"captured_at":"2026-10-20T23:32:14Z","latitude":4.7712,"longitude":-74.0452,`+
+				`"accuracy_m":8,"location_trusted":true,"sha256":"%s","byte_size":312044}`,
+			digest, digest))
+	}
+	return strings.Join(partes, ",")
+}
+
+// almacenDeEvidencia is the store that holds what validBody declares, for the
+// tests that mount the use case instead of a double.
+type almacenDeEvidencia struct{}
+
+func (almacenDeEvidencia) SignUpload(context.Context, string, domain.Upload,
+	time.Duration) (ports.SignedUpload, error) {
+	return ports.SignedUpload{}, errors.New("the signature has its own route")
+}
+
+func (almacenDeEvidencia) Stat(_ context.Context, key string) (ports.StoredEvidence, error) {
+	for _, digest := range digestsDeLaEvidencia {
+		if strings.HasSuffix(key, digest+".jpg") {
+			return ports.StoredEvidence{ByteSize: 312044, SHA256: digest}, nil
+		}
+	}
+	return ports.StoredEvidence{}, ports.ErrEvidenceNotFound
+}
 
 func filedClaim() domain.Claim {
 	return domain.Claim{
@@ -119,6 +159,11 @@ func TestTheFilingArrivesCompleteAtTheUseCase(t *testing.T) {
 	assert.Equal(t, "collision", svc.gotRequest.IncidentType)
 	assert.Equal(t, "yes", svc.gotRequest.Details["third_party"])
 	assert.True(t, svc.gotRequest.DeclarationAccepted)
+	require.Len(t, svc.gotRequest.Evidence, 4)
+	assert.Equal(t, "evidence/sub-carolina/"+digestsDeLaEvidencia[0]+".jpg", svc.gotRequest.Evidence[0].ObjectKey)
+	assert.Equal(t, "photo", svc.gotRequest.Evidence[0].Kind)
+	assert.Equal(t, 4.7712, svc.gotRequest.Evidence[0].Latitude)
+	assert.True(t, svc.gotRequest.Evidence[0].LocationTrusted)
 }
 
 // A retry is not a new filing: the answer is the case that already exists.

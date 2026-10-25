@@ -514,7 +514,7 @@ func TestAnIDThatIsNotAClaimIDIsNotFoundWithoutReading(t *testing.T) {
 func TestTheMobileFilingStillAnswersNextToTheReads(t *testing.T) {
 	store := memory.NewCaseStore()
 	h := httpadapter.NewRouter(
-		httpadapter.WithFilings(filing.NewService(store, fixedClock{}), callers),
+		httpadapter.WithFilings(filing.NewService(store, almacenDeEvidencia{}, fixedClock{}), callers),
 		httpadapter.WithClaimReads(filing.NewQueryService(store, nil), callers))
 
 	rec := do(h, http.MethodPost, "/v1/claims", "insured", strings.NewReader(validBody),

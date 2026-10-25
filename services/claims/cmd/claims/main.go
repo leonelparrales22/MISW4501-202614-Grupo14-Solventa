@@ -17,8 +17,13 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/pdf"
 	policiesadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/policies"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/postgres"
+	s3adapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/s3"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/evidence"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/filing"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 const serviceName = "claims"
@@ -29,6 +34,16 @@ var version = "dev"
 // envDatabaseURL is the service's own database. Without it the filed claims
 // live in memory and are lost when the service restarts.
 const envDatabaseURL = "DATABASE_URL"
+
+// Variables of the evidence store (HU-M2.1-01): the bucket of the environment
+// and, only for a local run, the endpoint of an S3 emulator.
+const (
+	envEvidenceBucket = "EVIDENCE_BUCKET"
+	envEvidenceURL    = "EVIDENCE_ENDPOINT_URL"
+)
+
+// evidenceCheckTimeout bounds the check of the evidence bucket at start.
+const evidenceCheckTimeout = 10 * time.Second
 
 func main() {
 	// JSON logs with correlation and trace ids, plus OpenTelemetry traces and
@@ -53,11 +68,19 @@ func main() {
 			log.Fatalf("could not set up the token verification: %v", err)
 		}
 		stores := claimStores(context.Background())
+		// HU-M2.1-01: the evidence of the phone lives in the bucket of the
+		// environment, and the filing checks every key against it.
+		evidences := evidenceStore(context.Background())
 		opts = append(opts,
-			httpadapter.WithFilings(filing.NewService(stores.claims, systemClock{}), verifier),
+			httpadapter.WithFilings(
+				filing.NewService(stores.claims, evidences, systemClock{}), verifier),
 			// HU-W2.1-01: the insured's claims of both channels, the detail
 			// and the filing receipt.
 			httpadapter.WithClaimReads(filing.NewQueryService(stores.records, pdf.NewReceiptRenderer()), verifier))
+		if evidences != nil {
+			opts = append(opts,
+				httpadapter.WithEvidence(evidence.NewService(evidences, systemClock{}), verifier))
+		}
 		opts = append(opts, webFilings(stores, verifier)...)
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)
@@ -134,6 +157,43 @@ func webFilings(s stores, verifier security.Verifier) []httpadapter.Option {
 		filing.NewWebService(s.records, s.supports, directory, systemClock{}),
 		filing.NewSupportService(s.supports, systemClock{}),
 		verifier)}
+}
+
+// evidenceStore opens the bucket where the captured evidence goes. Without
+// the bucket the evidence of HU-M2.1-01 is not mounted and a filing that
+// declares evidence is refused, so the rest of the service keeps answering; a
+// bucket that is configured and cannot be reached is a misconfiguration and
+// the service does not start with it.
+func evidenceStore(ctx context.Context) ports.EvidenceStore {
+	bucket := os.Getenv(envEvidenceBucket)
+	if bucket == "" {
+		log.Printf("%s is not set: the evidence of the claim (HU-M2.1-01) is not mounted",
+			envEvidenceBucket)
+		return nil
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		log.Fatalf("could not load the AWS configuration for %s: %v", envEvidenceBucket, err)
+	}
+	client := awss3.NewFromConfig(cfg, func(o *awss3.Options) {
+		// Only a local run points somewhere else; an emulator addresses the
+		// bucket by path, not by subdomain.
+		if endpoint := os.Getenv(envEvidenceURL); endpoint != "" {
+			o.BaseEndpoint = &endpoint
+			o.UsePathStyle = true
+		}
+	})
+	store, err := s3adapter.New(client, bucket)
+	if err != nil {
+		log.Fatalf("could not open the evidence store: %v", err)
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, evidenceCheckTimeout)
+	defer cancel()
+	if err := store.Check(checkCtx); err != nil {
+		log.Fatalf("could not reach the evidence store: %v", err)
+	}
+	log.Printf("evidence: s3://%s", store.Bucket())
+	return store
 }
 
 type systemClock struct{}
