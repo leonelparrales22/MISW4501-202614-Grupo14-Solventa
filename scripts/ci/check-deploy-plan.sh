@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Guards the production-demo deploy of backend-cd: a new image tag may only
+# Guards the staging deploy of backend-cd: a new image tag may only
 # replace ECS task definitions and update ECS services. Any other change in the
 # plan (drift, a default changed in a pending PR, an environment half turned
 # on) stops the deploy before apply. So does a service going from 0 tasks to

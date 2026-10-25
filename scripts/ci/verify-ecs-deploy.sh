@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Confirms a production-demo deploy of backend-cd: waits until every ECS
+# Confirms a staging deploy of backend-cd: waits until every ECS
 # service of the cluster is stable and checks that each one runs the new tag.
 # The deployment circuit breaker rolls a failing service back to its previous
 # task definition, which is stable too, so stability alone is not enough.

@@ -166,3 +166,27 @@ run "deploy_role_is_separate_from_the_publish_role" {
     error_message = "Only jobs of the production-demo environment (manual approval) may deploy; never a branch run or a pull request."
   }
 }
+
+run "staging_deploy_role_is_added_next_to_the_production_demo_one" {
+  command = plan
+
+  assert {
+    condition     = aws_iam_role.deploy_staging.name == "solventa-github-actions-deploy-staging"
+    error_message = "The staging deploy role name is referenced by the backend-cd workflow."
+  }
+
+  assert {
+    condition     = aws_iam_role.deploy.name == "solventa-github-actions-deploy"
+    error_message = "The production-demo deploy role stays, for when the CD deploys there again."
+  }
+
+  assert {
+    condition = flatten([
+      for c in data.aws_iam_policy_document.deploy_staging_trust.statement[0].condition :
+      c.values if c.variable == "token.actions.githubusercontent.com:sub"
+      ]) == [
+      "repo:leonelparrales22@52500190/MISW4501-202614-Grupo14-Solventa@1325296709:environment:staging",
+    ]
+    error_message = "Only jobs of the staging environment may deploy to staging; never a branch run or a pull request."
+  }
+}

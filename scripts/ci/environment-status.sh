@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Tells backend-cd whether production-demo can take a deploy. Prints "up" or
-# "off: <reason>".
+# Tells backend-cd whether an environment (its ECS cluster) can take a deploy.
+# Prints "up" or "off: <reason>".
 #
-#   demo-status.sh <cluster>
+#   environment-status.sh <cluster>
 #
 # Up means the cluster exists and every ECS service has tasks. While
 # scripts/environment/up.sh prepares the database, the cluster exists with
 # every service at 0 tasks: that counts as off, because a deploy would turn the
-# services on before the database is ready (0 -> N is a change inside ECS).
+# services on before the database is ready (0 -> N is a change inside ECS). A
+# test window that takes a stub down (stub_desired_count_overrides) is off too:
+# a deploy would bring the stub back in the middle of the window.
 set -euo pipefail
 
 cluster="$1"

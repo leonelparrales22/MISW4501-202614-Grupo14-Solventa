@@ -1,6 +1,7 @@
 # Continuous delivery base: permanent ECR repositories, the IAM role that
 # GitHub Actions assumes through OIDC to push to them, the release tag of main
-# (SSM) and the role that deploys that tag to production-demo.
+# (SSM), the role that deploys that tag to production-demo (kept for when the
+# CD deploys there again) and the role that deploys to staging (current CD).
 #
 # No long-lived AWS keys are stored in GitHub: the workflow exchanges its OIDC
 # token for short-lived credentials, and the trust policy only accepts runs of
@@ -38,6 +39,13 @@ locals {
   demo_name      = "solventa-demo"
   demo_state_key = "production-demo/platform/terraform.tfstate"
   state_bucket   = "solventa-tfstate-368083581678"
+
+  # staging/platform, the current target of the deploy: its ECS cluster, the
+  # prefix of its IAM roles and secrets (name = "solventa-stg"), its remote
+  # state key and the SSM path it reads (portal URL).
+  staging_name      = "solventa-stg"
+  staging_state_key = "staging/platform/terraform.tfstate"
+  staging_ssm_path  = "solventa/staging"
 
   oidc_url          = "token.actions.githubusercontent.com"
   oidc_provider_arn = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_oidc_provider_arn
@@ -330,4 +338,139 @@ resource "aws_iam_role_policy" "deploy" {
   name   = "deploy-production-demo"
   role   = aws_iam_role.deploy.id
   policy = data.aws_iam_policy_document.deploy.json
+}
+
+# --- staging deploy ------------------------------------------------------------------------
+
+# The current CD deploys to staging: automatic on main, manual on develop. Same
+# shape as the production-demo role above, which stays unused until the CD
+# deploys there again. Assumed only by the deploy job of backend-cd in the
+# GitHub environment staging; its deployment branches (develop and main) keep
+# other branches and pull requests out.
+data "aws_iam_policy_document" "deploy_staging_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_url}:sub"
+      values   = ["${local.github_sub}:environment:${var.staging_deploy_environment}"]
+    }
+  }
+}
+
+resource "aws_iam_role" "deploy_staging" {
+  name                 = "solventa-github-actions-deploy-staging"
+  description          = "Assumed by the deploy job of backend-cd (GitHub OIDC, environment ${var.staging_deploy_environment}) to run terraform apply of staging/platform with a new image tag."
+  assume_role_policy   = data.aws_iam_policy_document.deploy_staging_trust.json
+  max_session_duration = 3600
+}
+
+# terraform plan refreshes every resource of the platform, and the workflow
+# reads the cluster (scripts/ci/environment-status.sh and staging-vars.sh).
+resource "aws_iam_role_policy_attachment" "deploy_staging_read" {
+  role       = aws_iam_role.deploy_staging.name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+data "aws_iam_policy_document" "deploy_staging" {
+  statement {
+    sid       = "StateList"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${local.state_bucket}"]
+  }
+
+  # State and its native S3 lock file (use_lockfile).
+  statement {
+    sid       = "StateReadWrite"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["arn:aws:s3:::${local.state_bucket}/${local.staging_state_key}", "arn:aws:s3:::${local.state_bucket}/${local.staging_state_key}.tflock"]
+  }
+
+  statement {
+    sid       = "StateUnlock"
+    actions   = ["s3:DeleteObject"]
+    resources = ["arn:aws:s3:::${local.state_bucket}/${local.staging_state_key}.tflock"]
+  }
+
+  statement {
+    sid       = "ReadIdentityState"
+    actions   = ["s3:GetObject"]
+    resources = ["arn:aws:s3:::${local.state_bucket}/bootstrap/identity/terraform.tfstate"]
+  }
+
+  # Parameters of the environment, such as the portal URL (/solventa/staging/web/...).
+  statement {
+    sid     = "ReadEnvironmentParameters"
+    actions = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+    resources = [
+      "arn:aws:ssm:${var.region}:${local.account_id}:parameter/${local.staging_ssm_path}",
+      "arn:aws:ssm:${var.region}:${local.account_id}:parameter/${local.staging_ssm_path}/*",
+    ]
+  }
+
+  statement {
+    sid       = "DecryptEnvironmentParameters"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.region}.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid       = "RefreshSecretValues"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:aws:secretsmanager:${var.region}:${local.account_id}:secret:${local.staging_name}/*"]
+  }
+
+  statement {
+    sid       = "TaskDefinitions"
+    actions   = ["ecs:RegisterTaskDefinition", "ecs:DeregisterTaskDefinition"]
+    resources = ["*"] # neither action supports resource-level permissions
+  }
+
+  statement {
+    sid       = "TagTaskDefinitions"
+    actions   = ["ecs:TagResource"]
+    resources = ["arn:aws:ecs:${var.region}:${local.account_id}:task-definition/${local.staging_name}-*"]
+  }
+
+  statement {
+    sid       = "UpdateServices"
+    actions   = ["ecs:UpdateService"]
+    resources = ["arn:aws:ecs:${var.region}:${local.account_id}:service/${local.staging_name}/*"]
+  }
+
+  statement {
+    sid       = "PassTaskRoles"
+    actions   = ["iam:PassRole"]
+    resources = ["arn:aws:iam::${local.account_id}:role/${local.staging_name}-*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "deploy_staging" {
+  name   = "deploy-staging"
+  role   = aws_iam_role.deploy_staging.id
+  policy = data.aws_iam_policy_document.deploy_staging.json
 }
