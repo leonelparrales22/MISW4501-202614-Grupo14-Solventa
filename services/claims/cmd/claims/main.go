@@ -8,10 +8,14 @@ import (
 	"os"
 	"time"
 
+	corepolicies "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/policies"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/observability"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/resilience"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/http"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/memory"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/pdf"
+	policiesadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/policies"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/filing"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
@@ -48,8 +52,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("could not set up the token verification: %v", err)
 		}
-		opts = append(opts, httpadapter.WithFilings(
-			filing.NewService(claimStore(context.Background()), systemClock{}), verifier))
+		stores := claimStores(context.Background())
+		opts = append(opts,
+			httpadapter.WithFilings(filing.NewService(stores.claims, systemClock{}), verifier),
+			// HU-W2.1-01: the insured's claims of both channels, the detail
+			// and the filing receipt.
+			httpadapter.WithClaimReads(filing.NewQueryService(stores.records, pdf.NewReceiptRenderer()), verifier))
+		opts = append(opts, webFilings(stores, verifier)...)
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)
 	}
@@ -70,14 +79,24 @@ func main() {
 	log.Fatal(err)
 }
 
-// claimStore opens the database and applies the migrations, or keeps the
-// claims in memory when there is no database configured.
-func claimStore(ctx context.Context) ports.ClaimRepository {
+// stores are the repositories of the service. The mobile filing (HU-M2.2-01)
+// and the web filing (HU-W2.1-01) share the claims, the filing numbers and the
+// filing keys.
+type stores struct {
+	claims   ports.ClaimRepository
+	records  ports.ClaimRecords
+	supports ports.SupportStore
+}
+
+// claimStores opens the database once and applies the migrations, or keeps
+// everything in one in-memory store when there is no database configured.
+func claimStores(ctx context.Context) stores {
 	url := os.Getenv(envDatabaseURL)
 	if url == "" {
 		log.Printf("%s is not set: the filed claims live in memory and are lost when the service restarts",
 			envDatabaseURL)
-		return memory.NewClaimStore()
+		cases := memory.NewCaseStore()
+		return stores{claims: cases, records: cases, supports: cases}
 	}
 	db, err := postgres.Open(ctx, url)
 	if err != nil {
@@ -87,7 +106,34 @@ func claimStore(ctx context.Context) ports.ClaimRepository {
 		log.Fatalf("could not migrate the database: %v", err)
 	}
 	log.Print("claims: PostgreSQL")
-	return postgres.NewClaimStore(db)
+	return stores{
+		claims:   postgres.NewClaimStore(db),
+		records:  postgres.NewClaimRecordStore(db),
+		supports: postgres.NewSupportStore(db),
+	}
+}
+
+// webFilings mounts the web filing with supports (HU-W2.1-01) when the policy
+// core is configured. Without it nothing is mounted: nobody could tell which
+// policies are the insured's (fail-closed).
+func webFilings(s stores, verifier security.Verifier) []httpadapter.Option {
+	cfg, err := loadPolicyCoreConfig(os.Getenv)
+	if err != nil {
+		log.Fatalf("invalid configuration: %v", err)
+	}
+	if cfg.url == "" {
+		log.Printf("%s is not set: the web filing of the claim (HU-W2.1-01) is not mounted", envPolicyCoreURL)
+		return nil
+	}
+	core := corepolicies.NewClient(corepolicies.Config{
+		BaseURL: cfg.url, Timeout: cfg.timeout, Breaker: resilience.DefaultConfig(),
+	})
+	directory := policiesadapter.NewDirectory(core)
+	log.Printf("web filing (HU-W2.1-01): policy core at %s, timeout %s", cfg.url, cfg.timeout)
+	return []httpadapter.Option{httpadapter.WithWebFilings(
+		filing.NewWebService(s.records, s.supports, directory, systemClock{}),
+		filing.NewSupportService(s.supports, systemClock{}),
+		verifier)}
 }
 
 type systemClock struct{}
