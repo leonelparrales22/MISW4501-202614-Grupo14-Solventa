@@ -32,7 +32,7 @@
 #   STATE_DIR          plans and resolved tags (default ${TMPDIR:-/tmp}/solventa-environment-<env>)
 #   TTL                staging: TTL tag, YYYY-MM-DD (default today)
 #   EXTRA_TAGS         staging: extra tags, for example '{Owner="nicolas",Story="T5"}'
-#   CD_EXTRA_BRANCHES  staging: branches added to develop in the publishing role (comma list)
+#   CD_EXTRA_BRANCHES  staging: branches added to develop and main in the publishing role (comma list)
 #   FRONT_REF          staging: branch dispatched in the front phase (default develop)
 #   FRONT_DIR          production-demo: clean checkout of the front end at origin/main
 #   SEED_USER_PASSWORD password of the permanent users for the smoke phase (default

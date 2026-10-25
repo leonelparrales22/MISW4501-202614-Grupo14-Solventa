@@ -17,7 +17,7 @@ sesión**.
 | Distribución | `d<id>.cloudfront.net`; `/v1/*` y `/pasarela/*` al stage `staging` del API, rutas de socio con la key de `portal-embebido` |
 | `config.json` | URL del portal, URL de la pasarela (`<portal>/pasarela`), pool permanente de `bootstrap/identity` y su cliente `web` |
 | SSM | `/solventa/staging/web/{bucket,distribution-id,url}`; `staging/platform` lee la `url` para los enlaces de los correos |
-| Rol del CD | `solventa-github-actions-web-stg`: confía en `develop` del repo del front (variable `cd_branches`) |
+| Rol del CD | `solventa-github-actions-web-stg`: confía en `develop` (bajo demanda) y `main` (cada merge) del repo del front (variable `cd_branches`) |
 
 Estado remoto: `staging/web/terraform.tfstate` en `solventa-tfstate-368083581678`. Etiquetas: `Project=solventa`, `Env=staging`,
 `Task=T5`, `TTL=<var.ttl>` y las de `extra_tags` (`Owner`, `Story`).
@@ -28,7 +28,7 @@ Estado remoto: `staging/web/terraform.tfstate` en `solventa-tfstate-368083581678
 |---|---|---|
 | `ttl` | — (obligatoria) | Fecha `AAAA-MM-DD` límite; etiqueta `TTL` |
 | `api_enabled` | `true` | Lee `staging/platform` por estado remoto y publica `config.json`. `false` deja solo el sitio (un `plan` sin plataforma, o la prueba del despacho del workflow) |
-| `cd_branches` | `["develop"]` | Ramas en las que confía el rol. Una ventana agrega la de su historia para el disparador temporal (D-9 b de T5); `main` está prohibida (#68) y el rol se destruye con la ventana |
+| `cd_branches` | `["develop", "main"]` | Ramas en las que confía el rol: `cd-portal.yml` publica staging bajo demanda desde `develop` y en cada merge a `main`, como `backend-cd`. `develop` es obligatoria. Una ventana agrega la de su historia para el disparador temporal (D-9 b de T5); el rol se destruye con la ventana |
 | `extra_tags` | `{}` | Etiquetas adicionales; no reemplazan las cuatro por defecto |
 
 Con `api_enabled = true`, si `staging/platform` no tiene las salidas `api_origin`, `cognito` y `portal_partner_api_key` (la
@@ -44,7 +44,7 @@ originación arranque ya con la URL del portal) y `down.sh staging` (después de
 export AWS_PROFILE=solventa          # cuenta 368083581678
 cd infra/terraform/environments/staging/web
 terraform init
-terraform plan -out site.tfplan -var ttl=<fecha> -var 'cd_branches=["develop"]'
+terraform plan -out site.tfplan -var ttl=<fecha> -var 'cd_branches=["develop","main"]'
 terraform apply site.tfplan && rm site.tfplan     # el plan lleva la key del socio (sensible): se borra al aplicar
 terraform output url
 # ... ventana ...

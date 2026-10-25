@@ -254,7 +254,8 @@ platform_vars() { # services_enabled -> one argument per line
 web_vars() { # api_enabled -> one argument per line
   printf '%s\n' "-var=api_enabled=$1"
   if [[ "$ENVIRONMENT" == staging ]]; then
-    local branches='"develop"' b
+    # develop (on demand) and main (cd-portal.yml publishes staging on every merge to main).
+    local branches='"develop","main"' b
     for b in $(tr ',' ' ' <<<"${CD_EXTRA_BRANCHES:-}"); do branches="$branches,\"$b\""; done
     printf '%s\n' "-var=ttl=$TTL" "-var=cd_branches=[$branches]"
     [[ -n "${EXTRA_TAGS:-}" ]] && printf '%s\n' "-var=extra_tags=$EXTRA_TAGS"
