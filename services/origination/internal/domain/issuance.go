@@ -142,7 +142,7 @@ func (f IssuanceFilter) Validate() error {
 	if f.Status != "" && !f.Status.Valid() {
 		return fmt.Errorf("unknown issuance status %q", f.Status)
 	}
-	if f.Channel != "" && f.Channel != ChannelWeb && f.Channel != ChannelMobile && f.Channel != ChannelAdvisor {
+	if f.Channel != "" && f.Channel != ChannelWeb && f.Channel != ChannelMobile && f.Channel != ChannelAdvisor && f.Channel != ChannelRenewal {
 		return fmt.Errorf("unknown channel %q", f.Channel)
 	}
 	if !f.From.IsZero() && !f.To.IsZero() && f.To.Before(f.From) {

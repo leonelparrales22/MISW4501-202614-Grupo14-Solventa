@@ -155,3 +155,21 @@ func (s *CustomerStore) Link(ctx context.Context, c domain.Customer, e domain.Cu
 	}
 	return stored, nil
 }
+
+var _ ports.CustomerBySubject = (*CustomerStore)(nil)
+
+// GetBySubject returns ports.ErrCustomerNotFound when no customer has the
+// account subject.
+func (s *CustomerStore) GetBySubject(ctx context.Context, subject string) (domain.Customer, error) {
+	if subject == "" {
+		return domain.Customer{}, ports.ErrCustomerNotFound
+	}
+	c, found, err := s.one(ctx, `SELECT `+customerColumns+` FROM customer WHERE cognito_sub = $1`, subject)
+	if err != nil {
+		return domain.Customer{}, fmt.Errorf("read the customer by subject: %w", err)
+	}
+	if !found {
+		return domain.Customer{}, ports.ErrCustomerNotFound
+	}
+	return c, nil
+}

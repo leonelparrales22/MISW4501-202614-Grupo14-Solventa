@@ -43,6 +43,7 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/profiling"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/rating"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/renewal"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/underwriting"
 )
 
@@ -111,6 +112,8 @@ func main() {
 		// through the same client; without the provider no purchase is
 		// formalized, because it could not get the customer's consent.
 		var consentSender ports.ConsentCodeSender = formalization.UnavailableSender{}
+		// HU-W1.5-02: the not-renewed notice goes out through the same client.
+		var renewalNotifier ports.RenewalNotifier
 		// One repository for every document of the service: the contractual
 		// PDF (HU-W1.3-03) and the faces of the identity document of the
 		// sign-up (HU-M1.1-01) go to the same bucket, so they share one client.
@@ -132,6 +135,7 @@ func main() {
 			wakeContracts = contract.service.Notify
 			reviewNotifier = emailadapter.NewReviewNotifier(contract.emailClient)
 			consentSender = emailadapter.NewConsentNotifier(contract.emailClient)
+			renewalNotifier = emailadapter.NewRenewalNotifier(contract.emailClient)
 			opts = append(opts, httpadapter.WithContractDocuments(contract.reader, verifier))
 		} else {
 			log.Printf("%s is not set: the contractual document and its notification (HU-W1.3-03) are not wired", envEmailURL)
@@ -143,12 +147,20 @@ func main() {
 		// with DATABASE_URL, with or without the payment gateway.
 		customers := st.customers
 		if cfg.billing.enabled {
+			// HU-W1.5-02: every activation is also projected into the
+			// policies the insured sees and renews.
+			activations = append(activations, renewal.NewProjector(postgres.NewPolicyStore(st.db)))
 			charges, err := newBilling(context.Background(), cfg.billing, st.db, wakeContracts, activations...)
 			if err != nil {
 				log.Fatalf("could not set up the premium charge: %v", err)
 			}
 			starter = charges.starter
 			opts = append(opts, httpadapter.WithCharges(charges.service, verifier))
+			renewals, err := newRenewalService(context.Background(), cfg.renewal, st.db, resolver, renewalNotifier, charges.wake)
+			if err != nil {
+				log.Fatalf("could not set up the policy renewal: %v", err)
+			}
+			opts = append(opts, httpadapter.WithPolicies(renewals, verifier))
 		} else {
 			logWithoutBilling(cfg.contracts.enabled)
 		}
@@ -242,6 +254,8 @@ type config struct {
 
 	// Premium charge (HA-D02).
 	billing billingConfig
+	// renewal configures the online renewal of a policy (HU-W1.5-02).
+	renewal renewalConfig
 
 	// Explicit consent verified with the audit service (HU-W1.2-01).
 	audit auditConfig
@@ -557,6 +571,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("%s (an S3 bucket, in AWS) or %s (a local directory) is required when %s is set: the faces of the identity document are kept there",
 				envDocumentsBucket, envDocumentsDir, envCognitoUserPoolID)
 		}
+	}
+	if err := loadRenewalConfig(getenv, &cfg.renewal); err != nil {
+		return config{}, err
 	}
 	if err := loadBillingConfig(getenv, &cfg.billing); err != nil {
 		return config{}, err

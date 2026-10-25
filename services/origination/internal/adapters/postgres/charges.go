@@ -38,7 +38,7 @@ const chargeColumns = `acceptance_id, idempotency_key, offer_id, customer_id, ch
 	resume_count, last_resumed_by, last_resumed_at, resume_note,
 	payment_method_kind, payment_token, payment_brand, payment_last4, payment_installments,
 	payment_bank_code, payment_payer_type, payment_method_captured_at, payment_attempt,
-	offer_expires_at, created_at, updated_at`
+	offer_expires_at, renewal_of, coverage_not_before, created_at, updated_at`
 
 // coverageJSON is how a coverage is kept in the coverages column.
 type coverageJSON struct {
@@ -86,7 +86,8 @@ func scanCharge(s scanner) (domain.Charge, error) {
 		resumedBy, resumeNote, declineCode                                    sql.NullString
 		payKind, payToken, payBrand, payLast4, payBank, payPayerType          sql.NullString
 		payInstallments                                                       sql.NullInt64
-		payCapturedAt, offerExpires                                           sql.NullTime
+		payCapturedAt, offerExpires, notBefore                                sql.NullTime
+		renewalOf                                                             sql.NullString
 	)
 	err := s.Scan(&c.AcceptanceID, &c.IdempotencyKey, &c.OfferID, &c.CustomerID, &channel, &c.AcceptedAt,
 		&c.Holder.FullName, &c.Holder.DocumentID, &c.Holder.Email, &c.AmountMinor, &c.Currency, &insuredMinor, &c.Terms.TermMonths, &coverages,
@@ -96,7 +97,7 @@ func scanCharge(s scanner) (domain.Charge, error) {
 		&c.ActivationAttempts, &activationNext, &actErr,
 		&c.ResumeCount, &resumedBy, &lastResumedAt, &resumeNote,
 		&payKind, &payToken, &payBrand, &payLast4, &payInstallments, &payBank, &payPayerType, &payCapturedAt,
-		&c.PaymentAttempt, &offerExpires, &c.CreatedAt, &c.UpdatedAt)
+		&c.PaymentAttempt, &offerExpires, &renewalOf, &notBefore, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return domain.Charge{}, err
 	}
@@ -119,6 +120,10 @@ func scanCharge(s scanner) (domain.Charge, error) {
 		Brand: payBrand.String, Last4: payLast4.String, Installments: int(payInstallments.Int64),
 		BankCode: payBank.String, PayerType: domain.PayerType(payPayerType.String),
 		CapturedAt: payCapturedAt.Time,
+	}
+	c.RenewalOf, c.CoverageNotBefore = renewalOf.String, notBefore.Time.UTC()
+	if !notBefore.Valid {
+		c.CoverageNotBefore = time.Time{}
 	}
 	c.AcceptedAt, c.WindowStartedAt = c.AcceptedAt.UTC(), c.WindowStartedAt.UTC()
 	c.CreatedAt, c.UpdatedAt = c.CreatedAt.UTC(), c.UpdatedAt.UTC()
@@ -167,15 +172,16 @@ func (s *ChargeStore) CreatePending(ctx context.Context, c domain.Charge) (domai
 	stored, created, err := s.one(ctx, `INSERT INTO charge_attempt (
 			acceptance_id, idempotency_key, offer_id, customer_id, channel, accepted_at,
 			holder_full_name, holder_document_id, holder_email, amount_minor, currency, insured_amount_minor, term_months, coverages,
-			status, attempts, next_attempt_at, window_started_at, window_ends_at, offer_expires_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 0, $16, $17, $18, $19, $20, $20)
+			status, attempts, next_attempt_at, window_started_at, window_ends_at, offer_expires_at, created_at, updated_at,
+			renewal_of, coverage_not_before)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 0, $16, $17, $18, $19, $20, $20, $21, $22)
 		ON CONFLICT DO NOTHING
 		RETURNING `+chargeColumns,
 		c.AcceptanceID, c.IdempotencyKey, c.OfferID, c.CustomerID, string(c.Channel), c.AcceptedAt.UTC(),
 		c.Holder.FullName, c.Holder.DocumentID, c.Holder.Email, c.AmountMinor, c.Currency,
 		domain.ToMinorUnits(c.Terms.InsuredAmount), c.Terms.TermMonths, string(coverages),
 		string(domain.ChargePending), nullTime(c.NextAttemptAt), c.WindowStartedAt.UTC(), nullTime(c.WindowEndsAt),
-		nullTime(c.OfferExpiresAt), c.CreatedAt.UTC())
+		nullTime(c.OfferExpiresAt), c.CreatedAt.UTC(), nullString(c.RenewalOf), nullTime(c.CoverageNotBefore))
 	if err != nil {
 		return domain.Charge{}, false, fmt.Errorf("insert the charge of %s: %w", c.AcceptanceID, err)
 	}

@@ -139,6 +139,11 @@ func (s *Service) AttachPaymentMethod(ctx context.Context, acceptanceID string,
 	if err := validatePaymentMethod(m); err != nil {
 		return domain.Charge{}, err
 	}
+	// The insured of a renewal has until the deadline of the renewal to get
+	// the payment through (HU-W1.5-02): after it the policy is not renewed.
+	if now := s.clock.Now().UTC(); domain.IsRenewalCharge(acceptanceID) && !current.WindowEndsAt.IsZero() && !now.Before(current.WindowEndsAt) {
+		return domain.Charge{}, ports.ErrChargeNotPayable
+	}
 
 	c, err := s.repo.AttachPaymentMethod(ctx, acceptanceID, m, s.clock.Now().UTC())
 	if err != nil {

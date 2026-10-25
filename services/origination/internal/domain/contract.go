@@ -36,6 +36,10 @@ type CoverageActivated struct {
 	ActivatedAt   time.Time
 	CoverageStart time.Time
 	CoverageEnd   time.Time
+
+	// RenewalOf is the policy this one renews (HU-W1.5-02); empty for new
+	// business. The coverage of a renewal starts when the renewed one ends.
+	RenewalOf string
 }
 
 // Validate reports why the event cannot produce a contractual document.

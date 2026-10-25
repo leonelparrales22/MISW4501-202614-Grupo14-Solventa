@@ -42,7 +42,7 @@ pasarela respondiera), `payment_rejected`, `payment_method_missing`, `document_g
 El más reciente aceptado primero. Todos los filtros son opcionales y se combinan:
 
 - `status`: `accepted` | `charging` | `active` | `notified` | `exception`.
-- `channel`: `web` | `mobile` | `advisor` (dónde se registró la aceptación; `advisor` es la compra que un asesor formaliza en nombre del cliente, HU-W1.1-03; el aliado no se guarda en la aceptación).
+- `channel`: `web` | `mobile` | `advisor` | `renewal` (dónde se registró la aceptación; `advisor` es la compra que un asesor formaliza en nombre del cliente, HU-W1.1-03; `renewal` es la renovación en línea del asegurado, HU-W1.5-02, que no tiene aceptación ni oferta detrás: su `acceptance_id` y `offer_id` son los de la renovación, `ren-…`; el aliado no se guarda en la aceptación).
 - `from`, `to`: fecha de aceptación, **inclusivas**, en RFC 3339; `to` no puede ser anterior a `from`.
 - `day_from`: inicio del día del analista, para los conteos «de hoy» (por defecto, medianoche UTC).
 - `limit`: 1–200, por defecto 50.
