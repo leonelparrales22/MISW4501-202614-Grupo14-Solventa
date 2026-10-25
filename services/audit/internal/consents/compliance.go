@@ -106,6 +106,11 @@ func complianceHistory(c domain.Consent, events []domain.ConsentEvent, now time.
 		if !a.RecordedAt.Equal(b.RecordedAt) {
 			return a.RecordedAt.Before(b.RecordedAt)
 		}
+		// The request and the revocation are written in one transaction, so
+		// they can share both times: the lifecycle decides, never the random id.
+		if ra, rb := lifecycleRank(a.Status), lifecycleRank(b.Status); ra != rb {
+			return ra < rb
+		}
 		return a.EventID < b.EventID
 	})
 	history := make([]domain.ConsentEvent, 0, len(own)+2)
@@ -130,6 +135,19 @@ func hasNotConfirmed(rev *domain.RevocationView) bool {
 		}
 	}
 	return false
+}
+
+// lifecycleRank orders the events of the whole consent that can share their
+// times: the request comes before the revocation it asks for. The events of an
+// entity never tie with them (they are written later, by the worker).
+func lifecycleRank(status string) int {
+	switch status {
+	case domain.HistoryRevocationRequested:
+		return 0
+	case domain.HistoryRevoked:
+		return 1
+	}
+	return 2
 }
 
 // Revoke revokes the consent on behalf of the analyst whose token has the

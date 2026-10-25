@@ -359,6 +359,27 @@ func TestComplianceStateOfAnActiveConsent(t *testing.T) {
 	assert.Equal(t, []domain.Entity{{Code: "aliado-banco-1", Name: "Banco Aliado"}}, state.View.Entities)
 }
 
+// The request and the revocation are written in one transaction: they can share
+// both times, and the random event ids must not decide their order.
+func TestComplianceHistoryKeepsTheRequestBeforeTheRevocationWhenTheyTie(t *testing.T) {
+	f := newComplianceFixture(t)
+	at := f.clock.Now().Add(-time.Hour)
+	for _, e := range []domain.ConsentEvent{
+		{EventID: "a-revoked", Status: domain.HistoryRevoked, OccurredAt: at, RecordedAt: at, ReceiptID: "REV-0001"},
+		{EventID: "b-requested", Status: domain.HistoryRevocationRequested, OccurredAt: at, RecordedAt: at},
+	} {
+		e.ConsentID = "cns-a1"
+		f.events.add(e)
+	}
+
+	state, err := f.compliance.State(context.Background(), "cns-a1")
+
+	require.NoError(t, err)
+	require.Len(t, state.History, 3)
+	assert.Equal(t, []string{domain.HistoryGranted, domain.HistoryRevocationRequested, domain.HistoryRevoked},
+		[]string{state.History[0].Status, state.History[1].Status, state.History[2].Status})
+}
+
 func TestComplianceStateOfAnExpiredConsentShowsTheExpiry(t *testing.T) {
 	f := newComplianceFixture(t)
 
