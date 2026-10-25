@@ -114,6 +114,9 @@ type payGateway struct {
 	charged  map[string]int
 	keys     []string
 	srv      *httptest.Server
+	// declineFirst declines the first payment attempt of every charge and
+	// takes the retry (the key of the second payment ends in -2).
+	declineFirst bool
 }
 
 func newPayGateway(t *testing.T) *payGateway {
@@ -142,7 +145,7 @@ func (g *payGateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	g.requests[key]++
 	g.keys = append(g.keys, key)
-	declined := strings.Contains(in.Reference, "declined")
+	declined := strings.Contains(in.Reference, "declined") || (g.declineFirst && !strings.HasSuffix(key, "-2"))
 	if !declined && g.charged[key] == 0 {
 		g.charged[key]++ // processed before answering
 	}
@@ -163,6 +166,12 @@ func (g *payGateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusCreated)
 	_, _ = fmt.Fprintf(w, `{"charge_id":"ch-%s","status":"succeeded"}`, key)
+}
+
+func (g *payGateway) setDeclineFirst(on bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.declineFirst = on
 }
 
 func (g *payGateway) set(m gatewayMode) {

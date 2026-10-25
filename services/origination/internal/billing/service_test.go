@@ -445,3 +445,27 @@ func TestEveryResumptionLeavesAnActionWithItsAuthorAndDate(t *testing.T) {
 	_, err = svc.ListActions(as(security.RoleAdvisor, "adv-1"), "acc-1")
 	assert.ErrorIs(t, err, security.ErrForbidden)
 }
+
+// The insured of a renewal has until the deadline of the renewal to get the
+// payment through (HU-W1.5-02): the charge window ends there, and a method
+// handed over after it is refused. A charge of another channel keeps its rule.
+func TestARenewalTakesNoPaymentMethodPastItsDeadline(t *testing.T) {
+	repo := newMemRepo()
+	deadline := t0.Add(72 * time.Hour)
+	renewalCharge := domain.NewCharge(domain.Acceptance{ID: "ren-pol-1-20261002", Channel: domain.ChannelRenewal, AcceptedAt: t0},
+		domain.Offer{ID: "ren-pol-1-20261002", CustomerID: "cust-1", Premium: 149_800, Currency: "COP"},
+		domain.CoverageTerms{TermMonths: 12}, t0, deadline)
+	repo.put(renewalCharge)
+	clk := &clock{now: t0}
+	svc := billing.NewService(repo, clk, resilience.DefaultRetryPolicy(), nil)
+	owner := as(security.RoleInsured, "cust-1")
+
+	clk.set(deadline.Add(-time.Minute))
+	_, err := svc.AttachPaymentMethod(owner, "ren-pol-1-20261002", cardMethod())
+	require.NoError(t, err, "inside the deadline")
+
+	repo.put(renewalCharge)
+	clk.set(deadline)
+	_, err = svc.AttachPaymentMethod(owner, "ren-pol-1-20261002", cardMethod())
+	assert.ErrorIs(t, err, ports.ErrChargeNotPayable, "at the deadline")
+}

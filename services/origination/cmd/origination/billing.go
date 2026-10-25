@@ -116,6 +116,9 @@ func loadBillingConfig(getenv func(string) string, cfg *billingConfig) error {
 type billingWiring struct {
 	starter *billing.Starter
 	service *billing.Service
+	// wake wakes the charge worker after a charge is stored elsewhere (the
+	// renewal of HU-W1.5-02).
+	wake func()
 }
 
 // newBilling wires the premium charge (HA-D02) over the single pool of
@@ -141,6 +144,7 @@ func newBilling(ctx context.Context, cfg billingConfig, db *sql.DB, wakeContract
 	log.Printf("premium charge: PostgreSQL, gateway %s (timeout %s), retries from %s up to %s within %s, poll every %s, claim lease %s",
 		cfg.gatewayURL, cfg.gatewayTimeout, cfg.retry.Base, cfg.retry.Max, cfg.retry.Window, cfg.worker.PollInterval, cfg.worker.ClaimLease)
 	return billingWiring{
+		wake:    worker.Notify,
 		starter: billing.NewStarter(repo, billing.OfferTerms(demoCoverageTerms()), clock, cfg.retry, worker.Notify),
 		service: billing.NewService(repo, clock, cfg.retry, worker.Notify).
 			WithContractRetry(postgres.NewContractStore(db), wakeContracts),

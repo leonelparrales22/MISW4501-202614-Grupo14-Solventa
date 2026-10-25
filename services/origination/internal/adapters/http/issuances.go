@@ -174,8 +174,8 @@ func issuanceFilterOf(req *http.Request) (f domain.IssuanceFilter, dayFrom time.
 	if f.Status != "" && !f.Status.Valid() {
 		return f, dayFrom, "status must be one of accepted, charging, active, notified or exception"
 	}
-	if f.Channel != "" && f.Channel != domain.ChannelWeb && f.Channel != domain.ChannelMobile && f.Channel != domain.ChannelAdvisor {
-		return f, dayFrom, "channel must be web or mobile"
+	if f.Channel != "" && f.Channel != domain.ChannelWeb && f.Channel != domain.ChannelMobile && f.Channel != domain.ChannelAdvisor && f.Channel != domain.ChannelRenewal {
+		return f, dayFrom, "channel must be web, mobile, advisor or renewal"
 	}
 	for name, dst := range map[string]*time.Time{"from": &f.From, "to": &f.To, "day_from": &dayFrom} {
 		if raw := q.Get(name); raw != "" {

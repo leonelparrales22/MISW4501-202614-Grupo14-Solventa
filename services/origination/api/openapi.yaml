@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.11.0
+  version: 0.12.0
 paths:
   /health:
     get:
@@ -659,7 +659,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [web, mobile, advisor]
+            enum: [web, mobile, advisor, renewal]
         - name: from
           in: query
           required: false
@@ -1157,6 +1157,154 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/policies:
+    get:
+      summary: List the policies of the insured with their renewal state (HU-W1.5-02)
+      description: >
+        Screen A1. Returns the policies the caller owns, the ones ending last
+        first. A policy appears when the premium is charged and its coverage is
+        activated. renewal_window says when the renewal opens (RENEWAL_WINDOW_DAYS
+        before the coverage ends, 30 by default) and closes (when the coverage
+        ends); can_renew is true only inside the window and while the period has
+        no renewal yet. renewal is the outcome of the current period, once there
+        is one. Needs PostgreSQL and the premium charge. Only the insured.
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The policies of the caller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/{policy_id}/renewal:
+    get:
+      summary: Read the renewal conditions of a policy before accepting them (HU-W1.5-02)
+      description: >
+        Screen A4. Shows the current conditions next to the renewed ones, which
+        the engine re-prices with the current profile of the insured (age today,
+        same insured amount, the renewal term). requoted is false when the
+        engine could not price the renewal (no registered customer, no profile)
+        and the renewed conditions repeat the current ones. discount_rate is the
+        good-experience discount: 8 % when the policy had no claims in its last
+        year; origination has no claims data, so today it always applies
+        (simulated, replaceable). payment_method is the card or PSE bank the
+        policy was paid with, which the renewal charges, without its token; null
+        when none was registered. Outside the renewal window it answers 409
+        renewal_not_available: the option is not available (criterion 3). Only
+        the insured who owns the policy.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The current and the renewed conditions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenewalConditions"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          $ref: "#/components/responses/RenewalNotAvailable"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+    post:
+      summary: Accept the renewal of a policy and pay it (HU-W1.5-02)
+      description: >
+        Screen A4 "Renovar y pagar". Accepting is the consent to the conditions
+        shown: the service stores the renewal and the premium charge with the
+        channel renewal (listed by the monitor of HU-W1.3-04 like any issuance),
+        attaches the payment method the policy was paid with and starts the
+        charge with the same mechanism as every issuance (HA-D02). Once the charge
+        is confirmed a new policy is active, with the coverage starting when the
+        renewed one ends (no gap, no overlap), and its contractual document is
+        issued (HU-W1.3-03). It is idempotent per policy and period: accepting
+        again returns the same renewal and the same charge (200), so a double
+        click or two tabs are one renewal and one charge. If the payment is
+        declined, the charge is an issuance exception for operations and the
+        request is kept: the insured can hand over another payment method with
+        POST /v1/acceptances/{charge_id}/charge/payment-method until retry_until
+        (RENEWAL_PAYMENT_RETRY_HOURS, 72 by default); after it the renewal is not
+        renewed. Outside the window it answers 409 renewal_not_available. Only
+        the insured who owns the policy.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: "The period was already accepted: the same renewal"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Renewal"
+        "201":
+          description: The renewal was accepted and its charge started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Renewal"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          $ref: "#/components/responses/RenewalNotAvailable"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/{policy_id}/renewal/status:
+    get:
+      summary: Read the renewal of the current period of a policy (HU-W1.5-02)
+      description: >
+        Screen A4b. Returns the renewal with its charge, and settles it first:
+        accepted while the premium is being charged or the payment can still be
+        fixed, renewed once the charge is confirmed (new_policy_id), not_renewed
+        when the payment was not through at retry_until (reason payment_failed).
+        The client polls it after accepting, as it polls the charge. Only the
+        insured who owns the policy.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The renewal in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Renewal"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The policy does not exist (policy_not_found) or has no renewal for its current period (renewal_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
   /v1/policies/{policy_id}/issuance-status:
     get:
       summary: Read the state of the contractual issuance of a policy (HU-W1.3-03)
@@ -1506,6 +1654,27 @@ components:
             $ref: "#/components/schemas/Error"
     ChargeUnavailable:
       description: The premium charge could not be read (charge_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PolicyNotFound:
+      description: The policy does not exist (policy_not_found)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RenewalNotAvailable:
+      description: >
+        The policy is not inside its renewal window, or the window closed with no
+        renewal (renewal_not_available); or the period was already accepted or
+        renewed and the conditions are no longer offered (renewal_closed)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RenewalUnavailable:
+      description: The renewal could not be read or processed (renewal_unavailable); retry later
       content:
         application/json:
           schema:
@@ -2064,7 +2233,7 @@ components:
           description: Owner of the offer (the sub claim of their token).
         channel:
           type: string
-          enum: [web, mobile, advisor]
+          enum: [web, mobile, advisor, renewal]
         accepted_at:
           type: string
           format: date-time
@@ -2529,7 +2698,7 @@ components:
           description: The holder, when origination knows them.
         channel:
           type: string
-          enum: [web, mobile, advisor]
+          enum: [web, mobile, advisor, renewal]
         status:
           type: string
           enum: [accepted, charging, active, notified, exception]
@@ -2842,6 +3011,173 @@ components:
           type: string
           minLength: 1
           maxLength: 500
+    PolicySummary:
+      type: object
+      required: [policy_id, holder_name, premium, currency, insured_amount, coverages, coverage_start, coverage_end, renewal_of]
+      properties:
+        policy_id:
+          type: string
+        holder_name:
+          type: string
+        premium:
+          type: number
+        currency:
+          type: string
+        insured_amount:
+          type: number
+        coverages:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/Coverage"
+        coverage_start:
+          type: string
+          format: date-time
+        coverage_end:
+          type: string
+          format: date-time
+        renewal_of:
+          type: string
+          nullable: true
+          description: The policy this one renews; null for new business.
+    RenewalWindow:
+      type: object
+      required: [opens_at, closes_at]
+      properties:
+        opens_at:
+          type: string
+          format: date-time
+        closes_at:
+          type: string
+          format: date-time
+          description: When the coverage ends.
+    RenewalSummary:
+      type: object
+      required: [renewal_id, status, reason, new_policy_id, charge_id, accepted_at, retry_until, closed_at]
+      properties:
+        renewal_id:
+          type: string
+          description: '"ren-" + policy id + the day the coverage ends (yyyymmdd): one per policy and period.'
+        status:
+          type: string
+          enum: [accepted, renewed, not_renewed]
+          description: >
+            accepted: the insured accepted and the premium is being charged or
+            the payment can still be fixed; renewed: charged, the new policy is
+            active; not_renewed: the window closed with no answer or the payment
+            was not through in time.
+        reason:
+          type: string
+          nullable: true
+          enum: [no_response, payment_failed, null]
+        new_policy_id:
+          type: string
+          nullable: true
+        charge_id:
+          type: string
+          nullable: true
+          description: >
+            Id of the premium charge, usable as {acceptance_id} in
+            /v1/acceptances/{acceptance_id}/charge and in its payment-method route.
+        accepted_at:
+          type: string
+          format: date-time
+          nullable: true
+        retry_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: Deadline to get the payment through.
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+    PolicyListItem:
+      allOf:
+        - $ref: "#/components/schemas/PolicySummary"
+        - type: object
+          required: [renewal_window, can_renew, renewal]
+          properties:
+            renewal_window:
+              $ref: "#/components/schemas/RenewalWindow"
+            can_renew:
+              type: boolean
+            renewal:
+              nullable: true
+              allOf:
+                - $ref: "#/components/schemas/RenewalSummary"
+    PolicyList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/PolicyListItem"
+    RenewalTerms:
+      type: object
+      required: [premium, currency, insured_amount, coverages, coverage_start, coverage_end]
+      properties:
+        premium:
+          type: number
+        currency:
+          type: string
+        insured_amount:
+          type: number
+        coverages:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/Coverage"
+        coverage_start:
+          type: string
+          format: date-time
+        coverage_end:
+          type: string
+          format: date-time
+    RenewalConditions:
+      type: object
+      required: [policy, current, renewal, renewal_window, requoted, discount_rate, payment_method]
+      properties:
+        policy:
+          $ref: "#/components/schemas/PolicySummary"
+        current:
+          $ref: "#/components/schemas/RenewalTerms"
+        renewal:
+          $ref: "#/components/schemas/RenewalTerms"
+        renewal_window:
+          $ref: "#/components/schemas/RenewalWindow"
+        requoted:
+          type: boolean
+          description: False when the engine could not price the renewal and the renewed conditions repeat the current ones.
+        discount_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Good-experience discount applied to the renewed premium (0.08), 0 when none.
+        payment_method:
+          nullable: true
+          description: The method the renewal charges, without its token; null when the policy has none registered.
+          allOf:
+            - $ref: "#/components/schemas/PaymentMethod"
+    Renewal:
+      type: object
+      required: [renewal, terms, discount_rate, charge]
+      properties:
+        renewal:
+          $ref: "#/components/schemas/RenewalSummary"
+        terms:
+          $ref: "#/components/schemas/RenewalTerms"
+        discount_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+        charge:
+          nullable: true
+          description: The premium charge of the renewal, as GET /v1/acceptances/{charge_id}/charge returns it.
+          allOf:
+            - $ref: "#/components/schemas/Charge"
     Error:
       type: object
       required: [error, message]
@@ -2873,5 +3209,11 @@ components:
             - decision_not_registered
             - decision_continuation_pending
             - review_unavailable
+            - policy_not_found
+            - renewal_not_found
+            - renewal_not_available
+            - renewal_closed
+            - renewal_unavailable
+            - charge_not_payable
         message:
           type: string

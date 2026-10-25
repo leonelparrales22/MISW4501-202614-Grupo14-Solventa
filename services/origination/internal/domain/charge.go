@@ -159,11 +159,16 @@ type Charge struct {
 
 	// The coverage activation, set in the same write that confirms the
 	// charge (CA-4) and published afterwards.
-	PolicyID                string
-	ActivationEventID       string
-	ActivatedAt             time.Time
-	CoverageStart           time.Time
-	CoverageEnd             time.Time
+	PolicyID          string
+	ActivationEventID string
+	ActivatedAt       time.Time
+	CoverageStart     time.Time
+	CoverageEnd       time.Time
+	// RenewalOf and CoverageNotBefore are set on the charge of a policy
+	// renewal (HU-W1.5-02): the policy it renews and the earliest start of
+	// its coverage, which is when that policy ends.
+	RenewalOf               string
+	CoverageNotBefore       time.Time
 	ActivationPublishedAt   time.Time
 	ActivationAttempts      int
 	ActivationNextAttemptAt time.Time
@@ -258,7 +263,12 @@ func (c Charge) Confirmed(at time.Time, providerReference string) Charge {
 	c.ActivationEventID = ActivationEventIDFor(c.AcceptanceID)
 	c.ActivatedAt = at
 	c.CoverageStart = at
-	c.CoverageEnd = at.AddDate(0, c.Terms.TermMonths, 0)
+	if c.CoverageNotBefore.After(at) {
+		// A renewal paid before the policy ends starts when it ends: no
+		// gap and no overlap (HU-W1.5-02).
+		c.CoverageStart = c.CoverageNotBefore
+	}
+	c.CoverageEnd = c.CoverageStart.AddDate(0, c.Terms.TermMonths, 0)
 	c.ActivationNextAttemptAt = at
 	c.UpdatedAt = at
 	return c
@@ -281,6 +291,7 @@ func (c Charge) ActivationEvent() CoverageActivated {
 		ActivatedAt:   c.ActivatedAt,
 		CoverageStart: c.CoverageStart,
 		CoverageEnd:   c.CoverageEnd,
+		RenewalOf:     c.RenewalOf,
 	}
 }
 

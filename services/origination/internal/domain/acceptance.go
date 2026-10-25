@@ -48,6 +48,10 @@ const (
 	// customer (HU-W1.1-03). A customer cannot choose it: ParseChannel does
 	// not name it.
 	ChannelAdvisor Channel = "advisor"
+	// ChannelRenewal is the renewal of a policy the insured accepts in the
+	// portal (HU-W1.5-02). It has no offer or acceptance behind it: the
+	// charge of the renewal is its own record.
+	ChannelRenewal Channel = "renewal"
 )
 
 // ParseChannel returns the channel a customer accepts through, named by s, or
