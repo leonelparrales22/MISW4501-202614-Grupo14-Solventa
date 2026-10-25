@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.10.1
+  version: 0.11.0
 paths:
   /health:
     get:
@@ -659,7 +659,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [web, mobile]
+            enum: [web, mobile, advisor]
         - name: from
           in: query
           required: false
@@ -806,8 +806,8 @@ paths:
         mode, source and notice. Every invalid field is reported at once and no
         quote is generated. consent_active is affirmed by the caller while the
         audit service does not expose the consent query. With DATABASE_URL the
-        customers are stored in PostgreSQL; the quotes are in-memory for now
-        (PENDING: PostgreSQL).
+        customers and the quotes are stored in PostgreSQL; HU-W1.1-03
+        formalizes a valid quote.
       security:
         - cognitoJwt: []
       requestBody:
@@ -902,6 +902,207 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: The quote could not be read (quote_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/assisted-quotes/{quote_id}/consent:
+    post:
+      summary: Send the customer the confirmation code of a purchase (HU-W1.1-03)
+      description: >
+        Only for the confirmation_code acceptance method. Before formalizing
+        with it, the advisor asks for the code with which the
+        customer consents to the purchase made on their behalf (CA-5). The
+        service generates a code of 6 digits, keeps only its hash and e-mails
+        it to the customer; the code never travels back to the advisor, who
+        only gets the masked address it went to. The code is valid for 10
+        minutes (and never past the validity of the quote). A new code replaces
+        the previous one, up to 3 codes per quote. Only a valid quote that was
+        not formalized yet gets a code.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/QuoteId"
+      responses:
+        "200":
+          description: The code was sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentCodeSent"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The quote does not exist (quote_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another advisor already formalized the quote (already_formalized)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The quote expired (quote_expired); generate a new one
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteExpired"
+        "429":
+          description: The quote used all its codes (too_many_codes)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The code cannot be delivered (code_delivery_unavailable) or the service is down (formalization_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/assisted-quotes/{quote_id}/formalization:
+    post:
+      summary: Formalize the purchase of a quote on behalf of the customer (HU-W1.1-03)
+      description: >
+        The advisor confirms the data and conditions of a valid quote and
+        formalizes the purchase recording how and when the customer accepted
+        (CA-1, CA-5): a recorded call or a remote signature, identified by its
+        reference, or the confirmation code the customer received.
+        Formalizing records the advisor, the date and the quote (CA-4),
+        stores the offer of the quote and registers the acceptance with the
+        advisor channel, which starts the issuance with no further manual step
+        (CA-3): the charge and the policy follow the same path as an
+        acceptance of the customer. An expired quote is not formalized and the
+        answer offers to generate a new one (CA-2). Two advisors formalizing
+        the same quote at once: one completes (201), the other gets 409 (CA-6).
+        Repeating it by the advisor who formalized returns the same record
+        (200) with no new acceptance. With the code method, a code can be tried
+        5 times per quote. Every invalid field is reported at once (422
+        validation_failed).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/QuoteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FormalizePurchaseRequest"
+      responses:
+        "200":
+          description: The quote was already formalized by the caller; the same record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Formalization"
+        "201":
+          description: Purchase formalized and issuance started
+          headers:
+            Location:
+              description: Path of the formalization.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Formalization"
+        "400":
+          description: The body is not valid JSON (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The quote does not exist (quote_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another advisor formalized the quote first (already_formalized)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >
+            A field is missing or invalid (validation_failed, with the error of
+            each field), the quote expired (quote_expired, with
+            suggest_new_quote), no code was requested (consent_code_required),
+            the code is not the one sent (invalid_confirmation_code) or it
+            expired (confirmation_code_expired).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/QuoteExpired"
+                  - $ref: "#/components/schemas/Error"
+        "429":
+          description: The quote used all its attempts (too_many_attempts)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The purchase could not be formalized (formalization_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: Read the formalization of a quote (HU-W1.1-03)
+      description: >
+        Returns who formalized the quote, when, with which consent method and
+        the acceptance that started the issuance (CA-4).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/QuoteId"
+      responses:
+        "200":
+          description: The formalization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Formalization"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The quote was not formalized (formalization_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The formalization could not be read (formalization_unavailable); retry later
           content:
             application/json:
               schema:
@@ -1227,6 +1428,14 @@ components:
       bearerFormat: JWT
       description: ID token of the Cognito user pool (HA-S01).
   parameters:
+    QuoteId:
+      name: quote_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
     PolicyID:
       name: policy_id
       in: path
@@ -1492,6 +1701,102 @@ components:
           enum: [death, total_permanent_disability]
         insured_amount:
           type: number
+    ConsentCodeSent:
+      type: object
+      required: [quote_id, sent_to, expires_at]
+      properties:
+        quote_id:
+          type: string
+        sent_to:
+          type: string
+          description: Masked e-mail address of the customer, e.g. la***@example.com.
+        expires_at:
+          type: string
+          format: date-time
+          description: Until when the code can be used.
+    FormalizePurchaseRequest:
+      type: object
+      required: [acceptance]
+      properties:
+        acceptance:
+          type: object
+          required: [method, accepted_at]
+          properties:
+            method:
+              type: string
+              enum: [recorded_call, remote_signature, confirmation_code]
+              description: How the customer accepted the offer.
+            accepted_at:
+              type: string
+              format: date-time
+              description: >
+                When the customer accepted. Not in the future and not before
+                the minute the quote was generated.
+            reference:
+              type: string
+              minLength: 1
+              maxLength: 64
+              pattern: "^[A-Za-z0-9._:/#-]+$"
+              description: >
+                Reference of the recording or the signature. Required unless
+                the method is confirmation_code.
+        confirmation_code:
+          type: string
+          pattern: "^[0-9]{6}$"
+          description: The code the customer received by e-mail. Required with the confirmation_code method.
+    QuoteExpired:
+      type: object
+      required: [error, message, expires_at, suggest_new_quote]
+      properties:
+        error:
+          type: string
+          enum: [quote_expired]
+        message:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        suggest_new_quote:
+          type: boolean
+          description: Always true; the advisor must generate a new quote (CA-2).
+    Formalization:
+      type: object
+      required: [formalization_id, quote_id, offer_id, acceptance_id, customer_id, advisor_id, advisor_email, consent_method, accepted_at, consent_reference, formalized_at, status]
+      properties:
+        formalization_id:
+          type: string
+        quote_id:
+          type: string
+          description: The quote the purchase comes from (CA-4).
+        offer_id:
+          type: string
+        acceptance_id:
+          type: string
+          description: The acceptance, with channel advisor, that started the issuance.
+        customer_id:
+          type: string
+        advisor_id:
+          type: string
+          description: The sub claim of the advisor who formalized (CA-4).
+        advisor_email:
+          type: string
+          description: E-mail of the advisor; the token carries no name.
+        consent_method:
+          type: string
+          enum: [recorded_call, remote_signature, confirmation_code]
+        accepted_at:
+          type: string
+          format: date-time
+          description: When the customer accepted the offer (CA-5).
+        consent_reference:
+          type: string
+          description: Reference of the recording or the signature; empty with the confirmation_code method.
+        formalized_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          description: Status of the acceptance (registered, issuance_pending, in_review).
     AssistedQuote:
       type: object
       required: [quote_id, customer_id, customer, insured_amount, term_months, premium, currency, coverages, rating_version,
@@ -1759,7 +2064,7 @@ components:
           description: Owner of the offer (the sub claim of their token).
         channel:
           type: string
-          enum: [web, mobile]
+          enum: [web, mobile, advisor]
         accepted_at:
           type: string
           format: date-time
@@ -2190,7 +2495,7 @@ components:
           description: The holder, when origination knows them.
         channel:
           type: string
-          enum: [web, mobile]
+          enum: [web, mobile, advisor]
         status:
           type: string
           enum: [accepted, charging, active, notified, exception]

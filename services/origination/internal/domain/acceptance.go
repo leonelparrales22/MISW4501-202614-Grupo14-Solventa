@@ -44,9 +44,14 @@ type Channel string
 const (
 	ChannelWeb    Channel = "web"
 	ChannelMobile Channel = "mobile"
+	// ChannelAdvisor is an acceptance an advisor registers on behalf of the
+	// customer (HU-W1.1-03). A customer cannot choose it: ParseChannel does
+	// not name it.
+	ChannelAdvisor Channel = "advisor"
 )
 
-// ParseChannel returns the channel named by s, or false if s names none.
+// ParseChannel returns the channel a customer accepts through, named by s, or
+// false if s names none.
 func ParseChannel(s string) (Channel, bool) {
 	switch c := Channel(s); c {
 	case ChannelWeb, ChannelMobile:

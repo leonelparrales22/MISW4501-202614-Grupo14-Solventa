@@ -51,11 +51,28 @@ func NewAcceptanceService(offers ports.OfferRepository, acceptances ports.Accept
 // even if the offer has expired since, so retrying never repeats the process.
 // Only the owner of the offer may accept it.
 func (s *AcceptanceService) Accept(ctx context.Context, offerID string, channel domain.Channel) (domain.Acceptance, bool, error) {
+	return s.accept(ctx, offerID, channel, func(offer domain.Offer) error {
+		return security.RequireOwnerOrRole(ctx, offer.CustomerID)
+	})
+}
+
+// AcceptForCustomer registers the acceptance of the offer on behalf of its
+// customer. Only an advisor may, and only when the customer consented to the
+// purchase: the formalization of HU-W1.1-03 checks it and records it before
+// calling. It is idempotent like Accept.
+func (s *AcceptanceService) AcceptForCustomer(ctx context.Context, offerID string) (domain.Acceptance, bool, error) {
+	return s.accept(ctx, offerID, domain.ChannelAdvisor, func(domain.Offer) error {
+		return security.RequireAnyRole(ctx, security.RoleAdvisor)
+	})
+}
+
+func (s *AcceptanceService) accept(ctx context.Context, offerID string, channel domain.Channel,
+	authorize func(domain.Offer) error) (domain.Acceptance, bool, error) {
 	offer, err := s.offers.Get(ctx, offerID)
 	if err != nil {
 		return domain.Acceptance{}, false, err
 	}
-	if err := security.RequireOwnerOrRole(ctx, offer.CustomerID); err != nil {
+	if err := authorize(offer); err != nil {
 		return domain.Acceptance{}, false, err
 	}
 

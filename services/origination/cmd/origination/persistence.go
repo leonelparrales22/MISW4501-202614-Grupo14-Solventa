@@ -16,8 +16,8 @@ import (
 // is a single switch, DATABASE_URL: everything goes to PostgreSQL together or
 // everything stays in memory, never a mix.
 const (
-	storesInPostgres = "origination data in PostgreSQL: personalized and adjusted offers, acceptances, the advisor inbox and its decisions, customers and the outbox of domain events (HU-W1.2-03, HU-W1.3-01, HU-W1.1-02, HU-M1.1-01, HU-M1.3-01)"
-	storesInMemory   = envDatabaseURL + " is not set: personalized and adjusted offers, acceptances, the advisor inbox and its decisions, customers and the outbox of domain events are kept in memory and lost on restart"
+	storesInPostgres = "origination data in PostgreSQL: personalized and adjusted offers, acceptances, the advisor inbox and its decisions, customers, the advisor quotes and their formalizations, and the outbox of domain events (HU-W1.2-03, HU-W1.3-01, HU-W1.1-02, HU-M1.1-01, HU-M1.3-01, HU-W1.1-01, HU-W1.1-03)"
+	storesInMemory   = envDatabaseURL + " is not set: personalized and adjusted offers, acceptances, the advisor inbox and its decisions, customers, the advisor quotes and their formalizations, and the outbox of domain events are kept in memory and lost on restart"
 )
 
 // stores are the stores of origination's own data.
@@ -32,6 +32,11 @@ type stores struct {
 	acceptances ports.AcceptanceRepository
 	reviews     ports.ReviewRepository
 	customers   ports.CustomerRepository
+	// quotes, formalizations and challenges are the advisor quotes and the
+	// formalization of their purchase (HU-W1.1-01, HU-W1.1-03).
+	quotes       ports.QuoteRepository
+	formalized   ports.FormalizationStore
+	consentCodes ports.ConsentChallengeStore
 	// outbox holds the domain events written with the customers
 	// (CustomerLinked, HU-M1.3-01); the relay publishes them.
 	outbox outbox.Store
@@ -53,6 +58,7 @@ func newStores(ctx context.Context, databaseURL string, clock ports.Clock) (stor
 			demo: demo, offers: memory.NewPersonalizedOfferStore(), adjusted: demo,
 			acceptances: memory.NewAcceptanceStore(), reviews: memory.NewReviewQueueStub(), customers: customers,
 			outbox: customers.Outbox(),
+			quotes: memory.NewQuoteStore(), formalized: memory.NewFormalizationStore(), consentCodes: memory.NewConsentChallengeStore(),
 		}, nil
 	}
 	db, err := postgres.Open(ctx, databaseURL)
@@ -68,6 +74,7 @@ func newStores(ctx context.Context, databaseURL string, clock ports.Clock) (stor
 		db: db, demo: demo, offers: postgres.NewOfferStore(db), adjusted: postgres.NewAdjustedOfferStore(db),
 		acceptances: postgres.NewAcceptanceStore(db), reviews: postgres.NewReviewStore(db), customers: postgres.NewCustomerStore(db),
 		outbox: postgres.NewOutboxStore(db),
+		quotes: postgres.NewQuoteStore(db), formalized: postgres.NewFormalizationStore(db), consentCodes: postgres.NewConsentChallengeStore(db),
 	}, nil
 }
 

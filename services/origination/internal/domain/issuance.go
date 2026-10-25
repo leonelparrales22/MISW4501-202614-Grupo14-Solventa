@@ -128,7 +128,7 @@ func (i Issuance) IsUnattended(now time.Time) bool {
 // everything.
 type IssuanceFilter struct {
 	Status IssuanceStatus
-	// Channel is where the customer accepted: web or mobile.
+	// Channel is where the acceptance was registered: web, mobile or advisor.
 	Channel Channel
 	// From and To bound the date of the acceptance, both inclusive; zero is
 	// open.
@@ -142,7 +142,7 @@ func (f IssuanceFilter) Validate() error {
 	if f.Status != "" && !f.Status.Valid() {
 		return fmt.Errorf("unknown issuance status %q", f.Status)
 	}
-	if f.Channel != "" && f.Channel != ChannelWeb && f.Channel != ChannelMobile {
+	if f.Channel != "" && f.Channel != ChannelWeb && f.Channel != ChannelMobile && f.Channel != ChannelAdvisor {
 		return fmt.Errorf("unknown channel %q", f.Channel)
 	}
 	if !f.From.IsZero() && !f.To.IsZero() && f.To.Before(f.From) {
