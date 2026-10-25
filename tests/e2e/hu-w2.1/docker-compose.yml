@@ -1,0 +1,86 @@
+# End-to-end scenarios of HU-W2.1-01 (filing of the claim with supports from
+# the web portal): the real claims service with its PostgreSQL, the policy
+# core stub behind Toxiproxy and Moto as Cognito. Run it with ./run.sh. Build
+# context is the repository root. Published ports (127.0.0.1 only): claims
+# 8297, the policy core stub 9160, Toxiproxy API 8495, Moto 5123.
+name: e2e-hu-w21
+
+services:
+  postgres-claims:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=claims
+      - POSTGRES_USER=claims
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claims -d claims"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  policy-core:
+    build:
+      context: ../../..
+      dockerfile: stubs/policy-core/Dockerfile
+    ports:
+      - "127.0.0.1:${POLICY_CORE_PORT:-9160}:9060" # read by run.sh to know the policies of each insured
+    environment:
+      - PORT=9060
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "127.0.0.1:${TOXIPROXY_PORT:-8495}:8474" # Toxiproxy API, used by run.sh
+    depends_on:
+      - policy-core
+
+  # The Toxiproxy image is distroless (no shell, no CLI), so the proxy is
+  # created through its HTTP API.
+  toxiproxy-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - toxiproxy
+    entrypoint:
+      - sh
+      - -c
+      - >
+        until curl -sf http://toxiproxy:8474/version; do sleep 1; done;
+        curl -sf -X POST http://toxiproxy:8474/proxies -H 'Content-Type: application/json'
+        -d '{"name":"policycore","listen":"0.0.0.0:9061","upstream":"policy-core:9060","enabled":true}'
+
+  moto:
+    image: motoserver/moto:5.2.3
+    ports:
+      - "127.0.0.1:${MOTO_PORT:-5123}:5000"
+    environment:
+      - MOTO_COGNITO_IDP_USER_POOL_ID_STRATEGY=HASH
+      - MOTO_COGNITO_IDP_USER_POOL_CLIENT_ID_STRATEGY=HASH
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/moto-api/')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  claims:
+    build:
+      context: ../../..
+      dockerfile: services/claims/Dockerfile
+    ports:
+      - "127.0.0.1:${CLAIMS_PORT:-8297}:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://claims:${PG_PASSWORD:-}@postgres-claims:5432/claims?sslmode=disable
+      # Through Toxiproxy, so run.sh can take the policy core down.
+      - POLICY_CORE_URL=http://toxiproxy:9061
+      # Cognito of Moto, written by run.sh after seeding it.
+      - AUTH_ISSUER=${AUTH_ISSUER:-}
+      - AUTH_JWKS_URL=${AUTH_JWKS_URL:-}
+      - AUTH_CLIENT_IDS=${AUTH_CLIENT_IDS:-}
+    depends_on:
+      postgres-claims:
+        condition: service_healthy
+      moto:
+        condition: service_healthy
+      # The proxy is created by run.sh (toxiproxy-init) before claims starts.
+      toxiproxy:
+        condition: service_started
