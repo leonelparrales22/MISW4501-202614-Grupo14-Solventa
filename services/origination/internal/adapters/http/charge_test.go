@@ -84,7 +84,8 @@ var chargeAt = time.Date(2026, 10, 16, 15, 0, 0, 0, time.UTC)
 func pendingCharge() domain.Charge {
 	c := domain.NewCharge(
 		domain.Acceptance{ID: "acc-1", Channel: domain.ChannelWeb, AcceptedAt: chargeAt.Add(-time.Minute)},
-		domain.Offer{ID: "demo-active-1", CustomerID: "cust-1", Premium: 89_500, Currency: "COP"},
+		domain.Offer{ID: "demo-active-1", CustomerID: "cust-1", Premium: 89_500, Currency: "COP",
+			ExpiresAt: chargeAt.Add(26 * time.Hour)},
 		domain.CoverageTerms{TermMonths: 120}, chargeAt, chargeAt.Add(24*time.Hour))
 	c.Attempts, c.LastAttemptAt, c.LastFailureAt = 2, chargeAt.Add(2*time.Second), chargeAt.Add(2*time.Second)
 	c.NextAttemptAt = chargeAt.Add(3 * time.Second)
@@ -123,7 +124,9 @@ func TestGetChargeShowsAPendingChargeWithoutPolicy(t *testing.T) {
 	assert.Equal(t, "2026-10-16T15:00:03Z", body["next_attempt_at"])
 	assert.Equal(t, map[string]any{"started_at": "2026-10-16T15:00:00Z", "ends_at": "2026-10-17T15:00:00Z"}, body["retry_window"],
 		"a 24-hour window")
-	for _, k := range []string{"policy_id", "coverage_activated_at", "activation_published_at", "confirmed_at", "failure_reason"} {
+	assert.Equal(t, "2026-10-17T17:00:00Z", body["offer_expires_at"], "how long the acceptance is worth (E4c)")
+	for _, k := range []string{"policy_id", "coverage_activated_at", "activation_published_at", "confirmed_at",
+		"failure_reason", "decline_code", "provider_reference"} {
 		v, present := body[k]
 		assert.True(t, present, k)
 		assert.Nil(t, v, k)
@@ -144,6 +147,64 @@ func TestGetChargeShowsThePolicyOnceConfirmed(t *testing.T) {
 	assert.Equal(t, "2026-10-16T15:00:05Z", body["confirmed_at"])
 	assert.Equal(t, "2026-10-16T15:00:06Z", body["activation_published_at"])
 	assert.Nil(t, body["next_attempt_at"], "finished")
+}
+
+// Screen E4c needs the issuer's own words: which code it gave, which
+// reference to quote and how long the offer is still worth (HU-W1.3-02).
+func TestGetChargeShowsWhatTheIssuerSaidWhenItDeclined(t *testing.T) {
+	c := pendingCharge()
+	c.Status, c.FailureReason = domain.ChargeFailed, domain.ChargePaymentRejected
+	c.DeclineCode, c.ProviderReference = "51", "ch-7"
+	c.PaymentMethod = domain.PaymentMethod{Kind: domain.PaymentCard, Brand: "visa", Last4: "1111",
+		Installments: 1, CapturedAt: chargeAt}
+	c.PaymentAttempt = 1
+
+	rec := callCharges(t, &fakeCharges{charge: c}, http.MethodGet, "/v1/acceptances/acc-1/charge", "insured:cust-1", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := decode(t, rec)
+	assert.Equal(t, "payment_rejected", body["failure_reason"])
+	assert.Equal(t, "51", body["decline_code"])
+	assert.Equal(t, "ch-7", body["provider_reference"])
+	assert.Equal(t, "2026-10-17T17:00:00Z", body["offer_expires_at"])
+	assert.EqualValues(t, 1, body["payment_attempt"])
+	// The code travels, the wording does not: the screen writes it, so the
+	// copy is not frozen in this service.
+	assert.NotContains(t, rec.Body.String(), "insufficient")
+}
+
+// PSE needs to know whether the payer is a person or a company, so it travels
+// both ways (HU-W1.3-02).
+func TestThePayerTypeTravelsBothWays(t *testing.T) {
+	c := pendingCharge()
+	c.PaymentMethod = domain.PaymentMethod{Kind: domain.PaymentPSE, BankCode: "1007",
+		PayerType: domain.PayerNatural, Installments: 1, CapturedAt: chargeAt}
+	svc := &fakeCharges{charge: c}
+
+	rec := callCharges(t, svc, http.MethodPost, "/v1/acceptances/acc-1/charge/payment-method", "insured:cust-1",
+		`{"method":"pse","bank_code":"1007","payer_type":"natural"}`)
+
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Equal(t, domain.PayerNatural, svc.gotMethod.PayerType)
+	method, _ := decode(t, rec)["payment_method"].(map[string]any)
+	require.NotNil(t, method)
+	assert.Equal(t, "natural", method["payer_type"])
+}
+
+// A card has no payer type, and the field says so rather than inventing one.
+func TestACardReportsNoPayerType(t *testing.T) {
+	c := pendingCharge()
+	c.PaymentMethod = domain.PaymentMethod{Kind: domain.PaymentCard, Brand: "visa", Last4: "1111",
+		Installments: 1, CapturedAt: chargeAt}
+
+	rec := callCharges(t, &fakeCharges{charge: c}, http.MethodGet, "/v1/acceptances/acc-1/charge", "insured:cust-1", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	method, _ := decode(t, rec)["payment_method"].(map[string]any)
+	require.NotNil(t, method)
+	v, present := method["payer_type"]
+	assert.True(t, present)
+	assert.Nil(t, v)
 }
 
 func TestGetChargeErrors(t *testing.T) {

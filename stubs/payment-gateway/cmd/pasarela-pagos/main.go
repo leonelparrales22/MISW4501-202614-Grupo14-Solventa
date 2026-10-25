@@ -103,8 +103,12 @@ type charge struct {
 }
 
 type errorBody struct {
-	Error       string `json:"error"`
-	Message     string `json:"message"`
+	Error   string `json:"error"`
+	Message string `json:"message"`
+	// ChargeID is the gateway's reference for the declined charge. A real
+	// gateway hands one over whatever the outcome, and the customer needs it
+	// to talk to the issuer about the decline (screen E4c, HU-W1.3-02).
+	ChargeID    string `json:"charge_id,omitempty"`
 	DeclineCode string `json:"decline_code,omitempty"`
 }
 
@@ -286,8 +290,10 @@ func (g *gateway) process(key string, in chargeRequest) (status int, body any, n
 
 	var res result
 	if declined {
+		g.seq++
 		res = result{req: in, status: http.StatusPaymentRequired, body: errorBody{
-			Error: "payment_declined", Message: reason, DeclineCode: declineCode}}
+			Error: "payment_declined", Message: reason, ChargeID: "ch-" + strconv.Itoa(g.seq),
+			DeclineCode: declineCode}}
 	} else {
 		g.seq++
 		g.realCharges[key]++

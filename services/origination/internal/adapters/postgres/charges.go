@@ -32,12 +32,13 @@ func NewChargeStore(db *sql.DB) *ChargeStore { return &ChargeStore{db: db} }
 const chargeColumns = `acceptance_id, idempotency_key, offer_id, customer_id, channel, accepted_at,
 	holder_full_name, holder_document_id, holder_email, amount_minor, currency, insured_amount_minor, term_months, coverages,
 	status, attempts, next_attempt_at, claimed_until, window_started_at, window_ends_at, last_attempt_at, last_failure_at,
-	failure_reason, last_error, provider_reference, confirmed_at,
+	failure_reason, last_error, decline_code, provider_reference, confirmed_at,
 	policy_id, activation_event_id, activated_at, coverage_start, coverage_end, activation_published_at,
 	activation_attempts, activation_next_attempt_at, activation_last_error,
 	resume_count, last_resumed_by, last_resumed_at, resume_note,
 	payment_method_kind, payment_token, payment_brand, payment_last4, payment_installments,
-	payment_bank_code, payment_method_captured_at, payment_attempt, created_at, updated_at`
+	payment_bank_code, payment_payer_type, payment_method_captured_at, payment_attempt,
+	offer_expires_at, created_at, updated_at`
 
 // coverageJSON is how a coverage is kept in the coverages column.
 type coverageJSON struct {
@@ -82,20 +83,20 @@ func scanCharge(s scanner) (domain.Charge, error) {
 		next, claimed, windowEnds, lastAttempt, lastFailure, confirmed        sql.NullTime
 		activated, covStart, covEnd, published, activationNext, lastResumedAt sql.NullTime
 		failureReason, lastError, providerRef, policyID, eventID, actErr      sql.NullString
-		resumedBy, resumeNote                                                 sql.NullString
-		payKind, payToken, payBrand, payLast4, payBank                        sql.NullString
+		resumedBy, resumeNote, declineCode                                    sql.NullString
+		payKind, payToken, payBrand, payLast4, payBank, payPayerType          sql.NullString
 		payInstallments                                                       sql.NullInt64
-		payCapturedAt                                                         sql.NullTime
+		payCapturedAt, offerExpires                                           sql.NullTime
 	)
 	err := s.Scan(&c.AcceptanceID, &c.IdempotencyKey, &c.OfferID, &c.CustomerID, &channel, &c.AcceptedAt,
 		&c.Holder.FullName, &c.Holder.DocumentID, &c.Holder.Email, &c.AmountMinor, &c.Currency, &insuredMinor, &c.Terms.TermMonths, &coverages,
 		&status, &c.Attempts, &next, &claimed, &c.WindowStartedAt, &windowEnds, &lastAttempt, &lastFailure,
-		&failureReason, &lastError, &providerRef, &confirmed,
+		&failureReason, &lastError, &declineCode, &providerRef, &confirmed,
 		&policyID, &eventID, &activated, &covStart, &covEnd, &published,
 		&c.ActivationAttempts, &activationNext, &actErr,
 		&c.ResumeCount, &resumedBy, &lastResumedAt, &resumeNote,
-		&payKind, &payToken, &payBrand, &payLast4, &payInstallments, &payBank, &payCapturedAt, &c.PaymentAttempt,
-		&c.CreatedAt, &c.UpdatedAt)
+		&payKind, &payToken, &payBrand, &payLast4, &payInstallments, &payBank, &payPayerType, &payCapturedAt,
+		&c.PaymentAttempt, &offerExpires, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return domain.Charge{}, err
 	}
@@ -107,7 +108,8 @@ func scanCharge(s scanner) (domain.Charge, error) {
 	c.NextAttemptAt, c.ClaimedUntil, c.WindowEndsAt = next.Time, claimed.Time, windowEnds.Time
 	c.LastAttemptAt, c.LastFailureAt, c.ConfirmedAt = lastAttempt.Time, lastFailure.Time, confirmed.Time
 	c.FailureReason = domain.ChargeFailureReason(failureReason.String)
-	c.LastError, c.ProviderReference = lastError.String, providerRef.String
+	c.LastError, c.DeclineCode, c.ProviderReference = lastError.String, declineCode.String, providerRef.String
+	c.OfferExpiresAt = offerExpires.Time
 	c.PolicyID, c.ActivationEventID = policyID.String, eventID.String
 	c.ActivatedAt, c.CoverageStart, c.CoverageEnd = activated.Time, covStart.Time, covEnd.Time
 	c.ActivationPublishedAt, c.ActivationNextAttemptAt, c.ActivationLastError = published.Time, activationNext.Time, actErr.String
@@ -115,13 +117,14 @@ func scanCharge(s scanner) (domain.Charge, error) {
 	c.PaymentMethod = domain.PaymentMethod{
 		Kind: domain.PaymentMethodKind(payKind.String), Token: payToken.String,
 		Brand: payBrand.String, Last4: payLast4.String, Installments: int(payInstallments.Int64),
-		BankCode: payBank.String, CapturedAt: payCapturedAt.Time,
+		BankCode: payBank.String, PayerType: domain.PayerType(payPayerType.String),
+		CapturedAt: payCapturedAt.Time,
 	}
 	c.AcceptedAt, c.WindowStartedAt = c.AcceptedAt.UTC(), c.WindowStartedAt.UTC()
 	c.CreatedAt, c.UpdatedAt = c.CreatedAt.UTC(), c.UpdatedAt.UTC()
 	for _, t := range []*time.Time{&c.NextAttemptAt, &c.ClaimedUntil, &c.WindowEndsAt, &c.LastAttemptAt, &c.LastFailureAt,
 		&c.ConfirmedAt, &c.ActivatedAt, &c.CoverageStart, &c.CoverageEnd, &c.ActivationPublishedAt,
-		&c.ActivationNextAttemptAt, &c.LastResumedAt, &c.PaymentMethod.CapturedAt} {
+		&c.ActivationNextAttemptAt, &c.LastResumedAt, &c.PaymentMethod.CapturedAt, &c.OfferExpiresAt} {
 		if !t.IsZero() {
 			*t = t.UTC()
 		}
@@ -164,14 +167,15 @@ func (s *ChargeStore) CreatePending(ctx context.Context, c domain.Charge) (domai
 	stored, created, err := s.one(ctx, `INSERT INTO charge_attempt (
 			acceptance_id, idempotency_key, offer_id, customer_id, channel, accepted_at,
 			holder_full_name, holder_document_id, holder_email, amount_minor, currency, insured_amount_minor, term_months, coverages,
-			status, attempts, next_attempt_at, window_started_at, window_ends_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 0, $16, $17, $18, $19, $19)
+			status, attempts, next_attempt_at, window_started_at, window_ends_at, offer_expires_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 0, $16, $17, $18, $19, $20, $20)
 		ON CONFLICT DO NOTHING
 		RETURNING `+chargeColumns,
 		c.AcceptanceID, c.IdempotencyKey, c.OfferID, c.CustomerID, string(c.Channel), c.AcceptedAt.UTC(),
 		c.Holder.FullName, c.Holder.DocumentID, c.Holder.Email, c.AmountMinor, c.Currency,
 		domain.ToMinorUnits(c.Terms.InsuredAmount), c.Terms.TermMonths, string(coverages),
-		string(domain.ChargePending), nullTime(c.NextAttemptAt), c.WindowStartedAt.UTC(), nullTime(c.WindowEndsAt), c.CreatedAt.UTC())
+		string(domain.ChargePending), nullTime(c.NextAttemptAt), c.WindowStartedAt.UTC(), nullTime(c.WindowEndsAt),
+		nullTime(c.OfferExpiresAt), c.CreatedAt.UTC())
 	if err != nil {
 		return domain.Charge{}, false, fmt.Errorf("insert the charge of %s: %w", c.AcceptanceID, err)
 	}
@@ -379,19 +383,22 @@ func (s *ChargeStore) AttachPaymentMethod(ctx context.Context, acceptanceID stri
 
 	c, found, err := s.one(ctx, `UPDATE charge_attempt SET
 			payment_method_kind = $2, payment_token = $3, payment_brand = $4, payment_last4 = $5,
-			payment_installments = $6, payment_bank_code = $7, payment_method_captured_at = $8,
-			payment_attempt = payment_attempt + 1,
+			payment_installments = $6, payment_bank_code = $7, payment_payer_type = $10,
+			payment_method_captured_at = $8, payment_attempt = payment_attempt + 1,
 			status = 'pending', next_attempt_at = $8, claimed_until = NULL,
 			attempts = CASE WHEN status = 'failed' THEN 0 ELSE attempts END,
 			idempotency_key = CASE WHEN status = 'failed'
 				THEN $9 || '-' || (payment_attempt + 1)::text ELSE idempotency_key END,
-			failure_reason = NULL, last_error = NULL, updated_at = $8
+			-- The decline of the previous method goes with it: what the
+			-- screen shows from now on is this attempt, not the old one.
+			failure_reason = NULL, last_error = NULL, decline_code = NULL,
+			provider_reference = NULL, updated_at = $8
 		WHERE acceptance_id = $1
 		  AND ((status = 'pending' AND attempts = 0)
 		       OR (status = 'failed' AND failure_reason = 'payment_rejected'))
 		RETURNING `+chargeColumns,
 		acceptanceID, string(m.Kind), nullString(m.Token), nullString(m.Brand), nullString(m.Last4),
-		m.Installments, nullString(m.BankCode), at, keyBase)
+		m.Installments, nullString(m.BankCode), at, keyBase, nullString(string(m.PayerType)))
 	if err != nil {
 		return domain.Charge{}, fmt.Errorf("attach the payment method of %s: %w", acceptanceID, err)
 	}
@@ -403,6 +410,28 @@ func (s *ChargeStore) AttachPaymentMethod(ctx context.Context, acceptanceID stri
 		return domain.Charge{}, err
 	}
 	return domain.Charge{}, ports.ErrChargeNotPayable
+}
+
+// RecordDecline keeps what the issuer said about a declined charge: its code
+// and the gateway's reference. It is written after the charge is already
+// failed, because the failure itself is recorded by the shared idempotency
+// runner, which only carries a diagnostic message.
+//
+// It is display detail, not state: it is conditional on the charge still
+// being the failed one it was, and if this write is lost the charge is still
+// correctly failed, only without the code to show in screen E4c.
+func (s *ChargeStore) RecordDecline(ctx context.Context, acceptanceID, code, reference string) error {
+	if code == "" && reference == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE charge_attempt
+		SET decline_code = COALESCE($2, decline_code), provider_reference = COALESCE($3, provider_reference)
+		WHERE acceptance_id = $1 AND status = 'failed' AND failure_reason = 'payment_rejected'`,
+		acceptanceID, nullString(code), nullString(reference))
+	if err != nil {
+		return fmt.Errorf("record the decline of %s: %w", acceptanceID, err)
+	}
+	return nil
 }
 
 // ExpireWithoutPaymentMethod fails the charges that ran out of window while

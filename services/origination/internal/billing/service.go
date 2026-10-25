@@ -176,6 +176,11 @@ func validatePaymentMethod(m domain.PaymentMethod) error {
 		if m.BankCode == "" {
 			return fmt.Errorf("%w: PSE needs the bank", ErrInvalidPaymentMethod)
 		}
+		// PSE asks the bank whether the payer is a person or a company
+		// before it can take the debit, so the screen has to say which.
+		if !domain.ValidPayerType(m.PayerType) {
+			return fmt.Errorf("%w: PSE needs the payer type, natural or legal", ErrInvalidPaymentMethod)
+		}
 	default:
 		return fmt.Errorf("%w: the method must be card or pse", ErrInvalidPaymentMethod)
 	}

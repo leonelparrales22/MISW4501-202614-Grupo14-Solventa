@@ -68,7 +68,7 @@ Cuerpo con tarjeta de crédito:
 Cuerpo con PSE:
 
 ```json
-{ "method": "pse", "bank_code": "1007" }
+{ "method": "pse", "bank_code": "1007", "payer_type": "natural" }
 ```
 
 - `method`: `card` o `pse`.
@@ -78,6 +78,8 @@ Cuerpo con PSE:
 - `brand` y `last4`: para mostrar «Visa ···1111» en el resumen y en la póliza. `last4` son exactamente cuatro dígitos.
 - `installments`: 1 a 36, por omisión 1.
 - `bank_code`: obligatorio con `pse`.
+- `payer_type`: obligatorio con `pse`; `natural` o `legal`. PSE le pregunta al banco si quien paga es una persona o una
+  empresa antes de poder tomar el débito, así que la pantalla tiene que decirlo. Se ignora con `card`.
 
 Devuelve el cobro (`Charge`) ya con su `payment_method` y `next_attempt_at` en el instante de la llamada.
 
@@ -87,7 +89,7 @@ admiten y con qué clave de idempotencia se cobra cada intento está en la **sec
 
 | Error | Cuándo |
 |---|---|
-| `400 invalid_request` | Cuerpo inválido, token con forma de tarjeta, `last4` que no son cuatro dígitos, `installments` fuera de rango |
+| `400 invalid_request` | Cuerpo inválido, token con forma de tarjeta, `last4` que no son cuatro dígitos, `installments` fuera de rango, PSE sin banco o sin `payer_type` |
 | `401` | Sin sesión |
 | `403` | La aceptación es de otro cliente |
 | `404 charge_not_found` | La aceptación no tiene cobro: no se ha aprobado, está en revisión o no existe |
@@ -144,17 +146,20 @@ silencio  ─▶ pending, reintentos con la MISMA clave ─▶ E4b          (mec
 
 Los casos que no admiten responden `409 charge_not_payable`.
 
-## 5. `GET /v1/acceptances/{acceptance_id}/charge` — campos nuevos
+## 5. `GET /v1/acceptances/{acceptance_id}/charge` 
 
-La ruta no cambia; su respuesta adiciona dos campos y un motivo de fallo. **Las tres adiciones son compatibles**: nada
-de lo que hoy consume este endpoint deja de funcionar.
+Se adicionan campos que ayudan a tener información actualizada
 
 ```json
 "payment_method": {
   "method": "card", "brand": "visa", "last4": "1111",
-  "installments": 1, "bank_code": null, "captured_at": "2026-10-17T14:05:00Z"
+  "installments": 1, "bank_code": null, "payer_type": null,
+  "captured_at": "2026-10-17T14:05:00Z"
 },
-"payment_attempt": 2
+"payment_attempt": 2,
+"decline_code": "51",
+"provider_reference": "ch-7",
+"offer_expires_at": "2026-10-18T14:30:00Z"
 ```
 
 `payment_method` es nulo mientras no haya medio de pago.
@@ -178,6 +183,24 @@ saber con qué clave se está cobrando (`cobro-<id>` con 1, `cobro-<id>-2` con 2
 | Ventana vencida sin respuesta | `failed` + `retry_window_expired` | presente | Excepción, **sin** reintento del cliente |
 | Confirmado | `confirmed` | presente | E5 · Póliza emitida |
 
+### Lo que E4c necesita del rechazo
+
+Se detalla información que para el cliente es útil yque necesita saber **qué envía el emisor**, **qué número o código citar** si llama al
+banco y **cuánto tiempo le queda** para intentar con otro medio. Tres campos, todos nulos mientras no apliquen:
+
+| Campo | Qué es |
+|---|---|
+| `decline_code` | El código del emisor tal como lo reporta la pasarela (`51` = fondos insuficientes). Nulo si no hubo rechazo explícito |
+| `provider_reference` | El identificador de la pasarela para este cobro, **aprobado o rechazado**. Es lo que el cliente cita ante su banco |
+| `offer_expires_at` | Hasta cuándo vale la oferta detrás de la aceptación. Se fotografía al crear el cobro, porque las ofertas viven en memoria (decisión D-2) |
+
+
+`decline_code` y `provider_reference` **se limpian** al entregar otro medio de pago: pertenecían al medio anterior, se limpian para no confundir al cliente.
+
+Se escriben **después** de marcar el cobro como fallido, porque el fallo lo registra el mecanismo compartido de
+`pkg/idempotency`, que solo lleva un mensaje de diagnóstico. Son detalle de presentación: si esa escritura se pierde,
+el cobro sigue correctamente fallido y en la bandeja de operaciones, y lo único que falta es qué mostrar.
+
 `failure_reason` gana el valor **`payment_method_missing`**: la ventana de 24 horas venció sin que el cliente entregara
 un medio de pago. Aparece también en `GET /v1/issuance-exceptions`, de donde se sirve el monitoreo de HU-W1.3-04.
 
@@ -195,6 +218,9 @@ sin token. El barrido lo vuelve a vencer si la ventana nueva también pasa sin p
   aprueba, y las terminadas en `0002` rechazan con `insufficient_funds`. **Sin esto, E4c no es alcanzable en una
   demostración.**
 
+- La respuesta de **rechazo** lleva ahora `charge_id` además de `decline_code`. Una pasarela real entrega su
+  referencia pase lo que pase, y es la que el cliente cita ante el emisor.
+
 El cambio es aditivo: un `POST /charges` sin `payment_token` se sigue comportando como hoy, para no romper a quien ya
 lo use.
 
@@ -208,6 +234,9 @@ lo use.
 | El token lo obtiene el navegador | Tokenizar en el servidor, que metería el PAN en nuestro dominio y a Solventa en alcance PCI-DSS |
 | `payment_method` explícito en la respuesta | Que el *front* dedujera el estado de `attempts == 0 && next_attempt_at == null`, acoplamiento implícito que se rompe al cambiar cuándo se incrementa `attempts` |
 | Clave nueva solo tras un rechazo definitivo | Clave nueva en cada captura, que tras un silencio de la pasarela podría cobrar dos veces: es justo lo que HA-D02 evita |
+| El código del emisor viaja como código, no como frase | Mandar la glosa ya redactada, que congelaría el texto y el idioma de E4c en un servicio de backend |
+| El detalle del rechazo se escribe en una segunda escritura | Cambiar la firma de `Store.Fail` en `pkg/idempotency`, compartido por los cinco servicios, para que llevara el error tipado |
+| La referencia de la pasarela reutiliza `provider_reference` | Una columna nueva solo para el rechazo, cuando es exactamente el mismo dato |
 | Clave con sufijo `-2`, `-3` | Un identificador aleatorio por intento, que haría imposible reconstruir a mano qué cobro pertenece a qué aceptación al depurar |
 
 ## 8. Lo que queda fuera
