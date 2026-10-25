@@ -7,7 +7,14 @@
 # is the repository root.
 #
 # Published ports (127.0.0.1 only, configurable, chosen not to collide with
-# tests/e2e/hu-w1.2): audit 8390, origination 8391, LocalStack 4576, Moto 5130.
+# tests/e2e/hu-w1.2): audit 8390, origination 8391, LocalStack 4576, Moto 5130,
+# the Open Finance stub 9390 and the Toxiproxy API 8394.
+#
+# HU-M1.3-02: the Open Finance stub behind Toxiproxy receives the profile
+# queries of origination (proxy openfinance) and the revocation notices of
+# audit (proxy openfinance-revocations); origination verifies the consent with
+# the real audit (AUDIT_URL) and audit notifies the entities with a deadline
+# shortened to 5 s.
 name: hu-m1-3-e2e
 
 x-aws-local: &aws-local
@@ -70,6 +77,43 @@ services:
       timeout: 10s
       retries: 60
 
+  # HU-M1.3-02: the Open Finance provider. The entity aliado-mudo never answers
+  # its notices (503), to show the partial revocation (R7).
+  openfinance:
+    build:
+      context: ../../..
+      dockerfile: stubs/openfinance/Dockerfile
+    ports:
+      - "127.0.0.1:${OPENFINANCE_PORT:-9390}:9000" # GET /debug/consent-revocations, used by run.sh
+    environment:
+      PORT: "9000"
+      REVOCATION_UNRESPONSIVE_ENTITIES: ${REVOCATION_UNRESPONSIVE_ENTITIES:-aliado-mudo}
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "127.0.0.1:${TOXIPROXY_PORT:-8394}:8474" # Toxiproxy API
+    depends_on:
+      - openfinance
+
+  # The Toxiproxy image is distroless (no shell, no CLI), so the proxies are
+  # created through its HTTP API: one for the profiles of origination, one for
+  # the notices of audit, so the connections of each can be told apart.
+  # /populate creates or replaces them, so it runs again without failing when
+  # audit or origination restart (both depend on it).
+  toxiproxy-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - toxiproxy
+    entrypoint:
+      - sh
+      - -c
+      - >
+        until curl -sf http://toxiproxy:8474/version; do sleep 1; done;
+        curl -sf -o /dev/null -X POST http://toxiproxy:8474/populate -H 'Content-Type: application/json'
+        -d '[{"name":"openfinance","listen":"0.0.0.0:9001","upstream":"openfinance:9000","enabled":true},
+        {"name":"openfinance-revocations","listen":"0.0.0.0:9002","upstream":"openfinance:9000","enabled":true}]'
+
   moto:
     image: motoserver/moto:5.2.3
     ports:
@@ -102,6 +146,10 @@ services:
       EVENTS_QUEUE_URL: http://localstack:4566/000000000000/solventa-local-audit
       AWS_ENDPOINT_URL_SQS: http://localstack:4566
       LOG_LEVEL: debug
+      # HU-M1.3-02: the notices of the revocations, with a short deadline.
+      OPEN_FINANCE_URL: http://toxiproxy:9002
+      REVOCATION_NOTICE_DEADLINE_SECONDS: ${REVOCATION_DEADLINE_SECONDS:-5}
+      REVOCATION_NOTICE_POLL_INTERVAL_MS: "500"
     depends_on:
       postgres-audit:
         condition: service_healthy
@@ -109,6 +157,8 @@ services:
         condition: service_healthy
       localstack:
         condition: service_healthy
+      toxiproxy-init:
+        condition: service_completed_successfully
 
   origination:
     build:
@@ -120,8 +170,10 @@ services:
       <<: *aws-local
       PORT: "8080"
       REDIS_ADDR: redis:6379
-      # No source is queried in this scenario; the URL is required.
-      OPEN_FINANCE_URL: http://127.0.0.1:9
+      # HU-M1.3-02 (R2): the profiles go to the stub through Toxiproxy, and the
+      # consent is verified with the real audit before any query.
+      OPEN_FINANCE_URL: http://toxiproxy:9001
+      AUDIT_URL: http://audit:8080
       DATABASE_URL: postgres://origination:${PG_PASSWORD:-}@postgres-origination:5432/origination?sslmode=disable
       # Human routes and sign-up of the insured (HU-M1.1-01) against Moto.
       AUTH_ISSUER: ${AUTH_ISSUER:-}
@@ -143,3 +195,5 @@ services:
         condition: service_healthy
       localstack:
         condition: service_healthy
+      toxiproxy-init:
+        condition: service_completed_successfully

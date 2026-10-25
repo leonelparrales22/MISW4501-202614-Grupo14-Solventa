@@ -360,6 +360,7 @@ paths:
           schema:
             type: string
             format: uuid
+            pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
       requestBody:
         required: true
         content:
@@ -459,6 +460,8 @@ paths:
           required: false
           schema:
             type: string
+            maxLength: 64
+            pattern: "^[A-Za-z0-9 ,;=.*-]*$"
             example: es-CO
       responses:
         "200":
