@@ -83,6 +83,9 @@ type RejectedError struct {
 	Code string
 	// DeclineCode is the issuer's reason, when the gateway gives one.
 	DeclineCode string
+	// Reference is the gateway's id for the declined charge, when it gives
+	// one. It is what the customer quotes to the issuer (screen E4c).
+	Reference string
 }
 
 func (e *RejectedError) Error() string {
@@ -169,6 +172,7 @@ func (c *Client) Charge(ctx context.Context, req ChargeRequest) (Charge, error) 
 type errorBody struct {
 	Error       string `json:"error"`
 	DeclineCode string `json:"decline_code"`
+	ChargeID    string `json:"charge_id"`
 }
 
 func (c *Client) charge(ctx context.Context, req ChargeRequest) (answer, error) {
@@ -208,7 +212,8 @@ func (c *Client) charge(ctx context.Context, req ChargeRequest) (answer, error) 
 	default:
 		var eb errorBody
 		_ = json.NewDecoder(body).Decode(&eb)
-		return answer{rejected: &RejectedError{StatusCode: resp.StatusCode, Code: eb.Error, DeclineCode: eb.DeclineCode}}, nil
+		return answer{rejected: &RejectedError{StatusCode: resp.StatusCode, Code: eb.Error,
+			DeclineCode: eb.DeclineCode, Reference: eb.ChargeID}}, nil
 	}
 }
 

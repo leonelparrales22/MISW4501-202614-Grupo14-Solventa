@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.10.1
+  version: 0.11.0
 paths:
   /health:
     get:
@@ -1948,7 +1948,7 @@ components:
           description: Time from the start of the consultation until the source ended or was canceled.
     PaymentMethod:
       type: object
-      required: [method, brand, last4, installments, bank_code, captured_at]
+      required: [method, brand, last4, installments, bank_code, payer_type, captured_at]
       description: >
         The payment method of a charge. The card number never reaches this
         service: the browser tokenises it against the gateway and only the
@@ -1976,6 +1976,13 @@ components:
           type: string
           nullable: true
           description: Bank chosen for pse; null for card.
+        payer_type:
+          type: string
+          nullable: true
+          enum: [natural, legal, null]
+          description: >
+            Who pays, which pse asks the bank before it can take the debit:
+            required with pse, null for card.
         captured_at:
           type: string
           format: date-time
@@ -2015,7 +2022,8 @@ components:
       type: object
       required: [acceptance_id, offer_id, customer_id, accepted_at, status, idempotency_key, amount, currency, attempts,
         last_attempt_at, last_failure_at, next_attempt_at, retry_window, failure_reason, confirmed_at, policy_id,
-        coverage_activated_at, activation_published_at, resume_count, updated_at, payment_method, payment_attempt]
+        coverage_activated_at, activation_published_at, resume_count, updated_at, payment_method, payment_attempt,
+        decline_code, provider_reference, offer_expires_at]
       properties:
         acceptance_id:
           type: string
@@ -2079,6 +2087,32 @@ components:
             still failing; payment_rejected: the gateway declined the charge;
             payment_method_missing: the window ended without the customer
             handing over a payment method, so nothing was ever charged.
+        decline_code:
+          type: string
+          nullable: true
+          description: >
+            The issuer's code as the gateway reports it (51 means insufficient
+            funds); null when there was no explicit decline. The code travels
+            and not the sentence: the wording of screen E4c belongs to the
+            client, so it follows its language instead of being frozen here.
+            It is cleared when another payment method is handed over, because
+            it belonged to the previous one.
+          example: "51"
+        provider_reference:
+          type: string
+          nullable: true
+          description: >
+            The gateway's id for this charge, confirmed or declined: what the
+            customer quotes to their issuer. Cleared together with
+            decline_code when another payment method is handed over.
+        offer_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            How long the offer behind the acceptance is worth. It is
+            photographed when the charge is created, so E4c can say what the
+            customer still has time to do.
         payment_method:
           allOf:
             - $ref: "#/components/schemas/PaymentMethod"

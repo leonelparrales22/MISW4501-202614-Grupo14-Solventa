@@ -295,6 +295,10 @@ func TestTheDeclinedTestCardIsDeclined(t *testing.T) {
 
 	require.Equal(t, http.StatusPaymentRequired, rec.Code)
 	assert.Contains(t, rec.Body.String(), "insufficient_funds")
+	assert.Contains(t, rec.Body.String(), `"decline_code":"51"`)
+	// A real gateway hands over its reference whatever the outcome, and the
+	// customer needs it to talk to the issuer (screen E4c, HU-W1.3-02).
+	assert.Contains(t, rec.Body.String(), `"charge_id":"ch-`)
 	assert.Zero(t, debug(t, h).RealCharges["cobro-acc-1"], "a declined card is not charged")
 }
 

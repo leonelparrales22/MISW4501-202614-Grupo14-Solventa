@@ -20,7 +20,7 @@ type memRepo struct {
 	// actions is the history Resume records, as the PostgreSQL one does.
 	actions []domain.IssuanceAction
 
-	createErr, getErr, listErr, writeErr, claimErr error
+	createErr, getErr, listErr, writeErr, claimErr, declineErr error
 }
 
 var _ ports.ChargeRepository = (*memRepo)(nil)
@@ -426,6 +426,26 @@ func (r *memRepo) AttachPaymentMethod(_ context.Context, id string,
 	row = row.WithPaymentMethod(m, now)
 	r.rows[id] = row
 	return row, nil
+}
+
+func (r *memRepo) RecordDecline(_ context.Context, id, code, reference string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.declineErr != nil {
+		return r.declineErr
+	}
+	row, ok := r.rows[id]
+	if !ok || row.Status != domain.ChargeFailed || row.FailureReason != domain.ChargePaymentRejected {
+		return nil
+	}
+	if code != "" {
+		row.DeclineCode = code
+	}
+	if reference != "" {
+		row.ProviderReference = reference
+	}
+	r.rows[id] = row
+	return nil
 }
 
 func (r *memRepo) ExpireWithoutPaymentMethod(_ context.Context, now time.Time) ([]string, error) {

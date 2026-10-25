@@ -98,6 +98,7 @@ func charge(id string) domain.Charge {
 	acc := domain.Acceptance{ID: id, OfferID: "demo-active-" + id, CustomerID: "cust-1", Channel: domain.ChannelWeb,
 		AcceptedAt: t0.Add(-time.Minute)}
 	offer := domain.Offer{ID: "demo-active-" + id, CustomerID: "cust-1", Premium: 89_500, Currency: "COP",
+		ExpiresAt: t0.Add(26 * time.Hour),
 		Applicant: domain.Applicant{FullName: "Ana Pérez", DocumentID: "demo-document", Email: "ana@example.com"}}
 	terms := domain.CoverageTerms{InsuredAmount: 250_000_000, TermMonths: 120, Coverages: []domain.Coverage{
 		{Code: domain.CoverageDeath, InsuredAmount: 250_000_000},
@@ -294,6 +295,62 @@ func TestFailForTheWindowAndForARejection(t *testing.T) {
 	_, ok, err := s.Claim(context.Background(), "acc-w", t0.Add(time.Hour), time.Second)
 	require.NoError(t, err)
 	assert.False(t, ok, "a failed charge is never claimed")
+}
+
+// What screen E4c shows about a decline is written after the failure, and
+// only onto the charge it belongs to (HU-W1.3-02).
+func TestRecordDeclineKeepsTheCodeAndTheReference(t *testing.T) {
+	s := postgres.NewChargeStore(newDB(t))
+	create(t, s, "acc-r")
+	c := claim(t, s, "acc-r", t0)
+	_, err := s.Fail(context.Background(), c, t0.Add(time.Second), idempotency.ReasonRejected, "declined")
+	require.NoError(t, err)
+
+	require.NoError(t, s.RecordDecline(context.Background(), "acc-r", "51", "ch-7"))
+
+	got, err := s.Get(context.Background(), "acc-r")
+	require.NoError(t, err)
+	assert.Equal(t, "51", got.DeclineCode)
+	assert.Equal(t, "ch-7", got.ProviderReference)
+	assert.Equal(t, t0.Add(26*time.Hour), got.OfferExpiresAt, "the validity snapshotted when the charge was created")
+}
+
+func TestRecordDeclineOnlyTouchesARejectedCharge(t *testing.T) {
+	s := postgres.NewChargeStore(newDB(t))
+	create(t, s, "acc-w")
+	c := claim(t, s, "acc-w", t0)
+	// The window ran out: there is no issuer answer, so nothing to write.
+	_, err := s.Fail(context.Background(), c, t0.Add(time.Second), idempotency.ReasonWindowExpired, "no answer")
+	require.NoError(t, err)
+
+	require.NoError(t, s.RecordDecline(context.Background(), "acc-w", "51", "ch-7"))
+	require.NoError(t, s.RecordDecline(context.Background(), "acc-unknown", "51", "ch-7"))
+
+	got, err := s.Get(context.Background(), "acc-w")
+	require.NoError(t, err)
+	assert.Empty(t, got.DeclineCode)
+	assert.Empty(t, got.ProviderReference)
+}
+
+// Paying again with another card must not leave the previous decline on
+// screen: it belonged to the method that is gone (HU-W1.3-02).
+func TestAnotherPaymentMethodClearsTheDeclineOfTheOldOne(t *testing.T) {
+	s := postgres.NewChargeStore(newDB(t))
+	create(t, s, "acc-1")
+	c := claim(t, s, "acc-1", t0)
+	_, err := s.Fail(context.Background(), c, t0.Add(time.Second), idempotency.ReasonRejected, "declined")
+	require.NoError(t, err)
+	require.NoError(t, s.RecordDecline(context.Background(), "acc-1", "51", "ch-7"))
+
+	got, err := s.AttachPaymentMethod(context.Background(), "acc-1",
+		domain.PaymentMethod{Kind: domain.PaymentPSE, BankCode: "1007", PayerType: domain.PayerLegal, Installments: 1},
+		t0.Add(time.Minute))
+	require.NoError(t, err)
+
+	assert.Empty(t, got.DeclineCode)
+	assert.Empty(t, got.ProviderReference)
+	assert.Equal(t, domain.PayerLegal, got.PaymentMethod.PayerType, "PSE keeps whether the payer is a person or a company")
+	assert.Equal(t, domain.ChargePending, got.Status)
 }
 
 func TestConfirmSetsThePolicyAndKeepsTheClaimToPublish(t *testing.T) {
@@ -534,14 +591,24 @@ func TestAChargeWithoutAPaymentMethodExpiresAsAnIssuanceException(t *testing.T) 
 	assert.ErrorIs(t, err, ports.ErrChargeNotPayable, "only operations can resume it")
 }
 
-// Migration 0004 upgrades a database already migrated with 0001-0003, as
-// the ones of the other environments are: the old constraint refused the
-// reason, the new one takes it and still refuses an unknown one.
+// Migration 0004 upgrades a database that does not have it yet, as the ones
+// of the other environments are: the old constraint refused the reason, the
+// new one takes it and still refuses an unknown one.
+//
+// The database is built with every other migration, not with the first three:
+// so the test keeps asking about the constraint of 0004 and not about which
+// columns existed the day it was written.
 func TestMigration0004LetsAnExistingDatabaseStorePaymentMethodMissing(t *testing.T) {
 	db := newUnmigratedDB(t)
 	ctx := context.Background()
 	old := fstest.MapFS{}
-	for _, name := range []string{"0001_charge_attempt.sql", "0002_charge_payment_method.sql", "0003_offer.sql"} {
+	entries, err := migrations.FS.ReadDir(".")
+	require.NoError(t, err)
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".sql") || strings.HasPrefix(name, "0004_") {
+			continue
+		}
 		data, err := migrations.FS.ReadFile(name)
 		require.NoError(t, err)
 		old[name] = &fstest.MapFile{Data: data}
@@ -550,7 +617,7 @@ func TestMigration0004LetsAnExistingDatabaseStorePaymentMethodMissing(t *testing
 	s := postgres.NewChargeStore(db)
 	waiting := createWaitingForCard(t, s, "acc-before-0004")
 
-	_, err := s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt)
+	_, err = s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt)
 	require.Error(t, err, "without 0004 the CHECK of 0001 refuses payment_method_missing")
 	assert.Contains(t, err.Error(), "charge_attempt_failure_reason_check")
 

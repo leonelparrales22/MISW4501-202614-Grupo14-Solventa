@@ -21,3 +21,7 @@ junit*.xml
 *.tfvars
 !*.example.tfvars
 crash.log
+
+# Binario del stub de la pasarela de pagos
+stubs/payment-gateway/pasarela-pagos.exe
+stubs/payment-gateway/pasarela-pagos

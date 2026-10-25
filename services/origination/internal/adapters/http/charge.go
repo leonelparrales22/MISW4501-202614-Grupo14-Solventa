@@ -61,6 +61,7 @@ type paymentMethodBody struct {
 	Last4        *string   `json:"last4"`
 	Installments int       `json:"installments"`
 	BankCode     *string   `json:"bank_code"`
+	PayerType    *string   `json:"payer_type"`
 	CapturedAt   time.Time `json:"captured_at"`
 }
 
@@ -70,25 +71,35 @@ type retryWindowBody struct {
 }
 
 type chargeResponse struct {
-	AcceptanceID          string          `json:"acceptance_id"`
-	OfferID               string          `json:"offer_id"`
-	CustomerID            string          `json:"customer_id"`
-	AcceptedAt            time.Time       `json:"accepted_at"`
-	Status                string          `json:"status"`
-	IdempotencyKey        string          `json:"idempotency_key"`
-	Amount                float64         `json:"amount"`
-	Currency              string          `json:"currency"`
-	Attempts              int             `json:"attempts"`
-	LastAttemptAt         *time.Time      `json:"last_attempt_at"`
-	LastFailureAt         *time.Time      `json:"last_failure_at"`
-	NextAttemptAt         *time.Time      `json:"next_attempt_at"`
-	RetryWindow           retryWindowBody `json:"retry_window"`
-	FailureReason         *string         `json:"failure_reason"`
-	ConfirmedAt           *time.Time      `json:"confirmed_at"`
-	PolicyID              *string         `json:"policy_id"`
-	CoverageActivatedAt   *time.Time      `json:"coverage_activated_at"`
-	ActivationPublishedAt *time.Time      `json:"activation_published_at"`
-	ResumeCount           int             `json:"resume_count"`
+	AcceptanceID   string          `json:"acceptance_id"`
+	OfferID        string          `json:"offer_id"`
+	CustomerID     string          `json:"customer_id"`
+	AcceptedAt     time.Time       `json:"accepted_at"`
+	Status         string          `json:"status"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	Amount         float64         `json:"amount"`
+	Currency       string          `json:"currency"`
+	Attempts       int             `json:"attempts"`
+	LastAttemptAt  *time.Time      `json:"last_attempt_at"`
+	LastFailureAt  *time.Time      `json:"last_failure_at"`
+	NextAttemptAt  *time.Time      `json:"next_attempt_at"`
+	RetryWindow    retryWindowBody `json:"retry_window"`
+	FailureReason  *string         `json:"failure_reason"`
+	// DeclineCode is the issuer's code when the gateway declined the charge;
+	// null otherwise. The client turns it into words, so the wording of
+	// screen E4c is not frozen in this service (HU-W1.3-02).
+	DeclineCode *string `json:"decline_code"`
+	// ProviderReference is the gateway's id for this charge, confirmed or
+	// declined: what the customer quotes to the issuer.
+	ProviderReference *string `json:"provider_reference"`
+	// OfferExpiresAt is how long the acceptance behind this charge is worth,
+	// so E4c can say what the customer still has time to do.
+	OfferExpiresAt        *time.Time `json:"offer_expires_at"`
+	ConfirmedAt           *time.Time `json:"confirmed_at"`
+	PolicyID              *string    `json:"policy_id"`
+	CoverageActivatedAt   *time.Time `json:"coverage_activated_at"`
+	ActivationPublishedAt *time.Time `json:"activation_published_at"`
+	ResumeCount           int        `json:"resume_count"`
 	// PaymentMethod is null while there is none; PaymentAttempt counts how
 	// many the customer handed over, which is not Attempts (HU-W1.3-02).
 	PaymentMethod  *paymentMethodBody `json:"payment_method"`
@@ -131,6 +142,8 @@ type paymentMethodRequest struct {
 	Last4        string `json:"last4"`
 	Installments *int   `json:"installments"`
 	BankCode     string `json:"bank_code"`
+	// PayerType is natural or legal, which PSE asks for. Ignored for a card.
+	PayerType string `json:"payer_type"`
 }
 
 func attachPaymentMethod(svc ChargeService) http.HandlerFunc {
@@ -152,6 +165,7 @@ func attachPaymentMethod(svc ChargeService) http.HandlerFunc {
 		c, err := svc.AttachPaymentMethod(req.Context(), id, domain.PaymentMethod{
 			Kind: domain.PaymentMethodKind(in.Method), Token: in.PaymentToken,
 			Brand: in.Brand, Last4: in.Last4, Installments: installments, BankCode: in.BankCode,
+			PayerType: domain.PayerType(in.PayerType),
 		})
 		respondCharge(w, req, http.StatusAccepted, c, err)
 	}
@@ -277,6 +291,9 @@ func toChargeResponse(c domain.Charge) chargeResponse {
 			EndsAt:    optionalTime(c.WindowEndsAt),
 		},
 		FailureReason:         optionalString(string(c.FailureReason)),
+		DeclineCode:           optionalString(c.DeclineCode),
+		ProviderReference:     optionalString(c.ProviderReference),
+		OfferExpiresAt:        optionalTime(c.OfferExpiresAt),
 		ConfirmedAt:           optionalTime(c.ConfirmedAt),
 		PolicyID:              optionalString(c.PolicyID),
 		CoverageActivatedAt:   optionalTime(c.ActivatedAt),
@@ -301,6 +318,7 @@ func toPaymentMethodBody(m domain.PaymentMethod) *paymentMethodBody {
 		Last4:        optionalString(m.Last4),
 		Installments: m.Installments,
 		BankCode:     optionalString(m.BankCode),
+		PayerType:    optionalString(string(m.PayerType)),
 		CapturedAt:   m.CapturedAt.UTC(),
 	}
 }

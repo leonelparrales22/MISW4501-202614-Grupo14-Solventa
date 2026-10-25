@@ -233,10 +233,44 @@ func TestPSENeedsNoToken(t *testing.T) {
 	_, svc := pendingChargeService()
 
 	c, err := svc.AttachPaymentMethod(as(security.RoleInsured, "cust-1"), "acc-1",
-		domain.PaymentMethod{Kind: domain.PaymentPSE, BankCode: "1007", Installments: 1})
+		domain.PaymentMethod{Kind: domain.PaymentPSE, BankCode: "1007", Installments: 1,
+			PayerType: domain.PayerNatural})
 
 	require.NoError(t, err)
 	assert.Equal(t, domain.PaymentPSE, c.PaymentMethod.Kind)
+	assert.Equal(t, domain.PayerNatural, c.PaymentMethod.PayerType)
+}
+
+// PSE asks the bank whether the payer is a person or a company before it can
+// take the debit, so the screen has to say which (HU-W1.3-02).
+func TestPSENeedsThePayerType(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		payer domain.PayerType
+	}{
+		{"missing", ""},
+		{"not one of the two", "cooperativa"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, svc := pendingChargeService()
+
+			_, err := svc.AttachPaymentMethod(as(security.RoleInsured, "cust-1"), "acc-1",
+				domain.PaymentMethod{Kind: domain.PaymentPSE, BankCode: "1007", Installments: 1, PayerType: tc.payer})
+
+			require.ErrorIs(t, err, billing.ErrInvalidPaymentMethod)
+		})
+	}
+}
+
+// A card has no payer type and must not be asked for one.
+func TestACardTakesNoPayerType(t *testing.T) {
+	_, svc := pendingChargeService()
+
+	c, err := svc.AttachPaymentMethod(as(security.RoleInsured, "cust-1"), "acc-1",
+		domain.PaymentMethod{Kind: domain.PaymentCard, Token: "tok_visa_1111", Last4: "1111", Installments: 1})
+
+	require.NoError(t, err)
+	assert.Empty(t, c.PaymentMethod.PayerType)
 }
 
 func TestAChargeThatTakesNoPaymentMethodIsRefused(t *testing.T) {
