@@ -86,14 +86,17 @@ aprobación**. Créelo antes de que un job vuelva a usarlo.
 
 ## Cómo se publica
 
-1. Todo *push* a `develop` o `main` dispara `backend-cd` (sin filtro de rutas, para que cada merge a `main` despliegue), y
-   también *Run workflow* en GitHub Actions.
-2. [`scripts/ci/changed-images.sh`](../../../../scripts/ci/changed-images.sh) decide qué imágenes reconstruir: la del directorio
-   que cambió, o **todas** si cambió algo compartido (`pkg/`, `go.work`, `.dockerignore`, el propio CD). Un *push* a `develop`
-   que no cambia ninguna imagen no construye nada. En `main` y en una ejecución manual se reconstruyen **siempre todas**, para
-   que el commit tenga todas sus etiquetas y se despliegue con un solo `image_tag`.
+1. `backend-cd` corre con todo *push* a `main` (sin filtro de rutas, para que cada merge despliegue) y con *Run workflow*
+   sobre `develop` o `main`. Un *push* a `develop` **no** lo dispara, y *Run workflow* sobre otra rama no hace nada.
+2. Cada ejecución construye **las 10 imágenes** del commit
+   ([`scripts/ci/changed-images.sh`](../../../../scripts/ci/changed-images.sh) sin base), para que tenga todas sus etiquetas y
+   se despliegue con un solo `image_tag`.
 3. Cada imagen se construye con el contexto en la raíz y se publica como `solventa/<imagen>:<sha de 12 caracteres>`.
 4. Si esa etiqueta ya existe (reejecución del mismo commit), no se vuelve a publicar.
+
+Como `develop` solo publica cuando alguien lanza el pipeline, `scripts/environment/up.sh staging` (que toma, por imagen, la
+etiqueta más reciente de `develop`) puede encontrar imágenes viejas: lance *Run workflow* sobre `develop` antes de encender
+`staging`, o justo después (con el ambiente encendido, además despliega).
 
 `develop` y `main` publican en los mismos repositorios, con el SHA como única etiqueta: no hay etiquetas por ambiente. Por eso
 "la imagen más reciente" puede ser de `develop`; la versión de `main` es la que indica el parámetro
@@ -106,7 +109,7 @@ aprobación**. Créelo antes de que un job vuelva a usarlo.
 |---|---|---|
 | Merge a `main` | El commit del merge | Ninguna: automático |
 | *Run workflow* sobre `develop` (Actions → backend-cd → Run workflow → *Branch: develop*) | El último commit de `develop` | Ninguna: lo lanza una persona |
-| *Push* a `develop` | Nada (solo publica las imágenes que cambiaron) | — |
+| *Push* a `develop` | Nada: el pipeline no corre | — |
 
 Después de publicar **todas** las imágenes del commit:
 
