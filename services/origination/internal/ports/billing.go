@@ -28,6 +28,7 @@ var ErrChargeNotPayable = errors.New("charge does not take a payment method")
 // result is conditional on the claim (idempotency.ErrClaimLost otherwise).
 type ChargeRepository interface {
 	idempotency.Store[domain.Charge]
+	IssuanceMonitor
 
 	// CreatePending stores the charge unless its acceptance already has one;
 	// then it returns the existing charge and created=false.

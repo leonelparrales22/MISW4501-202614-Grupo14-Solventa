@@ -35,6 +35,10 @@ type Service struct {
 	clock  ports.Clock
 	policy resilience.RetryPolicy
 	notify func()
+	// contracts and wakeContracts retry a failed contractual issuance
+	// (HU-W1.3-04); nil until WithContractRetry.
+	contracts     ports.ContractRetrier
+	wakeContracts func()
 }
 
 // NewService builds a Service. policy gives the window of a resumed charge;
@@ -77,10 +81,23 @@ func (s *Service) Resume(ctx context.Context, acceptanceID, note string) (domain
 	if err := security.RequireAnyRole(ctx, security.RoleOperations); err != nil {
 		return domain.Charge{}, err
 	}
+	note, err := cleanNote(note)
+	if err != nil {
+		return domain.Charge{}, err
+	}
+	return s.resume(ctx, acceptanceID, note)
+}
+
+// cleanNote trims the note of an analyst and checks its length.
+func cleanNote(note string) (string, error) {
 	note = strings.TrimSpace(note)
 	if note == "" || utf8.RuneCountInString(note) > domain.MaxResumeNoteLength {
-		return domain.Charge{}, ErrInvalidNote
+		return "", ErrInvalidNote
 	}
+	return note, nil
+}
+
+func (s *Service) resume(ctx context.Context, acceptanceID, note string) (domain.Charge, error) {
 	caller, _ := security.ClaimsFromContext(ctx)
 	now := s.clock.Now().UTC()
 	c, err := s.repo.Resume(ctx, acceptanceID, domain.ChargeResumption{

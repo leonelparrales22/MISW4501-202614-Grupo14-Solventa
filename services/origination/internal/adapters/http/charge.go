@@ -21,6 +21,9 @@ import (
 type ChargeService interface {
 	Get(ctx context.Context, acceptanceID string) (domain.Charge, error)
 	ListExceptions(ctx context.Context, limit int) ([]domain.Charge, error)
+	Overview(ctx context.Context, filter domain.IssuanceFilter, dayFrom time.Time) (billing.IssuanceOverview, error)
+	ListActions(ctx context.Context, acceptanceID string) ([]domain.IssuanceAction, error)
+	RetryIssuance(ctx context.Context, acceptanceID, note string) (domain.IssuanceActionKind, error)
 	Resume(ctx context.Context, acceptanceID, note string) (domain.Charge, error)
 	AttachPaymentMethod(ctx context.Context, acceptanceID string, m domain.PaymentMethod) (domain.Charge, error)
 }
@@ -28,9 +31,9 @@ type ChargeService interface {
 // WithCharges mounts the premium charge routes (HA-D02). They are human
 // routes: the Cognito JWT is verified with pkg/security. The insured who owns
 // the acceptance, an advisor or an operations analyst read the charge (screen
-// E4b); only operations list the issuance exceptions and resume them (the
-// monitoring screen O1/O1b is HU-W1.3-04). Register it after
-// WithObservability.
+// E4b); only operations list the issuance exceptions, resume them and see the
+// issuances with the history of the actions on them (the monitoring screen
+// O1/O1b, HU-W1.3-04). Register it after WithObservability.
 func WithCharges(svc ChargeService, verifier security.Verifier) Option {
 	return func(r chi.Router) {
 		r.Group(func(r chi.Router) {
@@ -40,6 +43,10 @@ func WithCharges(svc ChargeService, verifier security.Verifier) Option {
 			operations := security.RequireRole(security.RoleOperations)
 			r.With(operations).Get("/v1/issuance-exceptions", listIssuanceExceptions(svc))
 			r.With(operations).Post("/v1/acceptances/{acceptance_id}/charge/resume", resumeCharge(svc))
+			// The monitoring screen O1/O1b (HU-W1.3-04).
+			r.With(operations).Get("/v1/issuances", listIssuances(svc))
+			r.With(operations).Get("/v1/issuances/{acceptance_id}/actions", listIssuanceActions(svc))
+			r.With(operations).Post("/v1/issuances/{acceptance_id}/retry", retryIssuance(svc))
 			// Screen E4: only the insured pays, so no advisor or analyst
 			// role here (HU-W1.3-02).
 			r.With(security.RequireRole(security.RoleInsured)).

@@ -305,13 +305,22 @@ func (s *ChargeStore) Resume(ctx context.Context, acceptanceID string, r domain.
 	// with no token. It goes back to waiting for one -pending with no due
 	// date- which is the state HU-W1.3-02 already uses for that, and the
 	// customer can pay from screen E4 within the new window.
-	c, found, err := s.one(ctx, `UPDATE charge_attempt
-		SET status = 'pending', attempts = 0, claimed_until = NULL, failure_reason = NULL,
-		    next_attempt_at = CASE WHEN payment_method_kind IS NULL THEN NULL ELSE $2::timestamptz END,
-		    window_started_at = $2, window_ends_at = $3, resume_count = resume_count + 1, last_resumed_by = $4,
-		    last_resumed_at = $2, resume_note = $5, updated_at = $2
-		WHERE acceptance_id = $1 AND status = 'failed'
-		RETURNING `+chargeColumns, acceptanceID, at, nullTime(r.WindowEndsAt), r.By, r.Note)
+	//
+	// The action is recorded by the same statement (HU-W1.3-04, CA-3), so the
+	// history never misses a resumption nor keeps one that did not happen.
+	c, found, err := s.one(ctx, `WITH resumed AS (
+			UPDATE charge_attempt
+			SET status = 'pending', attempts = 0, claimed_until = NULL, failure_reason = NULL,
+			    next_attempt_at = CASE WHEN payment_method_kind IS NULL THEN NULL ELSE $2::timestamptz END,
+			    window_started_at = $2, window_ends_at = $3, resume_count = resume_count + 1, last_resumed_by = $4,
+			    last_resumed_at = $2, resume_note = $5, updated_at = $2
+			WHERE acceptance_id = $1 AND status = 'failed'
+			RETURNING `+chargeColumns+`
+		), recorded AS (
+			INSERT INTO issuance_action (acceptance_id, action, actor, note, created_at)
+			SELECT acceptance_id, 'resume', $4::text, $5::text, $2::timestamptz FROM resumed
+		)
+		SELECT `+chargeColumns+` FROM resumed`, acceptanceID, at, nullTime(r.WindowEndsAt), r.By, r.Note)
 	if err != nil {
 		return domain.Charge{}, fmt.Errorf("resume the charge of %s: %w", acceptanceID, err)
 	}

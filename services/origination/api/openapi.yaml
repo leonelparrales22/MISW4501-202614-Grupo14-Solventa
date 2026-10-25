@@ -631,6 +631,167 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "503":
           $ref: "#/components/responses/ChargeUnavailable"
+  /v1/issuances:
+    get:
+      summary: List the issuances with their status (HU-W1.3-04)
+      description: >
+        The monitoring screen of operations (O1): every acceptance on its way
+        to an active policy, the latest accepted first, with the status
+        accepted (underwriting pending), charging, active, notified (the insured
+        has their document and notice) or exception (the premium charge or the
+        contractual issuance failed). Filters by status, channel and date of
+        acceptance (both ends inclusive); a filter that matches nothing returns an
+        empty list, not an error. The counts always cover every issuance,
+        whatever the filter, with "today" starting at day_from. An exception that
+        waited longer than 30 minutes for an analyst comes flagged as unattended.
+        Only operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [accepted, charging, active, notified, exception]
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [web, mobile]
+        - name: from
+          in: query
+          required: false
+          description: Earliest acceptance, an RFC 3339 date-time.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Latest acceptance, an RFC 3339 date-time, not before from.
+          schema:
+            type: string
+            format: date-time
+        - name: day_from
+          in: query
+          required: false
+          description: Start of the day of the caller, for the counts of today (midnight UTC by default).
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: The issuances and the counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuanceList"
+        "400":
+          description: Invalid status, channel, date range or limit (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
+  /v1/issuances/{acceptance_id}/actions:
+    get:
+      summary: List the actions taken on an issuance (HU-W1.3-04)
+      description: >
+        What the operations analysts did on the issuance of an acceptance (each
+        retry, with its author, note and date), the latest first. An acceptance
+        with no actions returns an empty list. Only operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      responses:
+        "200":
+          description: The actions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuanceActionList"
+        "400":
+          description: Invalid path parameter (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
+  /v1/issuances/{acceptance_id}/retry:
+    post:
+      summary: Retry the failed step of an issuance (HU-W1.3-04)
+      description: >
+        An operations analyst retries what failed, from the registered
+        acceptance: the premium charge goes back to pending with the same
+        idempotency key and a new retry window (as POST
+        /v1/acceptances/{id}/charge/resume), or, if the charge is done and the
+        contractual issuance failed after every attempt, the document and the
+        notice are tried again. The note is required (1 to 500 characters) and
+        the action is recorded with the author and the date. It is idempotent:
+        of two retries at once one wins and the other gets 409, so nothing is
+        charged or notified twice. Only operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResumeChargeRequest"
+      responses:
+        "202":
+          description: Retried
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuanceRetry"
+        "400":
+          description: Invalid path parameter, body or note (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The acceptance has no premium charge or contractual issuance to retry (issuance_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Nothing of the issuance is failed (issuance_not_retryable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
   /v1/assisted-quotes:
     post:
       summary: Generate an assisted quote (HU-W1.1-01)
@@ -2011,6 +2172,155 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/IssuanceException"
+    Issuance:
+      type: object
+      description: An accepted offer on its way to an active policy (HU-W1.3-04).
+      required: [acceptance_id, offer_id, customer_id, customer_name, channel, status, step, accepted_at, updated_at, amount,
+        currency, attempts, policy_id, reason, failed_at, notified_at, unattended, resume_count, last_resumed_at, last_resumed_by]
+      properties:
+        acceptance_id:
+          type: string
+        offer_id:
+          type: string
+        customer_id:
+          type: string
+        customer_name:
+          type: string
+          nullable: true
+          description: The holder, when origination knows them.
+        channel:
+          type: string
+          enum: [web, mobile]
+        status:
+          type: string
+          enum: [accepted, charging, active, notified, exception]
+        step:
+          type: string
+          enum: [underwriting, awaiting_payment_method, premium_charge, contract_document, notification, completed]
+          description: Where the issuance is, or failed when the status is exception.
+        accepted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        amount:
+          type: number
+          nullable: true
+          description: The premium; null while the status is accepted.
+        currency:
+          type: string
+          nullable: true
+        attempts:
+          type: integer
+          minimum: 0
+          description: Of the premium charge, or of the contractual issuance once the charge is confirmed.
+        policy_id:
+          type: string
+          nullable: true
+          description: Set once the charge was confirmed.
+        reason:
+          type: string
+          enum: [retry_window_expired, payment_rejected, payment_method_missing, document_generation_failed, notification_failed]
+          nullable: true
+          description: Only for an exception.
+        failed_at:
+          type: string
+          format: date-time
+          nullable: true
+        notified_at:
+          type: string
+          format: date-time
+          nullable: true
+        unattended:
+          type: boolean
+          description: An exception that waited 30 minutes or more for an analyst.
+        resume_count:
+          type: integer
+          minimum: 0
+        last_resumed_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_resumed_by:
+          type: string
+          nullable: true
+    IssuanceCounts:
+      type: object
+      description: Every issuance, whatever the filter of the list.
+      required: [accepted, charging, charging_with_retries, active_today, notified_today, exceptions, unattended]
+      properties:
+        accepted:
+          type: integer
+          minimum: 0
+        charging:
+          type: integer
+          minimum: 0
+        charging_with_retries:
+          type: integer
+          minimum: 0
+          description: Charging issuances whose gateway already failed at least once.
+        active_today:
+          type: integer
+          minimum: 0
+          description: Policies activated since day_from.
+        notified_today:
+          type: integer
+          minimum: 0
+          description: Policies whose insured was notified since day_from.
+        exceptions:
+          type: integer
+          minimum: 0
+        unattended:
+          type: integer
+          minimum: 0
+          description: Exceptions that waited 30 minutes or more.
+    IssuanceList:
+      type: object
+      required: [items, counts]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Issuance"
+        counts:
+          $ref: "#/components/schemas/IssuanceCounts"
+    IssuanceAction:
+      type: object
+      required: [id, action, actor, note, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        action:
+          type: string
+          enum: [resume, retry]
+          description: resume retried the premium charge; retry the contractual issuance.
+        actor:
+          type: string
+          description: The subject of the token of the analyst.
+        note:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    IssuanceActionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssuanceAction"
+    IssuanceRetry:
+      type: object
+      required: [acceptance_id, action]
+      properties:
+        acceptance_id:
+          type: string
+        action:
+          type: string
+          enum: [resume, retry]
     ReviewRequestList:
       type: object
       required: [items, counts]
@@ -2215,6 +2525,8 @@ components:
             - charge_not_found
             - charge_not_resumable
             - charge_unavailable
+            - issuance_not_found
+            - issuance_not_retryable
             - observations_required
             - premium_adjustment_invalid
             - review_request_not_found

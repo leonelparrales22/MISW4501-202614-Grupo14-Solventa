@@ -191,7 +191,7 @@ func TestNewBillingFailsWithoutADatabase(t *testing.T) {
 	cfg, err := loadConfig(env(billingEnv()))
 	require.NoError(t, err)
 
-	_, err = newBilling(context.Background(), cfg.billing, nil, recordingConsumer())
+	_, err = newBilling(context.Background(), cfg.billing, nil, nil, recordingConsumer())
 	assert.ErrorContains(t, err, "DATABASE_URL")
 }
 
@@ -244,7 +244,7 @@ func TestNewBillingMigratesChargesAndActivatesTheCoverage(t *testing.T) {
 	st, err := newStores(ctx, cfg.offers.databaseURL, systemClock{})
 	require.NoError(t, err)
 	defer func() { _ = st.db.Close() }()
-	wiring, err := newBilling(ctx, cfg.billing, st.db, sink)
+	wiring, err := newBilling(ctx, cfg.billing, st.db, nil, sink)
 	require.NoError(t, err)
 
 	require.NoError(t, wiring.starter.Start(ctx,

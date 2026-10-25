@@ -23,6 +23,11 @@ import (
 type fakeCharges struct {
 	charge     domain.Charge
 	exceptions []domain.Charge
+	overview   billing.IssuanceOverview
+	actions    []domain.IssuanceAction
+	gotFilter  domain.IssuanceFilter
+	gotDayFrom time.Time
+	retried    domain.IssuanceActionKind
 	err        error
 	gotID      string
 	gotNote    string
@@ -41,6 +46,24 @@ func (f *fakeCharges) ListExceptions(_ context.Context, limit int) ([]domain.Cha
 	f.calls++
 	f.gotLimit = limit
 	return f.exceptions, f.err
+}
+
+func (f *fakeCharges) Overview(_ context.Context, filter domain.IssuanceFilter, dayFrom time.Time) (billing.IssuanceOverview, error) {
+	f.calls++
+	f.gotFilter, f.gotDayFrom = filter, dayFrom
+	return f.overview, f.err
+}
+
+func (f *fakeCharges) RetryIssuance(_ context.Context, id, note string) (domain.IssuanceActionKind, error) {
+	f.calls++
+	f.gotID, f.gotNote = id, note
+	return f.retried, f.err
+}
+
+func (f *fakeCharges) ListActions(_ context.Context, id string) ([]domain.IssuanceAction, error) {
+	f.calls++
+	f.gotID = id
+	return f.actions, f.err
 }
 
 func (f *fakeCharges) Resume(_ context.Context, id, note string) (domain.Charge, error) {

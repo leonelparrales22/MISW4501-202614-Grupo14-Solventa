@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"math"
@@ -32,6 +33,7 @@ import (
 	odadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/opendata"
 	ofadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/openfinance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/pdf"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
 	redisadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/redis"
 	s3adapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/s3"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
@@ -97,6 +99,9 @@ func main() {
 		}
 		var starter ports.IssuanceStarter = memory.NewIssuanceStub()
 		var activations []ports.CoverageActivationHandler
+		// HU-W1.3-04: wakes the worker of the contractual issuance after an
+		// analyst retries a failed one.
+		var wakeContracts func()
 		// HU-W1.1-02: the adjust and reject decisions are e-mailed to the
 		// customer through the same provider client, so it keeps a single
 		// circuit breaker.
@@ -114,11 +119,12 @@ func main() {
 			documents, documentsAt = store, where
 		}
 		if cfg.contracts.enabled {
-			contract, err := newContractWiring(context.Background(), cfg.contracts, documents, documentsAt)
+			contract, err := newContractWiring(context.Background(), cfg.contracts, documents, documentsAt, st.db)
 			if err != nil {
 				log.Fatalf("could not set up the contractual document: %v", err)
 			}
 			activations = append(activations, contract.service)
+			wakeContracts = contract.service.Notify
 			reviewNotifier = emailadapter.NewReviewNotifier(contract.emailClient)
 			opts = append(opts, httpadapter.WithContractDocuments(contract.reader, verifier))
 		} else {
@@ -131,7 +137,7 @@ func main() {
 		// with DATABASE_URL, with or without the payment gateway.
 		customers := st.customers
 		if cfg.billing.enabled {
-			charges, err := newBilling(context.Background(), cfg.billing, st.db, activations...)
+			charges, err := newBilling(context.Background(), cfg.billing, st.db, wakeContracts, activations...)
 			if err != nil {
 				log.Fatalf("could not set up the premium charge: %v", err)
 			}
@@ -321,16 +327,23 @@ type contractWiring struct {
 // newContractWiring wires the contractual issuance (HU-W1.3-03): the PDF
 // generator, the document store it receives (S3 in AWS or a local directory,
 // HA-D02), the signed links, the e-mail provider and the in-memory repository
-// and audit log (PENDING: PostgreSQL and the audit service). It starts the
-// worker that issues the documents.
+// and audit log (PENDING: the audit service). The repository is PostgreSQL
+// with a database (HU-W1.3-04: the monitoring of the issuances reads it and it
+// survives a restart) and in memory without one. It starts the worker that
+// issues the documents.
 func newContractWiring(ctx context.Context, cfg contractConfig, store ports.DocumentStore,
-	where string) (contractWiring, error) {
+	where string, db *sql.DB) (contractWiring, error) {
 	signer, err := links.NewSigner(cfg.linkSecret)
 	if err != nil {
 		return contractWiring{}, err
 	}
 	clock := systemClock{}
-	repo, audit := memory.NewContractStore(), memory.NewIssuanceAuditLog()
+	var repo ports.ContractRepository = memory.NewContractStore()
+	repository := "in-memory repository"
+	if db != nil {
+		repo, repository = postgres.NewContractStore(db), "PostgreSQL repository"
+	}
+	audit := memory.NewIssuanceAuditLog()
 	emailClient := email.NewClient(email.Config{
 		BaseURL: cfg.emailURL, Timeout: cfg.emailTimeout, Breaker: resilience.DefaultConfig(),
 	})
@@ -339,8 +352,8 @@ func newContractWiring(ctx context.Context, cfg contractConfig, store ports.Docu
 		Repo: repo, Generator: pdf.New(), Store: store, Signer: signer, Notifier: notifier, Audit: audit, Clock: clock,
 	}, cfg.service)
 	go service.Run(ctx)
-	log.Printf("contractual document: PDF in %s, e-mail via %s, links valid %s, in-memory repository and audit log (pending PostgreSQL and the audit service)",
-		where, cfg.emailURL, cfg.service.LinkTTL)
+	log.Printf("contractual document: PDF in %s, e-mail via %s, links valid %s, %s and in-memory audit log (pending the audit service)",
+		where, cfg.emailURL, cfg.service.LinkTTL, repository)
 	return contractWiring{
 		service:     service,
 		reader:      issuance.NewContractReader(repo, store, audit, signer, clock),
