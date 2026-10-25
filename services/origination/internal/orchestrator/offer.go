@@ -88,6 +88,9 @@ type OfferDeps struct {
 	Profiles ProfileResolver
 	Rater    ports.Rater
 	Clock    ports.Clock
+	// Decisions receives the audit record of every offer priced (HU-W4.1-01).
+	// Nil: nothing is recorded.
+	Decisions ports.DecisionRecorder
 }
 
 // OfferService is the use case of HU-W1.2-03: it generates the personalized
@@ -148,6 +151,7 @@ func (s *OfferService) Generate(ctx context.Context, req domain.EmbeddedOfferReq
 		return domain.PersonalizedOffer{}, fail(span, "could not save the offer", err)
 	}
 
+	recordDecision(ctx, s.d.Decisions, stored)
 	span.SetAttributes(attribute.String("offer.mode", string(stored.Mode)), attribute.String("offer.profile_source", string(stored.ProfileSource)))
 	s.generated.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("mode", string(stored.Mode)), attribute.String("profile_source", string(stored.ProfileSource))))
@@ -237,6 +241,7 @@ func (s *OfferService) Renew(ctx context.Context, offerID string) (domain.Person
 		return domain.PersonalizedOffer{}, false, fail(span, "could not save the renewal", err)
 	}
 	if created {
+		recordDecision(ctx, s.d.Decisions, stored)
 		s.renewed.Add(ctx, 1, metric.WithAttributes(attribute.String("mode", string(stored.Mode))))
 		slog.InfoContext(ctx, "personalized offer renewed", "offer_id", old.ID, "renewal_id", stored.ID, "mode", stored.Mode)
 	}

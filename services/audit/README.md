@@ -2,13 +2,13 @@
 
 Garantiza trazabilidad: cualquier decisión de suscripción o precio debe poder reconstruirse al 100 %, y los consentimientos de Open Finance deben ser verificables y revocables.
 
-**Estado:** `GET /health` y, con `DATABASE_URL`, el módulo `consents` de **HU-W1.2-01** (consentimiento explícito e inmutable del cliente): `GET /v1/audit/consent-terms/current`, `POST /v1/audit/consents`, `GET /v1/audit/consent-verifications` y `GET /v1/audit/consents/{consent_id}`. **HU-M1.3-01:** el asegurado consulta sus propios consentimientos (`GET /v1/consents` y `GET /v1/consents/{consent_id}`, con `AUTH_*`), con el estado y el historial derivados de `consent_event`; `audit` reconoce al titular por el vínculo `sub` ↔ documento que le llega con el evento `CustomerLinked` de originación (`EVENTS_QUEUE_URL`). **HU-M1.3-02:** el asegurado revoca un consentimiento (`POST /v1/consents/{consent_id}/revocations`) y descarga el comprobante en PDF (`GET /v1/consents/{consent_id}/revocation-receipt`); el registro es inmutable y queda antes de responder, el consentimiento deja de verificarse como activo en ese instante y, con `OPEN_FINANCE_URL`, un trabajador avisa a cada entidad dentro de 5 minutos. El módulo `decisions` sigue reservado.
+**Estado:** `GET /health` y, con `DATABASE_URL`, el módulo `consents` de **HU-W1.2-01** (consentimiento explícito e inmutable del cliente): `GET /v1/audit/consent-terms/current`, `POST /v1/audit/consents`, `GET /v1/audit/consent-verifications` y `GET /v1/audit/consents/{consent_id}`. **HU-M1.3-01:** el asegurado consulta sus propios consentimientos (`GET /v1/consents` y `GET /v1/consents/{consent_id}`, con `AUTH_*`), con el estado y el historial derivados de `consent_event`; `audit` reconoce al titular por el vínculo `sub` ↔ documento que le llega con el evento `CustomerLinked` de originación (`EVENTS_QUEUE_URL`). **HU-M1.3-02:** el asegurado revoca un consentimiento (`POST /v1/consents/{consent_id}/revocations`) y descarga el comprobante en PDF (`GET /v1/consents/{consent_id}/revocation-receipt`); el registro es inmutable y queda antes de responder, el consentimiento deja de verificarse como activo en ese instante y, con `OPEN_FINANCE_URL`, un trabajador avisa a cada entidad dentro de 5 minutos. El módulo `decisions` sigue reservado. Con `DATABASE_URL` también el módulo `decisions` de **HU-W4.1-01** (registro de auditoría de las decisiones de suscripción): `POST /v1/audit/decisions` (interna) y, con `AUTH_ISSUER`, `GET /v1/audit/decisions/{offer_id}` (rol `operations`).
 
 ## Responsabilidades
 
 | Módulo (`internal/`) | Qué hace |
 |---|---|
-| `decisions` | Registro inmutable (*append-only*) de qué datos y reglas llevaron a un precio o decisión de aceptación/rechazo |
+| `decisions` | Registro inmutable (*append-only*) de qué datos y reglas llevaron a un precio o decisión de aceptación/rechazo. **HU-W4.1-01:** `decisions.Service` guarda el registro que envía `origination` (idempotente por `offer_id`; `recorded_at` lo pone el servidor) y lo entrega al analista de operaciones |
 | `consents` | Registro, consulta y revocación de consentimientos de datos financieros (revocación efectiva ≤ 5 min). **HU-W1.2-01:** `consents.Service` publica los términos vigentes (`v1`), registra el consentimiento (idempotente por cliente, solicitud y versión; la fecha y hora la pone el servidor), lo consulta como evidencia y lo verifica para `origination`. **HU-M1.3-01:** `consents.HolderService` guarda el vínculo de la cuenta con su documento (idempotente por `subject`; un documento distinto para el mismo `subject` conserva el primero y deja un aviso), resuelve el titular de un token (`ErrHolderNotLinked` sin vínculo) y lista u obtiene sus consentimientos con `domain.View` (estado derivado, entidad del catálogo, fin de vigencia, comprobante e historial); uno ajeno responde como inexistente. **HU-M1.3-02:** `consents.RevocationService` revoca (genérico `Revoke`, el que reutiliza el portal, y `RevokeAsHolder`), genera el comprobante (`Receipt`) y reintenta solo las entidades no confirmadas (`RetryPending`); `consents.NoticeWorker` avisa a cada entidad con `pkg/idempotency` (un reclamo por intento, la misma clave en cada intento, ventana de 5 min); `Service.Verify` responde con el estado derivado (`WithEvents`): revocado o parcial ⇒ `active=false` |
 
 ## Reglas de diseño
@@ -150,6 +150,25 @@ El portal de cumplimiento solo agrega sus rutas; el proceso ya existe:
    trabajador.
 3. El estado por entidad, el resumen (`in_progress`, `completed`, `partial`), la ventana de 5 minutos, la revocación parcial y el
    registro inmutable no cambian. Mostrar «Revocación en curso» en el portal es solo leer `notice_status`.
+
+## Registro de auditoría de decisiones (HU-W4.1-01)
+
+Contrato para el front: [`docs/contratos/HU-W4.1-01-api.md`](../../docs/contratos/HU-W4.1-01-api.md).
+
+```
+POST /v1/audit/decisions ───────────▶ origination registra cada oferta que cotiza (red interna, sin token)
+GET  /v1/audit/decisions/{offer_id} ▶ el analista (rol operations) reconstruye la decisión  [CA-1, CA-3]
+```
+
+- **Contenido (CA-3):** fecha y hora de la solicitud (UTC con zona), versión del motor de rating, fuentes consultadas (estado y latencia de cada una),
+  perfil resultante, reglas de rating con su orden de ejecución y valor de salida, prima y decisión (`accepted`, `rejected` o `deferred` con motivo).
+- **Solo lectura (CA-4):** la tabla `underwriting_decision` rechaza `UPDATE`, `DELETE` y `TRUNCATE` con disparadores (`forbid_decision_mutation()`) y
+  no existe ninguna ruta para modificarla. Un identificador inexistente responde `404 decision_not_found` con un mensaje genérico (CA-2).
+- **Ingesta:** `origination` llama a `POST /v1/audit/decisions` al generar, renovar o recotizar una oferta personalizada (`AUDIT_URL`). Una oferta normal se
+  registra como `accepted`; una provisional (fuente caída), como `deferred` con su motivo. Si audit no responde, la oferta se entrega igual y el error queda en el log
+  (el registro es idempotente: puede reenviarse). **Pendiente:** el rechazo por la bandeja del asesor (HU-W1.1-02) y el reintento garantizado con *outbox*/SNS.
+- **Identificador:** hoy se busca por el id de la oferta (`off-…`); buscar por el id de la póliza emitida queda pendiente de que la emisión registre su vínculo con la oferta.
+- Como la verificación del consentimiento, **la ruta de registro debe ser alcanzable solo desde la red interna**.
 
 ## Configuración (variables de entorno)
 

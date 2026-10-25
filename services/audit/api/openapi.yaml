@@ -232,6 +232,106 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/audit/decisions:
+    post:
+      operationId: recordDecision
+      summary: Record an underwriting decision (HU-W4.1-01)
+      description: >
+        Internal route origination calls for every offer it prices. It carries
+        no Cognito token and must be reachable only from inside the network.
+        The record is append-only and idempotent by `offer_id`: sending the
+        same offer again returns the stored record and never replaces it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisionRecord"
+      responses:
+        "201":
+          description: The decision was recorded
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionRecord"
+        "200":
+          description: A decision for that offer already existed; it is returned unchanged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionRecord"
+        "400":
+          description: Malformed body (invalid_request) or invalid fields (validation_failed)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "503":
+          description: The decision could not be recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/audit/decisions/{offer_id}:
+    get:
+      operationId: getDecision
+      summary: Audit record of an underwriting decision (HU-W4.1-01)
+      description: >
+        Read-only. Human route: only the operations role of the Cognito pool
+        reads it. An unknown id answers 404 with a generic message.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: offer_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The audit record
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionRecord"
+        "401":
+          description: Missing, invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The role may not read audit records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No audit record for that identifier
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The record could not be read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/consents:
     get:
       operationId: listHolderConsents
@@ -535,6 +635,7 @@ components:
             - terms_outdated
             - consent_not_found
             - not_found
+            - decision_not_found
             - holder_not_linked
             - consent_not_active
             - consent_already_revoked
@@ -552,7 +653,7 @@ components:
           type: string
         code:
           type: string
-          enum: [required, invalid_format, out_of_range, incomplete, must_be_true]
+          enum: [required, invalid, invalid_format, out_of_range, incomplete, must_be_true, too_many]
     ValidationError:
       type: object
       required: [error, message, fields]
@@ -940,3 +1041,48 @@ components:
         generated_at:
           type: string
           format: date-time
+    DecisionRecord:
+      type: object
+      required: [offer_id, customer_id, partner_id, application_id, channel, requested_at, rater_version, sources, profile, rules, premium, currency, decision]
+      properties:
+        offer_id: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$"}
+        customer_id: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$"}
+        partner_id: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$"}
+        application_id: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$"}
+        channel: {type: string, maxLength: 128}
+        requested_at: {type: string, format: date-time, description: When the underwriting request was made (UTC)}
+        rater_version: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$"}
+        sources:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            required: [source, status, latency_ms]
+            properties:
+              source: {type: string, minLength: 1}
+              status: {type: string, minLength: 1, description: "ok, timeout, error or circuit_open"}
+              latency_ms: {type: integer, format: int64, minimum: 0, maximum: 3600000}
+        profile:
+          type: object
+          required: [score, category, partial]
+          properties:
+            score: {type: number, minimum: 0, maximum: 1}
+            category: {type: string}
+            partial: {type: boolean}
+        rules:
+          type: array
+          minItems: 1
+          maxItems: 50
+          description: Rating rules in execution order
+          items:
+            type: object
+            required: [order, code, value]
+            properties:
+              order: {type: integer, minimum: 1, maximum: 1000}
+              code: {type: string, minLength: 1}
+              value: {type: number}
+        premium: {type: number, minimum: 0, maximum: 1000000000000}
+        currency: {type: string, minLength: 3, maxLength: 3}
+        decision: {type: string, enum: [accepted, rejected, deferred]}
+        decision_reason: {type: string, maxLength: 200, description: Required unless the decision is accepted}
+        recorded_at: {type: string, format: date-time, readOnly: true, description: Set by the server}

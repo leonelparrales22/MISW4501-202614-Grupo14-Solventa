@@ -32,6 +32,9 @@ type RequoteDeps struct {
 	Rater       ports.Rater
 	Notifier    ports.RequoteNotifier
 	Clock       ports.Clock
+	// Decisions receives the audit record of each replacement offer
+	// (HU-W4.1-01). Nil: nothing is recorded.
+	Decisions ports.DecisionRecorder
 }
 
 // RequoteConfig tunes the worker. Zero values take the defaults.
@@ -159,6 +162,7 @@ func (w *RequoteWorker) requote(ctx context.Context, old domain.PersonalizedOffe
 		return false
 	}
 
+	recordDecision(ctx, w.d.Decisions, offer)
 	w.requoted.Add(ctx, 1, metric.WithAttributes(attribute.String("profile_source", string(offer.ProfileSource))))
 	slog.InfoContext(ctx, "provisional offer replaced", "offer_id", old.ID, "new_offer_id", offer.ID,
 		"old_premium", old.Premium, "new_premium", offer.Premium)

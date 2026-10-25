@@ -74,7 +74,11 @@ func newOfferWiring(ctx context.Context, cfg config, resolver *profiling.Resolve
 	acceptances := st.acceptances
 
 	var consents ports.ConsentVerifier
+	var decisions ports.DecisionRecorder
 	if cfg.audit.url != "" {
+		decisions = auditadapter.NewRecorder(auditadapter.Config{
+			BaseURL: cfg.audit.url, Timeout: cfg.audit.timeout, Breaker: resilience.DefaultConfig(),
+		})
 		consents = auditadapter.NewVerifier(auditadapter.Config{
 			BaseURL: cfg.audit.url, Timeout: cfg.audit.timeout, Breaker: resilience.DefaultConfig(),
 		})
@@ -83,13 +87,13 @@ func newOfferWiring(ctx context.Context, cfg config, resolver *profiling.Resolve
 	}
 	rater := rating.New()
 	service := orchestrator.NewOfferService(orchestrator.OfferDeps{
-		Store: store, Offers: router, Consents: consents, Profiles: resolver, Rater: rater, Clock: clock,
+		Store: store, Offers: router, Consents: consents, Profiles: resolver, Rater: rater, Clock: clock, Decisions: decisions,
 	})
 
 	if consents != nil {
 		worker := orchestrator.NewRequoteWorker(orchestrator.RequoteDeps{
 			Store: store, Acceptances: acceptances, Consents: consents, Profiles: resolver, Rater: rater,
-			Notifier: newRequoteNotifier(cfg), Clock: clock,
+			Notifier: newRequoteNotifier(cfg), Clock: clock, Decisions: decisions,
 		}, orchestrator.RequoteConfig{PollInterval: cfg.offers.requotePollInterval, Batch: cfg.offers.requoteBatch})
 		go worker.Run(ctx)
 		log.Printf("offer requote: provisional offers are re-examined every %s (batch %d)", cfg.offers.requotePollInterval, cfg.offers.requoteBatch)
