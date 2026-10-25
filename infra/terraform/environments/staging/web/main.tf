@@ -61,8 +61,9 @@ module "web" {
   partner_api_key = var.api_enabled ? local.platform.portal_partner_api_key : null
   cognito         = local.cognito
 
-  # Publishing role of cd-portal.yml (decision D-8 of T5): develop, plus the
-  # branch of a window only while it exists (D-9 b).
+  # Publishing role of cd-portal.yml (decision D-8 of T5): develop and main
+  # (main publishes staging on every merge, like backend-cd), plus the branch of
+  # a window only while it exists (D-9 b).
   cd = {
     role_name             = "solventa-github-actions-web-stg"
     github_subject_prefix = local.front_subject_prefix

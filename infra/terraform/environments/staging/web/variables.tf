@@ -26,13 +26,13 @@ variable "api_enabled" {
 }
 
 variable "cd_branches" {
-  description = "Branches of the front-end repository whose workflow runs may assume the publishing role. develop by default; a staging window can add the branch of its story for the temporary trigger (decision D-9 b of T5), and the role is destroyed with the window."
+  description = "Branches of the front-end repository whose workflow runs may assume the publishing role. develop (on demand) and main (automatic on every merge, like backend-cd) by default; a staging window can add the branch of its story for the temporary trigger (decision D-9 b of T5), and the role is destroyed with the window."
   type        = list(string)
-  default     = ["develop"]
+  default     = ["develop", "main"]
 
   validation {
-    condition     = contains(var.cd_branches, "develop") && alltrue([for b in var.cd_branches : !contains(["main"], b)])
-    error_message = "cd_branches must keep develop and never include main (production-demo is published by the main pipeline, #68)."
+    condition     = contains(var.cd_branches, "develop")
+    error_message = "cd_branches must keep develop."
   }
 }
 
