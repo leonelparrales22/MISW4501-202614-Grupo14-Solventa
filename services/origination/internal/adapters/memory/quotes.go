@@ -93,8 +93,8 @@ func (s *CustomerStore) save(c domain.Customer) domain.Customer {
 	return c
 }
 
-// QuoteStore is an in-memory ports.QuoteRepository. PENDING: the PostgreSQL
-// repository; until then the quotes are lost when the service restarts.
+// QuoteStore is the in-memory ports.QuoteRepository the service uses without
+// DATABASE_URL: the quotes are lost when the service restarts.
 type QuoteStore struct {
 	mu   sync.Mutex
 	byID map[string]domain.Quote

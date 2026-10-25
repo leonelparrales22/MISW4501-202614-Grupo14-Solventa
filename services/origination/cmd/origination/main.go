@@ -37,6 +37,7 @@ import (
 	redisadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/redis"
 	s3adapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/s3"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/formalization"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/issuance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/orchestrator"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
@@ -106,6 +107,10 @@ func main() {
 		// customer through the same provider client, so it keeps a single
 		// circuit breaker.
 		var reviewNotifier ports.ReviewOutcomeNotifier
+		// HU-W1.1-03: the confirmation code reaches the customer by e-mail
+		// through the same client; without the provider no purchase is
+		// formalized, because it could not get the customer's consent.
+		var consentSender ports.ConsentCodeSender = formalization.UnavailableSender{}
 		// One repository for every document of the service: the contractual
 		// PDF (HU-W1.3-03) and the faces of the identity document of the
 		// sign-up (HU-M1.1-01) go to the same bucket, so they share one client.
@@ -126,6 +131,7 @@ func main() {
 			activations = append(activations, contract.service)
 			wakeContracts = contract.service.Notify
 			reviewNotifier = emailadapter.NewReviewNotifier(contract.emailClient)
+			consentSender = emailadapter.NewConsentNotifier(contract.emailClient)
 			opts = append(opts, httpadapter.WithContractDocuments(contract.reader, verifier))
 		} else {
 			log.Printf("%s is not set: the contractual document and its notification (HU-W1.3-03) are not wired", envEmailURL)
@@ -150,7 +156,11 @@ func main() {
 		opts = append(opts,
 			httpadapter.WithAcceptances(acceptances, verifier),
 			httpadapter.WithOffers(offers.service, verifier),
-			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver, customers), verifier),
+			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver, customers, st.quotes), verifier),
+			httpadapter.WithFormalizations(formalization.New(formalization.Deps{
+				Quotes: st.quotes, Customers: customers, Offers: st.offers, Formalized: st.formalized, Challenges: st.consentCodes,
+				Sender: consentSender, Acceptances: acceptances, Clock: systemClock{},
+			}), verifier),
 			httpadapter.WithReviews(reviews, verifier))
 		// Sign-up of the insured (HU-M1.1-01). It needs the user pool: the
 		// account is created from here, never by the client.
@@ -395,12 +405,13 @@ func newDocumentStore(ctx context.Context, cfg documentsConfig) (ports.DocumentS
 }
 
 // newAssistedQuoteService wires the advisor quote (HU-W1.1-01) over the
-// customer repository it receives, the in-memory quote store (PENDING:
-// PostgreSQL), the shared profiling Resolver and the rating engine.
+// customer and quote repositories it receives (PostgreSQL with DATABASE_URL,
+// memory otherwise: newStores), the shared profiling Resolver and the rating
+// engine.
 func newAssistedQuoteService(resolver *profiling.Resolver,
-	customers ports.CustomerRepository) *orchestrator.AssistedQuoteService {
-	log.Printf("assisted quote: in-memory quote store (pending PostgreSQL), rating %s", rating.Version)
-	return orchestrator.NewAssistedQuoteService(customers, memory.NewQuoteStore(), resolver, rating.New(), systemClock{})
+	customers ports.CustomerRepository, quotes ports.QuoteRepository) *orchestrator.AssistedQuoteService {
+	log.Printf("assisted quote: rating %s", rating.Version)
+	return orchestrator.NewAssistedQuoteService(customers, quotes, resolver, rating.New(), systemClock{})
 }
 
 // newHTTPClient builds the client shared by the external-source adapters: one

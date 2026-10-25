@@ -42,7 +42,7 @@ pasarela respondiera), `payment_rejected`, `payment_method_missing`, `document_g
 El más reciente aceptado primero. Todos los filtros son opcionales y se combinan:
 
 - `status`: `accepted` | `charging` | `active` | `notified` | `exception`.
-- `channel`: `web` | `mobile` (dónde aceptó el cliente; el aliado o el asesor no se guardan en la aceptación).
+- `channel`: `web` | `mobile` | `advisor` (dónde se registró la aceptación; `advisor` es la compra que un asesor formaliza en nombre del cliente, HU-W1.1-03; el aliado no se guarda en la aceptación).
 - `from`, `to`: fecha de aceptación, **inclusivas**, en RFC 3339; `to` no puede ser anterior a `from`.
 - `day_from`: inicio del día del analista, para los conteos «de hoy» (por defecto, medianoche UTC).
 - `limit`: 1–200, por defecto 50.
@@ -118,6 +118,6 @@ ocurrió ni un cambio sin su acción. Un reintento rechazado (`409`, `404`) no d
   para no pasar de 5 SP).
 - **Alerta real del escalamiento** (evento, correo o notificación a un responsable): hoy solo la marca `unattended`.
 - **Gestión manual** distinta de reintentar, y excepciones de otros pasos que aún no existen (póliza, firma).
-- **Canal con el aliado o el asesor** (el mockup O1 muestra «Banco Aliado», «Asesor · L. Gómez»): la aceptación solo guarda `web` o
-  `mobile`.
+- **Aliado y nombre del asesor** (el mockup O1 muestra «Banco Aliado», «Asesor · L. Gómez»): la aceptación guarda `web`, `mobile` o
+  `advisor` (HU-W1.1-03), pero no el aliado ni quién es el asesor; ese dato está en la formalización.
 - **Código del banco** («código 51») y detalle del error de la pasarela: no se exponen.

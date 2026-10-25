@@ -87,8 +87,8 @@ documento ya registrado se **actualizan** los datos de contacto y se conserva el
 
 ## 3. Lo que todavía es provisional
 
-- Los clientes están en **PostgreSQL** con `DATABASE_URL` (HU-M1.1-01 y fix C5: el mismo pool de originación, también sin pasarela);
-  sin ella, en memoria. Las cotizaciones siguen **en memoria** (se pierden si el servicio se reinicia) hasta contar con PostgreSQL.
+- Los clientes y las cotizaciones están en **PostgreSQL** con `DATABASE_URL` (HU-M1.1-01, fix C5 y HU-W1.1-03: el mismo pool de
+  originación, también sin pasarela); sin ella, en memoria.
 - El motor de rating `v1` es una tabla actuarial mínima detrás del puerto `Rater`; HU-W1.2-03 puede ampliarla sin cambiar este contrato.
 - `consent_active` lo afirma el asesor mientras `audit` no exponga la consulta de consentimientos (HU-W1.2-01).
-- La formalización de la compra es HU-W1.1-03: aquí solo se expone `can_formalize`.
+- La formalización de la compra es HU-W1.1-03 ([`HU-W1.1-03-api.md`](HU-W1.1-03-api.md)): aquí solo se expone `can_formalize`.
