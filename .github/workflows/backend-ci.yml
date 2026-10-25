@@ -86,6 +86,71 @@ jobs:
             }' coverage.out | sort
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Resumen detallado de tests
+        if: always()
+        run: |
+          [ -f junit.xml ] || exit 0
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import os
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("junit.xml").getroot()
+          suites = list(root.iter("testsuite"))
+          names = [s.get("name", "") for s in suites]
+          prefix = os.path.commonprefix(names)
+          prefix = prefix[:prefix.rfind("/") + 1] if "/" in prefix else ""
+
+          rows, cases = [], []
+          for s in suites:
+              n = s.get("name", "")
+              t = f = k = 0
+              for c in s.iter("testcase"):
+                  fail = c.find("failure") is not None or c.find("error") is not None
+                  skip = c.find("skipped") is not None
+                  t += 1
+                  f += fail
+                  k += skip
+                  cases.append((n, c.get("name", ""), float(c.get("time") or 0), fail, skip, c))
+              rows.append((n[len(prefix):], t, t - f - k, f, k, float(s.get("time") or 0)))
+
+          T = sum(r[1] for r in rows)
+          P = sum(r[2] for r in rows)
+          F = sum(r[3] for r in rows)
+          K = sum(r[4] for r in rows)
+          D = sum(r[5] for r in rows)
+
+          print(f"## 🧪 Tests: {T} ejecutados · ✅ {P} pasaron · ❌ {F} fallaron · ⏭️ {K} omitidos · ⏱️ {D:.1f}s acumulados")
+          print()
+          print("| Paquete | Estado | Tests | ✅ | ❌ | ⏭️ | Tiempo |")
+          print("|---|---|---|---|---|---|---|")
+          for name, t, p, f, k, d in sorted(rows):
+              icon = "❌" if f else ("⏭️" if t and k == t else "✅")
+              print(f"| `{name}` | {icon} | {t} | {p} | {f} | {k} | {d:.2f}s |")
+          print()
+
+          failed = [x for x in cases if x[3]]
+          if failed:
+              print("### ❌ Tests fallidos")
+              for n, name, _, _, _, c in failed:
+                  e = c.find("failure") if c.find("failure") is not None else c.find("error")
+                  msg = (e.text or e.get("message") or "")[:1500]
+                  print(f"<details open><summary><code>{n[len(prefix):]}</code> · {name}</summary>\n\n```\n{msg}\n```\n</details>\n")
+
+          skipped = [x for x in cases if x[4]]
+          if skipped:
+              print("### ⏭️ Tests omitidos")
+              print("<details><summary>Ver lista</summary>\n")
+              for n, name, *_ in skipped:
+                  print(f"- `{n[len(prefix):]}` · {name}")
+              print("\n</details>\n")
+
+          print("### 🐢 10 tests más lentos")
+          print("| Test | Paquete | Tiempo |")
+          print("|---|---|---|")
+          for n, name, t, *_ in sorted(cases, key=lambda x: -x[2])[:10]:
+              print(f"| {name} | `{n[len(prefix):]}` | {t:.2f}s |")
+          PY
+
       - name: Reporte de tests
         if: always()
         continue-on-error: true
