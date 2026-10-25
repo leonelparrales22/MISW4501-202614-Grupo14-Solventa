@@ -67,3 +67,9 @@ variable "images_to_keep" {
   type        = number
   default     = 30
 }
+
+variable "staging_deploy_environment" {
+  description = "GitHub environment (no reviewers, deployment branches develop and main) whose jobs may assume the staging deploy role."
+  type        = string
+  default     = "staging"
+}

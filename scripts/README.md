@@ -5,6 +5,10 @@ Utilidades de desarrollo y CI. Cada script debe documentarse aquí al agregarse.
 | Script | Uso |
 |---|---|
 | [`ci/changed-images.sh`](ci/changed-images.sh) | `changed-images.sh <sha-base> <sha-head>`: imprime como arreglo JSON las imágenes que `backend-cd` debe construir. Reconstruye la imagen cuyo directorio cambió y **todas** si cambió algo compartido (`pkg/`, `go.work`, `.dockerignore`, el CD) o si no hay base utilizable. Requiere `git` y `jq` |
+| [`ci/environment-status.sh`](ci/environment-status.sh) | `environment-status.sh <cluster>`: imprime `up` si el cluster existe y todos sus servicios tienen tareas, o `off: <motivo>`. `backend-cd` solo despliega con `up`. Requiere `aws` |
+| [`ci/staging-vars.sh`](ci/staging-vars.sh) | `staging-vars.sh <cluster>`: imprime como archivo de variables JSON de Terraform el `ttl` y los `extra_tags` con los que `up.sh` encendió `staging`, leídos de las etiquetas del cluster. Requiere `aws` y `jq` |
+| [`ci/check-deploy-plan.sh`](ci/check-deploy-plan.sh) | `terraform show -json tfplan \| check-deploy-plan.sh`: falla si el plan cambia algo que no sea una *task definition* o un servicio de ECS, o si un servicio pasa de 0 tareas a alguna. Requiere `jq` |
+| [`ci/verify-ecs-deploy.sh`](ci/verify-ecs-deploy.sh) | `verify-ecs-deploy.sh <cluster> <etiqueta>`: espera a que los servicios estén estables y falla si alguno no corre la etiqueta nueva (por ejemplo, tras un *rollback* del *circuit breaker*). Requiere `aws` |
 | [`environment/up.sh`](environment/up.sh) | `up.sh <staging\|production-demo> [--only <fases>] [--from <fase>] [--skip <fases>] [--skip-front] [--dry-run] [--yes] [--confirm-production-demo]`: enciende un ambiente completo en orden (plataforma, base de datos, portal web, servicios, front y humo). Ver «Encender y apagar un ambiente» |
 | [`environment/down.sh`](environment/down.sh) | `down.sh <staging\|production-demo> [--dry-run] [--yes] [--confirm-production-demo]`: apaga un ambiente; staging entero, production-demo entero salvo el sitio y el pool permanente |
 | [`environment/lib.sh`](environment/lib.sh) | Funciones comunes de `up.sh` y `down.sh` (argumentos, guardas, etiquetas de imagen, Terraform); no se ejecuta solo |
@@ -12,7 +16,7 @@ Utilidades de desarrollo y CI. Cada script debe documentarse aquí al agregarse.
 ## Encender y apagar un ambiente (T5)
 
 Un comando enciende y otro apaga cada ambiente (decisiones D-16 y D-18 de T5, ajustadas con #68 y #69). Viven aquí y no en
-`scripts/ci/` porque no son del CD: `backend-cd` solo se dispara con `scripts/ci/**`, así que cambiarlos no reconstruye imágenes.
+`scripts/ci/` porque no son del CD: cambiarlos no reconstruye imágenes (solo `scripts/ci/**` cuenta como cambio compartido).
 
 ### Fases de `up.sh`
 
