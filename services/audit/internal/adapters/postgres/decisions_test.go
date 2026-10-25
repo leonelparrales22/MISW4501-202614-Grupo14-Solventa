@@ -12,11 +12,17 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/domain"
 )
 
+var score = 0.82
+
 func decisionRecord(offerID string) domain.DecisionRecord {
 	return domain.DecisionRecord{
 		OfferID: offerID, CustomerID: "cus-1", PartnerID: "p-1", ApplicationID: "app-1", Channel: "embedded",
 		RequestedAt: time.Date(2026, 10, 20, 15, 4, 5, 0, time.UTC), RaterVersion: "v1",
-		Sources:      []domain.SourceConsulted{{Source: "open_finance", Status: "ok", LatencyMS: 80}, {Source: "kyc", Status: "timeout", LatencyMS: 700}},
+		ConsentID: "cns-1",
+		Sources: []domain.SourceConsulted{
+			{Source: "open_finance", Status: "ok", LatencyMS: 80, ConsultedAt: time.Date(2026, 10, 20, 15, 4, 5, 120_000_000, time.UTC), Score: &score, Category: "preferred"},
+			{Source: "kyc", Status: "timeout", LatencyMS: 700},
+		},
 		ProfileScore: 0.4, ProfileCategory: "medium", ProfilePartial: true,
 		Rules:   []domain.RuleApplied{{Order: 1, Code: "base_monthly_rate", Value: 0.001}, {Order: 2, Code: "age_factor", Value: 1.2}},
 		Premium: 120000.5, Currency: "COP", Decision: domain.DecisionDeferred, DecisionReason: "kyc_unavailable",
@@ -44,6 +50,24 @@ func TestDecisionStoreRoundTripAndIdempotency(t *testing.T) {
 	assert.Equal(t, stored, again)
 
 	_, err = store.Get(ctx, "missing")
+	assert.ErrorIs(t, err, domain.ErrDecisionNotFound)
+}
+
+func TestDecisionStoreFindsTheLatestOfAnApplication(t *testing.T) {
+	store := postgres.NewDecisionStore(newDB(t))
+	ctx := context.Background()
+	older, newer := decisionRecord("off-old"), decisionRecord("off-new")
+	older.RequestedAt = older.RequestedAt.Add(-time.Hour)
+	for _, r := range []domain.DecisionRecord{older, newer} {
+		_, _, err := store.Create(ctx, r)
+		require.NoError(t, err)
+	}
+
+	got, err := store.GetByApplication(ctx, "app-1")
+	require.NoError(t, err)
+	assert.Equal(t, "off-new", got.OfferID)
+
+	_, err = store.GetByApplication(ctx, "app-none")
 	assert.ErrorIs(t, err, domain.ErrDecisionNotFound)
 }
 

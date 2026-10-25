@@ -6,6 +6,7 @@ package decisions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -42,9 +43,15 @@ func (s *Service) Record(ctx context.Context, r domain.DecisionRecord) (domain.D
 	return stored, created, nil
 }
 
-// Get returns the decision of the offer or domain.ErrDecisionNotFound.
-func (s *Service) Get(ctx context.Context, offerID string) (domain.DecisionRecord, error) {
-	r, err := s.store.Get(ctx, offerID)
+// Get returns the decision an analyst looks for: the identifier is the id of
+// the offer or, failing that, the number of the partner's application (then
+// the most recent decision of that application). domain.ErrDecisionNotFound
+// when neither matches.
+func (s *Service) Get(ctx context.Context, id string) (domain.DecisionRecord, error) {
+	r, err := s.store.Get(ctx, id)
+	if errors.Is(err, domain.ErrDecisionNotFound) {
+		r, err = s.store.GetByApplication(ctx, id)
+	}
 	if err != nil {
 		return domain.DecisionRecord{}, fmt.Errorf("read the decision: %w", err)
 	}

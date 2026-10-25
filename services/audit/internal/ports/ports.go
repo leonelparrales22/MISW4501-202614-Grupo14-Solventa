@@ -180,4 +180,7 @@ type DecisionStore interface {
 	Create(ctx context.Context, r domain.DecisionRecord) (stored domain.DecisionRecord, created bool, err error)
 	// Get returns the record of the offer or domain.ErrDecisionNotFound.
 	Get(ctx context.Context, offerID string) (domain.DecisionRecord, error)
+	// GetByApplication returns the most recent record of the application
+	// (the request number of the partner) or domain.ErrDecisionNotFound.
+	GetByApplication(ctx context.Context, applicationID string) (domain.DecisionRecord, error)
 }

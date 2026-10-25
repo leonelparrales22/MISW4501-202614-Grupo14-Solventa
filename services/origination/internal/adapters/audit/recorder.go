@@ -47,9 +47,12 @@ func NewRecorder(cfg Config) *Recorder {
 }
 
 type decisionSourceBody struct {
-	Source    string `json:"source"`
-	Status    string `json:"status"`
-	LatencyMS int64  `json:"latency_ms"`
+	Source      string     `json:"source"`
+	Status      string     `json:"status"`
+	LatencyMS   int64      `json:"latency_ms"`
+	ConsultedAt *time.Time `json:"consulted_at"`
+	Score       *float64   `json:"score"`
+	Category    string     `json:"category"`
 }
 
 type decisionRuleBody struct {
@@ -63,6 +66,7 @@ type decisionBody struct {
 	CustomerID    string               `json:"customer_id"`
 	PartnerID     string               `json:"partner_id"`
 	ApplicationID string               `json:"application_id"`
+	ConsentID     string               `json:"consent_id"`
 	Channel       string               `json:"channel"`
 	RequestedAt   time.Time            `json:"requested_at"`
 	RaterVersion  string               `json:"rater_version"`
@@ -83,14 +87,19 @@ type decisionBody struct {
 // error.
 func (r *Recorder) Record(ctx context.Context, d ports.DecisionRecord) error {
 	body := decisionBody{
-		OfferID: d.OfferID, CustomerID: d.CustomerID, PartnerID: d.PartnerID, ApplicationID: d.ApplicationID,
+		OfferID: d.OfferID, CustomerID: d.CustomerID, PartnerID: d.PartnerID, ApplicationID: d.ApplicationID, ConsentID: d.ConsentID,
 		Channel: d.Channel, RequestedAt: d.RequestedAt, RaterVersion: d.RaterVersion,
 		Sources: []decisionSourceBody{}, Rules: []decisionRuleBody{},
 		Premium: d.Premium, Currency: d.Currency, Decision: d.Decision, DecisionReason: d.DecisionReason,
 	}
 	body.Profile.Score, body.Profile.Category, body.Profile.Partial = d.ProfileScore, d.ProfileCategory, d.ProfilePartial
 	for _, s := range d.Sources {
-		body.Sources = append(body.Sources, decisionSourceBody{Source: s.Source, Status: s.Status, LatencyMS: s.LatencyMS})
+		entry := decisionSourceBody{Source: s.Source, Status: s.Status, LatencyMS: s.LatencyMS, Score: s.Score, Category: s.Category}
+		if !s.ConsultedAt.IsZero() {
+			at := s.ConsultedAt.UTC()
+			entry.ConsultedAt = &at
+		}
+		body.Sources = append(body.Sources, entry)
 	}
 	for _, rule := range d.Rules {
 		body.Rules = append(body.Rules, decisionRuleBody{Order: rule.Order, Code: rule.Code, Value: rule.Value})

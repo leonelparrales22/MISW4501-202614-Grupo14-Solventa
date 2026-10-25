@@ -285,7 +285,9 @@ paths:
       summary: Audit record of an underwriting decision (HU-W4.1-01)
       description: >
         Read-only. Human route: only the operations role of the Cognito pool
-        reads it. An unknown id answers 404 with a generic message.
+        reads it. The identifier is the id of the offer or the number of the
+        partner's application (then the most recent decision of that
+        application). An unknown id answers 404 with a generic message.
       security:
         - cognitoJwt: []
       parameters:
@@ -1049,7 +1051,8 @@ components:
         customer_id: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$"}
         partner_id: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$"}
         application_id: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$"}
-        channel: {type: string, maxLength: 128}
+        consent_id: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]*$", description: The consent the sources were consulted under}
+        channel: {type: string, pattern: "^[A-Za-z0-9_.:-]{1,64}$"}
         requested_at: {type: string, format: date-time, description: When the underwriting request was made (UTC)}
         rater_version: {type: string, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$"}
         sources:
@@ -1059,15 +1062,18 @@ components:
             type: object
             required: [source, status, latency_ms]
             properties:
-              source: {type: string, minLength: 1}
-              status: {type: string, minLength: 1, description: "ok, timeout, error or circuit_open"}
+              source: {type: string, pattern: "^[A-Za-z0-9_.:-]{1,64}$"}
+              status: {type: string, pattern: "^[A-Za-z0-9_.:-]{1,64}$", description: "ok, timeout, error or circuit_open"}
               latency_ms: {type: integer, format: int64, minimum: 0, maximum: 3600000}
+              consulted_at: {type: string, format: date-time, nullable: true, description: When the call to the source started (UTC)}
+              score: {type: number, minimum: 0, maximum: 1, nullable: true, description: The risk score the source returned; null when it did not answer}
+              category: {type: string, maxLength: 64, pattern: "^[A-Za-z0-9_.:-]*$", description: The category the source returned; empty when it did not answer}
         profile:
           type: object
           required: [score, category, partial]
           properties:
             score: {type: number, minimum: 0, maximum: 1}
-            category: {type: string}
+            category: {type: string, maxLength: 64, pattern: "^[A-Za-z0-9_.:-]*$"}
             partial: {type: boolean}
         rules:
           type: array
@@ -1079,10 +1085,10 @@ components:
             required: [order, code, value]
             properties:
               order: {type: integer, minimum: 1, maximum: 1000}
-              code: {type: string, minLength: 1}
+              code: {type: string, pattern: "^[A-Za-z0-9_.:-]{1,64}$"}
               value: {type: number}
         premium: {type: number, minimum: 0, maximum: 1000000000000}
-        currency: {type: string, minLength: 3, maxLength: 3}
+        currency: {type: string, pattern: "^[A-Z]{3}$"}
         decision: {type: string, enum: [accepted, rejected, deferred]}
-        decision_reason: {type: string, maxLength: 200, description: Required unless the decision is accepted}
+        decision_reason: {type: string, maxLength: 64, pattern: "^[A-Za-z0-9_.:-]*$", description: Required unless the decision is accepted}
         recorded_at: {type: string, format: date-time, readOnly: true, description: Set by the server}

@@ -23,7 +23,7 @@ const (
 // down comes back, and says why.
 func decisionOf(o domain.PersonalizedOffer) ports.DecisionRecord {
 	r := ports.DecisionRecord{
-		OfferID: o.ID, CustomerID: o.CustomerID, PartnerID: o.PartnerID, ApplicationID: o.ApplicationID,
+		OfferID: o.ID, CustomerID: o.CustomerID, PartnerID: o.PartnerID, ApplicationID: o.ApplicationID, ConsentID: o.ConsentID,
 		Channel: string(o.Channel), RequestedAt: o.CreatedAt.UTC(), RaterVersion: o.RaterVersion,
 		ProfileScore: o.Profile.Score, ProfileCategory: o.Profile.Category, ProfilePartial: o.Profile.Partial,
 		Premium: o.Premium, Currency: o.Currency, Decision: decisionAccepted,
@@ -36,7 +36,12 @@ func decisionOf(o domain.PersonalizedOffer) ports.DecisionRecord {
 		}
 	}
 	for _, s := range o.Profile.Sources {
-		r.Sources = append(r.Sources, ports.DecisionSource{Source: s.Source, Status: string(s.Status), LatencyMS: s.Latency.Milliseconds()})
+		src := ports.DecisionSource{Source: s.Source, Status: string(s.Status), LatencyMS: s.Latency.Milliseconds(), ConsultedAt: s.ConsultedAt}
+		if s.Value != nil {
+			score := s.Value.Score
+			src.Score, src.Category = &score, s.Value.Category
+		}
+		r.Sources = append(r.Sources, src)
 	}
 	for i, rule := range o.Rules {
 		r.Rules = append(r.Rules, ports.DecisionRule{Order: i + 1, Code: rule.Code, Value: rule.Value})

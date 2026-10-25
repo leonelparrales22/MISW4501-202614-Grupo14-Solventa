@@ -66,9 +66,13 @@ type (
 		Coverages          []coverageJSON `json:"coverages"`
 	}
 	sourceJSON struct {
-		Source    string `json:"source"`
-		Status    string `json:"status"`
-		LatencyMs int64  `json:"latency_ms"`
+		Source      string     `json:"source"`
+		Status      string     `json:"status"`
+		LatencyMs   int64      `json:"latency_ms"`
+		ConsultedAt *time.Time `json:"consulted_at,omitempty"`
+		// Score and Category are what the source returned; absent when it did not answer.
+		Score    *float64 `json:"score,omitempty"`
+		Category string   `json:"category,omitempty"`
 	}
 	profileJSON struct {
 		Score        float64      `json:"score"`
@@ -239,7 +243,16 @@ func insertOffer(ctx context.Context, db execer, o domain.PersonalizedOffer) (bo
 		snapshot.CalculatedAt = &t
 	}
 	for _, src := range o.Profile.Sources {
-		snapshot.Sources = append(snapshot.Sources, sourceJSON{Source: src.Source, Status: string(src.Status), LatencyMs: src.Latency.Milliseconds()})
+		entry := sourceJSON{Source: src.Source, Status: string(src.Status), LatencyMs: src.Latency.Milliseconds()}
+		if !src.ConsultedAt.IsZero() {
+			at := src.ConsultedAt.UTC()
+			entry.ConsultedAt = &at
+		}
+		if src.Value != nil {
+			score := src.Value.Score
+			entry.Score, entry.Category = &score, src.Value.Category
+		}
+		snapshot.Sources = append(snapshot.Sources, entry)
 	}
 	profile, err := json.Marshal(snapshot)
 	if err != nil {
@@ -325,9 +338,16 @@ func scanOffer(row scanner) (domain.PersonalizedOffer, error) {
 		o.Profile.CalculatedAt = p.CalculatedAt.UTC()
 	}
 	for _, src := range p.Sources {
-		o.Profile.Sources = append(o.Profile.Sources, domain.SourceOutcome{
+		outcome := domain.SourceOutcome{
 			Source: src.Source, Status: domain.SourceStatus(src.Status), Latency: time.Duration(src.LatencyMs) * time.Millisecond,
-		})
+		}
+		if src.ConsultedAt != nil {
+			outcome.ConsultedAt = src.ConsultedAt.UTC()
+		}
+		if src.Score != nil {
+			outcome.Value = &domain.SourceValue{Score: *src.Score, Category: src.Category}
+		}
+		o.Profile.Sources = append(o.Profile.Sources, outcome)
 	}
 	for _, r := range rs {
 		o.Rules = append(o.Rules, domain.AppliedRule{Code: r.Code, Value: r.Value})

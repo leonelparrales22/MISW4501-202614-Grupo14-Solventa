@@ -14,11 +14,17 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 )
 
+var score = 0.82
+
 func decision() ports.DecisionRecord {
 	return ports.DecisionRecord{
 		OfferID: "off-1", CustomerID: "c1", PartnerID: "p1", ApplicationID: "a1", Channel: "embedded",
 		RequestedAt: time.Date(2026, 10, 20, 15, 0, 0, 0, time.UTC), RaterVersion: "v1",
-		Sources:      []ports.DecisionSource{{Source: "kyc", Status: "timeout", LatencyMS: 700}},
+		ConsentID: "cns-1",
+		Sources: []ports.DecisionSource{
+			{Source: "open_finance", Status: "ok", LatencyMS: 80, ConsultedAt: time.Date(2026, 10, 20, 15, 0, 0, 0, time.UTC), Score: &score, Category: "preferred"},
+			{Source: "kyc", Status: "timeout", LatencyMS: 700},
+		},
 		ProfileScore: 0.4, ProfileCategory: "standard", ProfilePartial: true,
 		Rules:   []ports.DecisionRule{{Order: 1, Code: "base_monthly_rate", Value: 0.001}},
 		Premium: 1000, Currency: "COP", Decision: "deferred", DecisionReason: "kyc_unavailable",
@@ -41,6 +47,10 @@ func TestRecordPostsTheDecisionToAudit(t *testing.T) {
 		assert.Equal(t, "2026-10-20T15:00:00Z", body["requested_at"])
 		assert.Equal(t, map[string]any{"score": 0.4, "category": "standard", "partial": true}, body["profile"])
 		assert.NotContains(t, body, "document_id", "no personal data travels to audit")
+		assert.Equal(t, "cns-1", body["consent_id"])
+		sources := body["sources"].([]any)
+		assert.Equal(t, map[string]any{"source": "open_finance", "status": "ok", "latency_ms": float64(80), "consulted_at": "2026-10-20T15:00:00Z", "score": 0.82, "category": "preferred"}, sources[0])
+		assert.Nil(t, sources[1].(map[string]any)["score"], "a source that did not answer has no value")
 		w.WriteHeader(http.StatusCreated)
 	})
 

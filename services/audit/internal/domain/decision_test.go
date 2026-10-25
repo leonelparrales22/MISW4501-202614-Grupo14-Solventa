@@ -56,10 +56,26 @@ func TestDecisionRecordRejectedOrDeferredNeedsAReason(t *testing.T) {
 
 func TestDecisionRecordValidateRejectsOutOfRangeNumbers(t *testing.T) {
 	cases := map[string]func(*domain.DecisionRecord){
-		"sources": func(r *domain.DecisionRecord) { r.Sources[0].LatencyMS = 3_600_001 },
-		"rules":   func(r *domain.DecisionRecord) { r.Rules[0].Order = 0 },
-		"premium": func(r *domain.DecisionRecord) { r.Premium = 1e13 },
-		"profile": func(r *domain.DecisionRecord) { r.ProfileScore = 1.5 },
+		"sources":    func(r *domain.DecisionRecord) { r.Sources[0].LatencyMS = 3_600_001 },
+		"rules":      func(r *domain.DecisionRecord) { r.Rules[0].Order = 0 },
+		"premium":    func(r *domain.DecisionRecord) { r.Premium = 1e13 },
+		"profile":    func(r *domain.DecisionRecord) { r.ProfileScore = 1.5 },
+		"consent_id": func(r *domain.DecisionRecord) { r.ConsentID = "bad id!" },
+	}
+	for field, mutate := range cases {
+		r := validDecision()
+		mutate(&r)
+		var verr *domain.ValidationError
+		require.ErrorAs(t, r.Validate(), &verr, field)
+		assert.Equal(t, field, verr.Fields[0].Field)
+	}
+}
+
+func TestDecisionRecordValidateRejectsControlCharactersInCodes(t *testing.T) {
+	cases := map[string]func(*domain.DecisionRecord){
+		"sources": func(r *domain.DecisionRecord) { r.Sources[0].Status = "\x00" },
+		"rules":   func(r *domain.DecisionRecord) { r.Rules[0].Code = "base\nrate" },
+		"channel": func(r *domain.DecisionRecord) { r.Channel = "emb edded" },
 	}
 	for field, mutate := range cases {
 		r := validDecision()

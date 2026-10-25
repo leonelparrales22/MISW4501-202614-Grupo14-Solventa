@@ -36,6 +36,22 @@ func (m *memStore) Create(_ context.Context, r domain.DecisionRecord) (domain.De
 	return r, true, nil
 }
 
+func (m *memStore) GetByApplication(_ context.Context, app string) (domain.DecisionRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var found *domain.DecisionRecord
+	for _, r := range m.rows {
+		if r.ApplicationID == app && (found == nil || r.RequestedAt.After(found.RequestedAt)) {
+			r := r
+			found = &r
+		}
+	}
+	if found == nil {
+		return domain.DecisionRecord{}, domain.ErrDecisionNotFound
+	}
+	return *found, nil
+}
+
 func (m *memStore) Get(_ context.Context, id string) (domain.DecisionRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -100,4 +116,20 @@ func TestGet(t *testing.T) {
 
 	_, err = svc.Get(context.Background(), "nope")
 	assert.ErrorIs(t, err, domain.ErrDecisionNotFound)
+}
+
+func TestGetFindsTheMostRecentDecisionOfAnApplication(t *testing.T) {
+	svc := decisions.NewService(&memStore{}, fixedClock(time.Now()))
+	older, newer := record(), record()
+	older.OfferID, older.RequestedAt = "off-old", time.Date(2026, 10, 19, 10, 0, 0, 0, time.UTC)
+	newer.OfferID, newer.RequestedAt = "off-new", time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	for _, r := range []domain.DecisionRecord{older, newer} {
+		_, _, err := svc.Record(context.Background(), r)
+		require.NoError(t, err)
+	}
+
+	got, err := svc.Get(context.Background(), "app-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, "off-new", got.OfferID)
 }

@@ -41,6 +41,17 @@ func (m *memDecisions) Create(_ context.Context, r domain.DecisionRecord) (domai
 	return r, true, nil
 }
 
+func (m *memDecisions) GetByApplication(_ context.Context, app string) (domain.DecisionRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.rows {
+		if r.ApplicationID == app {
+			return r, nil
+		}
+	}
+	return domain.DecisionRecord{}, domain.ErrDecisionNotFound
+}
+
 func (m *memDecisions) Get(_ context.Context, id string) (domain.DecisionRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -50,9 +61,10 @@ func (m *memDecisions) Get(_ context.Context, id string) (domain.DecisionRecord,
 	return domain.DecisionRecord{}, domain.ErrDecisionNotFound
 }
 
-const decisionJSON = `{"offer_id":"off-1","customer_id":"cus-1","partner_id":"partner-1","application_id":"app-1",
+const decisionJSON = `{"offer_id":"off-1","customer_id":"cus-1","partner_id":"partner-1","application_id":"app-1","consent_id":"cns-1",
 "channel":"embedded","requested_at":"2026-10-20T10:04:05-05:00","rater_version":"v1",
-"sources":[{"source":"open_finance","status":"ok","latency_ms":80},{"source":"kyc","status":"timeout","latency_ms":700}],
+"sources":[{"source":"open_finance","status":"ok","latency_ms":80,"consulted_at":"2026-10-20T15:04:05.120Z","score":0.82,"category":"preferred"},
+{"source":"kyc","status":"timeout","latency_ms":700,"consulted_at":"2026-10-20T15:04:05.120Z","score":null,"category":""}],
 "profile":{"score":0.4,"category":"medium","partial":true},
 "rules":[{"order":1,"code":"base_monthly_rate","value":0.001},{"order":2,"code":"age_factor","value":1.2}],
 "premium":120000,"currency":"COP","decision":"deferred","decision_reason":"kyc_unavailable"}`
@@ -95,10 +107,26 @@ func TestRecordThenReadDecision(t *testing.T) {
 	assert.Equal(t, "v1", body["rater_version"])
 	assert.Equal(t, "2026-10-20T15:04:05Z", body["requested_at"], "UTC instant of the request")
 	assert.Equal(t, granted.Format(time.RFC3339), body["recorded_at"])
-	assert.Len(t, body["sources"], 2)
+	sources := body["sources"].([]any)
+	require.Len(t, sources, 2)
+	assert.Equal(t, 0.82, sources[0].(map[string]any)["score"], "the value the source returned")
+	assert.Equal(t, "preferred", sources[0].(map[string]any)["category"])
+	assert.Equal(t, "2026-10-20T15:04:05.12Z", sources[0].(map[string]any)["consulted_at"])
+	assert.Nil(t, sources[1].(map[string]any)["score"], "a source that did not answer has no value")
+	assert.Equal(t, "cns-1", body["consent_id"])
 	rules := body["rules"].([]any)
 	require.Len(t, rules, 2)
 	assert.Equal(t, "base_monthly_rate", rules[0].(map[string]any)["code"], "rules keep their execution order")
+}
+
+func TestReadDecisionByApplicationNumber(t *testing.T) {
+	h := newDecisionHandler(&memDecisions{})
+	require.Equal(t, http.StatusCreated, doDecision(h, http.MethodPost, "/v1/audit/decisions", decisionJSON, "").Code)
+
+	read := doDecision(h, http.MethodGet, "/v1/audit/decisions/app-1", "", "operations")
+
+	require.Equal(t, http.StatusOK, read.Code)
+	assert.Contains(t, read.Body.String(), `"offer_id":"off-1"`)
 }
 
 func TestReadDecisionNotFoundHidesInternals(t *testing.T) {

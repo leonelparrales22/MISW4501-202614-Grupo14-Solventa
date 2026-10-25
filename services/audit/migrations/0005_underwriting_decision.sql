@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS underwriting_decision (
     customer_id      TEXT             NOT NULL,
     partner_id       TEXT             NOT NULL,
     application_id   TEXT             NOT NULL,
+    consent_id       TEXT             NOT NULL DEFAULT '',
     channel          TEXT             NOT NULL,
     requested_at     TIMESTAMPTZ      NOT NULL,
     rater_version    TEXT             NOT NULL,
@@ -20,6 +21,9 @@ CREATE TABLE IF NOT EXISTS underwriting_decision (
     decision_reason  TEXT             NOT NULL DEFAULT '',
     recorded_at      TIMESTAMPTZ      NOT NULL DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS underwriting_decision_application_idx
+    ON underwriting_decision (application_id, requested_at DESC);
 
 CREATE OR REPLACE FUNCTION forbid_decision_mutation() RETURNS trigger AS $$
 BEGIN

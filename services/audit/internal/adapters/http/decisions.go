@@ -53,9 +53,12 @@ func WithDecisionReads(svc DecisionReader, verifier security.Verifier) Option {
 }
 
 type decisionSourceBody struct {
-	Source    string `json:"source"`
-	Status    string `json:"status"`
-	LatencyMS int64  `json:"latency_ms"`
+	Source      string     `json:"source"`
+	Status      string     `json:"status"`
+	LatencyMS   int64      `json:"latency_ms"`
+	ConsultedAt *time.Time `json:"consulted_at"`
+	Score       *float64   `json:"score"`
+	Category    string     `json:"category"`
 }
 
 type decisionRuleBody struct {
@@ -78,6 +81,7 @@ type decisionBody struct {
 	CustomerID     string               `json:"customer_id"`
 	PartnerID      string               `json:"partner_id"`
 	ApplicationID  string               `json:"application_id"`
+	ConsentID      string               `json:"consent_id"`
 	Channel        string               `json:"channel"`
 	RequestedAt    time.Time            `json:"requested_at"`
 	RaterVersion   string               `json:"rater_version"`
@@ -93,13 +97,17 @@ type decisionBody struct {
 
 func (b decisionBody) record() domain.DecisionRecord {
 	r := domain.DecisionRecord{
-		OfferID: b.OfferID, CustomerID: b.CustomerID, PartnerID: b.PartnerID, ApplicationID: b.ApplicationID,
+		OfferID: b.OfferID, CustomerID: b.CustomerID, PartnerID: b.PartnerID, ApplicationID: b.ApplicationID, ConsentID: b.ConsentID,
 		Channel: b.Channel, RequestedAt: b.RequestedAt, RaterVersion: b.RaterVersion,
 		ProfileScore: b.Profile.Score, ProfileCategory: b.Profile.Category, ProfilePartial: b.Profile.Partial,
 		Premium: b.Premium, Currency: b.Currency, Decision: domain.Decision(b.Decision), DecisionReason: b.DecisionReason,
 	}
 	for _, s := range b.Sources {
-		r.Sources = append(r.Sources, domain.SourceConsulted{Source: s.Source, Status: s.Status, LatencyMS: s.LatencyMS})
+		src := domain.SourceConsulted{Source: s.Source, Status: s.Status, LatencyMS: s.LatencyMS, Score: s.Score, Category: s.Category}
+		if s.ConsultedAt != nil {
+			src.ConsultedAt = s.ConsultedAt.UTC()
+		}
+		r.Sources = append(r.Sources, src)
 	}
 	for _, rule := range b.Rules {
 		r.Rules = append(r.Rules, domain.RuleApplied{Order: rule.Order, Code: rule.Code, Value: rule.Value})
@@ -110,7 +118,7 @@ func (b decisionBody) record() domain.DecisionRecord {
 func bodyOf(r domain.DecisionRecord) decisionBody {
 	recorded := r.RecordedAt
 	b := decisionBody{
-		OfferID: r.OfferID, CustomerID: r.CustomerID, PartnerID: r.PartnerID, ApplicationID: r.ApplicationID,
+		OfferID: r.OfferID, CustomerID: r.CustomerID, PartnerID: r.PartnerID, ApplicationID: r.ApplicationID, ConsentID: r.ConsentID,
 		Channel: r.Channel, RequestedAt: r.RequestedAt, RaterVersion: r.RaterVersion,
 		Sources: []decisionSourceBody{}, Rules: []decisionRuleBody{},
 		Profile: decisionProfileBody{Score: r.ProfileScore, Category: r.ProfileCategory, Partial: r.ProfilePartial},
@@ -118,7 +126,12 @@ func bodyOf(r domain.DecisionRecord) decisionBody {
 		RecordedAt: &recorded,
 	}
 	for _, s := range r.Sources {
-		b.Sources = append(b.Sources, decisionSourceBody{Source: s.Source, Status: s.Status, LatencyMS: s.LatencyMS})
+		entry := decisionSourceBody{Source: s.Source, Status: s.Status, LatencyMS: s.LatencyMS, Score: s.Score, Category: s.Category}
+		if !s.ConsultedAt.IsZero() {
+			at := s.ConsultedAt.UTC()
+			entry.ConsultedAt = &at
+		}
+		b.Sources = append(b.Sources, entry)
 	}
 	for _, rule := range r.Rules {
 		b.Rules = append(b.Rules, decisionRuleBody{Order: rule.Order, Code: rule.Code, Value: rule.Value})

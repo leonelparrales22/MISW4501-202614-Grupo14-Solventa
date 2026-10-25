@@ -11,6 +11,12 @@ type DecisionSource struct {
 	Source    string
 	Status    string
 	LatencyMS int64
+	// ConsultedAt is when the call started; zero when unknown.
+	ConsultedAt time.Time
+	// Score and Category are what the source returned; nil / empty when it
+	// did not answer.
+	Score    *float64
+	Category string
 }
 
 // DecisionRule is one rating rule, in execution order, with its output value.
@@ -28,9 +34,11 @@ type DecisionRecord struct {
 	CustomerID    string
 	PartnerID     string
 	ApplicationID string
-	Channel       string
-	RequestedAt   time.Time
-	RaterVersion  string
+	// ConsentID is the consent the profile was consulted under.
+	ConsentID    string
+	Channel      string
+	RequestedAt  time.Time
+	RaterVersion string
 
 	Sources         []DecisionSource
 	ProfileScore    float64
