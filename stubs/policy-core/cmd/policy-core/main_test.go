@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -81,7 +82,7 @@ func TestTheAutoPolicyCoversGlassOnlyForSomeHolders(t *testing.T) {
 }
 
 func TestHandlerServesThePoliciesOfAHolder(t *testing.T) {
-	h := newHandler(0, map[string][]policy{}, clock)
+	h := newHandler(0, seedData{}, clock)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/holders/sub-1/policies", nil))
@@ -100,7 +101,7 @@ func TestHandlerServesTheSeededPolicies(t *testing.T) {
 			Status: statusActive, ValidFrom: from, ValidTo: from.AddDate(1, 0, 0), CoveredIncidents: []string{"collision"}}},
 		"without-policies": {},
 	}
-	h := newHandler(0, seed, clock)
+	h := newHandler(0, seedData{policies: seed}, clock)
 
 	var body policiesResponse
 	rec := httptest.NewRecorder()
@@ -114,7 +115,7 @@ func TestHandlerServesTheSeededPolicies(t *testing.T) {
 }
 
 func TestHandlerRejectsAnInvalidHolder(t *testing.T) {
-	h := newHandler(0, map[string][]policy{}, clock)
+	h := newHandler(0, seedData{}, clock)
 
 	for _, id := range []string{"%20", strings.Repeat("x", maxHolderIDLength+1)} {
 		rec := httptest.NewRecorder()
@@ -129,12 +130,12 @@ func TestHandlerRejectsAnInvalidHolder(t *testing.T) {
 
 func TestHandlerServesHealth(t *testing.T) {
 	rec := httptest.NewRecorder()
-	newHandler(0, nil, clock).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	newHandler(0, seedData{}, clock).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestHandlerAppliesTheArtificialDelay(t *testing.T) {
-	h := newHandler(30*time.Millisecond, nil, clock)
+	h := newHandler(30*time.Millisecond, seedData{}, clock)
 	start := time.Now()
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/holders/sub-1/policies", nil))
 	assert.GreaterOrEqual(t, time.Since(start), 30*time.Millisecond)
@@ -143,7 +144,8 @@ func TestHandlerAppliesTheArtificialDelay(t *testing.T) {
 func TestLoadSeed(t *testing.T) {
 	seed, err := loadSeed("")
 	require.NoError(t, err)
-	assert.Empty(t, seed)
+	assert.Empty(t, seed.policies)
+	assert.Empty(t, seed.profiles)
 
 	dir := t.TempDir()
 	good := filepath.Join(dir, "seed.json")
@@ -152,15 +154,16 @@ func TestLoadSeed(t *testing.T) {
 		"valid_to":"2027-01-01T05:00:00Z","covered_incidents":["water_damage"]}],"sub-2":[]}}`), 0o600))
 	seed, err = loadSeed(good)
 	require.NoError(t, err)
-	require.Len(t, seed["sub-1"], 1)
-	assert.Equal(t, "HG-2026-000002", seed["sub-1"][0].PolicyID)
-	assert.Empty(t, seed["sub-2"])
+	require.Len(t, seed.policies["sub-1"], 1)
+	assert.Equal(t, "HG-2026-000002", seed.policies["sub-1"][0].PolicyID)
+	assert.Empty(t, seed.policies["sub-2"])
+	assert.Empty(t, seed.profiles)
 
 	empty := filepath.Join(dir, "empty.json")
 	require.NoError(t, os.WriteFile(empty, []byte(`{}`), 0o600))
 	seed, err = loadSeed(empty)
 	require.NoError(t, err)
-	assert.Empty(t, seed)
+	assert.Empty(t, seed.policies)
 
 	bad := filepath.Join(dir, "bad.json")
 	require.NoError(t, os.WriteFile(bad, []byte(`{not json`), 0o600))
@@ -169,6 +172,101 @@ func TestLoadSeed(t *testing.T) {
 
 	_, err = loadSeed(filepath.Join(dir, "missing.json"))
 	assert.Error(t, err)
+}
+
+func TestEveryPolicyCarriesTheTermsOfEachCoverage(t *testing.T) {
+	for _, p := range buildPolicies("sub-1", fixedNow) {
+		require.Len(t, p.Coverages, len(p.CoveredIncidents), p.PolicyID)
+		for i, c := range p.Coverages {
+			assert.Equal(t, p.CoveredIncidents[i], c.Incident)
+			assert.Equal(t, "COP", c.Currency)
+			assert.Positive(t, c.InsuredValueMinor)
+			assert.GreaterOrEqual(t, c.DeductibleBasisPoints, 0)
+			assert.Less(t, c.DeductibleBasisPoints, 10_000)
+		}
+	}
+	home := buildPolicies("sub-1", fixedNow)[1]
+	assert.Equal(t, coverage{Incident: "water_damage", InsuredValueMinor: 32_000_000_000, Currency: "COP",
+		DeductibleBasisPoints: 500}, home.Coverages[0], "the figures of screen O6")
+}
+
+func TestHandlerServesOnePolicyOfTheHolder(t *testing.T) {
+	h := newHandler(0, seedData{}, clock)
+	want := buildPolicies("sub-1", fixedNow)[1]
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/holders/sub-1/policies/"+want.PolicyID, nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got policy
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, want, got)
+}
+
+func TestHandlerHidesThePoliciesOfAnotherHolder(t *testing.T) {
+	h := newHandler(0, seedData{}, clock)
+	theirs := buildPolicies("sub-2", fixedNow)[0].PolicyID
+
+	for _, id := range []string{theirs, "AU-2026-999999"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/holders/sub-1/policies/"+id, nil))
+		assert.Equal(t, http.StatusNotFound, rec.Code, id)
+	}
+}
+
+func TestHandlerServesTheProfileOfTheHolder(t *testing.T) {
+	h := newHandler(0, seedData{}, clock)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/holders/sub-1", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got holder
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, buildHolder("sub-1"), got)
+}
+
+func TestHandlerServesTheSeededProfile(t *testing.T) {
+	seeded := holder{HolderID: "seeded", FullName: "Carolina Pérez Ruiz", DocumentType: "CC", DocumentID: "1020345678",
+		Email: "carolina.perez@correo.example", Phone: "+57 301 234 5678",
+		PayoutAccount: payoutAccount{BankCode: "1007", BankName: "Banco Aliado", AccountType: "savings",
+			AccountNumber: "0123-4567-89"}}
+	h := newHandler(0, seedData{profiles: map[string]holder{"seeded": seeded}}, clock)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/holders/seeded", nil))
+
+	var got holder
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, seeded, got)
+}
+
+func TestBuildHolderIsDeterministicAndPays(t *testing.T) {
+	assert.Equal(t, buildHolder("sub-1"), buildHolder("sub-1"))
+	assert.NotEqual(t, buildHolder("sub-1").DocumentID, buildHolder("sub-2").DocumentID)
+
+	for i := 0; i < 200; i++ {
+		h := buildHolder("holder-" + strconv.Itoa(i))
+		assert.Regexp(t, `^\d{4}-\d{4}-\d{2}$`, h.PayoutAccount.AccountNumber)
+		assert.False(t, strings.HasSuffix(h.PayoutAccount.AccountNumber, "89"),
+			"89 is the ending the gateway stub rejects")
+		assert.Regexp(t, `^[a-z]+\.\d+@correo\.example$`, h.Email)
+		assert.NotEmpty(t, h.FullName)
+		assert.Equal(t, "savings", h.PayoutAccount.AccountType)
+	}
+}
+
+func TestLoadSeedReadsTheProfiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "seed.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"profiles":{"sub-1":{"full_name":"Carolina Pérez Ruiz",
+		"payout_account":{"bank_code":"1007","account_number":"0123-4567-89"}}}}`), 0o600))
+
+	seed, err := loadSeed(path)
+
+	require.NoError(t, err)
+	assert.Equal(t, "sub-1", seed.profiles["sub-1"].HolderID, "the key is the holder id")
+	assert.Equal(t, "0123-4567-89", seed.profiles["sub-1"].PayoutAccount.AccountNumber)
+	assert.Empty(t, seed.policies)
 }
 
 func TestEnvInt(t *testing.T) {
