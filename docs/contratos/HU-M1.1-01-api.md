@@ -4,9 +4,65 @@ Servicio: **originación**. Consumidor: cliente móvil.
 
 ---
 
-## 1. `POST /v1/registrations`
+## 1. Flujo
 
-Crea el cliente y la cuenta con la que inicia sesión.
+El registro tiene dos llamadas (decisión del 29/10/2026):
+
+1. **`POST /v1/registrations/document-reads`**: el proveedor de identidad lee las dos caras y devuelve los datos impresos en el documento. La aplicación los muestra en M1c para que la persona los confirme o los corrija (criterio 1). No se guarda nada.
+2. **`POST /v1/registrations`**: con los datos confirmados y las mismas dos caras, originación guarda el documento y el cliente, **verifica a la persona con el proveedor** y solo si la aprueba crea la cuenta en el *user pool* (criterios 2 y 5). Un rechazo responde `422 identity_not_verified` sin decir el motivo (criterio 3).
+
+La verificación es **síncrona**, con un corte de 10 s hacia el proveedor: la aplicación deja de esperar a los 30 s (criterio 6), así que la respuesta siempre llega antes.
+
+**Con el stub (`stubs/kyc`)** el resultado lo decide el **último dígito del número de documento**, para mostrar cada rama en una demostración: `…0` lista restrictiva, `…1` documento ilegible, `…2` identidad no verificable y cualquier otro se aprueba. La lectura nunca devuelve un número terminado en 0, 1 o 2: para ver un rechazo hay que corregir el número en M1c.
+
+---
+
+## 2. `POST /v1/registrations/document-reads`
+
+Lee los datos del documento para que la persona los confirme.
+
+| | |
+|---|---|
+| Autenticación | Ninguna. La cuenta no existe todavía |
+| Límite | El mismo del registro, en el API Gateway |
+| Caché | `Cache-Control: no-store` |
+
+### Petición
+
+```json
+{
+  "document_front": "/9j/4AAQSkZJRgABAQ…",
+  "document_back": "/9j/4AAQSkZJRgABAQ…"
+}
+```
+
+Las dos caras con las mismas reglas que en el registro: base64 de un JPEG entre 1 KiB y 1,5 MB, y el reverso no puede ser la misma imagen del frente.
+
+### Respuesta `200`
+
+```json
+{
+  "document_type": "CC",
+  "document_id": "1020345678",
+  "given_names": "Carolina",
+  "surnames": "Pérez Ruiz",
+  "birth_date": "1992-04-18"
+}
+```
+
+### Errores
+
+| Código | `error` | Condición |
+|---|---|---|
+| `400` | `invalid_request` | El cuerpo no es JSON válido |
+| `422` | `validation_failed` | Una cara falta, no es un JPEG o está fuera de tamaño |
+| `503` | `document_read_unavailable` | El proveedor no respondió. Reintentable |
+
+---
+
+## 3. `POST /v1/registrations`
+
+Verifica a la persona y, si el proveedor la aprueba, crea el cliente y la cuenta con la que inicia sesión.
 
 | | |
 |---|---|
@@ -78,12 +134,13 @@ reconocer al titular de los consentimientos otorgados con ese documento (`GET /v
 
 ---
 
-## 2. Errores
+## 4. Errores del registro
 
 | Código | `error` | Condición |
 |---|---|---|
 | `400` | `invalid_request` | El cuerpo no es JSON válido |
 | `409` | `already_registered` | El documento o el correo ya tienen cuenta |
+| `422` | `identity_not_verified` | El proveedor no aprobó a la persona: documento ilegible, identidad no verificable o lista restrictiva. **El motivo no se devuelve** (criterio 3); queda en el registro del servicio con el `verification_id` del proveedor. La aplicación muestra M1e con el canal de soporte |
 | `422` | `validation_failed` | Uno o más campos incumplen sus reglas |
 | `503` | `registration_unavailable` | El registro no se pudo completar. Reintentable |
 
@@ -104,9 +161,11 @@ Códigos de campo: `required`, `invalid_format`, `out_of_range`.
 
 ---
 
-## 3. Reintento
+## 5. Reintento
 
-El registro se escribe en tres pasos: primero las dos caras del documento, después el cliente y por último la cuenta en el *user pool*.
+El registro se escribe en cuatro pasos: primero las dos caras del documento, después el cliente (en estado `pending`), luego la verificación con el proveedor y por último la cuenta en el *user pool*. **Ningún rechazo llega a crear la cuenta.**
+
+Si el proveedor no responde, la respuesta es `503`, el cliente queda `pending` y reintentar vuelve a verificar. Un rechazo por documento ilegible o identidad no verificable también se puede reintentar, con otras fotos o con los datos corregidos. **Un rechazo por lista restrictiva cierra ese documento para siempre**: los intentos siguientes responden `422 identity_not_verified` sin volver a consultar al proveedor, para que nadie pruebe hasta pasar.
 
 Si falla el repositorio documental, la respuesta es `503` y no se guarda ni el cliente ni la cuenta. Si falla la cuenta, el cliente queda guardado sin ella y la respuesta también es `503`. **Reintentar con el mismo documento completa ese registro**: conserva el `customer_id` y la fecha de creación originales, y no crea un cliente nuevo.
 
@@ -116,7 +175,7 @@ Un documento o un correo que ya tienen cuenta responden `409`, no `503`.
 
 ---
 
-## 4. Tratamiento de datos
+## 6. Tratamiento de datos
 
 El documento y el correo identifican a la persona y son únicos en la plataforma. La comparación del correo ignora mayúsculas y minúsculas.
 

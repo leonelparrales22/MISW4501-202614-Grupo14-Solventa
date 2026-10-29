@@ -139,6 +139,19 @@ func (p *identityPool) CreateAccount(context.Context, string, string, string) (s
 	return fmt.Sprintf("sub-%d", p.next), nil
 }
 
+// approvingKYC is the identity provider of the sign-up: it approves everybody,
+// which is what a document number that does not end in 0, 1 or 2 gets from the
+// KYC stub (HU-M1.1-01).
+type approvingKYC struct{}
+
+func (approvingKYC) ReadDocument(context.Context, domain.IdentityDocument, domain.IdentityDocument) (domain.DocumentData, error) {
+	return domain.DocumentData{}, nil
+}
+
+func (approvingKYC) Verify(context.Context, domain.IdentityCheck) (domain.IdentityVerdict, error) {
+	return domain.IdentityVerdict{VerificationID: "kyc-test", Approved: true, CheckedAt: time.Now().UTC()}, nil
+}
+
 // documentBucket keeps the faces of the identity document in memory.
 type documentBucket struct {
 	mu   sync.Mutex
@@ -186,7 +199,7 @@ func TestTheRegistrationLinkReachesTheAuditQueueThroughTheOutbox(t *testing.T) {
 	ctx := context.Background()
 	registeredAt := time.Now().UTC().Truncate(time.Second)
 	customers := postgres.NewCustomerStore(db)
-	svc := orchestrator.NewRegistrationService(customers, &documentBucket{objs: map[string][]byte{}}, &identityPool{},
+	svc := orchestrator.NewRegistrationService(customers, &documentBucket{objs: map[string][]byte{}}, approvingKYC{}, &identityPool{},
 		fixedNow{t: registeredAt})
 	store := postgres.NewOutboxStore(db)
 

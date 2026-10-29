@@ -14,6 +14,7 @@ import (
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/http"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/orchestrator"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 )
 
 // El registro del asegurado (HU-M1.1-01). Es la única ruta de escritura que
@@ -23,6 +24,15 @@ type registroFalso struct {
 	cliente  domain.Customer
 	err      error
 	recibida domain.RegistrationRequest
+
+	lectura     domain.DocumentData
+	errLectura  error
+	carasLeidas [2]string
+}
+
+func (f *registroFalso) ReadDocument(_ context.Context, front, back string) (domain.DocumentData, error) {
+	f.carasLeidas = [2]string{front, back}
+	return f.lectura, f.errLectura
 }
 
 func (f *registroFalso) Register(_ context.Context, r domain.RegistrationRequest) (domain.Customer, error) {
@@ -167,4 +177,68 @@ func TestUnaFallaInternaNoSeDetalla(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	assert.Equal(t, "registration_unavailable", body["error"])
 	assert.NotContains(t, rec.Body.String(), "us-east-2_EWwg8NL2C")
+}
+
+// Criterio 3: un rechazo del proveedor se responde igual sea cual sea el
+// motivo, y sin decirlo.
+func TestUnRechazoDeIdentidadSeRespondeSinElMotivo(t *testing.T) {
+	svc := &registroFalso{err: orchestrator.ErrIdentityNotVerified}
+
+	rec, body := callQuotes(rutaDeRegistro(svc), http.MethodPost, "/v1/registrations", "", cuerpoDeRegistro)
+
+	require.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+	assert.Equal(t, "identity_not_verified", body["error"])
+	for _, motivo := range []string{"restricted", "list", "unreadable", "unverifiable", "lista"} {
+		assert.NotContains(t, strings.ToLower(rec.Body.String()), motivo)
+	}
+}
+
+func TestSiLaVerificacionNoRespondeElRegistroEsReintentable(t *testing.T) {
+	svc := &registroFalso{err: ports.ErrIdentityCheckUnavailable}
+
+	rec, body := callQuotes(rutaDeRegistro(svc), http.MethodPost, "/v1/registrations", "", cuerpoDeRegistro)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "registration_unavailable", body["error"])
+}
+
+const cuerpoDeLectura = `{"document_front":"` + frenteEnBase64 + `","document_back":"` + reversoEnBase64 + `"}`
+
+// Criterio 1: el proveedor lee el documento y la persona confirma los datos.
+func TestLaLecturaDelDocumentoDevuelveLosDatosLeidos(t *testing.T) {
+	svc := &registroFalso{lectura: domain.DocumentData{DocumentType: "CC", DocumentID: "1020345678",
+		GivenNames: "Carolina", Surnames: "Pérez Ruiz", BirthDate: "1992-04-18"}}
+
+	rec, body := callQuotes(rutaDeRegistro(svc), http.MethodPost, "/v1/registrations/document-reads", "", cuerpoDeLectura)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+	assert.Equal(t, "CC", body["document_type"])
+	assert.Equal(t, "1020345678", body["document_id"])
+	assert.Equal(t, "Carolina", body["given_names"])
+	assert.Equal(t, "Pérez Ruiz", body["surnames"])
+	assert.Equal(t, "1992-04-18", body["birth_date"])
+	assert.Equal(t, [2]string{frenteEnBase64, reversoEnBase64}, svc.carasLeidas)
+}
+
+func TestLaLecturaRespondeLosErroresDeCadaCaso(t *testing.T) {
+	for nombre, caso := range map[string]struct {
+		cuerpo string
+		err    error
+		codigo int
+		error  string
+	}{
+		"cuerpo invalido": {`{no es json`, nil, http.StatusBadRequest, "invalid_request"},
+		"cara invalida": {cuerpoDeLectura, &domain.ValidationError{Fields: []domain.FieldError{
+			{Field: "document_back", Code: domain.CodeInvalidFormat}}}, http.StatusUnprocessableEntity, "validation_failed"},
+		"proveedor caido": {cuerpoDeLectura, ports.ErrIdentityCheckUnavailable, http.StatusServiceUnavailable,
+			"document_read_unavailable"},
+	} {
+		svc := &registroFalso{errLectura: caso.err}
+
+		rec, body := callQuotes(rutaDeRegistro(svc), http.MethodPost, "/v1/registrations/document-reads", "", caso.cuerpo)
+
+		assert.Equal(t, caso.codigo, rec.Code, nombre)
+		assert.Equal(t, caso.error, body["error"], nombre)
+	}
 }

@@ -45,8 +45,22 @@ type Customer struct {
 	// empty for a customer an advisor quoted for, who captured no document.
 	DocumentFrontKey string
 	DocumentBackKey  string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// IdentityStatus is where the identity check of the sign-up stands
+	// (HU-M1.1-01); IdentityUnchecked for a customer an advisor quoted for.
+	// IdentityRejection, IdentityVerificationID and IdentityCheckedAt record
+	// the provider's last answer.
+	IdentityStatus         IdentityStatus
+	IdentityRejection      IdentityRejection
+	IdentityVerificationID string
+	IdentityCheckedAt      time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+// SignUpClosed tells whether this document can no longer sign up: the
+// provider found the person on a restrictive list.
+func (c Customer) SignUpClosed() bool {
+	return c.IdentityStatus == IdentityRejected && c.IdentityRejection.Final()
 }
 
 // Registered tells whether the customer already has an account to sign in with.

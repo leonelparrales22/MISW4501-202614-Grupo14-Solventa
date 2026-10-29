@@ -147,6 +147,20 @@ type IdentityProvider interface {
 	CreateAccount(ctx context.Context, email, password, fullName string) (subject string, err error)
 }
 
+// ErrIdentityCheckUnavailable is returned by an IdentityVerifier whose provider
+// gave no usable answer: timeout, connection error, unexpected status or open
+// circuit. It is not a rejection, and retrying is safe.
+var ErrIdentityCheckUnavailable = errors.New("the identity check is unavailable")
+
+// IdentityVerifier is the identity provider of the sign-up (HU-M1.1-01): it
+// reads the document so the person confirms the data printed on it, and it
+// verifies the person before the account exists. A rejection is an answer
+// (a verdict that is not Approved), not an error.
+type IdentityVerifier interface {
+	ReadDocument(ctx context.Context, front, back domain.IdentityDocument) (domain.DocumentData, error)
+	Verify(ctx context.Context, check domain.IdentityCheck) (domain.IdentityVerdict, error)
+}
+
 // QuoteRepository persists the assisted quotes (HU-W1.1-01).
 type QuoteRepository interface {
 	Create(ctx context.Context, q domain.Quote) error
