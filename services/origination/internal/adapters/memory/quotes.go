@@ -88,6 +88,12 @@ func (s *CustomerStore) save(c domain.Customer) domain.Customer {
 		if c.CognitoSub == "" {
 			c.CognitoSub = existing.CognitoSub
 		}
+		// Like the PostgreSQL store: a save without an identity status (the
+		// advisor's) keeps the check the customer already had.
+		if c.IdentityStatus == domain.IdentityUnchecked {
+			c.IdentityStatus, c.IdentityRejection = existing.IdentityStatus, existing.IdentityRejection
+			c.IdentityVerificationID, c.IdentityCheckedAt = existing.IdentityVerificationID, existing.IdentityCheckedAt
+		}
 	}
 	s.byDocument[c.DocumentID] = c
 	return c

@@ -2,6 +2,11 @@
 // restrictive lists and AML checks). Faults and latency are injected from
 // outside with Toxiproxy; ARTIFICIAL_DELAY_MS is a shortcut for quick local
 // runs.
+//
+// It answers two different questions. GET /profiles/{id} is the risk signal of
+// the parallel profiling (HA-L01). POST /documents/reads and POST
+// /verifications are the identity check of the sign-up (HU-M1.1-01): read the
+// data printed on the document, then verify the person (see identity.go).
 package main
 
 import (
@@ -52,6 +57,7 @@ func newHandler(delay time.Duration) http.Handler {
 			log.Printf("could not write the response: %v", err)
 		}
 	})
+	addIdentityRoutes(mux, delay)
 	return mux
 }
 

@@ -14,19 +14,63 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/orchestrator"
 )
 
-// RegistrationService is the use case behind the sign-up route (HU-M1.1-01).
+// RegistrationService is the use case behind the sign-up routes (HU-M1.1-01).
 type RegistrationService interface {
+	ReadDocument(ctx context.Context, front, back string) (domain.DocumentData, error)
 	Register(ctx context.Context, r domain.RegistrationRequest) (domain.Customer, error)
 }
 
-// WithRegistrations mounts the sign-up route of the insured (HU-M1.1-01).
+// WithRegistrations mounts the sign-up routes of the insured (HU-M1.1-01): the
+// read of the document, whose data the person confirms (criterion 1), and the
+// sign-up itself.
 //
-// It carries no session: the account does not exist yet, so the caller has no
+// They carry no session: the account does not exist yet, so the caller has no
 // token. The user pool only accepts accounts created from the server, so this
-// service decides who gets one. The gateway throttles the route.
+// service decides who gets one. The gateway throttles the routes.
 func WithRegistrations(svc RegistrationService) Option {
 	return func(r chi.Router) {
+		r.With(noStore).Post("/v1/registrations/document-reads", readDocument(svc))
 		r.With(noStore).Post("/v1/registrations", register(svc))
+	}
+}
+
+type documentReadRequest struct {
+	DocumentFront string `json:"document_front"`
+	DocumentBack  string `json:"document_back"`
+}
+
+type documentReadResponse struct {
+	DocumentType string `json:"document_type"`
+	DocumentID   string `json:"document_id"`
+	GivenNames   string `json:"given_names"`
+	Surnames     string `json:"surnames"`
+	BirthDate    string `json:"birth_date"`
+}
+
+func readDocument(svc RegistrationService) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		var in documentReadRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, maxRegistrationBodyBytes)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
+			return
+		}
+		data, err := svc.ReadDocument(req.Context(), in.DocumentFront, in.DocumentBack)
+		var invalid *domain.ValidationError
+		switch {
+		case err == nil:
+		case errors.As(err, &invalid):
+			writeValidationError(w, invalid)
+			return
+		default:
+			slog.ErrorContext(req.Context(), "could not read the identity document", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "document_read_unavailable",
+				"the document could not be read; retry later")
+			return
+		}
+		writeJSON(w, http.StatusOK, documentReadResponse{
+			DocumentType: data.DocumentType, DocumentID: data.DocumentID,
+			GivenNames: data.GivenNames, Surnames: data.Surnames, BirthDate: data.BirthDate,
+		})
 	}
 }
 
@@ -94,6 +138,13 @@ func register(svc RegistrationService) http.HandlerFunc {
 		case errors.Is(err, orchestrator.ErrAlreadyRegistered):
 			writeError(w, http.StatusConflict, "already_registered",
 				"the document or the email already has an account")
+			return
+		case errors.Is(err, orchestrator.ErrIdentityNotVerified):
+			// One answer for every reason the provider gives (criterion 3):
+			// telling a restrictive list from a blurred photo would tell the
+			// person which one they are.
+			writeError(w, http.StatusUnprocessableEntity, "identity_not_verified",
+				"the identity could not be verified")
 			return
 		default:
 			// The reason never reaches the caller: the route is public and

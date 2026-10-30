@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/filestore"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/memory"
 )
 
@@ -30,6 +31,7 @@ func TestElUserPoolTraeSuGrupoPorOmision(t *testing.T) {
 	m := requiredEnv()
 	m["COGNITO_USER_POOL_ID"] = "us-east-2_EWwg8NL2C"
 	m["DOCUMENTS_DIR"] = t.TempDir()
+	m["KYC_URL"] = "http://kyc:9020"
 
 	cfg, err := loadConfig(env(m))
 
@@ -44,6 +46,7 @@ func TestElGrupoDelRegistroSePuedeFijar(t *testing.T) {
 	m["COGNITO_USER_POOL_ID"] = "us-east-2_EWwg8NL2C"
 	m["COGNITO_INSURED_GROUP"] = "asegurados"
 	m["DOCUMENTS_DIR"] = t.TempDir()
+	m["KYC_URL"] = "http://kyc:9020"
 
 	cfg, err := loadConfig(env(m))
 
@@ -56,6 +59,7 @@ func TestElGrupoDelRegistroSePuedeFijar(t *testing.T) {
 func TestConUserPoolYSinRepositorioDocumentalNoArranca(t *testing.T) {
 	m := requiredEnv()
 	m["COGNITO_USER_POOL_ID"] = "us-east-2_EWwg8NL2C"
+	m["KYC_URL"] = "http://kyc:9020"
 
 	_, err := loadConfig(env(m))
 
@@ -66,10 +70,35 @@ func TestConUserPoolYSinRepositorioDocumentalNoArranca(t *testing.T) {
 }
 
 func TestElRegistroNoSeCableaSinRepositorioDocumental(t *testing.T) {
-	cfg := registrationConfig{enabled: true, poolID: "us-east-2_EWwg8NL2C", group: "insured"}
+	cfg := registrationConfig{enabled: true, poolID: "us-east-2_EWwg8NL2C", group: "insured", kycURL: "http://kyc:9020"}
 
 	_, err := newRegistrationService(context.Background(), cfg, memory.NewCustomerStore(), nil, "")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "document repository")
+}
+
+// Sin proveedor de identidad el registro crearía cuentas sin verificar a
+// nadie, que es justo lo que HU-M1.1-01 prohíbe (criterio 5): no arranca.
+func TestConUserPoolYSinProveedorDeIdentidadNoArranca(t *testing.T) {
+	m := requiredEnv()
+	m["COGNITO_USER_POOL_ID"] = "us-east-2_EWwg8NL2C"
+	m["DOCUMENTS_DIR"] = t.TempDir()
+	delete(m, "KYC_URL")
+
+	_, err := loadConfig(env(m))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "KYC_URL")
+}
+
+func TestElRegistroNoSeCableaSinProveedorDeIdentidad(t *testing.T) {
+	cfg := registrationConfig{enabled: true, poolID: "us-east-2_EWwg8NL2C", group: "insured"}
+	documents, err := filestore.New(t.TempDir())
+	require.NoError(t, err)
+
+	_, err = newRegistrationService(context.Background(), cfg, memory.NewCustomerStore(), documents, "disco")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "identity provider")
 }

@@ -184,3 +184,66 @@ func TestGuardarDeNuevoConservaLasLlavesDelDocumento(t *testing.T) {
 	assert.Equal(t, "identity-documents/aaaa1111.jpg", guardado.DocumentFrontKey)
 	assert.Equal(t, "identity-documents/bbbb2222.jpg", guardado.DocumentBackKey)
 }
+
+// HU-M1.1-01: la verificación de identidad queda con el cliente, y el asesor
+// que lo vuelve a guardar no la borra.
+func TestLaVerificacionDeIdentidadSeGuardaYElAsesorNoLaBorra(t *testing.T) {
+	s := postgres.NewCustomerStore(newDB(t))
+	ctx := context.Background()
+	revisado := t0.Add(time.Minute)
+
+	c := cliente("cus-1", "1020345670", "carolina@example.com")
+	c.IdentityStatus = domain.IdentityRejected
+	c.IdentityRejection = domain.RejectionRestrictedList
+	c.IdentityVerificationID = "kyc-1"
+	c.IdentityCheckedAt = revisado
+	_, err := s.Save(ctx, c)
+	require.NoError(t, err)
+
+	leido, err := s.GetByDocument(ctx, "1020345670")
+	require.NoError(t, err)
+	assert.Equal(t, domain.IdentityRejected, leido.IdentityStatus)
+	assert.Equal(t, domain.RejectionRestrictedList, leido.IdentityRejection)
+	assert.Equal(t, "kyc-1", leido.IdentityVerificationID)
+	assert.True(t, revisado.Equal(leido.IdentityCheckedAt))
+	assert.True(t, leido.SignUpClosed())
+
+	// El asesor guarda el mismo documento sin estado de identidad.
+	_, err = s.Save(ctx, cliente("cus-1", "1020345670", "carolina@example.com"))
+	require.NoError(t, err)
+	leido, err = s.GetByDocument(ctx, "1020345670")
+	require.NoError(t, err)
+	assert.Equal(t, domain.IdentityRejected, leido.IdentityStatus, "el cierre del documento se conserva")
+	assert.Equal(t, domain.RejectionRestrictedList, leido.IdentityRejection)
+}
+
+func TestUnaNuevaVerificacionReemplazaLaAnterior(t *testing.T) {
+	s := postgres.NewCustomerStore(newDB(t))
+	ctx := context.Background()
+
+	c := cliente("cus-1", "1020345671", "carolina@example.com")
+	c.IdentityStatus, c.IdentityRejection, c.IdentityVerificationID = domain.IdentityRejected, domain.RejectionUnreadable, "kyc-1"
+	c.IdentityCheckedAt = t0
+	_, err := s.Save(ctx, c)
+	require.NoError(t, err)
+
+	c.IdentityStatus, c.IdentityRejection, c.IdentityVerificationID = domain.IdentityVerified, "", "kyc-2"
+	_, err = s.Save(ctx, c)
+	require.NoError(t, err)
+
+	leido, err := s.GetByDocument(ctx, "1020345671")
+	require.NoError(t, err)
+	assert.Equal(t, domain.IdentityVerified, leido.IdentityStatus)
+	assert.Empty(t, leido.IdentityRejection)
+	assert.Equal(t, "kyc-2", leido.IdentityVerificationID)
+}
+
+func TestLaBaseRechazaUnEstadoDeIdentidadDesconocido(t *testing.T) {
+	s := postgres.NewCustomerStore(newDB(t))
+	c := cliente("cus-1", "1020345673", "carolina@example.com")
+	c.IdentityStatus = "maybe"
+
+	_, err := s.Save(context.Background(), c)
+
+	assert.Error(t, err)
+}

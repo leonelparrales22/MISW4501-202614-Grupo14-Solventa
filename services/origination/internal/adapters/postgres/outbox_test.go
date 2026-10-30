@@ -177,13 +177,18 @@ func TestMigration0008EnqueuesTheLinksOfTheCustomersAlreadyRegistered(t *testing
 		old[name] = &fstest.MapFile{Data: data}
 	}
 	require.NoError(t, postgres.MigrateFS(ctx, db, old))
-	customers := postgres.NewCustomerStore(db)
+	// The rows are written with the columns the table had before 0008: the
+	// store of today writes later columns too (0013, the identity check).
+	insertOld := func(c domain.Customer, sub any) {
+		_, err := db.ExecContext(ctx, `INSERT INTO customer (id, document_id, full_name, email, birth_date,
+			cognito_sub, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
+			c.ID, c.DocumentID, c.FullName, c.Email, c.BirthDate, sub, c.CreatedAt)
+		require.NoError(t, err)
+	}
 	registered := cliente("cus-1", "1020345678", "carolina@example.com")
 	registered.CognitoSub = "sub-carolina"
-	_, err = customers.Save(ctx, registered)
-	require.NoError(t, err)
-	_, err = customers.Save(ctx, cliente("cus-2", "9999999999", "half@example.com"))
-	require.NoError(t, err, "a registration left halfway, without subject")
+	insertOld(registered, registered.CognitoSub)
+	insertOld(cliente("cus-2", "9999999999", "half@example.com"), nil) // a registration left halfway, without subject
 
 	require.NoError(t, postgres.Migrate(ctx, db))
 

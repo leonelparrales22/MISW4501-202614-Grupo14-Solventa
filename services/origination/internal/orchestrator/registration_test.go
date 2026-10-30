@@ -102,7 +102,7 @@ func servicioConAlmacen(p *proveedorFalso, almacen *almacenFalso) (*memory.Custo
 	*orchestrator.RegistrationService) {
 	clientes := memory.NewCustomerStore()
 	return clientes, almacen,
-		orchestrator.NewRegistrationService(clientes, almacen, p, relojFijo{t: registroEn})
+		orchestrator.NewRegistrationService(clientes, almacen, &verificadorFalso{}, p, relojFijo{t: registroEn})
 }
 
 // jpegEnBase64 arma una cara del documento: la firma de un JPEG y el tamaño
@@ -367,7 +367,7 @@ func TestRegisterLinkFailureLeavesTheCustomerWithoutSubjectAsBefore(t *testing.T
 	boom := errors.New("the database is down")
 	store := memory.NewCustomerStore()
 	repo := failingLink{CustomerStore: store, err: boom}
-	svc := orchestrator.NewRegistrationService(repo, nuevoAlmacen(), &proveedorFalso{}, relojFijo{t: registroEn})
+	svc := orchestrator.NewRegistrationService(repo, nuevoAlmacen(), &verificadorFalso{}, &proveedorFalso{}, relojFijo{t: registroEn})
 
 	_, err := svc.Register(context.Background(), solicitudValida())
 
