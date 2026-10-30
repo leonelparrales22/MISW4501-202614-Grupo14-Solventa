@@ -197,11 +197,12 @@ variable "cors_allow_origin" {
 # --- Public card tokenization (T5) -------------------------------------------------------
 
 variable "registration_route" {
-  description = "Public POST /v1/registrations route of the insured sign-up (HU-M1.1-01): the account does not exist yet, so the call carries no token and no API key. rate_limit and burst_limit (requests per second) throttle it at the stage, since no usage plan covers a route without API key. backend_path is the path of origination behind the load balancer. Null: nothing is created."
+  description = "Public POST /v1/registrations and POST /v1/registrations/document-reads routes of the insured sign-up (HU-M1.1-01): the account does not exist yet, so the calls carry no token and no API key. rate_limit and burst_limit (requests per second) throttle each one at the stage, since no usage plan covers a route without API key. backend_path is the path of origination behind the load balancer. timeout_ms is the integration timeout: the sign-up waits for the identity provider (up to 10 s) before creating the account, so it cannot use the 5 s of the quoting routes. Null: nothing is created."
   type = object({
     backend_path = optional(string, "/v1/registrations")
     rate_limit   = optional(number, 2)
     burst_limit  = optional(number, 5)
+    timeout_ms   = optional(number, 15000)
   })
   default = null
 
@@ -213,6 +214,11 @@ variable "registration_route" {
   validation {
     condition     = var.registration_route == null || try(var.registration_route.rate_limit > 0 && var.registration_route.burst_limit > 0, false)
     error_message = "registration_route.rate_limit and burst_limit must be greater than 0."
+  }
+
+  validation {
+    condition     = var.registration_route == null || try(var.registration_route.timeout_ms >= 50 && var.registration_route.timeout_ms <= 29000, false)
+    error_message = "registration_route.timeout_ms must be between 50 and 29000 (the limit of a REST API integration)."
   }
 }
 

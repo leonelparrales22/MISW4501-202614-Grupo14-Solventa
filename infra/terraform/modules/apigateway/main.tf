@@ -193,6 +193,9 @@ resource "aws_api_gateway_deployment" "this" {
         aws_api_gateway_resource.registrations,
         aws_api_gateway_method.registrations_post,
         aws_api_gateway_integration.registrations_post,
+        aws_api_gateway_resource.registration_document_reads,
+        aws_api_gateway_method.registration_document_reads_post,
+        aws_api_gateway_integration.registration_document_reads_post,
       ])] : [],
       local.payment_tokenization_enabled ? [jsonencode([
         aws_api_gateway_resource.payment_gateway,
@@ -633,7 +636,46 @@ resource "aws_api_gateway_integration" "registrations_post" {
   connection_type         = local.connection_type
   connection_id           = var.vpc_link_v2_id
   integration_target      = local.private_integration ? var.integration_target_arn : null
-  timeout_milliseconds    = var.integration_timeout_ms
+  # Not the 5 s of the quoting routes: the sign-up waits for the identity
+  # provider (up to 10 s, kyc.IdentityTimeout) before creating the account.
+  timeout_milliseconds = var.registration_route.timeout_ms
+}
+
+# POST /v1/registrations/document-reads: the identity provider reads the
+# document so the person confirms the data before signing up (HU-M1.1-01,
+# criterion 1). Public for the same reason as the sign-up, and throttled the
+# same way: nothing is stored.
+resource "aws_api_gateway_resource" "registration_document_reads" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.registrations[0].id
+  path_part   = "document-reads"
+}
+
+resource "aws_api_gateway_method" "registration_document_reads_post" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id      = aws_api_gateway_rest_api.this.id
+  resource_id      = aws_api_gateway_resource.registration_document_reads[0].id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "registration_document_reads_post" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.registration_document_reads[0].id
+  http_method             = aws_api_gateway_method.registration_document_reads_post[0].http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "POST"
+  uri                     = "${local.backend}${var.registration_route.backend_path}/document-reads"
+  connection_type         = local.connection_type
+  connection_id           = var.vpc_link_v2_id
+  integration_target      = local.private_integration ? var.integration_target_arn : null
+  timeout_milliseconds    = var.registration_route.timeout_ms
 }
 
 # No usage plan covers a route without API key: the throttle lives at the
@@ -645,6 +687,23 @@ resource "aws_api_gateway_method_settings" "registrations" {
   rest_api_id = aws_api_gateway_rest_api.this.id
   stage_name  = aws_api_gateway_stage.this.stage_name
   method_path = "v1/registrations/POST"
+
+  settings {
+    metrics_enabled        = true
+    caching_enabled        = false
+    throttling_rate_limit  = var.registration_route.rate_limit
+    throttling_burst_limit = var.registration_route.burst_limit
+  }
+
+  depends_on = [aws_api_gateway_method_settings.all]
+}
+
+resource "aws_api_gateway_method_settings" "registration_document_reads" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "v1/registrations/document-reads/POST"
 
   settings {
     metrics_enabled        = true

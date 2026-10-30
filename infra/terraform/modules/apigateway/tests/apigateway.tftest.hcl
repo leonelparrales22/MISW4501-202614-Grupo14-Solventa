@@ -394,9 +394,24 @@ run "registration_is_public_post_only" {
       aws_api_gateway_integration.registrations_post[0].type == "HTTP_PROXY" &&
       aws_api_gateway_integration.registrations_post[0].integration_http_method == "POST" &&
       aws_api_gateway_integration.registrations_post[0].uri == "http://internal-alb.example.com/v1/registrations" &&
-      aws_api_gateway_integration.registrations_post[0].timeout_milliseconds == 5000
+      aws_api_gateway_integration.registrations_post[0].timeout_milliseconds == 15000
     )
-    error_message = "The route is proxied to /v1/registrations of origination behind the load balancer."
+    error_message = "The route is proxied to /v1/registrations of origination behind the load balancer, with 15 s for the identity check."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_resource.registration_document_reads[0].parent_id == aws_api_gateway_resource.registrations[0].id &&
+      aws_api_gateway_resource.registration_document_reads[0].path_part == "document-reads" &&
+      aws_api_gateway_method.registration_document_reads_post[0].http_method == "POST" &&
+      aws_api_gateway_method.registration_document_reads_post[0].authorization == "NONE" &&
+      aws_api_gateway_method.registration_document_reads_post[0].api_key_required == false &&
+      aws_api_gateway_integration.registration_document_reads_post[0].uri == "http://internal-alb.example.com/v1/registrations/document-reads" &&
+      aws_api_gateway_integration.registration_document_reads_post[0].timeout_milliseconds == 15000 &&
+      aws_api_gateway_method_settings.registration_document_reads[0].method_path == "v1/registrations/document-reads/POST" &&
+      aws_api_gateway_method_settings.registration_document_reads[0].settings[0].throttling_rate_limit == 2
+    )
+    error_message = "The read of the document (HU-M1.1-01, criterion 1) is a public POST under /v1/registrations, proxied to origination and throttled like the sign-up."
   }
 
   assert {
