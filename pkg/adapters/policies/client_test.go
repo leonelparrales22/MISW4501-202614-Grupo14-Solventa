@@ -212,3 +212,96 @@ func TestCallerCancellationCountsAsAFailure(t *testing.T) {
 	}
 	assert.Equal(t, "open", c.BreakerState())
 }
+
+const homePolicy = `{"policy_id":"HG-2025-880231","line":"home","product":"Hogar","insured_object":"Calle 1","status":"active",
+	"valid_from":"2025-11-01T05:00:00Z","valid_to":"2026-11-01T05:00:00Z","covered_incidents":["water_damage"],
+	"coverages":[{"incident":"water_damage","insured_value_minor":32000000000,"currency":"COP","deductible_basis_points":500}]}`
+
+func TestHolderPolicyReturnsTheCoverages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/holders/sub 1/policies/HG-2025-880231", r.URL.Path)
+		_, _ = w.Write([]byte(homePolicy))
+	}))
+	defer srv.Close()
+
+	got, err := policies.NewClient(testConfig(srv.URL, time.Second)).HolderPolicy(context.Background(), "sub 1", "HG-2025-880231")
+
+	require.NoError(t, err)
+	assert.Equal(t, "HG-2025-880231", got.PolicyID)
+	coverage, ok := got.Coverage("water_damage")
+	require.True(t, ok)
+	assert.Equal(t, policies.Coverage{Incident: "water_damage", InsuredValueMinor: 32_000_000_000, Currency: "COP",
+		DeductibleBasisPoints: 500}, coverage)
+	_, ok = got.Coverage("collision")
+	assert.False(t, ok, "an incident the policy does not cover")
+}
+
+func TestHolderPolicyNotFoundIsAnAnswer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	c := policies.NewClient(testConfig(srv.URL, time.Second))
+
+	for i := 0; i < 5; i++ {
+		_, err := c.HolderPolicy(context.Background(), "sub-1", "AU-2026-999999")
+		require.ErrorIs(t, err, policies.ErrPolicyNotFound)
+		assert.NotErrorIs(t, err, policies.ErrSourceUnavailable)
+	}
+	assert.Equal(t, "closed", c.BreakerState(), "a 404 does not count against the circuit")
+}
+
+func TestHolderPolicyValidatesItsArguments(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
+	defer srv.Close()
+	c := policies.NewClient(testConfig(srv.URL, time.Second))
+
+	_, err := c.HolderPolicy(context.Background(), "", "HG-1")
+	assert.ErrorIs(t, err, policies.ErrInvalidHolder)
+	_, err = c.HolderPolicy(context.Background(), "sub-1", "")
+	assert.ErrorIs(t, err, policies.ErrInvalidPolicy)
+	_, err = c.Holder(context.Background(), "")
+	assert.ErrorIs(t, err, policies.ErrInvalidHolder)
+	assert.Zero(t, calls.Load(), "invalid arguments never reach the core")
+}
+
+func TestHolderReturnsTheProfile(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/holders/sub-1", r.URL.Path)
+		_, _ = w.Write([]byte(`{"holder_id":"sub-1","full_name":"Carolina Pérez Ruiz","document_type":"CC",
+			"document_id":"1020345678","email":"carolina.perez@correo.example","phone":"+57 301 234 5678",
+			"payout_account":{"bank_code":"1007","bank_name":"Banco Aliado","account_type":"savings",
+			"account_number":"0123-4567-12"}}`))
+	}))
+	defer srv.Close()
+
+	got, err := policies.NewClient(testConfig(srv.URL, time.Second)).Holder(context.Background(), "sub-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, policies.Holder{HolderID: "sub-1", FullName: "Carolina Pérez Ruiz", DocumentType: "CC",
+		DocumentID: "1020345678", Email: "carolina.perez@correo.example", Phone: "+57 301 234 5678",
+		PayoutAccount: policies.PayoutAccount{BankCode: "1007", BankName: "Banco Aliado", AccountType: "savings",
+			AccountNumber: "0123-4567-12"}}, got)
+}
+
+func TestHolderTellsAnUnknownHolderFromAFailure(t *testing.T) {
+	for name, handler := range map[string]http.HandlerFunc{
+		"not found": func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) },
+		"5xx":       func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) },
+		"bad body":  func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{not json`)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(handler)
+			defer srv.Close()
+
+			_, err := policies.NewClient(testConfig(srv.URL, time.Second)).Holder(context.Background(), "sub-1")
+
+			if name == "not found" {
+				assert.ErrorIs(t, err, policies.ErrHolderNotFound)
+				return
+			}
+			assert.ErrorIs(t, err, policies.ErrSourceUnavailable)
+		})
+	}
+}
