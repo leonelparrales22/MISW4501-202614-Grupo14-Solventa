@@ -35,7 +35,7 @@ func claim(id, subject, key string) domain.Claim {
 }
 
 func TestEachFilingTakesItsOwnNumber(t *testing.T) {
-	s := memory.NewClaimStore()
+	s := memory.NewCaseStore()
 
 	first, created, err := s.Create(context.Background(), claim("cl-1", "sub-carolina", "draft-1"))
 	require.NoError(t, err)
@@ -48,7 +48,7 @@ func TestEachFilingTakesItsOwnNumber(t *testing.T) {
 }
 
 func TestTheSameKeyReturnsTheCaseThatAlreadyExists(t *testing.T) {
-	s := memory.NewClaimStore()
+	s := memory.NewCaseStore()
 	first, _, err := s.Create(context.Background(), claim("cl-1", "sub-carolina", "draft-1"))
 	require.NoError(t, err)
 
@@ -61,7 +61,7 @@ func TestTheSameKeyReturnsTheCaseThatAlreadyExists(t *testing.T) {
 }
 
 func TestTheSameKeyWithAnotherFilingIsRefused(t *testing.T) {
-	s := memory.NewClaimStore()
+	s := memory.NewCaseStore()
 	_, _, err := s.Create(context.Background(), claim("cl-1", "sub-carolina", "draft-1"))
 	require.NoError(t, err)
 
@@ -74,7 +74,7 @@ func TestTheSameKeyWithAnotherFilingIsRefused(t *testing.T) {
 }
 
 func TestTheKeyIsPerInsured(t *testing.T) {
-	s := memory.NewClaimStore()
+	s := memory.NewCaseStore()
 
 	_, _, err := s.Create(context.Background(), claim("cl-1", "sub-ana", "draft-1"))
 	require.NoError(t, err)

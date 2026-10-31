@@ -78,7 +78,7 @@ func TestARepeatedFilingKeyAcrossChannels(t *testing.T) {
 func TestASupportIsAttachedToOneClaimOnly(t *testing.T) {
 	s := memory.NewCaseStore()
 	sup := support("sup-1", "sub-1")
-	require.NoError(t, s.Save(context.Background(), sup, []byte("%PDF-")))
+	require.NoError(t, s.Save(context.Background(), sup))
 
 	pending, err := s.CountPending(context.Background(), "sub-1")
 	require.NoError(t, err)
@@ -98,8 +98,8 @@ func TestASupportIsAttachedToOneClaimOnly(t *testing.T) {
 
 func TestFindReturnsOnlyTheSupportsThatExist(t *testing.T) {
 	s := memory.NewCaseStore()
-	require.NoError(t, s.Save(context.Background(), support("sup-1", "sub-1"), nil))
-	require.NoError(t, s.Save(context.Background(), support("sup-2", "sub-2"), nil))
+	require.NoError(t, s.Save(context.Background(), support("sup-1", "sub-1")))
+	require.NoError(t, s.Save(context.Background(), support("sup-2", "sub-2")))
 
 	found, err := s.Find(context.Background(), []string{"sup-1", "sup-2", "sup-3"})
 
@@ -185,4 +185,34 @@ func TestTheListBreaksTiesByID(t *testing.T) {
 	assert.Equal(t, []string{"c", "b"}, []string{first[0].ID, first[1].ID})
 	require.Len(t, rest, 1)
 	assert.Equal(t, "a", rest[0].ID)
+}
+
+func TestAConfirmedSupportKeepsItsFirstConfirmation(t *testing.T) {
+	s := memory.NewCaseStore()
+	require.NoError(t, s.Save(context.Background(), support("sup-1", "sub-1")))
+
+	first, err := s.Confirm(context.Background(), "sup-1", filedAt)
+	require.NoError(t, err)
+	assert.True(t, first.Confirmed())
+	again, err := s.Confirm(context.Background(), "sup-1", filedAt.Add(time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, filedAt, again.ConfirmedAt)
+
+	_, err = s.Confirm(context.Background(), "sup-9", filedAt)
+	assert.ErrorIs(t, err, domain.ErrSupportNotFound)
+}
+
+func TestTheEvidenceOfAMobileClaimIsKeptByCopy(t *testing.T) {
+	s := memory.NewCaseStore()
+	c := claim("c1", "sub-1", "draft-1")
+	c.Evidence = []domain.Evidence{{ObjectKey: "evidence/sub-1/a.jpg", Kind: domain.KindPhoto}}
+	_, _, err := s.Create(context.Background(), c)
+	require.NoError(t, err)
+	c.Evidence[0].ObjectKey = "changed"
+
+	got, err := s.Get(context.Background(), "c1")
+	require.NoError(t, err)
+	require.Len(t, got.Evidence, 1)
+	assert.Equal(t, "evidence/sub-1/a.jpg", got.Evidence[0].ObjectKey)
+	assert.Equal(t, domain.ChannelMobile, got.Channel)
 }

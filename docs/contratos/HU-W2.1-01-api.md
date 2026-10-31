@@ -4,10 +4,11 @@ Servicio: **siniestros** (`claims`). Consumidor: portal web del asegurado.
 
 > **Fuente única para el front.** Generado a partir del código real del servicio `claims`
 > (`internal/adapters/http/web_filings.go`, `internal/filing/{web,supports,queries}.go`, `internal/domain/{catalog,web_filing,policy}.go`,
-> `migrations/0003_web_filing.sql`) y de respuestas **capturadas del binario en ejecución** el 2026-10-25 (`claims` en Docker con su
+> `migrations/0003_web_filing.sql`, `migrations/0004_support_objects.sql`) y de respuestas **capturadas del binario en ejecución** el 2026-10-25 (`claims` en Docker con su
 > PostgreSQL, el stub del core de pólizas detrás de Toxiproxy y Cognito local de Moto con verificación JWT RS256 real de
 > `pkg/security`). Los identificadores y las fechas de los ejemplos son los de esa ejecución. Contrato formal:
-> `services/claims/api/openapi.yaml` (versión 0.3.0).
+> `services/claims/api/openapi.yaml` (versión 0.5.0). Los ejemplos de §2.2 (declaración, subida y confirmación) y el arreglo
+> `evidence` de §2.4 se escribieron a partir del código y de las pruebas, no de una captura; el resto sí es una captura.
 
 ---
 
@@ -19,8 +20,11 @@ Portal web (sesión de Cognito, rol insured)        claims                      
 GET  /v1/claims/filing-options ──────────────────▶ pólizas del asegurado ───────────────▶ GET /holders/{sub}/policies
   ◀── pólizas activas, tipos cubiertos y soportes de cada tipo          (si no responde: 503)
 
-POST /v1/claims/supports (un archivo por llamada) ▶ valida el contenido (JPG/PNG/PDF ≤ 10 MiB) y lo guarda
-  ◀── 201 {support_id}  ·  413 / 415: solo ese archivo se rechaza
+POST /v1/claims/supports (declara un archivo) ───▶ valida tipo y tamaño y firma la subida
+  ◀── 201 {support_id, upload_url, upload_headers}  ·  413 / 415: solo ese archivo se rechaza
+PUT  <upload_url> (con upload_headers) ──────────▶ S3 (el archivo NO pasa por claims ni por el API Gateway)
+POST /v1/claims/supports/{id}/confirmation ──────▶ comprueba tamaño, resumen y contenido (JPG/PNG/PDF)
+  ◀── 200 {support_id, …}  ·  415 / 422: solo ese archivo se rechaza
 
 POST /v1/claims/web-filings ─────────────────────▶ 1. formulario y soportes del tipo (todo lo que falta, a la vez)
   (Idempotency-Key)                                 2. póliza propia, activa, que cubre el tipo y con el hecho en vigencia
@@ -37,7 +41,7 @@ GET  /v1/claims ─────────────────────�
 | CA-2 Falta un soporte o un dato → no se envía y se dice qué falta | `422 validation_failed` con todos los campos (§2.3) |
 | CA-3 Hecho fuera de vigencia o tipo no cubierto → no se radica, con el motivo | `422 policy_not_eligible` con `reason` (§2.3) |
 | CA-4 Caso `active`, radicado único, fecha y hora, soportes; confirmación descargable | `201` de la radicación, `GET /v1/claims/{id}` y el PDF |
-| CA-5 Archivo de tipo o tamaño no permitido → se rechaza con el motivo, sin perder lo diligenciado | `415` / `413` en la subida de ese archivo |
+| CA-5 Archivo de tipo o tamaño no permitido → se rechaza con el motivo, sin perder lo diligenciado | `413` / `415` al declarar el archivo y `415` / `422` al confirmarlo: solo ese archivo |
 | CA-6 Solo sobre sus pólizas; el caso aparece en su listado con su estado | La póliza se busca entre las del asegurado; `GET /v1/claims` |
 
 ---
@@ -122,15 +126,32 @@ póliza `HG-2026-486204` de Hogar con `water_damage`.)
 - `valid_to` es el primer instante **sin** cobertura. Sirve para el aviso «Fecha del hecho dentro de la vigencia» antes de enviar.
 - `503 policy_directory_unavailable`: el core de pólizas no respondió. Ofrecer reintentar.
 
-### 2.2 `POST /v1/claims/supports` — subir un soporte
+### 2.2 Los soportes: declarar, subir y confirmar
 
-`multipart/form-data` con **un solo** campo `file`. Se sube un archivo por llamada, en cuanto el asegurado lo elige.
+El archivo **va del navegador al almacenamiento (S3)**, no por `claims`. Por cada archivo que el asegurado elige, en cuanto lo elige:
+
+1. **`POST /v1/claims/supports`** declara el archivo y devuelve la URL firmada.
+2. **`PUT <upload_url>`** sube el archivo a S3.
+3. **`POST /v1/claims/supports/{support_id}/confirmation`** comprueba lo que llegó. Solo un soporte confirmado se puede radicar.
 
 | Regla | Valor |
 |---|---|
-| Formatos | JPG, PNG o PDF. Se decide por el **contenido** del archivo, no por la extensión |
-| Tamaño | De 1 byte a 10 MiB (10 485 760 bytes) por archivo |
-| Pendientes | Como máximo 50 soportes subidos y aún no asociados a un caso, por asegurado |
+| Formatos | JPG, PNG o PDF. El tipo declarado se valida al declarar; el **contenido** (los primeros bytes) se valida al confirmar, no la extensión |
+| Tamaño | De 1 byte a 10 MiB (10 485 760 bytes) por archivo. Ya no aplica el límite de 10 MB del API Gateway: el archivo no pasa por él |
+| Pendientes | Como máximo 50 soportes declarados y aún no asociados a un caso, por asegurado |
+
+#### 1. Declarar — `POST /v1/claims/supports`
+
+El navegador calcula el SHA-256 del archivo (por ejemplo con `crypto.subtle.digest`) y lo declara, en minúsculas y hexadecimal:
+
+```json
+{
+  "file_name": "croquis.pdf",
+  "content_type": "application/pdf",
+  "byte_size": 482113,
+  "sha256": "3ebdbded93068e8b1d3ce03106c0503e911fa0b6961e088e48f3a574b047d767"
+}
+```
 
 Respuesta `201`:
 
@@ -139,23 +160,60 @@ Respuesta `201`:
   "support_id": "sup-e9a4688ac28cb56a875bb3dbb5a4e84a",
   "file_name": "croquis.pdf",
   "content_type": "application/pdf",
-  "byte_size": 4105,
+  "byte_size": 482113,
   "sha256": "3ebdbded93068e8b1d3ce03106c0503e911fa0b6961e088e48f3a574b047d767",
-  "uploaded_at": "2026-10-25T01:43:02.260708Z"
+  "upload_url": "https://<bucket>.s3.us-east-2.amazonaws.com/supports/<sub>/sup-e9a4…?X-Amz-Algorithm=…&X-Amz-Signature=…",
+  "upload_headers": { "Content-Type": "application/pdf" },
+  "expires_at": "2026-10-30T15:10:00Z"
 }
 ```
 
 | Código | `error` | Qué mostrar |
 |---|---|---|
-| `400` | `invalid_request` | El cuerpo no es multipart o no trae exactamente un campo `file` |
-| `413` | `file_too_large` | «El archivo supera 10 MB» |
-| `415` | `unsupported_file_type` | «Solo se admiten JPG, PNG o PDF» |
-| `422` | `empty_file` | «El archivo está vacío» |
+| `400` | `invalid_request` | El cuerpo no es JSON |
+| `413` | `file_too_large` | «El archivo supera 10 MB» (el tamaño declarado supera 10 MiB) |
+| `415` | `unsupported_file_type` | «Solo se admiten JPG, PNG o PDF» (el tipo declarado) |
+| `422` | `empty_file` | «El archivo está vacío» (tamaño declarado menor que 1) |
+| `422` | `validation_failed` | El `sha256` falta o no es un SHA-256 en minúsculas (`fields`: `sha256`) |
 | `429` | `too_many_pending_supports` | «Tienes demasiados archivos sin radicar» |
 | `503` | `supports_unavailable` | Reintentar |
 
-Un rechazo afecta **solo** a ese archivo: los ya subidos siguen valiendo y el formulario no se pierde (CA-5). «Reemplazar» es
-subir otro archivo y enviar su `support_id` en lugar del anterior.
+#### 2. Subir — `PUT <upload_url>`
+
+- Es una llamada **directa a S3**, no a la API: **sin** `Authorization`. Cuerpo: el archivo, tal cual.
+- Enviar **exactamente** las cabeceras de `upload_headers`: la firma las cubre. Si el tamaño o el SHA-256 del cuerpo no son los
+  declarados, S3 rechaza la subida.
+- La URL vence a los 10 minutos (`expires_at`). Si venció, se declara el archivo otra vez.
+- **CORS:** el *bucket* acepta `PUT` y `GET` desde el origen del portal (el de `portal_base_url`); desde otro origen el navegador
+  bloquea la subida.
+
+#### 3. Confirmar — `POST /v1/claims/supports/{support_id}/confirmation`
+
+Sin cuerpo. Comprueba que el objeto está, que tiene el tamaño y el resumen declarados y que sus primeros bytes son el formato
+declarado. Confirmar dos veces es inocuo. Respuesta `200`:
+
+```json
+{
+  "support_id": "sup-e9a4688ac28cb56a875bb3dbb5a4e84a",
+  "file_name": "croquis.pdf",
+  "content_type": "application/pdf",
+  "byte_size": 482113,
+  "sha256": "3ebdbded93068e8b1d3ce03106c0503e911fa0b6961e088e48f3a574b047d767",
+  "confirmed_at": "2026-10-30T15:01:00Z"
+}
+```
+
+| Código | `error` | Qué mostrar |
+|---|---|---|
+| `404` | `support_not_found` | El soporte no existe o no es del asegurado (la respuesta es la misma) |
+| `415` | `unsupported_file_type` | «El contenido no es un JPG, PNG o PDF» (por ejemplo, un ejecutable renombrado `.pdf`) |
+| `422` | `support_not_uploaded` | El archivo aún no llegó a S3: subirlo y confirmar de nuevo |
+| `422` | `support_mismatch` | El archivo subido no es el declarado (otro tamaño u otro resumen) |
+| `503` | `supports_unavailable` | Reintentar |
+
+Un rechazo afecta **solo** a ese archivo: los ya confirmados siguen valiendo y el formulario no se pierde (CA-5). «Reemplazar» es
+declarar otro archivo y enviar su `support_id` en lugar del anterior. Un soporte declarado que no se confirmó, al radicar responde
+`supports.<código>: not_found`.
 
 ### 2.3 `POST /v1/claims/web-filings` — radicar
 
@@ -342,14 +400,37 @@ desconocido, `404 claim_not_found`.
         ]
       }
     ]
-  }
+  },
+  "evidence": []
 }
 ```
 
 - `status: active` es el estado «Radicado» de la pantalla (CA-4 lo llama *Activo*).
 - `filed_at` es la hora del servidor; mostrarla en la zona del usuario.
 - `supports` da el «3 de 3 obligatorios · 8 archivos» de la confirmación.
-- Caso radicado desde el móvil: `channel: mobile`, `policy.line`/`product`/`insured_object` en `null` y `supports` en ceros.
+- Caso radicado desde el móvil: `channel: mobile`, `policy.line`/`product`/`insured_object` en `null`, `supports` en ceros y
+  `evidence` con las fotografías y el video que el asegurado capturó en el lugar (HU-M2.1-01), en el orden de captura:
+
+```json
+"evidence": [
+  {
+    "kind": "photo",
+    "content_type": "image/jpeg",
+    "captured_at": "2026-10-23T23:32:14Z",
+    "latitude": 4.7712,
+    "longitude": -74.0452,
+    "accuracy_m": 8,
+    "location_trusted": true,
+    "byte_size": 312044,
+    "duration_s": 0,
+    "download_url": "https://<bucket>.s3.us-east-2.amazonaws.com/evidence/<sub>/9f2c….jpg?X-Amz-Signature=…",
+    "download_expires_at": "2026-10-30T15:10:00Z"
+  }
+]
+```
+
+  `download_url` es una lectura firmada que vence a los 10 minutos: se pide el detalle otra vez para obtener una nueva. Es `null`
+  si no se pudo firmar; el resto del detalle sigue valiendo. En un caso radicado desde la web `evidence` es `[]`.
 
 ### 2.5 `GET /v1/claims/{claim_id}/filing-receipt` — descargar el radicado
 
@@ -435,13 +516,14 @@ El catálogo está pendiente de validación con negocio. Si cambia, cambia `cata
 
 ---
 
-## 5. Provisional hasta HU-M2.1-01
+## 5. Qué cambió respecto de la versión 0.3.0
 
-Esta historia avanza sin esperar la evidencia multimedia de HU-M2.1-01. Cuando esa historia se integre, cambian:
-
-- **La subida de soportes:** pasará a una URL firmada de S3 (el archivo irá directo del navegador al almacenamiento), como la
-  evidencia del móvil. `POST /v1/claims/supports` cambiará de forma: se avisará con una versión nueva del contrato.
-- **Posible unificación** de `POST /v1/claims/web-filings` con `POST /v1/claims` (con un campo `channel`). Por decidir con el
-  equipo.
-- **En AWS, mientras tanto,** el API Gateway limita cada petición a 10 MB, así que un archivo de 10 MiB justos no pasa. En local
-  el límite es el del contrato.
+- **Los soportes ya no se suben a `claims` por `multipart`.** `POST /v1/claims/supports` pasó de recibir el archivo a recibir su
+  declaración (JSON) y devolver la URL firmada de S3; hay una ruta nueva de confirmación (§2.2). Es un cambio incompatible del
+  contrato: el front que no se había construido aún sobre `multipart` debe usar este flujo.
+- **Sin el límite de 10 MB del API Gateway:** el archivo va directo a S3.
+- **`GET /v1/claims/{id}` trae `evidence`** (la evidencia del móvil con lectura firmada).
+- **Las dos rutas de radicación se mantienen** (`POST /v1/claims` móvil, con evidencia geoetiquetada, y `POST
+  /v1/claims/web-filings`, con soportes y póliza), con una sola tabla, una numeración y las mismas claves de idempotencia.
+- **Titular de la póliza:** el core identifica al asegurado por el `sub` del token. El cruce con el documento del cliente se
+  decidirá cuando exista un core real que identifique por documento.

@@ -39,7 +39,64 @@ var (
 	// ErrTooManyPendingSupports means the insured already has
 	// MaxPendingSupports supports not attached to any claim.
 	ErrTooManyPendingSupports = errors.New("claims: too many supports not attached to a claim")
+	// ErrSupportNotFound is a support that does not exist or belongs to
+	// another insured: both look the same.
+	ErrSupportNotFound = errors.New("claims: the support does not exist")
+	// ErrSupportNotUploaded means the confirmation arrived before the file
+	// reached the storage.
+	ErrSupportNotUploaded = errors.New("claims: the file of the support is not in the storage")
+	// ErrSupportMismatch means the stored object is not the declared one: its
+	// size or its digest differ.
+	ErrSupportMismatch = errors.New("claims: the stored file is not the declared one")
 )
+
+// SupportObjectKey is where the file of a support lives in the store, under
+// the directory of whoever declared it.
+func SupportObjectKey(subject, supportID string) string {
+	return "supports/" + subject + "/" + supportID
+}
+
+// SupportUploadRequest is what the portal declares before uploading one
+// support to the store (HU-W2.1-01 criterion 5): the file itself never
+// crosses the service.
+type SupportUploadRequest struct {
+	FileName    string
+	ContentType string
+	ByteSize    int64
+	SHA256      string
+}
+
+// SupportUpload is a declared support that passed its rules.
+type SupportUpload struct {
+	FileName string
+	Format   FileFormat
+	ByteSize int64
+	SHA256   string
+}
+
+// Validate checks the declaration. The content type and the size are refused
+// with the sentinel errors above; a digest that is not SHA-256 comes back as
+// a *ValidationError. The real format is checked against the first bytes of
+// the stored file when the upload is confirmed.
+func (r SupportUploadRequest) Validate() (SupportUpload, error) {
+	format, ok := FormatOf(strings.TrimSpace(r.ContentType))
+	switch {
+	case !ok:
+		return SupportUpload{}, ErrUnsupportedFileType
+	case r.ByteSize <= 0:
+		return SupportUpload{}, ErrEmptyFile
+	case r.ByteSize > MaxSupportBytes:
+		return SupportUpload{}, ErrFileTooLarge
+	}
+	digest := strings.TrimSpace(r.SHA256)
+	switch {
+	case digest == "":
+		return SupportUpload{}, &ValidationError{Fields: []FieldError{{Field: "sha256", Code: CodeRequired}}}
+	case !sha256Pattern.MatchString(digest):
+		return SupportUpload{}, &ValidationError{Fields: []FieldError{{Field: "sha256", Code: CodeInvalidFormat}}}
+	}
+	return SupportUpload{FileName: SanitizeFileName(r.FileName), Format: format, ByteSize: r.ByteSize, SHA256: digest}, nil
+}
 
 // SupportFile is an uploaded support. It belongs to whoever uploaded it and can
 // be attached to one claim only.
@@ -50,11 +107,22 @@ type SupportFile struct {
 	Format       FileFormat
 	ByteSize     int64
 	// SHA256 is the digest of the content, in lowercase hexadecimal.
-	SHA256     string
+	SHA256 string
+	// UploadedAt is when the portal declared the file.
 	UploadedAt time.Time
+	// ConfirmedAt is when the stored file was checked against its
+	// declaration; zero until then. Only a confirmed support can be attached
+	// to a claim.
+	ConfirmedAt time.Time
 }
 
-// ContentType is the media type of the file, told by its content.
+// ObjectKey is where the file lives in the store.
+func (s SupportFile) ObjectKey() string { return SupportObjectKey(s.OwnerSubject, s.ID) }
+
+// Confirmed tells whether the stored file was checked.
+func (s SupportFile) Confirmed() bool { return !s.ConfirmedAt.IsZero() }
+
+// ContentType is the media type of the file, checked against its content.
 func (s SupportFile) ContentType() string { return s.Format.ContentType() }
 
 // Signatures of the accepted formats: the first bytes of the file.

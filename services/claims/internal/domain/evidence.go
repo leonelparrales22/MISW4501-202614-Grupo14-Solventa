@@ -105,6 +105,9 @@ func (u Upload) Key(subject string) string {
 	return evidencePrefix + subject + "/" + u.SHA256 + u.Kind.extension()
 }
 
+// ContentType is the media type the kind travels in.
+func (k EvidenceKind) ContentType() string { return k.contentType() }
+
 func (k EvidenceKind) contentType() string {
 	if k == KindVideo {
 		return VideoContentType

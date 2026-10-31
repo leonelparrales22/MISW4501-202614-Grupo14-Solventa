@@ -48,6 +48,14 @@ services:
       - PORT=8080
       - DATABASE_URL=postgres://claims:${PG_PASSWORD:-}@postgres-claims:5432/claims?sslmode=disable
       - POLICY_CORE_URL=http://policy-core:9060
+      # Object store of the supports and the evidence: the S3 of Moto, whose
+      # bucket run.sh creates before claims starts. The credentials are the
+      # dummy ones of the emulator.
+      - EVIDENCE_BUCKET=claims-evidence
+      - EVIDENCE_ENDPOINT_URL=http://moto:5000
+      - AWS_REGION=us-east-2
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
       # Cognito of Moto, written by run.sh after seeding it.
       - AUTH_ISSUER=${AUTH_ISSUER:-}
       - AUTH_JWKS_URL=${AUTH_JWKS_URL:-}

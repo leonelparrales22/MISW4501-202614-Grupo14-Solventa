@@ -17,13 +17,19 @@ run "one_repository_per_image" {
   command = plan
 
   assert {
-    condition     = length(module.ecr.repository_names) == 10
-    error_message = "There must be one repository for each of the 5 services and 5 stubs with a Dockerfile."
+    condition     = length(module.ecr.repository_names) == 11
+    error_message = "There must be one repository for each of the 5 services and 6 stubs with a Dockerfile."
   }
 
   assert {
     condition     = module.ecr.repository_names["origination"] == "solventa/origination"
     error_message = "Repositories are named solventa/<image>."
+  }
+
+  # HU-W2.1-01: the policy core stub is deployed from its own repository.
+  assert {
+    condition     = module.ecr.repository_names["policy-core"] == "solventa/policy-core"
+    error_message = "The policy core stub needs the repository solventa/policy-core."
   }
 }
 

@@ -43,8 +43,8 @@ variable "image_tag_overrides" {
   default     = {}
 
   validation {
-    condition     = alltrue([for k in keys(var.image_tag_overrides) : contains(["origination", "claims", "partners", "audit", "notifications", "openfinance", "opendata", "kyc", "email", "payment-gateway"], k)])
-    error_message = "image_tag_overrides keys must be image names: origination, claims, partners, audit, notifications, openfinance, opendata, kyc, email or payment-gateway."
+    condition     = alltrue([for k in keys(var.image_tag_overrides) : contains(["origination", "claims", "partners", "audit", "notifications", "openfinance", "opendata", "kyc", "email", "payment-gateway", "policy-core"], k)])
+    error_message = "image_tag_overrides keys must be image names: origination, claims, partners, audit, notifications, openfinance, opendata, kyc, email, payment-gateway or policy-core."
   }
 }
 
@@ -83,8 +83,8 @@ variable "stub_desired_count_overrides" {
   default     = {}
 
   validation {
-    condition     = alltrue([for k in keys(var.stub_desired_count_overrides) : contains(["openfinance", "opendata", "kyc", "email", "payment-gateway"], k)])
-    error_message = "stub_desired_count_overrides keys must be stub names: openfinance, opendata, kyc, email or payment-gateway."
+    condition     = alltrue([for k in keys(var.stub_desired_count_overrides) : contains(["openfinance", "opendata", "kyc", "email", "payment-gateway", "policy-core"], k)])
+    error_message = "stub_desired_count_overrides keys must be stub names: openfinance, opendata, kyc, email, payment-gateway or policy-core."
   }
 
   validation {
@@ -213,9 +213,11 @@ variable "human_routes" {
     review-requests     = { methods = ["GET", "POST"] }
     issuance-exceptions = { methods = ["GET"] }
     # Filing of the claim from the guided assistant of the mobile app
-    # (HU-M2.2-01). It is a write of the insured on their own behalf, so it
-    # only needs POST; the reads of the case come with HU-M2.4-01.
-    claims = { methods = ["POST"] }
+    # (HU-M2.2-01) and from the web portal (HU-W2.1-01). GET reads the list of
+    # claims (/v1/claims), the filing options, the detail and the filing
+    # receipt; POST files the claim, from the root, and uploads the supports
+    # and the web filing, from the subroutes.
+    claims = { methods = ["GET", "POST"] }
     # The insured reads their own consents from the mobile app (HU-M1.3-01):
     # GET /v1/consents and GET /v1/consents/{consent_id}. The revocation of
     # HU-M1.3-02 adds POST under the consent (POST

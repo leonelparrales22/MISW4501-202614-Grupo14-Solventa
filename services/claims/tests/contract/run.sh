@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Contract test of the claims routes (OBJ 05): starts the real service in
-# Docker (PostgreSQL of its own, the policy core stub, Moto as Cognito) and
+# Docker (PostgreSQL of its own, the policy core stub, Moto as Cognito and as
+# the S3 of the supports) and
 # runs Schemathesis against ../../api/openapi.yaml with every check, on the
 # routes /v1/claims*:
 #   1. as an insured: the filing of HU-M2.2-01 and every route of HU-W2.1-01
-#      (filing options, upload of a support, web filing, list, detail and
-#      receipt). The generated policies are not the insured's and the generated
+#      (filing options, declaration and confirmation of a support, web filing,
+#      list, detail and receipt). The generated policies are not the insured's and the generated
 #      ids do not exist, so the 422 and 404 answers are reached.
 #   2. as an advisor: every route answers 403.
 # The script exits with a non-zero code if any check fails. The environment is
@@ -34,6 +35,9 @@ trap cleanup EXIT
 
 echo "== Starting PostgreSQL, the policy core stub and Moto"
 $COMPOSE up -d --build --wait postgres-claims policy-core moto
+
+echo "== Creating the bucket of the supports in Moto (S3)"
+curl -sf -X PUT "http://localhost:$MOTO_PORT/claims-evidence" >/dev/null
 
 echo "== Seeding the local Cognito (Moto)"
 SEED_OUT=""
@@ -76,13 +80,17 @@ for i in $(seq 1 90); do
 done
 
 ROUTES='^/v1/claims'
+# The mobile filing (HU-M2.1-01) asks for 4 to 6 pieces of evidence with their
+# own keys, so Hypothesis discards most of what it generates for it (the
+# filter_too_much health check); the answers it does reach are still checked.
 
 seed=1
 for user in asegurado.local@example.com asesor.local@example.com; do
   echo "== Schemathesis: the claims routes as $user"
   $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://claims:8080 \
     -H "Authorization: Bearer $(token "$user")" --include-path-regex="$ROUTES" \
-    --checks=all --hypothesis-max-examples=50 --hypothesis-seed="$seed"
+    --checks=all --hypothesis-max-examples=50 --hypothesis-seed="$seed" \
+    --hypothesis-suppress-health-check=filter_too_much
   seed=$((seed + 1))
 done
 

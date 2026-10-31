@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
@@ -27,6 +28,47 @@ var ErrInvalidQuery = errors.New("claims: invalid query of the claims")
 type QueryService struct {
 	claims   ports.ClaimRecords
 	receipts ports.ReceiptRenderer
+	objects  ports.ObjectStore
+}
+
+// EvidenceLinkTTL is how long the signed read of a piece of evidence works.
+const EvidenceLinkTTL = 10 * time.Minute
+
+// WithObjects lets the detail of a claim filed from the mobile app link its
+// evidence: the photographs and the video are read from the object store with
+// a short-lived signed URL. Without it the detail lists the evidence without
+// links.
+func (s *QueryService) WithObjects(objects ports.ObjectStore) *QueryService {
+	s.objects = objects
+	return s
+}
+
+// EvidenceLink is a piece of evidence of a claim and, when it could be
+// signed, where to read it.
+type EvidenceLink struct {
+	Evidence  domain.Evidence
+	URL       string
+	ExpiresAt time.Time
+}
+
+// EvidenceLinks lists the evidence of the claim in the order it was captured.
+// A read that cannot be signed comes without URL: the rest of the detail is
+// still worth showing.
+func (s *QueryService) EvidenceLinks(ctx context.Context, c domain.ClaimRecord) []EvidenceLink {
+	out := make([]EvidenceLink, 0, len(c.Evidence))
+	for _, e := range c.Evidence {
+		link := EvidenceLink{Evidence: e}
+		if s.objects != nil {
+			signed, err := s.objects.SignDownload(ctx, e.ObjectKey, EvidenceLinkTTL)
+			if err != nil {
+				slog.WarnContext(ctx, "could not sign the read of the evidence", "claim_id", c.ID, "error", err)
+			} else {
+				link.URL, link.ExpiresAt = signed.URL, signed.ExpiresAt
+			}
+		}
+		out = append(out, link)
+	}
+	return out
 }
 
 // NewQueryService builds the service.

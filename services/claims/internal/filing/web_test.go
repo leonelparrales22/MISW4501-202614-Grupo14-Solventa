@@ -3,9 +3,10 @@ package filing_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,7 @@ const carolina = "sub-carolina"
 var (
 	jpeg = append([]byte{0xFF, 0xD8, 0xFF, 0xE0}, bytes.Repeat([]byte{1}, 2048)...)
 	pdf  = append([]byte("%PDF-1.7\n"), bytes.Repeat([]byte{2}, 2048)...)
+	png  = append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{3}, 2048)...)
 
 	validFrom = time.Date(2025, 11, 1, 5, 0, 0, 0, time.UTC)
 	validTo   = time.Date(2026, 11, 1, 5, 0, 0, 0, time.UTC)
@@ -74,6 +76,7 @@ type webFixture struct {
 	policies *directory
 	web      *filing.WebService
 	uploads  *filing.SupportService
+	objects  *objectStore
 }
 
 func newWebFixture() *webFixture {
@@ -90,20 +93,46 @@ func newWebFixture() *webFixture {
 		"sub-someone": {auto("AU-2025-999999")},
 	}}
 	clock := fixedClock{t: filedAt}
+	objects := newObjectStore()
 	return &webFixture{
-		store: store, policies: policies,
+		store: store, policies: policies, objects: objects,
 		web:     filing.NewWebService(store, store, policies, clock),
-		uploads: filing.NewSupportService(store, clock),
+		uploads: filing.NewSupportService(store, objects, clock),
 	}
+}
+
+// declaration is what the portal declares about a file it holds.
+func declaration(name string, content []byte) domain.SupportUploadRequest {
+	sum := sha256.Sum256(content)
+	contentType := "application/pdf"
+	switch {
+	case bytes.HasPrefix(content, jpeg[:3]):
+		contentType = "image/jpeg"
+	case bytes.HasPrefix(content, png[:8]):
+		contentType = "image/png"
+	}
+	return domain.SupportUploadRequest{
+		FileName: name, ContentType: contentType, ByteSize: int64(len(content)), SHA256: hex.EncodeToString(sum[:]),
+	}
+}
+
+// uploadOne declares a file, uploads it to the store as the browser would and
+// confirms it.
+func (f *webFixture) uploadOne(t *testing.T, subject, name string, content []byte) domain.SupportFile {
+	t.Helper()
+	up, err := f.uploads.Declare(context.Background(), subject, declaration(name, content))
+	require.NoError(t, err)
+	f.objects.put(up.File.ObjectKey(), content)
+	confirmed, err := f.uploads.Confirm(context.Background(), subject, up.File.ID)
+	require.NoError(t, err)
+	return confirmed
 }
 
 func (f *webFixture) upload(t *testing.T, subject string, content []byte, n int) []string {
 	t.Helper()
 	ids := make([]string, 0, n)
 	for i := 0; i < n; i++ {
-		s, err := f.uploads.Upload(context.Background(), subject, fmt.Sprintf("file-%d", i), bytes.NewReader(content))
-		require.NoError(t, err)
-		ids = append(ids, s.ID)
+		ids = append(ids, f.uploadOne(t, subject, fmt.Sprintf("file-%d", i), content).ID)
 	}
 	return ids
 }
@@ -310,7 +339,7 @@ func TestTheSupportsOfAnotherInsuredAreNotFound(t *testing.T) {
 // failingStore fails the operation it is told to; the rest goes to the store.
 type failingStore struct {
 	*memory.CaseStore
-	failFind, failFindByKey, failCreate, failCount, failSave bool
+	failFind, failFindByKey, failCreate, failCount, failSave, failConfirm bool
 }
 
 var errBroken = errors.New("database is down")
@@ -343,11 +372,18 @@ func (s failingStore) CountPending(ctx context.Context, owner string) (int, erro
 	return s.CaseStore.CountPending(ctx, owner)
 }
 
-func (s failingStore) Save(ctx context.Context, f domain.SupportFile, content []byte) error {
+func (s failingStore) Save(ctx context.Context, f domain.SupportFile) error {
 	if s.failSave {
 		return errBroken
 	}
-	return s.CaseStore.Save(ctx, f, content)
+	return s.CaseStore.Save(ctx, f)
+}
+
+func (s failingStore) Confirm(ctx context.Context, id string, at time.Time) (domain.SupportFile, error) {
+	if s.failConfirm {
+		return domain.SupportFile{}, errBroken
+	}
+	return s.CaseStore.Confirm(ctx, id, at)
 }
 
 func TestAStoreFailureIsReported(t *testing.T) {
@@ -370,42 +406,45 @@ func TestAStoreFailureIsReported(t *testing.T) {
 	}
 }
 
-// --- Upload of a support (criterion 5) ------------------------------------
+// --- Supports of the web filing (criterion 5) --------------------------------
 
-func TestASupportIsStoredWithTheFormatOfItsContent(t *testing.T) {
+func TestADeclaredSupportIsSignedUnderTheDirectoryOfItsOwner(t *testing.T) {
 	f := newWebFixture()
-	png := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, 7, 7, 7)
 
-	s, err := f.uploads.Upload(context.Background(), carolina, "../renamed.pdf", bytes.NewReader(png))
+	up, err := f.uploads.Declare(context.Background(), carolina, declaration("../renamed.pdf", png))
 
 	require.NoError(t, err)
-	assert.Regexp(t, `^sup-[0-9a-f]{32}$`, s.ID)
-	assert.Equal(t, domain.FormatPNG, s.Format, "the content decides, not the extension")
-	assert.Equal(t, "renamed.pdf", s.FileName)
-	assert.Equal(t, int64(len(png)), s.ByteSize)
-	assert.Len(t, s.SHA256, 64)
-	assert.Equal(t, carolina, s.OwnerSubject)
-	assert.Equal(t, filedAt, s.UploadedAt)
+	assert.Regexp(t, `^sup-[0-9a-f]{32}$`, up.File.ID)
+	assert.Equal(t, "renamed.pdf", up.File.FileName)
+	assert.Equal(t, domain.FormatPNG, up.File.Format)
+	assert.Equal(t, int64(len(png)), up.File.ByteSize)
+	assert.Equal(t, filedAt, up.File.UploadedAt)
+	assert.False(t, up.File.Confirmed(), "nothing is attachable before the upload is confirmed")
+	assert.Equal(t, "supports/"+carolina+"/"+up.File.ID, up.File.ObjectKey())
+	assert.Equal(t, []string{up.File.ObjectKey()}, f.objects.signed)
+	assert.NotEmpty(t, up.URL)
+	assert.Equal(t, filedAt.Add(filing.SupportUploadTTL), up.ExpiresAt)
 }
 
-func TestTheSizeOfASupportIsBounded(t *testing.T) {
+func TestTheDeclarationOfASupportIsBounded(t *testing.T) {
+	good := declaration("a.pdf", pdf)
 	tests := []struct {
-		name string
-		size int
-		want error
+		name   string
+		change func(*domain.SupportUploadRequest)
+		want   error
 	}{
-		{"empty", 0, domain.ErrEmptyFile},
-		{"exactly 10 MiB", domain.MaxSupportBytes, nil},
-		{"one byte over 10 MiB", domain.MaxSupportBytes + 1, domain.ErrFileTooLarge},
+		{"empty", func(r *domain.SupportUploadRequest) { r.ByteSize = 0 }, domain.ErrEmptyFile},
+		{"exactly 10 MiB", func(r *domain.SupportUploadRequest) { r.ByteSize = domain.MaxSupportBytes }, nil},
+		{"one byte over 10 MiB", func(r *domain.SupportUploadRequest) { r.ByteSize = domain.MaxSupportBytes + 1 }, domain.ErrFileTooLarge},
+		{"an executable", func(r *domain.SupportUploadRequest) { r.ContentType = "application/x-msdownload" }, domain.ErrUnsupportedFileType},
+		{"a GIF", func(r *domain.SupportUploadRequest) { r.ContentType = "image/gif" }, domain.ErrUnsupportedFileType},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			content := make([]byte, tt.size)
-			if tt.size > 0 {
-				copy(content, pdf)
-			}
+			r := good
+			tt.change(&r)
 
-			_, err := newWebFixture().uploads.Upload(context.Background(), carolina, "big.pdf", bytes.NewReader(content))
+			_, err := newWebFixture().uploads.Declare(context.Background(), carolina, r)
 
 			if tt.want == nil {
 				assert.NoError(t, err)
@@ -416,78 +455,186 @@ func TestTheSizeOfASupportIsBounded(t *testing.T) {
 	}
 }
 
-func TestATooLargeBodyIsNotReadToTheEnd(t *testing.T) {
-	body := &countingReader{r: io.MultiReader(bytes.NewReader(pdf), infinite{})}
+func TestADigestThatIsNotSHA256IsRefused(t *testing.T) {
+	for _, digest := range []string{"", "abc", strings.Repeat("G", 64), strings.ToUpper(strings.Repeat("a", 64))} {
+		r := declaration("a.pdf", pdf)
+		r.SHA256 = digest
 
-	_, err := newWebFixture().uploads.Upload(context.Background(), carolina, "endless.pdf", body)
+		_, err := newWebFixture().uploads.Declare(context.Background(), carolina, r)
 
-	assert.ErrorIs(t, err, domain.ErrFileTooLarge)
-	assert.LessOrEqual(t, body.n, int64(domain.MaxSupportBytes+1+32*1024))
+		var invalid *domain.ValidationError
+		require.ErrorAs(t, err, &invalid, digest)
+		assert.Equal(t, "sha256", invalid.Fields[0].Field)
+	}
 }
 
-func TestAFileThatIsNotJPGPNGOrPDFIsRefused(t *testing.T) {
-	for _, content := range [][]byte{[]byte("MZ\x90\x00 an executable"), []byte("<html>"), []byte("GIF89a....")} {
-		_, err := newWebFixture().uploads.Upload(context.Background(), carolina, "x.pdf", bytes.NewReader(content))
-		assert.ErrorIs(t, err, domain.ErrUnsupportedFileType)
+func TestAConfirmedSupportIsTheOneThatWasUploaded(t *testing.T) {
+	f := newWebFixture()
+
+	s := f.uploadOne(t, carolina, "a.pdf", pdf)
+
+	assert.True(t, s.Confirmed())
+	assert.Equal(t, filedAt, s.ConfirmedAt)
+	again, err := f.uploads.Confirm(context.Background(), carolina, s.ID)
+	require.NoError(t, err, "confirming twice is harmless")
+	assert.Equal(t, s.ConfirmedAt, again.ConfirmedAt)
+}
+
+func TestTheContentDecidesNotTheDeclaredType(t *testing.T) {
+	for name, content := range map[string][]byte{
+		"an executable":           append([]byte("MZ\x90\x00"), pdf...),
+		"html":                    []byte("<html>" + strings.Repeat("x", 100)),
+		"a PNG declared as a PDF": png,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newWebFixture()
+			r := declaration("x.pdf", content)
+			r.ContentType = "application/pdf"
+			up, err := f.uploads.Declare(context.Background(), carolina, r)
+			require.NoError(t, err)
+			f.objects.put(up.File.ObjectKey(), content)
+
+			_, err = f.uploads.Confirm(context.Background(), carolina, up.File.ID)
+
+			assert.ErrorIs(t, err, domain.ErrUnsupportedFileType)
+		})
 	}
+}
+
+func TestASupportThatWasNotUploadedCannotBeConfirmed(t *testing.T) {
+	f := newWebFixture()
+	up, err := f.uploads.Declare(context.Background(), carolina, declaration("a.pdf", pdf))
+	require.NoError(t, err)
+
+	_, err = f.uploads.Confirm(context.Background(), carolina, up.File.ID)
+
+	assert.ErrorIs(t, err, domain.ErrSupportNotUploaded)
+	// It can be confirmed once the file arrives: nothing is lost.
+	f.objects.put(up.File.ObjectKey(), pdf)
+	_, err = f.uploads.Confirm(context.Background(), carolina, up.File.ID)
+	assert.NoError(t, err)
+}
+
+func TestAStoredFileOfAnotherSizeOrDigestIsNotTheDeclaredOne(t *testing.T) {
+	f := newWebFixture()
+	up, err := f.uploads.Declare(context.Background(), carolina, declaration("a.pdf", pdf))
+	require.NoError(t, err)
+
+	f.objects.put(up.File.ObjectKey(), append(pdf, 1))
+	_, err = f.uploads.Confirm(context.Background(), carolina, up.File.ID)
+	assert.ErrorIs(t, err, domain.ErrSupportMismatch, "another size")
+
+	same := append([]byte(nil), pdf...)
+	same[100] ^= 0xFF
+	f.objects.put(up.File.ObjectKey(), same)
+	f.objects.digest[up.File.ObjectKey()] = strings.Repeat("0", 64)
+	_, err = f.uploads.Confirm(context.Background(), carolina, up.File.ID)
+	assert.ErrorIs(t, err, domain.ErrSupportMismatch, "the same size and another digest")
+}
+
+func TestOnlyTheOwnerConfirmsASupport(t *testing.T) {
+	f := newWebFixture()
+	up, err := f.uploads.Declare(context.Background(), carolina, declaration("a.pdf", pdf))
+	require.NoError(t, err)
+	f.objects.put(up.File.ObjectKey(), pdf)
+
+	_, err = f.uploads.Confirm(context.Background(), "sub-someone", up.File.ID)
+	assert.ErrorIs(t, err, domain.ErrSupportNotFound)
+	_, err = f.uploads.Confirm(context.Background(), carolina, "sup-"+strings.Repeat("0", 32))
+	assert.ErrorIs(t, err, domain.ErrSupportNotFound)
+}
+
+func TestAnUnconfirmedSupportCannotBeAttached(t *testing.T) {
+	f := newWebFixture()
+	r := f.collision(t)
+	up, err := f.uploads.Declare(context.Background(), carolina, declaration("croquis.pdf", pdf))
+	require.NoError(t, err)
+	r.Supports[2].SupportIDs = []string{up.File.ID}
+
+	_, _, err = f.web.File(context.Background(), carolina, "form-1", r)
+
+	var invalid *domain.ValidationError
+	require.ErrorAs(t, err, &invalid)
+	assert.Equal(t, []domain.FieldError{{Field: "supports.traffic_report", Code: domain.CodeNotFound}}, invalid.Fields)
 }
 
 func TestAnInsuredCannotPileUpPendingSupports(t *testing.T) {
 	f := newWebFixture()
 	f.upload(t, carolina, pdf, domain.MaxPendingSupports)
 
-	_, err := f.uploads.Upload(context.Background(), carolina, "one-more.pdf", bytes.NewReader(pdf))
+	_, err := f.uploads.Declare(context.Background(), carolina, declaration("one-more.pdf", pdf))
 	assert.ErrorIs(t, err, domain.ErrTooManyPendingSupports)
 
-	_, err = f.uploads.Upload(context.Background(), "sub-someone", "theirs.pdf", bytes.NewReader(pdf))
+	_, err = f.uploads.Declare(context.Background(), "sub-someone", declaration("theirs.pdf", pdf))
 	assert.NoError(t, err, "the limit is per insured")
 }
 
-func TestAnUploadReportsTheStoreFailures(t *testing.T) {
-	for name, broken := range map[string]func(*failingStore){
-		"counting": func(s *failingStore) { s.failCount = true },
-		"saving":   func(s *failingStore) { s.failSave = true },
+func TestTheSupportFailuresAreReported(t *testing.T) {
+	for name, broken := range map[string]func(*failingStore, *objectStore){
+		"counting": func(s *failingStore, _ *objectStore) { s.failCount = true },
+		"saving":   func(s *failingStore, _ *objectStore) { s.failSave = true },
+		"signing":  func(_ *failingStore, o *objectStore) { o.signErr = errBroken },
 	} {
 		t.Run(name, func(t *testing.T) {
-			store := failingStore{CaseStore: memory.NewCaseStore()}
-			broken(&store)
+			store, objects := failingStore{CaseStore: memory.NewCaseStore()}, newObjectStore()
+			broken(&store, objects)
 
-			_, err := filing.NewSupportService(store, fixedClock{t: filedAt}).
-				Upload(context.Background(), carolina, "a.pdf", bytes.NewReader(pdf))
+			_, err := filing.NewSupportService(store, objects, fixedClock{t: filedAt}).
+				Declare(context.Background(), carolina, declaration("a.pdf", pdf))
 
 			assert.ErrorIs(t, err, errBroken)
 		})
 	}
 }
 
-func TestAnUnreadableBodyIsReported(t *testing.T) {
-	_, err := newWebFixture().uploads.Upload(context.Background(), carolina, "a.pdf", iotestErr{})
-	assert.Error(t, err)
-}
+func TestTheFailuresOfTheStorageAreReportedWhenConfirming(t *testing.T) {
+	for name, broken := range map[string]func(*failingStore, *objectStore){
+		"reading the support": func(s *failingStore, _ *objectStore) { s.failFind = true },
+		"reading the object":  func(_ *failingStore, o *objectStore) { o.statErr = errBroken },
+		"reading its start":   func(_ *failingStore, o *objectStore) { o.headErr = errBroken },
+		"confirming":          func(s *failingStore, _ *objectStore) { s.failConfirm = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, objects := failingStore{CaseStore: memory.NewCaseStore()}, newObjectStore()
+			svc := filing.NewSupportService(store, objects, fixedClock{t: filedAt})
+			up, err := svc.Declare(context.Background(), carolina, declaration("a.pdf", pdf))
+			require.NoError(t, err)
+			objects.put(up.File.ObjectKey(), pdf)
+			broken(&store, objects)
+			svc = filing.NewSupportService(store, objects, fixedClock{t: filedAt})
 
-type countingReader struct {
-	r io.Reader
-	n int64
-}
+			_, err = svc.Confirm(context.Background(), carolina, up.File.ID)
 
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += int64(n)
-	return n, err
-}
-
-type infinite struct{}
-
-func (infinite) Read(p []byte) (int, error) {
-	for i := range p {
-		p[i] = 'x'
+			assert.ErrorIs(t, err, errBroken)
+		})
 	}
-	return len(p), nil
 }
 
-type iotestErr struct{}
+func TestTheEvidenceOfAMobileClaimComesWithSignedReads(t *testing.T) {
+	f := newWebFixture()
+	req := requestDe(carolina)
+	ev := nuevoAlmacenDeEvidencia()
+	ev.guardarTodo(req)
+	mobile, _, err := filing.NewService(f.store, ev, fixedClock{t: filedAt}).File(context.Background(), carolina, "draft-1", req)
+	require.NoError(t, err)
+	record, err := f.store.Get(context.Background(), mobile.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, record.Evidence)
 
-func (iotestErr) Read([]byte) (int, error) { return 0, errors.New("connection reset") }
+	links := filing.NewQueryService(f.store, &receipts{}).WithObjects(f.objects).EvidenceLinks(context.Background(), record)
+	require.Len(t, links, len(record.Evidence))
+	assert.Contains(t, links[0].URL, record.Evidence[0].ObjectKey)
+	assert.Equal(t, filedAt.Add(filing.EvidenceLinkTTL), links[0].ExpiresAt)
+
+	f.objects.signErr = errBroken
+	unsigned := filing.NewQueryService(f.store, &receipts{}).WithObjects(f.objects).EvidenceLinks(context.Background(), record)
+	require.Len(t, unsigned, len(record.Evidence), "the evidence is listed even when it cannot be signed")
+	assert.Empty(t, unsigned[0].URL)
+
+	withoutStore := filing.NewQueryService(f.store, &receipts{}).EvidenceLinks(context.Background(), record)
+	assert.Len(t, withoutStore, len(record.Evidence))
+	assert.Empty(t, withoutStore[0].URL)
+}
 
 // --- List, detail and receipt (criteria 4 and 6) ----------------------------
 

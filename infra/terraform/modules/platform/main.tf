@@ -93,6 +93,9 @@ locals {
     # is enabled (decision D-16 b), so it does not start without both.
     email             = 9030
     "payment-gateway" = 9040
+    # HU-W2.1-01: the policy core that claims reads inside the VPC. The browser
+    # never calls it, so it is not in lb_stubs.
+    "policy-core" = 9060
   }
 
   # Stubs that the browser also reaches through the API Gateway, so they sit
@@ -317,6 +320,11 @@ module "buckets" {
 
   bucket        = "${var.name}-${each.key}-${local.account_id}"
   force_destroy = var.ephemeral
+
+  # HU-W2.1-01: the web portal uploads the supports of a claim straight to the
+  # evidence bucket with signed URLs, so its origin must be allowed. The mobile
+  # app is not a browser and needs no CORS.
+  cors_allowed_origins = each.key == "evidence" && var.portal_base_url != null ? [var.portal_base_url] : []
 }
 
 # Key that signs the links of the contractual document (HU-W1.3-03): only
@@ -486,9 +494,10 @@ locals {
       AUTH_CLIENT_IDS = join(",", values(local.cognito.client_ids))
       EVIDENCE_BUCKET = module.buckets["evidence"].bucket
       AWS_REGION      = data.aws_region.current.region
-      # PENDING (HU-W2.1-01): the web filing also needs POLICY_CORE_URL. Until
-      # it is set, claims logs that those routes are not mounted and answers
-      # 404 to the portal.
+      # Setting this is what mounts the web filing of HU-W2.1-01 (filing
+      # options, supports and web filings). Without it claims logs that those
+      # routes are not mounted and answers 404 to the portal.
+      POLICY_CORE_URL = "http://policy-core.${local.namespace}:${local.stubs["policy-core"]}"
     }
   }
 

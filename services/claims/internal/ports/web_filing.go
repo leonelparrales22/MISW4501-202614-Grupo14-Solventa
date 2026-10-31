@@ -20,19 +20,38 @@ type PolicyDirectory interface {
 	HolderPolicies(ctx context.Context, subject string) ([]domain.Policy, error)
 }
 
-// SupportStore keeps the uploaded supports of the web filing (HU-W2.1-01).
-//
-// Provisional (HU-W2.1-01 §9): the content lives in the service's database
-// until the supports move to the evidence store of HU-M2.1-01 (S3 with a
-// signed upload URL).
+// SupportStore keeps the metadata of the supports of the web filing
+// (HU-W2.1-01). The file itself lives in the object store, under
+// domain.SupportFile.ObjectKey.
 type SupportStore interface {
-	// Save stores a new support with its content.
-	Save(ctx context.Context, f domain.SupportFile, content []byte) error
+	// Save stores a declared support, not confirmed yet.
+	Save(ctx context.Context, f domain.SupportFile) error
 	// Find returns the supports with the ids that exist, whoever owns them.
 	// An id that does not exist is simply absent from the map.
 	Find(ctx context.Context, ids []string) (map[string]domain.SupportFile, error)
+	// Confirm marks the support as checked and returns it, or
+	// domain.ErrSupportNotFound.
+	Confirm(ctx context.Context, id string, at time.Time) (domain.SupportFile, error)
 	// CountPending counts the supports of the owner not attached to any claim.
 	CountPending(ctx context.Context, owner string) (int, error)
+}
+
+// SignedDownload is the signed instruction to read one stored object.
+type SignedDownload struct {
+	URL       string
+	ExpiresAt time.Time
+}
+
+// ObjectStore is the object storage of the claims service: the evidence of
+// the phone (HU-M2.1-01) and the supports of the portal (HU-W2.1-01). The
+// files go from the client to the store with a signed URL; the service only
+// signs, checks what arrived and signs the reads.
+type ObjectStore interface {
+	EvidenceStore
+	// Head returns the first n bytes of the object, or ErrEvidenceNotFound.
+	Head(ctx context.Context, key string, n int64) ([]byte, error)
+	// SignDownload returns a URL that reads the object until ttl passes.
+	SignDownload(ctx context.Context, key string, ttl time.Duration) (SignedDownload, error)
 }
 
 // ErrClaimNotFound is returned when there is no claim with the id.
@@ -58,9 +77,10 @@ type ClaimCursor struct {
 }
 
 // ClaimRecords reads and writes the filed claims of both channels
-// (HU-W2.1-01). It shares the claims, the filing numbers and the filing keys
-// with the ClaimRepository of the mobile filing (HU-M2.2-01).
+// (HU-W2.1-01). It is also the ClaimRepository of the mobile filing
+// (HU-M2.2-01): one numbering, one set of filing keys and one writer.
 type ClaimRecords interface {
+	ClaimRepository
 	// CreateWeb stores a web claim with its policy copy and attaches its
 	// supports, all or nothing, and assigns its filing number. When the subject
 	// already filed with the same key it returns that claim and created=false,
@@ -70,7 +90,8 @@ type ClaimRecords interface {
 	// FindByKey returns the claim the subject filed with the key, or
 	// ErrClaimNotFound.
 	FindByKey(ctx context.Context, subject, key string) (domain.ClaimRecord, error)
-	// Get returns the claim with its supports, or ErrClaimNotFound.
+	// Get returns the claim with its supports and its evidence, or
+	// ErrClaimNotFound.
 	Get(ctx context.Context, id string) (domain.ClaimRecord, error)
 	// ListByOwner returns up to limit claims of the subject, newest first,
 	// after the cursor when there is one. The supports are not loaded.

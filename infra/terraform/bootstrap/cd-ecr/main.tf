@@ -28,6 +28,9 @@ locals {
     # need a registry to be deployed from.
     "email",
     "payment-gateway",
+    # HU-W2.1-01: the policy core that claims asks for the policies of the
+    # insured before accepting a web filing.
+    "policy-core",
   ])
 
   github_owner = split("/", var.github_repository)[0]

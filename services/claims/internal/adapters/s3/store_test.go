@@ -190,3 +190,104 @@ func TestTheStoreNeedsItsBucket(t *testing.T) {
 
 	assert.Error(t, err)
 }
+
+// --- Reads of the objects (HU-W2.1-01) -----------------------------------------
+
+type getFalso struct {
+	body   string
+	err    error
+	gotIn  *awss3.GetObjectInput
+	closed bool
+}
+
+type closeSpy struct {
+	*strings.Reader
+	spy *getFalso
+}
+
+func (c closeSpy) Close() error { c.spy.closed = true; return nil }
+
+func (g *getFalso) GetObject(_ context.Context, in *awss3.GetObjectInput, _ ...func(*awss3.Options)) (*awss3.GetObjectOutput, error) {
+	g.gotIn = in
+	if g.err != nil {
+		return nil, g.err
+	}
+	return &awss3.GetObjectOutput{Body: closeSpy{strings.NewReader(g.body), g}}, nil
+}
+
+type presignGetFalso struct {
+	err   error
+	gotIn *awss3.GetObjectInput
+}
+
+func (p *presignGetFalso) PresignGetObject(_ context.Context, in *awss3.GetObjectInput,
+	_ ...func(*awss3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+	p.gotIn = in
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &v4.PresignedHTTPRequest{URL: "https://bucket.s3.us-east-2.amazonaws.com/" + aws.ToString(in.Key) + "?X-Amz-Signature=abc",
+		Method: http.MethodGet}, nil
+}
+
+func tiendaDeLectura(t *testing.T, get *getFalso, presign *presignGetFalso) *Store {
+	t.Helper()
+	s := tienda(t, &headFalso{}, &presignFalso{})
+	s.get, s.presGet = get, presign
+	return s
+}
+
+func TestHeadReadsOnlyTheStartOfTheObject(t *testing.T) {
+	get := &getFalso{body: "%PDF-1.7 and then a lot more"}
+	s := tiendaDeLectura(t, get, &presignGetFalso{})
+
+	head, err := s.Head(context.Background(), "supports/sub-ana/sup-1", 8)
+
+	require.NoError(t, err)
+	assert.Equal(t, "%PDF-1.7", string(head))
+	assert.Equal(t, "bytes=0-7", aws.ToString(get.gotIn.Range), "a ranged read, never the whole file")
+	assert.Equal(t, "supports/sub-ana/sup-1", aws.ToString(get.gotIn.Key))
+	assert.True(t, get.closed)
+}
+
+func TestHeadOfAMissingObjectIsNotFound(t *testing.T) {
+	s := tiendaDeLectura(t, &getFalso{err: &types.NoSuchKey{}}, &presignGetFalso{})
+
+	_, err := s.Head(context.Background(), "supports/sub-ana/none", 8)
+
+	assert.ErrorIs(t, err, ports.ErrEvidenceNotFound)
+}
+
+func TestHeadReportsOtherFailuresAndBadArguments(t *testing.T) {
+	s := tiendaDeLectura(t, &getFalso{err: errors.New("throttled")}, &presignGetFalso{})
+	_, err := s.Head(context.Background(), "k", 8)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ports.ErrEvidenceNotFound)
+
+	_, err = s.Head(context.Background(), "k", 0)
+	assert.Error(t, err)
+
+	_, err = tienda(t, &headFalso{}, &presignFalso{}).Head(context.Background(), "k", 8)
+	assert.Error(t, err, "a store built without the read client says so")
+}
+
+func TestADownloadIsSignedWithAnExpiry(t *testing.T) {
+	presign := &presignGetFalso{}
+	s := tiendaDeLectura(t, &getFalso{}, presign)
+
+	signed, err := s.SignDownload(context.Background(), llave, 10*time.Minute)
+
+	require.NoError(t, err)
+	assert.Contains(t, signed.URL, llave)
+	assert.WithinDuration(t, time.Now().Add(10*time.Minute), signed.ExpiresAt, 5*time.Second)
+	assert.Equal(t, llave, aws.ToString(presign.gotIn.Key))
+}
+
+func TestADownloadThatCannotBeSignedIsAnError(t *testing.T) {
+	s := tiendaDeLectura(t, &getFalso{}, &presignGetFalso{err: errors.New("no credentials")})
+	_, err := s.SignDownload(context.Background(), llave, time.Minute)
+	assert.Error(t, err)
+
+	_, err = tienda(t, &headFalso{}, &presignFalso{}).SignDownload(context.Background(), llave, time.Minute)
+	assert.Error(t, err)
+}

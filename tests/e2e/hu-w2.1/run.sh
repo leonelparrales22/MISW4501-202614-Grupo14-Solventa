@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the HU-W2.1-01 end-to-end scenarios with Docker, against the real claims
 # service (its PostgreSQL, the policy core stub behind Toxiproxy, Moto as
-# Cognito):
+# Cognito and as the S3 of the supports):
 #
 #   1. CA-1  the filing options are the insured's active policies, without
 #            travel nor the expired one, with the supports of each type
@@ -11,8 +11,9 @@
 #            cover and an expired policy are refused with their reason
 #   4. CA-4  a complete filing creates the active claim with its number; the
 #            detail and the PDF receipt carry it; a retry gives the same claim
-#   5. CA-5  a file of 10 MiB + 1 byte (413) and an executable renamed .pdf
-#            (415) are refused; the supports uploaded before still file
+#   5. CA-5  a file of 10 MiB + 1 byte (413 when declared) and an executable
+#            renamed .pdf (415 when confirmed) are refused, 10 MiB exactly is
+#            accepted; the supports uploaded before still file
 #   6. CA-6  a policy of another insured is not found, the claim of another
 #            insured is 403, and the claim is in the insured's list
 #   7.       the policy core down (Toxiproxy): 503 and no new claim
@@ -75,11 +76,42 @@ call() {
 }
 field() { jq -r "$1" <<<"$BODY"; }
 
-# upload <token> <path> [file name]: uploads one support; sets STATUS and BODY.
+file_size() { wc -c <"$1" | tr -d '[:space:]'; }
+file_sha256() {
+  if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+content_type_of() {
+  case "$1" in
+    *.jpg) echo image/jpeg ;;
+    *.png) echo image/png ;;
+    *) echo application/pdf ;;
+  esac
+}
+
+# upload <token> <path> [file name]: what the portal does with a file. It
+# declares it, PUTs it to the signed URL (the S3 of Moto) and confirms it. STATUS
+# and BODY are the ones of the last step that ran: the declaration when it was
+# refused, the PUT when it failed, otherwise the confirmation.
 upload() {
-  STATUS="$(curl -s -o "$WORK/body" -w '%{http_code}' -X POST "$CLAIMS/v1/claims/supports" \
-    -H "Authorization: Bearer $1" -F "file=@$2;filename=${3:-$(basename "$2")}")"
-  BODY="$(cat "$WORK/body")"
+  local file="$2" name="${3:-$(basename "$2")}" declaration id url put_status h
+  local headers=()
+  declaration="$(jq -nc --arg n "$name" --arg t "$(content_type_of "$file")" --argjson s "$(file_size "$file")" \
+    --arg h "$(file_sha256 "$file")" '{file_name:$n, content_type:$t, byte_size:$s, sha256:$h}')"
+  call POST "$CLAIMS/v1/claims/supports" "$declaration" "$1"
+  [[ "$STATUS" == 201 ]] || return 0
+  id="$(field .support_id)"
+  url="$(field .upload_url)"
+  while IFS= read -r h; do headers+=(-H "$h"); done < <(
+    jq -r '.upload_headers | to_entries[] | select(.key | ascii_downcase != "content-length") | "\(.key): \(.value)"' <<<"$BODY")
+  # The signed URL names the host of the compose network; the script reaches Moto on its published port.
+  url="$(sed "s#//moto:5000#//localhost:$MOTO_PORT#" <<<"$url")"
+  put_status="$(curl -s -o "$WORK/put" -w '%{http_code}' -X PUT "$url" ${headers[@]+"${headers[@]}"} --data-binary "@$file")"
+  if [[ "$put_status" != 200 ]]; then
+    STATUS="$put_status"
+    BODY="$(cat "$WORK/put")"
+    return 0
+  fi
+  call POST "$CLAIMS/v1/claims/supports/$id/confirmation" "" "$1"
 }
 
 # upload_ids <token> <path> <n>: uploads the file n times and prints the ids as a JSON array.
@@ -87,7 +119,7 @@ upload_ids() {
   local ids=() i
   for i in $(seq 1 "$3"); do
     upload "$1" "$2"
-    [[ "$STATUS" == 201 ]] || {
+    [[ "$STATUS" == 200 ]] || {
       echo "upload failed: $STATUS $BODY" >&2
       return 1
     }
@@ -123,10 +155,13 @@ printf '\xff\xd8\xff\xe0' >"$WORK/photo.jpg" && head -c 4096 /dev/urandom >>"$WO
 printf '%%PDF-1.7\n' >"$WORK/doc.pdf" && head -c 4096 /dev/urandom >>"$WORK/doc.pdf"
 printf 'MZ\x90\x00' >"$WORK/virus.pdf" && head -c 4096 /dev/urandom >>"$WORK/virus.pdf"
 printf '%%PDF-1.7\n' >"$WORK/huge.pdf" && head -c $((10 * 1024 * 1024 - 8)) /dev/zero >>"$WORK/huge.pdf"
+printf '%%PDF-1.7\n' >"$WORK/limit.pdf" && head -c $((10 * 1024 * 1024 - 9)) /dev/zero >>"$WORK/limit.pdf"
 
 echo "== [$(stamp)] Starting PostgreSQL, the policy core stub behind Toxiproxy and Moto"
 $COMPOSE up -d --build --wait postgres-claims policy-core toxiproxy moto
 $COMPOSE up toxiproxy-init >/dev/null
+# The bucket of the supports, in the S3 of Moto, before claims starts: it checks it.
+curl -sf -X PUT "http://localhost:$MOTO_PORT/claims-evidence" >/dev/null
 
 echo "== [$(stamp)] Seeding the local Cognito (Moto) and a second insured"
 SEED_OUT=""
@@ -266,11 +301,23 @@ check "the receipt carries the filing number" yes "$(grep -aq "$FILING_NUMBER" "
 echo "== [$(stamp)] 5. CA-5: a file of a type or size not allowed is refused without losing the rest"
 SUPPORTS_CA5="$(collision_supports "$INSURED_TOKEN")"
 upload "$INSURED_TOKEN" "$WORK/huge.pdf" huge.pdf
-check "10 MiB + 1 byte is 413" 413 "$STATUS"
+check "10 MiB + 1 byte is 413 when declared" 413 "$STATUS"
 check "the error is file_too_large" file_too_large "$(field .error)"
+upload "$INSURED_TOKEN" "$WORK/limit.pdf" limit.pdf
+check "exactly 10 MiB is uploaded and confirmed (200)" 200 "$STATUS"
+check "with its size" 10485760 "$(field .byte_size)"
 upload "$INSURED_TOKEN" "$WORK/virus.pdf" virus.pdf
-check "an executable renamed .pdf is 415" 415 "$STATUS"
+check "an executable renamed .pdf is 415 when confirmed" 415 "$STATUS"
 check "the error is unsupported_file_type" unsupported_file_type "$(field .error)"
+call POST "$CLAIMS/v1/claims/supports" '{"file_name":"run.exe","content_type":"application/x-msdownload","byte_size":100,"sha256":"'"$(printf 'a%.0s' $(seq 1 64))"'"}' "$INSURED_TOKEN"
+check "a type that is not JPG, PNG or PDF is 415 when declared" 415 "$STATUS"
+call POST "$CLAIMS/v1/claims/supports" '{"file_name":"late.pdf","content_type":"application/pdf","byte_size":100,"sha256":"'"$(printf 'a%.0s' $(seq 1 64))"'"}' "$INSURED_TOKEN"
+LATE_ID="$(field .support_id)"
+call POST "$CLAIMS/v1/claims/supports/$LATE_ID/confirmation" "" "$INSURED_TOKEN"
+check "a file that was never uploaded is 422" 422 "$STATUS"
+check "the error is support_not_uploaded" support_not_uploaded "$(field .error)"
+call POST "$CLAIMS/v1/claims/supports/$LATE_ID/confirmation" "" "$OTHER_TOKEN"
+check "another insured cannot confirm it (404)" 404 "$STATUS"
 call POST "$CLAIMS/v1/claims/web-filings" "$(filing_body "$AUTO" collision "$OCCURRED" "$SUPPORTS_CA5")" "$INSURED_TOKEN" "$RUN_ID-ca5"
 check "the supports uploaded before still file (201)" 201 "$STATUS"
 

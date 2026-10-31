@@ -77,3 +77,46 @@ func TestTheShapeOfASupportID(t *testing.T) {
 func TestTheContentTypeOfASupportComesFromItsFormat(t *testing.T) {
 	assert.Equal(t, "application/pdf", domain.SupportFile{Format: domain.FormatPDF}.ContentType())
 }
+
+func TestTheDeclarationOfASupportIsValidatedByItsParts(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	tests := []struct {
+		name string
+		req  domain.SupportUploadRequest
+		want error
+	}{
+		{"a JPG", domain.SupportUploadRequest{FileName: "a.jpg", ContentType: "image/jpeg", ByteSize: 1, SHA256: digest}, nil},
+		{"a PNG", domain.SupportUploadRequest{FileName: "a.png", ContentType: "image/png", ByteSize: 10, SHA256: digest}, nil},
+		{"a PDF of exactly 10 MiB", domain.SupportUploadRequest{FileName: "a.pdf", ContentType: "application/pdf", ByteSize: domain.MaxSupportBytes, SHA256: digest}, nil},
+		{"one byte over", domain.SupportUploadRequest{FileName: "a.pdf", ContentType: "application/pdf", ByteSize: domain.MaxSupportBytes + 1, SHA256: digest}, domain.ErrFileTooLarge},
+		{"zero bytes", domain.SupportUploadRequest{FileName: "a.pdf", ContentType: "application/pdf", ByteSize: 0, SHA256: digest}, domain.ErrEmptyFile},
+		{"a negative size", domain.SupportUploadRequest{FileName: "a.pdf", ContentType: "application/pdf", ByteSize: -1, SHA256: digest}, domain.ErrEmptyFile},
+		{"a type that is not accepted", domain.SupportUploadRequest{FileName: "a.exe", ContentType: "application/octet-stream", ByteSize: 5, SHA256: digest}, domain.ErrUnsupportedFileType},
+		{"no type", domain.SupportUploadRequest{FileName: "a", ByteSize: 5, SHA256: digest}, domain.ErrUnsupportedFileType},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := tt.req.Validate()
+			if tt.want != nil {
+				assert.ErrorIs(t, err, tt.want)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.req.ByteSize, u.ByteSize)
+			assert.Equal(t, digest, u.SHA256)
+		})
+	}
+}
+
+func TestTheNameOfADeclaredSupportIsSanitized(t *testing.T) {
+	u, err := domain.SupportUploadRequest{FileName: "../../etc/passwd\x00.pdf", ContentType: "application/pdf",
+		ByteSize: 5, SHA256: strings.Repeat("b", 64)}.Validate()
+	assert.NoError(t, err)
+	assert.Equal(t, "passwd.pdf", u.FileName)
+}
+
+func TestTheObjectOfASupportHangsFromItsOwner(t *testing.T) {
+	f := domain.SupportFile{ID: "sup-1", OwnerSubject: "sub-ana"}
+	assert.Equal(t, "supports/sub-ana/sup-1", f.ObjectKey())
+	assert.False(t, f.Confirmed())
+}

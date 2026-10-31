@@ -156,7 +156,7 @@ run "without_tag_the_latest_image_is_pinned_by_digest" {
   }
 
   assert {
-    condition     = length(data.aws_ecr_image.latest) == 10 && strcontains(local.image_uris["audit"], "@sha256:")
+    condition     = length(data.aws_ecr_image.latest) == 11 && strcontains(local.image_uris["audit"], "@sha256:")
     error_message = "Without image_tag every image is the most recent one, pinned by digest."
   }
 }
@@ -169,8 +169,8 @@ run "services_can_be_switched_off" {
   }
 
   assert {
-    condition     = length(module.ecs.desired_counts) == 10 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
-    error_message = "The five services and the five stubs keep their ECS services, at 0 tasks."
+    condition     = length(module.ecs.desired_counts) == 11 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
+    error_message = "The five services and the six stubs keep their ECS services, at 0 tasks."
   }
 }
 
@@ -317,10 +317,10 @@ run "the_claim_filing_is_a_human_route" {
 
   assert {
     condition = (
-      toset(var.human_routes["claims"].methods) == toset(["POST"]) &&
+      toset(var.human_routes["claims"].methods) == toset(["GET", "POST"]) &&
       var.human_routes["claims"].root_methods == null
     )
-    error_message = "POST /v1/claims is a human route: the insured files on their own behalf."
+    error_message = "GET and POST /v1/claims are human routes: the insured files and reads on their own behalf (HU-M2.2-01, HU-W2.1-01)."
   }
 
   assert {
@@ -343,6 +343,36 @@ run "the_claim_filing_is_a_human_route" {
       contains(keys(local.service_environment.claims), v)
     ])
     error_message = "Claims verifies the token of the insured: it needs the user pool of the environment."
+  }
+}
+
+# HU-W2.1-01: the web filing asks the policy core for the policies of the
+# insured. The core is a stub that only claims calls inside the VPC.
+run "the_policy_core_runs_behind_cloud_map_for_claims" {
+  command = plan
+
+  variables {
+    image_tag_overrides = { policy-core = "prueba-hu-w2-1" }
+  }
+
+  assert {
+    condition     = local.stubs["policy-core"] == 9060 && module.ecs.desired_counts["policy-core"] == 1
+    error_message = "The policy core stub runs one task on port 9060."
+  }
+
+  assert {
+    condition     = local.service_environment.claims.POLICY_CORE_URL == "http://policy-core.solventa-test.local:9060"
+    error_message = "Claims reaches the policy core by its Cloud Map name; without it the web filing is not mounted."
+  }
+
+  assert {
+    condition     = !contains(keys(local.lb_stubs), "policy-core") && !contains(keys(module.alb.target_group_arns), "policy-core")
+    error_message = "The browser never calls the policy core: it has no rule in the ALB."
+  }
+
+  assert {
+    condition     = endswith(local.image_uris["policy-core"], ":prueba-hu-w2-1")
+    error_message = "The policy core image accepts a tag override like the others."
   }
 }
 
@@ -641,6 +671,34 @@ run "without_portal_the_links_stay_as_before" {
       local.service_environment.origination.DOCUMENTS_PUBLIC_BASE_URL == "https://abc123.execute-api.us-east-2.amazonaws.com/staging"
     )
     error_message = "Without a portal, origination keeps its default offer link and the document link on the stage."
+  }
+}
+
+# HU-W2.1-01: the browser of the portal uploads the supports of a claim to the
+# evidence bucket, so only that bucket accepts the origin of the portal.
+run "the_portal_may_upload_to_the_evidence_bucket_only" {
+  command = plan
+
+  variables {
+    portal_base_url = "https://d1234abcd.cloudfront.net"
+  }
+
+  assert {
+    condition = (
+      length(module.buckets["evidence"].cors_allowed_origins) == 1 &&
+      module.buckets["evidence"].cors_allowed_origins[0] == "https://d1234abcd.cloudfront.net" &&
+      length(module.buckets["documents"].cors_allowed_origins) == 0
+    )
+    error_message = "The evidence bucket allows the origin of the portal; the documents bucket allows none."
+  }
+}
+
+run "without_a_portal_the_evidence_bucket_has_no_cors" {
+  command = plan
+
+  assert {
+    condition     = length(module.buckets["evidence"].cors_allowed_origins) == 0
+    error_message = "Without portal_base_url there is no origin to allow."
   }
 }
 

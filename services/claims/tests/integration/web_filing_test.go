@@ -9,12 +9,12 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -170,26 +170,67 @@ func (clock) Now() time.Time { return time.Now() }
 // AUTH_* and POLICY_CORE_URL.
 type service struct {
 	http.Handler
-	db *sql.DB
+	db     *sql.DB
+	bucket *bucket
 }
 
-// almacenDeEvidencia stands for the evidence bucket of HU-M2.1-01: the
-// photographs never cross the service, so the filing only needs to find each
-// key with the size it declares. The bucket itself has its own test.
-type almacenDeEvidencia struct{}
-
-func (almacenDeEvidencia) SignUpload(context.Context, string, domain.Upload,
-	time.Duration) (ports.SignedUpload, error) {
-	return ports.SignedUpload{}, errors.New("the signature has its own route")
+// bucket stands for the object store of the environment (S3): the files go
+// from the client to it with a signed URL, so the service only signs, looks at
+// what arrived and signs the reads. The real adapter has its own tests. The
+// objects of the supports are the ones a client put with put(); the evidence
+// of the phone is known by its digest, as in the filing of HU-M2.1-01.
+type bucket struct {
+	mu      sync.Mutex
+	objects map[string][]byte
 }
 
-func (almacenDeEvidencia) Stat(_ context.Context, key string) (ports.StoredEvidence, error) {
+func newBucket() *bucket { return &bucket{objects: map[string][]byte{}} }
+
+// put is the PUT of the client to the signed URL.
+func (b *bucket) put(key string, content []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.objects[key] = content
+}
+
+func (b *bucket) SignUpload(_ context.Context, key string, u domain.Upload, ttl time.Duration) (ports.SignedUpload, error) {
+	return ports.SignedUpload{
+		URL:       "https://bucket.test/" + key + "?X-Amz-Signature=abc",
+		Headers:   map[string]string{"Content-Type": u.ContentType},
+		ExpiresAt: time.Now().UTC().Add(ttl),
+	}, nil
+}
+
+func (b *bucket) Stat(_ context.Context, key string) (ports.StoredEvidence, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if content, ok := b.objects[key]; ok {
+		return ports.StoredEvidence{ByteSize: int64(len(content))}, nil
+	}
 	for _, digest := range digestsDeLaEvidencia {
 		if strings.HasSuffix(key, digest+".jpg") {
 			return ports.StoredEvidence{ByteSize: 312044, SHA256: digest}, nil
 		}
 	}
 	return ports.StoredEvidence{}, ports.ErrEvidenceNotFound
+}
+
+func (b *bucket) Head(_ context.Context, key string, n int64) ([]byte, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	content, ok := b.objects[key]
+	if !ok {
+		return nil, ports.ErrEvidenceNotFound
+	}
+	if int64(len(content)) < n {
+		n = int64(len(content))
+	}
+	return content[:n], nil
+}
+
+func (b *bucket) SignDownload(_ context.Context, key string, ttl time.Duration) (ports.SignedDownload, error) {
+	return ports.SignedDownload{URL: "https://bucket.test/" + key + "?X-Amz-Signature=get",
+		ExpiresAt: time.Now().UTC().Add(ttl)}, nil
 }
 
 // digestsDeLaEvidencia identify the four photographs of the place that a
@@ -222,16 +263,16 @@ func start(t *testing.T, url string, core *policyCore) service {
 	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, postgres.Migrate(ctx, db))
 
-	claims, records, supports := postgres.NewClaimStore(db), postgres.NewClaimRecordStore(db), postgres.NewSupportStore(db)
+	records, supports, objects := postgres.NewClaimRecordStore(db), postgres.NewSupportStore(db), newBucket()
 	directory := policiesadapter.NewDirectory(corepolicies.NewClient(corepolicies.Config{
 		BaseURL: core.srv.URL, Timeout: 500 * time.Millisecond,
 		Breaker: resilience.Config{ConsecutiveFailures: 100, OpenTimeout: time.Second, HalfOpenSuccesses: 1},
 	}))
-	return service{db: db, Handler: httpadapter.NewRouter(
-		httpadapter.WithFilings(filing.NewService(claims, almacenDeEvidencia{}, clock{}), verifier),
-		httpadapter.WithClaimReads(filing.NewQueryService(records, pdf.NewReceiptRenderer()), verifier),
+	return service{db: db, bucket: objects, Handler: httpadapter.NewRouter(
+		httpadapter.WithFilings(filing.NewService(records, objects, clock{}), verifier),
+		httpadapter.WithClaimReads(filing.NewQueryService(records, pdf.NewReceiptRenderer()).WithObjects(objects), verifier),
 		httpadapter.WithWebFilings(filing.NewWebService(records, supports, directory, clock{}),
-			filing.NewSupportService(supports, clock{}), verifier),
+			filing.NewSupportService(supports, objects, clock{}), verifier),
 	)}
 }
 
@@ -258,30 +299,54 @@ var (
 	pdfFile  = append([]byte("%PDF-1.7\n"), bytes.Repeat([]byte{8}, 4096)...)
 )
 
-func upload(t *testing.T, h http.Handler, token, name string, content []byte) (*httptest.ResponseRecorder, map[string]any) {
+// declare asks for the signed upload of a file the portal holds.
+func declare(t *testing.T, h http.Handler, token, name, contentType string, size int, sum string) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	part, err := w.CreateFormFile("file", name)
+	raw, err := json.Marshal(map[string]any{"file_name": name, "content_type": contentType, "byte_size": size, "sha256": sum})
 	require.NoError(t, err)
-	_, err = part.Write(content)
-	require.NoError(t, err)
-	require.NoError(t, w.Close())
-	return call(t, h, http.MethodPost, "/v1/claims/supports", token, &buf, map[string]string{"Content-Type": w.FormDataContentType()})
+	return call(t, h, http.MethodPost, "/v1/claims/supports", token, bytes.NewReader(raw),
+		map[string]string{"Content-Type": "application/json"})
 }
 
-func uploadIDs(t *testing.T, h http.Handler, token string, content []byte, n int) []string {
+func confirm(t *testing.T, h http.Handler, token, id string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	return call(t, h, http.MethodPost, "/v1/claims/supports/"+id+"/confirmation", token, nil, nil)
+}
+
+// upload is what the portal does with a file: declare it, PUT it to the signed
+// URL and confirm it. It returns the declaration and the confirmation.
+func upload(t *testing.T, svc service, token, name string, content []byte) (decl, conf *httptest.ResponseRecorder, declBody, confBody map[string]any) {
+	t.Helper()
+	contentType := "application/pdf"
+	switch {
+	case bytes.HasPrefix(content, jpegFile[:3]):
+		contentType = "image/jpeg"
+	case bytes.HasPrefix(content, []byte{0x89, 'P', 'N', 'G'}):
+		contentType = "image/png"
+	}
+	sum := sha256.Sum256(content)
+	decl, declBody = declare(t, svc, token, name, contentType, len(content), hex.EncodeToString(sum[:]))
+	if decl.Code != http.StatusCreated {
+		return decl, nil, declBody, nil
+	}
+	id := declBody["support_id"].(string)
+	svc.bucket.put(domain.SupportObjectKey(verifier[token].Subject, id), content)
+	conf, confBody = confirm(t, svc, token, id)
+	return decl, conf, declBody, confBody
+}
+
+func uploadIDs(t *testing.T, svc service, token string, content []byte, n int) []string {
 	t.Helper()
 	ids := make([]string, 0, n)
 	for i := 0; i < n; i++ {
-		rec, m := upload(t, h, token, fmt.Sprintf("file-%d", i), content)
-		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		_, conf, _, m := upload(t, svc, token, fmt.Sprintf("file-%d", i), content)
+		require.Equal(t, http.StatusOK, conf.Code, conf.Body.String())
 		ids = append(ids, m["support_id"].(string))
 	}
 	return ids
 }
 
-func collisionBody(t *testing.T, h http.Handler, token string) map[string]any {
+func collisionBody(t *testing.T, h service, token string) map[string]any {
 	t.Helper()
 	return map[string]any{
 		"policy_id":     "AU-2025-118204",
@@ -420,21 +485,51 @@ func TestWebFilingAcceptanceCriteria(t *testing.T) {
 	t.Run("CA-5 a file of a type or size not allowed is refused without losing the rest", func(t *testing.T) {
 		body := collisionBody(t, svc, "carolina")
 
-		rec, m := upload(t, svc, "carolina", "virus.pdf", []byte("MZ\x90\x00 an executable"))
+		// The type is told by the content: an executable declared as a PDF
+		// reaches the store and is refused when the upload is confirmed.
+		_, conf, _, m := upload(t, svc, "carolina", "virus.pdf", []byte("MZ\x90\x00 an executable"))
+		assert.Equal(t, http.StatusUnsupportedMediaType, conf.Code)
+		assert.Equal(t, "unsupported_file_type", m["error"])
+
+		// A type that cannot be uploaded at all is refused when declared.
+		rec, m := declare(t, svc, "carolina", "run.exe", "application/x-msdownload", 100, strings.Repeat("a", 64))
 		assert.Equal(t, http.StatusUnsupportedMediaType, rec.Code)
 		assert.Equal(t, "unsupported_file_type", m["error"])
 
-		rec, m = upload(t, svc, "carolina", "huge.pdf", append(pdfFile[:9:9], bytes.Repeat([]byte{1}, 10<<20)...))
+		rec, m = declare(t, svc, "carolina", "huge.pdf", "application/pdf", 10<<20+1, strings.Repeat("a", 64))
 		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 		assert.Equal(t, "file_too_large", m["error"])
 
-		rec, m = upload(t, svc, "carolina", "limit.pdf", append(pdfFile[:9:9], bytes.Repeat([]byte{1}, 10<<20-9)...))
-		assert.Equal(t, http.StatusCreated, rec.Code, "exactly 10 MiB is accepted")
+		limit := append(pdfFile[:9:9], bytes.Repeat([]byte{1}, 10<<20-9)...)
+		decl, conf, _, m := upload(t, svc, "carolina", "limit.pdf", limit)
+		assert.Equal(t, http.StatusCreated, decl.Code, "exactly 10 MiB is accepted")
+		assert.Equal(t, http.StatusOK, conf.Code)
 		assert.EqualValues(t, 10<<20, m["byte_size"])
+
+		// A file declared and never uploaded cannot be confirmed, and can
+		// still be once it arrives.
+		_, declared := declare(t, svc, "carolina", "late.pdf", "application/pdf", len(pdfFile), strings.Repeat("a", 64))
+		rec, m = confirm(t, svc, "carolina", declared["support_id"].(string))
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+		assert.Equal(t, "support_not_uploaded", m["error"])
+
+		// Nor can another insured confirm it.
+		rec, _ = confirm(t, svc, "andres", declared["support_id"].(string))
+		assert.Equal(t, http.StatusNotFound, rec.Code)
 
 		// The supports uploaded before the refusals still file the claim.
 		rec, _ = file(t, svc, "carolina", "ca5", body)
 		assert.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+
+		// A support that was declared but not confirmed does not file.
+		rec, m = file(t, svc, "carolina", "ca5-b", map[string]any{
+			"policy_id": "AU-2025-118204", "incident_type": "collision",
+			"occurred_at": now.Add(-48 * time.Hour).Format(time.RFC3339), "place": "Calle 80 con carrera 30, Bogotá",
+			"description": "Al detenerme en el semáforo, un vehículo particular golpeó la parte trasera.",
+			"supports":    []map[string]any{{"requirement_code": "traffic_report", "support_ids": []string{declared["support_id"].(string)}}},
+		})
+		require.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+		assert.Contains(t, m["fields"], map[string]any{"field": "supports.traffic_report", "code": "not_found"})
 	})
 
 	t.Run("CA-6 only on the insured's own policies, and the claim is in their list", func(t *testing.T) {
@@ -505,6 +600,19 @@ func TestWebFilingAcceptanceCriteria(t *testing.T) {
 			}
 		}
 		assert.Equal(t, []any{"mobile"}, channels)
+
+		// The detail shows the evidence of the phone, with a signed read of each
+		// photograph and none of the internals.
+		rec, detail := call(t, svc, http.MethodGet, "/v1/claims/"+m["claim_id"].(string), "carolina", nil, nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "mobile", detail["channel"])
+		evidence := detail["evidence"].([]any)
+		require.Len(t, evidence, len(digestsDeLaEvidencia))
+		first := evidence[0].(map[string]any)
+		assert.Equal(t, "photo", first["kind"])
+		assert.Contains(t, first["download_url"], "https://bucket.test/evidence/sub-carolina/")
+		assert.NotContains(t, rec.Body.String(), "object_key")
+		assert.EqualValues(t, 0, detail["supports"].(map[string]any)["files"])
 	})
 }
 

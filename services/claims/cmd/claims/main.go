@@ -67,21 +67,23 @@ func main() {
 		if err != nil {
 			log.Fatalf("could not set up the token verification: %v", err)
 		}
-		stores := claimStores(context.Background())
+		records, supports := claimStores(context.Background())
 		// HU-M2.1-01: the evidence of the phone lives in the bucket of the
 		// environment, and the filing checks every key against it.
 		evidences := evidenceStore(context.Background())
 		opts = append(opts,
 			httpadapter.WithFilings(
-				filing.NewService(stores.claims, evidences, systemClock{}), verifier),
+				filing.NewService(records, evidences, systemClock{}), verifier),
 			// HU-W2.1-01: the insured's claims of both channels, the detail
-			// and the filing receipt.
-			httpadapter.WithClaimReads(filing.NewQueryService(stores.records, pdf.NewReceiptRenderer()), verifier))
+			// (with the evidence of the phone, when there is a store to sign
+			// its reads) and the filing receipt.
+			httpadapter.WithClaimReads(
+				filing.NewQueryService(records, pdf.NewReceiptRenderer()).WithObjects(evidences), verifier))
 		if evidences != nil {
 			opts = append(opts,
 				httpadapter.WithEvidence(evidence.NewService(evidences, systemClock{}), verifier))
 		}
-		opts = append(opts, webFilings(stores, verifier)...)
+		opts = append(opts, webFilings(records, supports, evidences, verifier)...)
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)
 	}
@@ -102,24 +104,17 @@ func main() {
 	log.Fatal(err)
 }
 
-// stores are the repositories of the service. The mobile filing (HU-M2.2-01)
-// and the web filing (HU-W2.1-01) share the claims, the filing numbers and the
-// filing keys.
-type stores struct {
-	claims   ports.ClaimRepository
-	records  ports.ClaimRecords
-	supports ports.SupportStore
-}
-
 // claimStores opens the database once and applies the migrations, or keeps
-// everything in one in-memory store when there is no database configured.
-func claimStores(ctx context.Context) stores {
+// everything in one in-memory store when there is no database configured. The
+// mobile filing (HU-M2.2-01) and the web filing (HU-W2.1-01) share the claims,
+// the filing numbers and the filing keys: one store serves both.
+func claimStores(ctx context.Context) (ports.ClaimRecords, ports.SupportStore) {
 	url := os.Getenv(envDatabaseURL)
 	if url == "" {
 		log.Printf("%s is not set: the filed claims live in memory and are lost when the service restarts",
 			envDatabaseURL)
 		cases := memory.NewCaseStore()
-		return stores{claims: cases, records: cases, supports: cases}
+		return cases, cases
 	}
 	db, err := postgres.Open(ctx, url)
 	if err != nil {
@@ -129,17 +124,15 @@ func claimStores(ctx context.Context) stores {
 		log.Fatalf("could not migrate the database: %v", err)
 	}
 	log.Print("claims: PostgreSQL")
-	return stores{
-		claims:   postgres.NewClaimStore(db),
-		records:  postgres.NewClaimRecordStore(db),
-		supports: postgres.NewSupportStore(db),
-	}
+	return postgres.NewClaimRecordStore(db), postgres.NewSupportStore(db)
 }
 
 // webFilings mounts the web filing with supports (HU-W2.1-01) when the policy
-// core is configured. Without it nothing is mounted: nobody could tell which
-// policies are the insured's (fail-closed).
-func webFilings(s stores, verifier security.Verifier) []httpadapter.Option {
+// core and the object store are configured. Without the core nothing is
+// mounted: nobody could tell which policies are the insured's (fail-closed).
+// Without the store the supports have nowhere to go.
+func webFilings(records ports.ClaimRecords, supports ports.SupportStore, objects ports.ObjectStore,
+	verifier security.Verifier) []httpadapter.Option {
 	cfg, err := loadPolicyCoreConfig(os.Getenv)
 	if err != nil {
 		log.Fatalf("invalid configuration: %v", err)
@@ -148,23 +141,29 @@ func webFilings(s stores, verifier security.Verifier) []httpadapter.Option {
 		log.Printf("%s is not set: the web filing of the claim (HU-W2.1-01) is not mounted", envPolicyCoreURL)
 		return nil
 	}
+	if objects == nil {
+		log.Printf("%s is not set: the web filing of the claim (HU-W2.1-01) is not mounted, its supports have no store",
+			envEvidenceBucket)
+		return nil
+	}
 	core := corepolicies.NewClient(corepolicies.Config{
 		BaseURL: cfg.url, Timeout: cfg.timeout, Breaker: resilience.DefaultConfig(),
 	})
 	directory := policiesadapter.NewDirectory(core)
 	log.Printf("web filing (HU-W2.1-01): policy core at %s, timeout %s", cfg.url, cfg.timeout)
 	return []httpadapter.Option{httpadapter.WithWebFilings(
-		filing.NewWebService(s.records, s.supports, directory, systemClock{}),
-		filing.NewSupportService(s.supports, systemClock{}),
+		filing.NewWebService(records, supports, directory, systemClock{}),
+		filing.NewSupportService(supports, objects, systemClock{}),
 		verifier)}
 }
 
-// evidenceStore opens the bucket where the captured evidence goes. Without
+// evidenceStore opens the bucket where the captured evidence and the supports
+// of the web filing go. Without
 // the bucket the evidence of HU-M2.1-01 is not mounted and a filing that
 // declares evidence is refused, so the rest of the service keeps answering; a
 // bucket that is configured and cannot be reached is a misconfiguration and
 // the service does not start with it.
-func evidenceStore(ctx context.Context) ports.EvidenceStore {
+func evidenceStore(ctx context.Context) ports.ObjectStore {
 	bucket := os.Getenv(envEvidenceBucket)
 	if bucket == "" {
 		log.Printf("%s is not set: the evidence of the claim (HU-M2.1-01) is not mounted",

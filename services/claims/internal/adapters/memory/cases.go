@@ -4,26 +4,23 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
 )
 
-// CaseStore keeps the claims of both channels and the uploaded supports in
-// memory (HU-W2.1-01), so that without a database the list of the insured
+// CaseStore keeps the claims of both channels and the metadata of the
+// supports in memory, so that without a database the list of the insured
 // shows the claims filed from the mobile app too. It is the mobile
 // ClaimRepository as well: one numbering and one set of filing keys for both
 // channels, as in PostgreSQL. Everything is lost when the service restarts.
-//
-// Provisional (HU-W2.1-01 §9): it repeats what ClaimStore does for the mobile
-// filing, which is left untouched.
 type CaseStore struct {
 	mu       sync.Mutex
 	byID     map[string]domain.ClaimRecord
 	byKey    map[string]string
 	sequence int
 	supports map[string]domain.SupportFile
-	contents map[string][]byte
 	// attachedTo tells the claim each support is attached to.
 	attachedTo map[string]string
 }
@@ -32,7 +29,7 @@ type CaseStore struct {
 func NewCaseStore() *CaseStore {
 	return &CaseStore{
 		byID: map[string]domain.ClaimRecord{}, byKey: map[string]string{},
-		supports: map[string]domain.SupportFile{}, contents: map[string][]byte{}, attachedTo: map[string]string{},
+		supports: map[string]domain.SupportFile{}, attachedTo: map[string]string{},
 	}
 }
 
@@ -105,7 +102,8 @@ func (s *CaseStore) Get(_ context.Context, id string) (domain.ClaimRecord, error
 	return copyRecord(c), nil
 }
 
-// ListByOwner returns the subject's claims, newest first, without supports.
+// ListByOwner returns the subject's claims, newest first, without supports
+// or evidence.
 func (s *CaseStore) ListByOwner(_ context.Context, subject string, f ports.ClaimFilter,
 	after *ports.ClaimCursor, limit int) ([]domain.ClaimRecord, error) {
 	s.mu.Lock()
@@ -122,7 +120,7 @@ func (s *CaseStore) ListByOwner(_ context.Context, subject string, f ports.Claim
 			continue
 		}
 		c = copyRecord(c)
-		c.Supports = nil
+		c.Supports, c.Evidence = nil, nil
 		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -134,14 +132,30 @@ func (s *CaseStore) ListByOwner(_ context.Context, subject string, f ports.Claim
 	return out, nil
 }
 
-// Save stores a new support with its content.
-func (s *CaseStore) Save(_ context.Context, f domain.SupportFile, content []byte) error {
+// Save stores a declared support, not confirmed yet.
+func (s *CaseStore) Save(_ context.Context, f domain.SupportFile) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.supports[f.ID] = f
-	s.contents[f.ID] = content
 	return nil
+}
+
+// Confirm marks the support as checked. A support that was already confirmed
+// keeps its first confirmation.
+func (s *CaseStore) Confirm(_ context.Context, id string, at time.Time) (domain.SupportFile, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	f, ok := s.supports[id]
+	if !ok {
+		return domain.SupportFile{}, domain.ErrSupportNotFound
+	}
+	if !f.Confirmed() {
+		f.ConfirmedAt = at.UTC()
+		s.supports[id] = f
+	}
+	return f, nil
 }
 
 // Find returns the supports with the ids that exist.
@@ -213,5 +227,6 @@ func copyRecord(c domain.ClaimRecord) domain.ClaimRecord {
 		c.Policy = &p
 	}
 	c.Supports = append([]domain.AttachedSupport(nil), c.Supports...)
+	c.Evidence = append([]domain.Evidence(nil), c.Evidence...)
 	return c
 }
