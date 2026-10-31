@@ -92,6 +92,9 @@ func main() {
 		}
 		log.Printf("triage (HU-W2.2-01): sweep every %s, policy %s", interval, priorities.Policy().Version)
 		opts = append(opts, httpadapter.WithTriage(priorities, verifier))
+		// HU-W2.2-03: what operations reads to evaluate a claim, with the
+		// terms of its policy when the policy core is configured.
+		opts = append(opts, httpadapter.WithEvaluation(evaluationService(records, priorities, evidences), verifier))
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)
 	}
