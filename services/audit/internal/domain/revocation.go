@@ -258,6 +258,54 @@ type RevocationView struct {
 	Device        string
 	Summary       NoticeSummary
 	Entities      []EntityNotice
+	// OutOfDeadline tells whether some entity did not confirm within its
+	// first window (RN-02): it has a revocation_not_confirmed, it confirmed
+	// at or after the end of that window, or it has not confirmed and the
+	// window already ended. A later successful retry does not undo it
+	// (indicator of HU-W4.2-01, decision D-5 a).
+	OutOfDeadline bool
+}
+
+// revocationOutOfDeadline tells whether some entity of the revoked event did
+// not confirm within its first window at now (RevocationView.OutOfDeadline).
+// An entity without the end of its window has no deadline to miss.
+func revocationOutOfDeadline(revoked ConsentEvent, entityEvents []ConsentEvent, now time.Time) bool {
+	var details RevokedDetails
+	if len(revoked.Details) > 0 {
+		// Like deriveNotices: an unreadable details has no entity to follow.
+		_ = json.Unmarshal(revoked.Details, &details)
+	}
+	for _, w := range details.Entities {
+		var confirmedAt time.Time
+		notConfirmed := false
+		for _, e := range entityEvents {
+			if e.EntityCode != w.Code {
+				continue
+			}
+			switch e.Status {
+			case HistoryRevocationConfirmed:
+				if confirmedAt.IsZero() {
+					confirmedAt = e.OccurredAt
+				}
+			case HistoryRevocationNotConfirmed:
+				notConfirmed = true
+			}
+		}
+		if notConfirmed {
+			return true
+		}
+		if w.DeadlineAt.IsZero() {
+			continue
+		}
+		at := now
+		if !confirmedAt.IsZero() {
+			at = confirmedAt
+		}
+		if !at.Before(w.DeadlineAt) {
+			return true
+		}
+	}
+	return false
 }
 
 // deriveNotices returns the state of the notice to each entity of the revoked

@@ -115,9 +115,12 @@ type Consent struct {
 }
 
 // ExpiresAt is when the consent stops being active: ConsentValidityMonths
-// after it was granted.
+// after it was granted, counted on the UTC calendar (a 29 February expires on
+// 1 March). The records are always read in UTC; computing it there also when
+// GrantedAt comes in another zone keeps it equal to the expiry the list of
+// the compliance portal computes in PostgreSQL (HU-W4.2-01).
 func (c Consent) ExpiresAt() time.Time {
-	return c.GrantedAt.AddDate(0, ConsentValidityMonths, 0)
+	return c.GrantedAt.UTC().AddDate(0, ConsentValidityMonths, 0)
 }
 
 // Active tells whether the consent covers the customer at now. It is active
