@@ -2,14 +2,17 @@
 
 Recibe, prioriza, evalúa y resuelve siniestros, incluidos los paramétricos que se pagan automáticamente.
 
-**Estado:** `GET /health` y **HU-M2.2-01:** `POST /v1/claims` (radicación del siniestro desde el asistente guiado del móvil), con autenticación Cognito (`pkg/security`) y los casos en **PostgreSQL** (`DATABASE_URL`); sin base de datos quedan en memoria. **HU-M2.1-01:** `POST /v1/claims/evidence/upload-url` (URL firmada con la que el teléfono sube la evidencia directamente al *bucket* `EVIDENCE_BUCKET`), y la evidencia asociada al caso con su ubicación, su instante de captura y su resumen de integridad. **HU-W2.1-01:** radicación del siniestro con soportes desde el portal web (`GET /v1/claims/filing-options`, `POST /v1/claims/supports` y su confirmación, `POST /v1/claims/web-filings`), validada contra el core de pólizas (`POLICY_CORE_URL`) y con los soportes subidos directo al *bucket* con URL firmada, y lectura de los casos propios de los dos canales (`GET /v1/claims`, `GET /v1/claims/{claim_id}`, que incluye la evidencia del móvil, y el comprobante en PDF `GET /v1/claims/{claim_id}/filing-receipt`). El resto de módulos sigue reservado.
+**Estado:** `GET /health` y **HU-M2.2-01:** `POST /v1/claims` (radicación del siniestro desde el asistente guiado del móvil), con autenticación Cognito (`pkg/security`) y los casos en **PostgreSQL** (`DATABASE_URL`); sin base de datos quedan en memoria. **HU-M2.1-01:** `POST /v1/claims/evidence/upload-url` (URL firmada con la que el teléfono sube la evidencia directamente al *bucket* `EVIDENCE_BUCKET`), y la evidencia asociada al caso con su ubicación, su instante de captura y su resumen de integridad. **HU-W2.1-01:** radicación del siniestro con soportes desde el portal web (`GET /v1/claims/filing-options`, `POST /v1/claims/supports` y su confirmación, `POST /v1/claims/web-filings`), validada contra el core de pólizas (`POLICY_CORE_URL`) y con los soportes subidos directo al *bucket* con URL firmada, y lectura de los casos propios de los dos canales (`GET /v1/claims`, `GET /v1/claims/{claim_id}`, que incluye la evidencia del móvil, y el comprobante en PDF `GET /v1/claims/{claim_id}/filing-receipt`). **HU-W2.2-01:** triage automático: cada caso que entra a
+evaluación recibe su nivel (Triage 1, 2 o 3) por severidad y monto estimado en ≤ 60 s, se recalcula solo cuando cambia esa
+información y se lee por `GET /v1/claims/{claim_id}/triage` (analista y asegurado), `GET /v1/claims/triage` (una página de casos)
+y `GET /v1/claims/triage-policy`; la radicación web gana el monto estimado opcional. El resto de módulos sigue reservado.
 
 ## Responsabilidades
 
 | Módulo (`internal/`) | Qué hace |
 |---|---|
 | `filing` | Radicación y seguimiento del siniestro (web y móvil). **HU-M2.2-01:** `Service` radica desde el asistente del móvil. **HU-W2.1-01:** `WebService` ofrece las pólizas activas del asegurado con los tipos y soportes de cada una y radica desde el portal web validando la póliza con el core de pólizas; `SupportService` declara cada soporte, firma su subida y confirma lo que llegó; `QueryService` lista los casos propios de los dos canales, entrega el detalle y el comprobante en PDF |
-| `triage` | Priorización automática por severidad, monto y tiempo de respuesta comprometido |
+| `triage` | Priorización automática por severidad, monto y tiempo de respuesta comprometido. **HU-W2.2-01:** `Service` calcula el nivel de cada caso con la política `triage-policy-v1`, lo registra con su causa y lee el triage de un caso, de una página de casos y la política vigente; `Worker` barre la base cada `TRIAGE_SWEEP_INTERVAL_SECONDS` buscando los casos sin cálculo o cuyos datos cambiaron |
 | `assessors` | Prestadores (peritos y talleres) y su asignación al caso: elige el más cercano por distancia y especialidad, ampliando el radio si no hay disponibles (HU-W2.3-01). Seguimiento de la intervención y cierre del caso (HU-W2.3-02). Es el único dueño del cálculo de distancia |
 | `assistance` | Asistencia en sitio: recibe las solicitudes del móvil con la ubicación del asegurado (HU-M2.3-01), las muestra en la bandeja de entrantes y gestiona su despacho y cierre con motivo (HU-W2.3-03). Para elegir prestador **llama a `assessors`**; no calcula distancias |
 | `parametric` | Pago automático cuando un evento externo (retraso de vuelo, clima) cruza un umbral |
@@ -105,12 +108,48 @@ GET  /v1/claims[/{id}[/filing-receipt]] ─▶ casos propios de los dos canales,
 
 | Adaptador | Qué hace |
 |---|---|
-| `http` | Router `chi`. `WithFilings` (HU-M2.2-01), `WithClaimReads` y `WithWebFilings` (HU-W2.1-01): `security.Authenticate` + `RequireRole(insured)`, `Cache-Control: no-store` |
-| `postgres` | `ClaimRecordStore`: único almacén de casos de los dos canales (radicación móvil con evidencia y web con soportes y póliza, transaccional) y `SupportStore`: metadatos de los soportes (HU-W2.1-01). Migraciones embebidas con *advisory lock* |
-| `memory` | Sin `DATABASE_URL`: `CaseStore` sirve a los dos canales y a los metadatos de los soportes (se pierden al reiniciar) |
+| `http` | Router `chi`. `WithFilings` (HU-M2.2-01), `WithClaimReads` y `WithWebFilings` (HU-W2.1-01): `security.Authenticate` + `RequireRole(insured)`, `Cache-Control: no-store`. `WithTriage` (HU-W2.2-01): el triage de un caso para `operations` e `insured` (vista por rol), el lote y la política solo para `operations` |
+| `postgres` | `ClaimRecordStore`: único almacén de casos de los dos canales (radicación móvil con evidencia y web con soportes y póliza, transaccional) y `SupportStore`: metadatos de los soportes (HU-W2.1-01). `TriageStore` (HU-W2.2-01): los cálculos del nivel en `claim_triage`, sobre el mismo *pool* que los casos (`TriageStoreOf`). Migraciones embebidas con *advisory lock* |
+| `memory` | Sin `DATABASE_URL`: `CaseStore` sirve a los dos canales y a los metadatos de los soportes, y `TriageStore` guarda los cálculos del nivel sobre esos casos (HU-W2.2-01); todo se pierde al reiniciar |
 | `policies` | Puente de `pkg/adapters/policies` al puerto `PolicyDirectory`; deja fuera las pólizas mal descritas y traduce cualquier falla a `ErrPolicyDirectoryUnavailable` |
 | `pdf` | Comprobante de radicación con `go-pdf/fpdf` |
 | `s3` | `ObjectStore` sobre el *bucket* de evidencia: firma las subidas (evidencia del móvil y soportes del portal), comprueba lo que llegó, lee los primeros bytes de un objeto y firma las lecturas |
+
+## Triage automático (HU-W2.2-01)
+
+Cada siniestro que entra a evaluación recibe un nivel de prioridad sin intervención manual, y el nivel se recalcula cuando cambia
+la información de la que salió. Contrato: [`docs/contratos/HU-W2.2-01-api.md`](../../docs/contratos/HU-W2.2-01-api.md).
+
+```
+claims (cada tarea de ECS)
+  triage.Worker ──cada 10 s──▶ casos en active o in_evaluation sin cálculo o con monto, tipo o versión de la política distintos
+                              └─▶ Service.Assess: nivel = severidad × banda de monto ──▶ INSERT en claim_triage (con su causa)   [CA-1…CA-3]
+GET /v1/claims/{id}/triage ──▶ operations: nivel, severidad, banda, monto, objetivo e historial · insured dueño: nivel y días    [CA-4]
+GET /v1/claims/triage?claim_id=… ─▶ el nivel de una página de casos en una llamada (operations)                                   [CA-4, CA-5]
+GET /v1/claims/triage-policy ────▶ severidad por tipo, umbrales y objetivo de cada nivel (operations)                              [CA-5]
+```
+
+- **Regla:** Triage 1 si la severidad es alta **o** el monto supera el umbral alto; Triage 3 si la severidad es baja **y** el monto
+  está por debajo del umbral bajo; Triage 2 en los demás casos. Sin monto, la banda es `unknown` y no lleva a 1 ni a 3.
+- **Política `triage-policy-v1`** (`internal/domain/triage_policy.go`), **provisional, pendiente de validación con negocio**:
+  hurto y daño a terceros `high`; colisión, otro y daño por agua `medium`; cristales `low`; umbrales de $ 5.000.000 y
+  $ 30.000.000; objetivos: Triage 1 atención inmediata (2 días hábiles de resolución para el cliente), Triage 2 cinco y Triage 3
+  diez días hábiles. Si cambia, cambia la versión y los casos vigentes se recalculan solos con la causa `policy_updated`.
+- **Por barrido, no por llamada:** el triage no lo invoca la radicación ni la evaluación. Lee la base, así que cualquier historia
+  que cambie el monto, el tipo o la cobertura de un caso (HU-W2.1-03, HU-W2.1-04, HU-W2.3-02) obtiene el recálculo sin llamar a
+  nada. El primer barrido corre al arrancar, por eso un caso que llegó con el servicio detenido se prioriza apenas vuelve. Dos
+  tareas no duplican un cálculo: cada uno ocupa el lugar `seq` siguiente del caso (llave primaria) y la que pierde no escribe.
+- **Estados que se priorizan:** `active` (mientras no exista la revisión del asesor, radicado es entrar a evaluación; HU-W2.1-03
+  lo quitará) e `in_evaluation` (HU-W2.2-03). Fuera de ellos no se recalcula, pero el último nivel sigue visible.
+- **Causas:** `entered_evaluation`, `estimated_amount_changed`, `incident_type_changed`, `coverage_changed`,
+  `provider_report_received` (reservada para HU-W2.3-02) y `policy_updated`. Un cambio que no mueve el nivel también se registra.
+- **El triage no consulta al core de pólizas:** la cobertura es la del tipo de siniestro y la línea sale del catálogo.
+- **Monto estimado:** lo declara el asegurado, opcional, en `POST /v1/claims/web-filings` (`estimated_amount_minor`, centavos de
+  COP, 1–10¹³) y queda en `claim.estimated_amount_minor`; entra en la huella de idempotencia solo si viene. El móvil radica sin
+  monto. El detalle del caso lo devuelve y omite el campo si no se declaró.
+- **Cómo lo usa otra historia:** la vista `claim_current_triage` (una fila por caso con su último cálculo) y el puerto
+  `ports.TriageStore.Current` dan el nivel vigente sin conocer el historial. El orden de la cola por prioridad es HU-W2.2-02.
+- **No publica ni consume eventos.**
 
 ## Requisitos de calidad que gobiernan el servicio
 
@@ -120,7 +159,7 @@ GET  /v1/claims[/{id}[/filing-receipt]] ─▶ casos propios de los dos canales,
 
 ## Datos y eventos
 
-- **BD propia:** PostgreSQL (siniestros): `claim` (con `channel`, `policy_snapshot` y `catalog_version` desde HU-W2.1-01), `claim_evidence`, `support_file` (metadatos; el archivo vive en S3) y `claim_support`. Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
+- **BD propia:** PostgreSQL (siniestros): `claim` (con `channel`, `policy_snapshot` y `catalog_version` desde HU-W2.1-01 y `estimated_amount_minor` desde HU-W2.2-01), `claim_evidence`, `support_file` (metadatos; el archivo vive en S3), `claim_support` y `claim_triage` (HU-W2.2-01: cada cálculo del nivel, solo se agregan filas) con su vista `claim_current_triage`. Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
 - **Publica:** `ClaimApproved` (dispara notificación y pago paramétrico). Ver [catálogo de eventos](../../docs/events/README.md).
 - **Depende de:** `pkg/adapters` (`iot`, `payments`, `policies` desde HU-W2.1-01), `pkg/outbox`. HU-W2.1-01 no publica ni consume eventos.
 
@@ -146,6 +185,7 @@ Variables que el servicio lee:
 | `AWS_REGION` | Región del SDK de AWS (la plataforma la fija, `us-east-2`) |
 | `POLICY_CORE_URL` | HU-W2.1-01: las opciones, la declaración y confirmación de soportes y la radicación web no se montan (sin el core no se sabe qué pólizas son del asegurado) |
 | `POLICY_CORE_TIMEOUT_MS` | 700 ms por llamada al core de pólizas |
+| `TRIAGE_SWEEP_INTERVAL_SECONDS` | HU-W2.2-01: el barrido del triage corre cada 10 s. Entre 1 y 30; otro valor impide arrancar. Solo se acorta en local y en la e2e |
 
 El `AUTH_ISSUER` del *user pool* permanente es
 `https://cognito-idp.us-east-2.amazonaws.com/us-east-2_EWwg8NL2C`. Las migraciones se aplican solas al arrancar.
@@ -161,3 +201,5 @@ Pruebas: `REQUIRE_DOCKER=1 go test ./services/claims/...` (PostgreSQL con Testco
 que necesitan Docker se saltan). `tests/integration/web_filing_test.go` ejercita cada criterio de HU-W2.1-01 por HTTP;
 [`tests/contract`](tests/contract/README.md) corre Schemathesis contra el servicio real y
 [`tests/e2e/hu-w2.1`](../../tests/e2e/hu-w2.1/README.md) recorre los criterios de punta a punta con el core detrás de Toxiproxy.
+**HU-W2.2-01:** `tests/integration/triage_test.go` ejercita cada criterio del triage por HTTP con el barrido corriendo; el contrato
+también pasa como `operations`; [`tests/e2e/hu-w2.2`](../../tests/e2e/hu-w2.2/README.md) lo recorre de punta a punta.

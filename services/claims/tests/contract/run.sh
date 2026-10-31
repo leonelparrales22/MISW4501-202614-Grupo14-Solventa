@@ -9,6 +9,9 @@
 #      list, detail and receipt). The generated policies are not the insured's and the generated
 #      ids do not exist, so the 422 and 404 answers are reached.
 #   2. as an advisor: every route answers 403.
+#   3. as operations (HU-W2.2-01): the reads of the triage (the triage of a
+#      claim, a page of claims and the policy in force) answer 200, 400 or
+#      404; the routes of the insured answer 403.
 # The script exits with a non-zero code if any check fails. The environment is
 # always removed at the end (down -v). Requirements: Docker (compose v2), curl,
 # jq and the AWS CLI (only to seed Moto, as tests/security/ha-s01/local does).
@@ -85,7 +88,7 @@ ROUTES='^/v1/claims'
 # filter_too_much health check); the answers it does reach are still checked.
 
 seed=1
-for user in asegurado.local@example.com asesor.local@example.com; do
+for user in asegurado.local@example.com asesor.local@example.com operaciones.local@example.com; do
   echo "== Schemathesis: the claims routes as $user"
   $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://claims:8080 \
     -H "Authorization: Bearer $(token "$user")" --include-path-regex="$ROUTES" \

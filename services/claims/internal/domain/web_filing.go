@@ -3,7 +3,9 @@ package domain
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -50,7 +52,18 @@ type WebFilingRequest struct {
 	Place       string
 	Description string
 	Supports    []SupportGroup
+	// EstimatedAmountMinor is the estimated amount of the loss in cents of
+	// COP as it came in the request (HU-W2.2-01), so a value that is not an
+	// integer is reported as a field and not as a broken request. Empty when
+	// it was not sent.
+	EstimatedAmountMinor string
 }
+
+// Limits of the estimated amount, in cents of COP (HU-W2.2-01).
+const (
+	MinEstimatedAmountMinor int64 = 1
+	MaxEstimatedAmountMinor int64 = 10_000_000_000_000
+)
 
 // AttachedSupport is a support attached to a claim, in the order the claim
 // shows it.
@@ -71,6 +84,9 @@ type ClaimRecord struct {
 	Policy         *Policy
 	CatalogVersion string
 	Supports       []AttachedSupport
+	// EstimatedAmountMinor is what the insured estimated the loss at, in
+	// cents of COP (HU-W2.2-01); nil when it was not declared.
+	EstimatedAmountMinor *int64
 }
 
 // WebFingerprint summarizes a web filing. Two filings with the same key are
@@ -81,6 +97,12 @@ func (c ClaimRecord) WebFingerprint() string {
 	b.WriteString(c.Fingerprint() + "\n")
 	for _, s := range c.Supports {
 		b.WriteString(s.RequirementCode + "=" + s.File.ID + "\n")
+	}
+	// HU-W2.2-01: the estimated amount is part of what was filed, but only
+	// when it was declared, so the claims filed before it keep their
+	// fingerprint and their retries still find them.
+	if c.EstimatedAmountMinor != nil {
+		b.WriteString("estimated_amount=" + strconv.FormatInt(*c.EstimatedAmountMinor, 10) + "\n")
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
@@ -135,6 +157,8 @@ func (r WebFilingRequest) Validate(now time.Time, catalog Catalog, subject strin
 		bad("description", CodeOutOfRange)
 	}
 
+	amount := estimatedAmount(strings.TrimSpace(r.EstimatedAmountMinor), bad)
+
 	var supports []AttachedSupport
 	if known {
 		supports = checkSupports(r.Supports, option, subject, uploaded, bad)
@@ -155,10 +179,35 @@ func (r WebFilingRequest) Validate(now time.Time, catalog Catalog, subject strin
 			Details:      map[string]string{},
 			Status:       StatusActive,
 		},
-		Channel:        ChannelWeb,
-		CatalogVersion: catalog.Version,
-		Supports:       supports,
+		Channel:              ChannelWeb,
+		CatalogVersion:       catalog.Version,
+		Supports:             supports,
+		EstimatedAmountMinor: amount,
 	}, nil
+}
+
+// estimatedAmount reads the optional estimated amount (HU-W2.2-01): an
+// integer number of cents between MinEstimatedAmountMinor and
+// MaxEstimatedAmountMinor. Anything that is not an integer is invalid_format;
+// an integer out of the range, even one that does not fit in 64 bits, is
+// out_of_range.
+func estimatedAmount(value string, bad func(field, code string)) *int64 {
+	if value == "" {
+		return nil
+	}
+	amount, err := strconv.ParseInt(value, 10, 64)
+	switch {
+	case errors.Is(err, strconv.ErrRange):
+		bad("estimated_amount_minor", CodeOutOfRange)
+		return nil
+	case err != nil:
+		bad("estimated_amount_minor", CodeInvalidFormat)
+		return nil
+	case amount < MinEstimatedAmountMinor || amount > MaxEstimatedAmountMinor:
+		bad("estimated_amount_minor", CodeOutOfRange)
+		return nil
+	}
+	return &amount
 }
 
 // checkSupports matches the groups of the request with the requirements of the

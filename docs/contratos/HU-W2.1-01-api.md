@@ -527,3 +527,14 @@ El catálogo está pendiente de validación con negocio. Si cambia, cambia `cata
   /v1/claims/web-filings`, con soportes y póliza), con una sola tabla, una numeración y las mismas claves de idempotencia.
 - **Titular de la póliza:** el core identifica al asegurado por el `sub` del token. El cruce con el documento del cliente se
   decidirá cuando exista un core real que identifique por documento.
+
+---
+
+## 6. Desde HU-W2.2-01 (versión 0.6.0)
+
+- `POST /v1/claims/web-filings` acepta `estimated_amount_minor`, **opcional**: el monto que el asegurado estima, en centavos de
+  COP (1–10¹³). Un valor que no es entero responde `422 validation_failed` con `{"field":"estimated_amount_minor","code":"invalid_format"}`
+  y uno fuera del rango, `out_of_range`. Forma parte de la radicación: la misma `Idempotency-Key` con otro monto es
+  `idempotency_key_reused`; sin monto, la huella es la de siempre.
+- `GET /v1/claims/{claim_id}` y la respuesta de la radicación lo devuelven en `estimated_amount_minor`; si no se declaró, el campo
+  no viene. Detalle y triage en [`HU-W2.2-01-api.md`](HU-W2.2-01-api.md).
