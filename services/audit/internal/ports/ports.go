@@ -45,6 +45,19 @@ type ConsentEventReader interface {
 	ListByConsents(ctx context.Context, consentIDs []string) (map[string][]domain.ConsentEvent, error)
 }
 
+// ComplianceListStore reads the list of consents of the compliance portal
+// (HU-W4.2-01). The database filters, counts and pages the consents with the
+// status rule of domain.DeriveStatus written in SQL (decision D-2 b′); an
+// equivalence test keeps both definitions equal.
+type ComplianceListStore interface {
+	// ListForCompliance returns, from one snapshot of the database and at
+	// now: the page of the query (each record with the status derived by the
+	// query, in the order of the list), the number of consents that meet the
+	// filters, the indicators over every consent (without AsOf) and the codes
+	// of the entities that have a consent.
+	ListForCompliance(ctx context.Context, q domain.ComplianceQuery, now time.Time) (domain.ComplianceListResult, error)
+}
+
 // ErrHolderNotLinked is returned when the account (subject) has no holder
 // link yet: origination has not sent its CustomerLinked event, or the account
 // never went through the registration (decision D-13 a).
