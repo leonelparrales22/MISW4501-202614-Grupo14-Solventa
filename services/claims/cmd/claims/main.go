@@ -84,6 +84,14 @@ func main() {
 				httpadapter.WithEvidence(evidence.NewService(evidences, systemClock{}), verifier))
 		}
 		opts = append(opts, webFilings(records, supports, evidences, verifier)...)
+		// HU-W2.2-01: the triage gives every claim in evaluation its priority
+		// from a sweep of the claims, and its routes read it.
+		priorities, interval, err := startTriage(context.Background(), records, os.Getenv)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		log.Printf("triage (HU-W2.2-01): sweep every %s, policy %s", interval, priorities.Policy().Version)
+		opts = append(opts, httpadapter.WithTriage(priorities, verifier))
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)
 	}

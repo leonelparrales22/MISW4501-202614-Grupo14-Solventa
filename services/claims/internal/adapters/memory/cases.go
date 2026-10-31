@@ -228,5 +228,9 @@ func copyRecord(c domain.ClaimRecord) domain.ClaimRecord {
 	}
 	c.Supports = append([]domain.AttachedSupport(nil), c.Supports...)
 	c.Evidence = append([]domain.Evidence(nil), c.Evidence...)
+	if c.EstimatedAmountMinor != nil {
+		amount := *c.EstimatedAmountMinor
+		c.EstimatedAmountMinor = &amount
+	}
 	return c
 }

@@ -33,7 +33,7 @@ var _ ports.ClaimRecords = (*ClaimRecordStore)(nil)
 const claimColumns = `id, filing_number, cognito_sub, filing_key, fingerprint, policy_id,
 	incident_type, occurred_at, place, description, details, status, filed_at`
 
-const recordColumns = claimColumns + `, channel, policy_snapshot, catalog_version`
+const recordColumns = claimColumns + `, channel, policy_snapshot, catalog_version, estimated_amount_minor`
 
 // policySnapshot is the JSON shape of the copy of the policy.
 type policySnapshot struct {
@@ -101,11 +101,12 @@ func (s *ClaimRecordStore) create(ctx context.Context, c domain.ClaimRecord, fin
 	c.FilingNumber = domain.FilingNumber(c.FiledAt, sequence)
 
 	res, err := tx.ExecContext(ctx, `INSERT INTO claim (`+recordColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (cognito_sub, filing_key) DO NOTHING`,
 		c.ID, c.FilingNumber, c.Subject, c.FilingKey, fingerprint, c.PolicyID,
 		string(c.IncidentType), c.OccurredAt, c.Place, c.Description, details,
-		string(c.Status), c.FiledAt, string(c.Channel), nullBytes(snapshot), nullString(c.CatalogVersion))
+		string(c.Status), c.FiledAt, string(c.Channel), nullBytes(snapshot), nullString(c.CatalogVersion),
+		nullInt64(c.EstimatedAmountMinor))
 	if err != nil {
 		return domain.ClaimRecord{}, false, fmt.Errorf("store the filing: %w", err)
 	}
@@ -160,6 +161,13 @@ func nullBytes(v []byte) any {
 		return nil
 	}
 	return v
+}
+
+func nullInt64(v *int64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
 }
 
 func nullFloat(v *float64) any {
@@ -345,16 +353,20 @@ func scanRecord(row scanner) (domain.ClaimRecord, string, error) {
 		details, snapshot         []byte
 		fingerprint               string
 		catalog                   sql.NullString
+		estimatedAmount           sql.NullInt64
 	)
 	if err := row.Scan(&c.ID, &c.FilingNumber, &c.Subject, &c.FilingKey, &fingerprint, &c.PolicyID,
 		&incident, &c.OccurredAt, &c.Place, &c.Description, &details, &status, &c.FiledAt,
-		&channel, &snapshot, &catalog); err != nil {
+		&channel, &snapshot, &catalog, &estimatedAmount); err != nil {
 		return domain.ClaimRecord{}, "", err
 	}
 	c.IncidentType = domain.IncidentType(incident)
 	c.Status = domain.Status(status)
 	c.Channel = domain.Channel(channel)
 	c.CatalogVersion = catalog.String
+	if estimatedAmount.Valid {
+		c.EstimatedAmountMinor = &estimatedAmount.Int64
+	}
 	c.OccurredAt = c.OccurredAt.UTC()
 	c.FiledAt = c.FiledAt.UTC()
 	c.Details = map[string]string{}
