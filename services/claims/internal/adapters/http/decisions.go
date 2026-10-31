@@ -21,7 +21,7 @@ import (
 
 // Decider is what the routes of the decision use (HU-W2.2-03).
 type Decider interface {
-	Approve(ctx context.Context, claimID, analyst string, approvedMinor int64) (domain.Decision, error)
+	Approve(ctx context.Context, claimID, analyst string, grossMinor int64) (domain.Decision, error)
 	Reject(ctx context.Context, claimID, analyst, reason string) (domain.Decision, error)
 	RetryPayout(ctx context.Context, claimID, analyst string, destination *domain.PayoutAccount) (domain.Decision, error)
 }
@@ -42,7 +42,7 @@ func WithDecisions(svc Decider, verifier security.Verifier) Option {
 }
 
 type approvalRequest struct {
-	ApprovedAmountMinor *int64 `json:"approved_amount_minor"`
+	GrossAmountMinor *int64 `json:"gross_amount_minor"`
 }
 
 type rejectionRequest struct {
@@ -102,11 +102,11 @@ func approveClaim(svc Decider) http.HandlerFunc {
 		if !decodeStrict(w, req, &in) {
 			return
 		}
-		if in.ApprovedAmountMinor == nil || *in.ApprovedAmountMinor < 1 {
-			writeError(w, http.StatusBadRequest, "invalid_request", "approved_amount_minor must be a positive whole number of cents")
+		if in.GrossAmountMinor == nil || *in.GrossAmountMinor < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "gross_amount_minor must be a positive whole number of cents")
 			return
 		}
-		d, err := svc.Approve(req.Context(), id, analystOf(req), *in.ApprovedAmountMinor)
+		d, err := svc.Approve(req.Context(), id, analystOf(req), *in.GrossAmountMinor)
 		if writeDecisionError(w, req, err) {
 			return
 		}
@@ -189,8 +189,8 @@ func writeDecisionError(w http.ResponseWriter, req *http.Request, err error) boo
 		{ports.ErrClaimNotFound, answer{http.StatusNotFound, "claim_not_found", "there is no claim with that id"}},
 		{ports.ErrNotDecidable, answer{http.StatusConflict, "claim_not_decidable", "the claim is not in evaluation: it was already decided"}},
 		{ports.ErrPayoutNotRetryable, answer{http.StatusConflict, "payout_not_retryable", "the payout of the claim is not a payment exception"}},
-		{domain.ErrAmountOutOfRange, answer{http.StatusUnprocessableEntity, "amount_out_of_range", "the approved amount must be positive"}},
-		{domain.ErrAmountExceedsInsuredValue, answer{http.StatusUnprocessableEntity, "amount_exceeds_insured_value", "the approved amount exceeds the insured value of the coverage"}},
+		{domain.ErrAmountOutOfRange, answer{http.StatusUnprocessableEntity, "amount_out_of_range", "the gross amount must be positive"}},
+		{domain.ErrAmountExceedsInsuredValue, answer{http.StatusUnprocessableEntity, "amount_exceeds_insured_value", "the gross amount exceeds the insured value of the coverage"}},
 		{domain.ErrNothingToPay, answer{http.StatusUnprocessableEntity, "nothing_to_pay", "after the deductible there is nothing to pay"}},
 		{domain.ErrNoPayoutAccount, answer{http.StatusUnprocessableEntity, "no_payout_account", "the insured has no account to pay the indemnity to"}},
 		{domain.ErrReasonRequired, answer{http.StatusUnprocessableEntity, "reason_required", "the reason of the rejection is required"}},
@@ -214,7 +214,7 @@ func writeDecisionError(w http.ResponseWriter, req *http.Request, err error) boo
 }
 
 type approvalBody struct {
-	ApprovedAmountMinor   int64  `json:"approved_amount_minor"`
+	GrossAmountMinor      int64  `json:"gross_amount_minor"`
 	InsuredValueMinor     int64  `json:"insured_value_minor"`
 	DeductibleBasisPoints int    `json:"deductible_basis_points"`
 	DeductibleMinor       int64  `json:"deductible_minor"`
@@ -280,7 +280,7 @@ func decisionBodyOf(d domain.Decision) decisionBody {
 	out := decisionBody{ClaimID: d.ClaimID, FilingNumber: d.FilingNumber, Status: string(d.StatusOf()),
 		Outcome: string(d.Outcome), DecidedBy: d.DecidedBy, DecidedAt: d.DecidedAt.UTC()}
 	if p := d.Payout; p != nil {
-		out.Approval = &approvalBody{ApprovedAmountMinor: d.ApprovedAmountMinor, InsuredValueMinor: d.InsuredValueMinor,
+		out.Approval = &approvalBody{GrossAmountMinor: d.GrossAmountMinor, InsuredValueMinor: d.InsuredValueMinor,
 			DeductibleBasisPoints: d.DeductibleBasisPoints, DeductibleMinor: d.DeductibleMinor(),
 			PayoutAmountMinor: p.AmountMinor, Currency: d.Currency}
 		a := p.Destination

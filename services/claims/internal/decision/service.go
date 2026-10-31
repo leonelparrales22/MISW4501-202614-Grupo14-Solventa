@@ -49,10 +49,10 @@ func (s *Service) Decision(ctx context.Context, claimID string) (domain.Decision
 	return s.store.Decision(ctx, claimID)
 }
 
-// Approve approves a claim in evaluation for approvedMinor, checked against
+// Approve approves a claim in evaluation for grossMinor, checked against
 // the coverage of its incident as the policy core describes it now, and
 // leaves its payout due. The worker pays it.
-func (s *Service) Approve(ctx context.Context, claimID, analyst string, approvedMinor int64) (domain.Decision, error) {
+func (s *Service) Approve(ctx context.Context, claimID, analyst string, grossMinor int64) (domain.Decision, error) {
 	c, err := s.decidable(ctx, claimID)
 	if err != nil {
 		return domain.Decision{}, err
@@ -65,7 +65,7 @@ func (s *Service) Approve(ctx context.Context, claimID, analyst string, approved
 	if !ok {
 		return domain.Decision{}, ErrNotCovered
 	}
-	d, err := domain.Approve(c, cov, holder, approvedMinor, analyst, s.clock.Now())
+	d, err := domain.Approve(c, cov, holder, grossMinor, analyst, s.clock.Now())
 	if err != nil {
 		return domain.Decision{}, err
 	}

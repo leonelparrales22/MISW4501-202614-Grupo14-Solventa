@@ -161,9 +161,9 @@ Todo lo que el analista necesita para decidir (pantalla O6).
 | `holder` | El asegurado según el núcleo. **La cuenta viaja enmascarada**: el número completo hace falta para pagar, no para evaluar, y nunca sale del servicio en una lectura |
 | `policy_unavailable` | `true` si el núcleo de pólizas no respondió. El resto del caso se muestra igual, pero **no se puede decidir sobre él** (O6 debe deshabilitar *Aprobar y pagar*) |
 
-**Deducible (criterio 2).** `deductible_basis_points` es el porcentaje en puntos básicos (500 = 5 %). El monto que se paga es
-el **aprobado bruto** menos ese porcentaje: con $ 4.350.000 aprobados y 5 %, se pagan $ 4.132.500. El PR 2b lo calcula y lo
-valida en el servicio; el portal solo lo muestra.
+**Deducible (criterio 2).** `deductible_basis_points` es el porcentaje en puntos básicos (500 = 5 %). La aseguradora paga
+el **costo bruto** menos ese porcentaje, que asume el asegurado: con un costo de $ 4.350.000 y 5 %, el monto aprobado es
+$ 4.132.500. El servicio lo calcula y lo valida (sección 4); el portal solo lo muestra.
 
 ### Errores
 
@@ -182,14 +182,24 @@ Una caída del núcleo de pólizas **no** es un `503`: responde `200` con `polic
 ## 4. `POST /v1/claims/{claim_id}/approval`
 
 ```json
-{ "approved_amount_minor": 435000000 }
+{ "gross_amount_minor": 435000000 }
 ```
 
-El monto **bruto** aprobado, en centavos. El servicio lee del núcleo la cobertura del incidente **en ese momento** y valida:
+El **costo bruto** que aprueba el analista (el costo de reparación, antes del deducible), en centavos. El **monto aprobado**
+que muestra O6 es el neto que paga la aseguradora, `payout_amount_minor` de la respuesta:
+
+| En O6 | Campo | Ejemplo |
+|---|---|---|
+| Costo de reparación (bruto) | `approval.gross_amount_minor` | $ 4.350.000 |
+| Deducible del 5 %, a cargo del asegurado | `approval.deductible_minor` | − $ 217.500 |
+| **Monto aprobado (neto a pagar por la aseguradora)** | `approval.payout_amount_minor` | **$ 4.132.500** |
+
+La web calcula y muestra el desglose antes de aprobar, pero envía el bruto: el deducible se calcula solo en el servidor, que
+responde el desglose para confirmar lo mostrado y paga únicamente el neto. El servicio lee del núcleo la cobertura del incidente **en ese momento** y valida:
 
 | Regla | Si no se cumple |
 |---|---|
-| `approved_amount_minor` entero ≥ 1 | `400 invalid_request` |
+| `gross_amount_minor` entero ≥ 1 | `400 invalid_request` |
 | No supera `insured_value_minor` de la cobertura | `422 amount_exceeds_insured_value` |
 | Después del deducible queda algo por pagar | `422 nothing_to_pay` |
 | La póliza cubre el incidente y el núcleo conoce al asegurado | `422 not_covered` |
@@ -205,7 +215,7 @@ El monto **bruto** aprobado, en centavos. El servicio lee del núcleo la cobertu
   "status": "approved", "outcome": "approved",
   "decided_by": "analista@solventa.example", "decided_at": "2026-09-16T16:40:00Z",
   "approval": {
-    "approved_amount_minor": 435000000, "insured_value_minor": 32000000000, "deductible_basis_points": 500,
+    "gross_amount_minor": 435000000, "insured_value_minor": 32000000000, "deductible_basis_points": 500,
     "deductible_minor": 21750000, "payout_amount_minor": 413250000, "currency": "COP"
   },
   "payout": {

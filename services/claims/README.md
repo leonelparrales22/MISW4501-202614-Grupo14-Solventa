@@ -161,7 +161,7 @@ indemnizar —y el pago sale solo— o lo rechaza con su motivo. Contrato:
 GET  /v1/claims/evaluations ─────────▶ casos en active o in_evaluation con su monto estimado y su prioridad           [CA-1]
 GET  /v1/claims/{id}/evaluation ─────▶ caso, soportes y evidencia firmados, triage, póliza y cobertura de hoy
                                        (core), asegurado con la cuenta enmascarada y la decisión                    [CA-1, CA-5]
-POST /v1/claims/{id}/approval ───────▶ monto ≤ valor asegurado, menos el deducible ──▶ claim_decision + approved     [CA-2]
+POST /v1/claims/{id}/approval ───────▶ costo bruto ≤ valor asegurado; paga bruto − deducible ──▶ approved          [CA-2]
         decision.Worker ─────────────▶ pasarela POST /payouts, llave indemnizacion-<id> ──▶ paid
                                        rechazo o 3 intentos sin respuesta ──▶ payment_exception                      [CA-4]
 POST /v1/claims/{id}/rejection ──────▶ motivo obligatorio ──▶ rejected; el worker envía el correo con el motivo      [CA-3]
@@ -176,6 +176,8 @@ POST /v1/claims/{id}/payout-retry ───▶ destino corregido o el mismo, mis
   `claim_decision`, una llave por caso que nunca cambia y resultados registrados solo mientras el reclamo sigue vigente. A
   diferencia de la prima, la ventana es de **3 intentos** (2 s y 4 s entre ellos), no de 24 h: el analista necesita la
   excepción en segundos para actuar (O6b).
+- **Bruto y neto:** el analista aprueba el costo bruto (`gross_amount_minor`); el deducible lo asume el asegurado y la
+  aseguradora paga el neto (`payout_amount_minor`), que es el "monto aprobado" de O6. El deducible se calcula solo aquí.
 - **El core de pólizas manda:** el valor asegurado, el deducible y la cuenta de pago se leen del core al decidir, no de la
   copia de la radicación. Si el core no responde, la decisión responde `503 policy_unavailable` y el detalle lo dice con
   `policy_unavailable`.

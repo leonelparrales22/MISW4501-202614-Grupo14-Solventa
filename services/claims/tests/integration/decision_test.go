@@ -270,7 +270,7 @@ func TestDecisionAcceptanceCriteria(t *testing.T) {
 
 	t.Run("6 only operations approves or rejects", func(t *testing.T) {
 		for _, token := range []string{"carolina", "advisor"} {
-			rec, _ := postJSON(t, svc, "/v1/claims/"+paid+"/approval", token, map[string]any{"approved_amount_minor": 1})
+			rec, _ := postJSON(t, svc, "/v1/claims/"+paid+"/approval", token, map[string]any{"gross_amount_minor": 1})
 			assert.Equal(t, http.StatusForbidden, rec.Code, token)
 			rec, _ = postJSON(t, svc, "/v1/claims/"+paid+"/rejection", token, map[string]any{"reason": "x"})
 			assert.Equal(t, http.StatusForbidden, rec.Code, token)
@@ -280,12 +280,12 @@ func TestDecisionAcceptanceCriteria(t *testing.T) {
 
 	t.Run("2 the approval is bounded by the insured value, discounts the deductible and is paid", func(t *testing.T) {
 		rec, body := postJSON(t, svc, "/v1/claims/"+paid+"/approval", "analista",
-			map[string]any{"approved_amount_minor": cents(320_000_000) + 1})
+			map[string]any{"gross_amount_minor": cents(320_000_000) + 1})
 		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 		assert.Equal(t, "amount_exceeds_insured_value", body["error"])
 
 		rec, body = postJSON(t, svc, "/v1/claims/"+paid+"/approval", "analista",
-			map[string]any{"approved_amount_minor": cents(4_350_000)})
+			map[string]any{"gross_amount_minor": cents(4_350_000)})
 		require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
 		approval := body["approval"].(map[string]any)
 		assert.EqualValues(t, cents(217_500), approval["deductible_minor"])
@@ -296,7 +296,7 @@ func TestDecisionAcceptanceCriteria(t *testing.T) {
 		require.NotNil(t, payout)
 		assert.EqualValues(t, cents(4_132_500), payout["amount_minor"])
 
-		rec, _ = postJSON(t, svc, "/v1/claims/"+paid+"/approval", "analista", map[string]any{"approved_amount_minor": 1})
+		rec, _ = postJSON(t, svc, "/v1/claims/"+paid+"/approval", "analista", map[string]any{"gross_amount_minor": 1})
 		assert.Equal(t, http.StatusConflict, rec.Code, "a decided claim is not decided again")
 	})
 
@@ -322,7 +322,7 @@ func TestDecisionAcceptanceCriteria(t *testing.T) {
 
 	t.Run("4 a failed payout keeps the approval as a payment exception that is retried once paid", func(t *testing.T) {
 		rec, _ := postJSON(t, svc, "/v1/claims/"+exception+"/approval", "analista",
-			map[string]any{"approved_amount_minor": cents(1_000_000)})
+			map[string]any{"gross_amount_minor": cents(1_000_000)})
 		require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
 		waitForStatus(t, svc, "andres", exception, "payment_exception")
 
@@ -363,7 +363,7 @@ func TestDecisionAcceptanceCriteria(t *testing.T) {
 		d := approved["decision"].(map[string]any)
 		assert.Equal(t, "analista@solventa.example", d["decided_by"])
 		assert.NotEmpty(t, d["decided_at"])
-		assert.EqualValues(t, cents(4_350_000), d["approval"].(map[string]any)["approved_amount_minor"])
+		assert.EqualValues(t, cents(4_350_000), d["approval"].(map[string]any)["gross_amount_minor"])
 		assert.Equal(t, "paid", d["payout"].(map[string]any)["status"])
 
 		_, refused := call(t, svc, http.MethodGet, "/v1/claims/"+rejected+"/evaluation", "analista", nil, nil)

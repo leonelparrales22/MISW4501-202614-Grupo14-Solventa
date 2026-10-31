@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS claim_decision (
     decided_at               TIMESTAMPTZ NOT NULL,
 
     -- The approval.
-    approved_amount_minor    BIGINT      CHECK (approved_amount_minor > 0),
+    gross_amount_minor       BIGINT      CHECK (gross_amount_minor > 0),
     insured_value_minor      BIGINT,
     deductible_basis_points  INTEGER     CHECK (deductible_basis_points BETWEEN 0 AND 10000),
     currency                 TEXT,
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS claim_decision (
     notice_last_error        TEXT,
 
     CONSTRAINT claim_decision_shape CHECK (
-        (outcome = 'approved' AND approved_amount_minor IS NOT NULL AND payout_key IS NOT NULL
+        (outcome = 'approved' AND gross_amount_minor IS NOT NULL AND payout_key IS NOT NULL
             AND payout_status IS NOT NULL AND rejection_reason IS NULL)
         OR (outcome = 'rejected' AND rejection_reason IS NOT NULL AND notice_to IS NOT NULL
             AND payout_key IS NULL))

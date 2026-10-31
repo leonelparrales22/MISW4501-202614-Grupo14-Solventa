@@ -25,7 +25,7 @@ var decididoEn = time.Date(2026, 9, 16, 16, 40, 0, 0, time.UTC)
 // aprobacionFallida es una aprobación cuyo pago rechazó la pasarela (O6b).
 var aprobacionFallida = domain.Decision{
 	ClaimID: claimID, FilingNumber: "SIN-2026-01655", Outcome: domain.OutcomeApproved, DecidedBy: "analista@solventa.example",
-	DecidedAt: decididoEn, ApprovedAmountMinor: 435_000_000, InsuredValueMinor: 32_000_000_000, DeductibleBasisPoints: 500,
+	DecidedAt: decididoEn, GrossAmountMinor: 435_000_000, InsuredValueMinor: 32_000_000_000, DeductibleBasisPoints: 500,
 	Currency: "COP",
 	Payout: &domain.Payout{
 		Key: domain.PayoutKey(claimID), BeneficiaryID: "sub-carolina", AmountMinor: 413_250_000, Currency: "COP",
@@ -82,7 +82,7 @@ func TestOnlyOperationsDecides(t *testing.T) {
 			want = http.StatusUnauthorized
 		}
 		for path, body := range map[string]string{
-			"/approval": `{"approved_amount_minor":100}`, "/rejection": `{"reason":"x"}`, "/payout-retry": `{}`,
+			"/approval": `{"gross_amount_minor":100}`, "/rejection": `{"reason":"x"}`, "/payout-retry": `{}`,
 		} {
 			code, _ := post(h, "/v1/claims/"+claimID+path, caller, body)
 			assert.Equal(t, want, code, "%s %s", caller, path)
@@ -98,7 +98,7 @@ func TestTheApprovalIsAcceptedWithTheAmountAndTheAnalyst(t *testing.T) {
 	d.Payout = &p
 	f := &fakeDecider{decision: d}
 
-	code, body := post(decisionRouter(f), "/v1/claims/"+claimID+"/approval", "operations", `{"approved_amount_minor":435000000}`)
+	code, body := post(decisionRouter(f), "/v1/claims/"+claimID+"/approval", "operations", `{"gross_amount_minor":435000000}`)
 
 	require.Equal(t, http.StatusAccepted, code, body)
 	assert.Equal(t, claimID, f.gotClaim)
@@ -147,10 +147,10 @@ func TestTheRetryCarriesTheCorrectedDestination(t *testing.T) {
 func TestTheRequestsAreValidatedBeforeTheService(t *testing.T) {
 	for name, tc := range map[string]struct{ path, body string }{
 		"no amount":        {"/approval", `{}`},
-		"zero amount":      {"/approval", `{"approved_amount_minor":0}`},
-		"decimal amount":   {"/approval", `{"approved_amount_minor":1.5}`},
-		"unknown field":    {"/approval", `{"approved_amount_minor":1,"x":1}`},
-		"two objects":      {"/approval", `{"approved_amount_minor":1}{}`},
+		"zero amount":      {"/approval", `{"gross_amount_minor":0}`},
+		"decimal amount":   {"/approval", `{"gross_amount_minor":1.5}`},
+		"unknown field":    {"/approval", `{"gross_amount_minor":1,"x":1}`},
+		"two objects":      {"/approval", `{"gross_amount_minor":1}{}`},
 		"no reason":        {"/rejection", `{}`},
 		"not json":         {"/rejection", `motivo`},
 		"short account":    {"/payout-retry", `{"destination":{"bank_code":"1007","account_type":"savings","account_number":"12"}}`},
@@ -162,7 +162,7 @@ func TestTheRequestsAreValidatedBeforeTheService(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, code, name)
 		assert.Zero(t, f.calls, name)
 	}
-	code, _ := post(decisionRouter(&fakeDecider{}), "/v1/claims/no-es-un-id/approval", "operations", `{"approved_amount_minor":1}`)
+	code, _ := post(decisionRouter(&fakeDecider{}), "/v1/claims/no-es-un-id/approval", "operations", `{"gross_amount_minor":1}`)
 	assert.Equal(t, http.StatusNotFound, code)
 }
 
@@ -185,7 +185,7 @@ func TestTheErrorsOfTheDecisionAreAnswered(t *testing.T) {
 		{errors.New("se cayó"), http.StatusServiceUnavailable, "claims_unavailable"},
 	} {
 		code, body := post(decisionRouter(&fakeDecider{err: tc.err}), "/v1/claims/"+claimID+"/approval", "operations",
-			`{"approved_amount_minor":1}`)
+			`{"gross_amount_minor":1}`)
 		assert.Equal(t, tc.want, code, tc.code)
 		assert.Contains(t, body, `"error":"`+tc.code+`"`)
 	}

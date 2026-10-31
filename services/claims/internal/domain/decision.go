@@ -53,8 +53,8 @@ const basisPoints = 10_000
 
 // The reasons a decision is refused. They are the analyst's to correct.
 var (
-	ErrAmountOutOfRange          = errors.New("claims: the approved amount must be positive")
-	ErrAmountExceedsInsuredValue = errors.New("claims: the approved amount exceeds the insured value of the coverage")
+	ErrAmountOutOfRange          = errors.New("claims: the gross amount must be positive")
+	ErrAmountExceedsInsuredValue = errors.New("claims: the gross amount exceeds the insured value of the coverage")
 	ErrNothingToPay              = errors.New("claims: after the deductible there is nothing to pay")
 	ErrNoPayoutAccount           = errors.New("claims: the insured has no account to pay the indemnity to")
 	ErrReasonRequired            = errors.New("claims: the reason of the rejection is required")
@@ -62,10 +62,10 @@ var (
 	ErrNoContact                 = errors.New("claims: the insured has no e-mail to notify the rejection to")
 )
 
-// DeductibleOf is the part of the approved amount that is not paid, rounded
+// DeductibleOf is the part of the gross amount that is not paid, rounded
 // to the nearest cent: 5 % of $ 4.350.000 is $ 217.500.
-func DeductibleOf(approvedMinor int64, deductibleBasisPoints int) int64 {
-	return (approvedMinor*int64(deductibleBasisPoints) + basisPoints/2) / basisPoints
+func DeductibleOf(grossMinor int64, deductibleBasisPoints int) int64 {
+	return (grossMinor*int64(deductibleBasisPoints) + basisPoints/2) / basisPoints
 }
 
 // PayoutFailure tells why a payout became a payment exception.
@@ -137,10 +137,12 @@ type Decision struct {
 	DecidedBy    string
 	DecidedAt    time.Time
 
-	// The approval: the amount the analyst approved, the terms of the
-	// coverage it was checked against and the payout, which is the approved
-	// amount less the deductible.
-	ApprovedAmountMinor   int64
+	// The approval: the gross amount the analyst approved (the cost of the
+	// repair, before the deductible), the terms of the coverage it was
+	// checked against and the payout, which is the gross amount less the
+	// deductible: what the insurer pays, the "approved amount" of screen O6.
+	// The deductible is borne by the insured.
+	GrossAmountMinor      int64
 	InsuredValueMinor     int64
 	DeductibleBasisPoints int
 	Currency              string
@@ -151,9 +153,9 @@ type Decision struct {
 	Notice *Notice
 }
 
-// DeductibleMinor is the deductible discounted from the approved amount.
+// DeductibleMinor is the deductible discounted from the gross amount.
 func (d Decision) DeductibleMinor() int64 {
-	return DeductibleOf(d.ApprovedAmountMinor, d.DeductibleBasisPoints)
+	return DeductibleOf(d.GrossAmountMinor, d.DeductibleBasisPoints)
 }
 
 // AttemptState is the payout as the shared runner sees it (pkg/idempotency).
@@ -176,18 +178,19 @@ func PayoutKey(claimID string) string { return "indemnizacion-" + claimID }
 // NoticeKey is the idempotency key of the notice of a rejection.
 func NoticeKey(claimID string) string { return "rechazo-" + claimID }
 
-// Approve builds the approval of a claim in evaluation for approvedMinor,
+// Approve builds the approval of a claim in evaluation for grossMinor, the
+// cost the analyst approves before the deductible,
 // checked against the coverage of its incident (criterion 2): the amount is
 // positive, it does not exceed the insured value, and what is left after the
 // deductible is paid to the account of the insured, due at once.
-func Approve(c ClaimRecord, cov Coverage, holder Holder, approvedMinor int64, by string, at time.Time) (Decision, error) {
+func Approve(c ClaimRecord, cov Coverage, holder Holder, grossMinor int64, by string, at time.Time) (Decision, error) {
 	switch {
-	case approvedMinor <= 0:
+	case grossMinor <= 0:
 		return Decision{}, ErrAmountOutOfRange
-	case approvedMinor > cov.InsuredValueMinor:
+	case grossMinor > cov.InsuredValueMinor:
 		return Decision{}, ErrAmountExceedsInsuredValue
 	}
-	payout := approvedMinor - DeductibleOf(approvedMinor, cov.DeductibleBasisPoints)
+	payout := grossMinor - DeductibleOf(grossMinor, cov.DeductibleBasisPoints)
 	if payout <= 0 {
 		return Decision{}, ErrNothingToPay
 	}
@@ -198,7 +201,7 @@ func Approve(c ClaimRecord, cov Coverage, holder Holder, approvedMinor int64, by
 	at = at.UTC()
 	return Decision{
 		ClaimID: c.ID, FilingNumber: c.FilingNumber, Outcome: OutcomeApproved, DecidedBy: by, DecidedAt: at,
-		ApprovedAmountMinor: approvedMinor, InsuredValueMinor: cov.InsuredValueMinor,
+		GrossAmountMinor: grossMinor, InsuredValueMinor: cov.InsuredValueMinor,
 		DeductibleBasisPoints: cov.DeductibleBasisPoints, Currency: cov.Currency,
 		Payout: &Payout{
 			Key: PayoutKey(c.ID), BeneficiaryID: c.Subject, AmountMinor: payout, Currency: cov.Currency,

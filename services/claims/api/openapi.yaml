@@ -822,7 +822,8 @@ paths:
     post:
       summary: Approve a claim and pay its indemnity (HU-W2.2-03)
       description: >-
-        The analyst approves a claim in evaluation for approved_amount_minor,
+        The analyst approves a claim in evaluation for gross_amount_minor, the
+        cost of the repair before the deductible,
         which cannot exceed the insured value of the coverage of its incident as
         the policy core describes it now. The indemnity is that amount less the
         deductible, and it is paid at once to the account the policy core has for
@@ -2128,7 +2129,7 @@ components:
           type: integer
           minimum: 0
           maximum: 10000
-          description: Share of the approved amount that is not paid; 500 is 5 percent.
+          description: Share of the gross amount that is not paid; 500 is 5 percent.
     CurrentPolicy:
       type: object
       required: [policy_id, line, product, insured_object, status, valid_from, valid_to, coverages]
@@ -2241,13 +2242,16 @@ components:
     ApprovalRequest:
       type: object
       additionalProperties: false
-      required: [approved_amount_minor]
+      required: [gross_amount_minor]
       properties:
-        approved_amount_minor:
+        gross_amount_minor:
           type: integer
           format: int64
           minimum: 1
-          description: The gross amount approved, in cents of the currency of the coverage, before the deductible.
+          description: >-
+            The cost the analyst approves, before the deductible, in cents of
+            the currency of the coverage. What the insurer pays (the approved
+            amount of screen O6) is payout_amount_minor of the answer.
     RejectionRequest:
       type: object
       additionalProperties: false
@@ -2283,15 +2287,15 @@ components:
           $ref: "#/components/schemas/PayoutDestination"
     DecisionApproval:
       type: object
-      required: [approved_amount_minor, insured_value_minor, deductible_basis_points, deductible_minor, payout_amount_minor, currency]
+      required: [gross_amount_minor, insured_value_minor, deductible_basis_points, deductible_minor, payout_amount_minor, currency]
       properties:
-        approved_amount_minor:
+        gross_amount_minor:
           type: integer
           format: int64
         insured_value_minor:
           type: integer
           format: int64
-          description: The insured value the approved amount was checked against.
+          description: The insured value the gross amount was checked against.
         deductible_basis_points:
           type: integer
         deductible_minor:
@@ -2300,7 +2304,10 @@ components:
         payout_amount_minor:
           type: integer
           format: int64
-          description: What reaches the insured, the approved amount less the deductible.
+          description: >-
+            What the insurer pays and reaches the insured: the gross amount
+            less the deductible, which the insured bears. It is the approved
+            amount screen O6 shows.
         currency:
           type: string
     Payout:

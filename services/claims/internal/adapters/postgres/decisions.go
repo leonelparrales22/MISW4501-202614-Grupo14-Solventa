@@ -34,7 +34,7 @@ func DecisionStoreOf(records *ClaimRecordStore) *DecisionStore { return &Decisio
 // decisionColumns are read from a claim_decision aliased d joined to its
 // claim aliased c.
 const decisionColumns = `d.claim_id, c.filing_number, d.outcome, d.decided_by, d.decided_at,
-	d.approved_amount_minor, d.insured_value_minor, d.deductible_basis_points, d.currency,
+	d.gross_amount_minor, d.insured_value_minor, d.deductible_basis_points, d.currency,
 	d.payout_key, d.beneficiary_id, d.payout_amount_minor, d.bank_code, d.bank_name, d.account_type, d.account_number,
 	d.payout_status, d.payout_attempts, d.next_attempt_at, d.claimed_until, d.last_attempt_at, d.last_failure_at,
 	d.payout_failure, d.last_error, d.gateway_code, d.payout_reference, d.paid_at,
@@ -65,7 +65,7 @@ func scanDecision(row scanner) (domain.Decision, error) {
 		return domain.Decision{}, err
 	}
 	d.Outcome, d.DecidedAt = domain.Outcome(outcome), d.DecidedAt.UTC()
-	d.ApprovedAmountMinor, d.InsuredValueMinor = approved.Int64, insured.Int64
+	d.GrossAmountMinor, d.InsuredValueMinor = approved.Int64, insured.Int64
 	d.DeductibleBasisPoints, d.Currency, d.Reason = int(deductible.Int64), currency.String, reason.String
 	if key.Valid {
 		d.Payout = &domain.Payout{
@@ -137,7 +137,7 @@ func (s *DecisionStore) Decide(ctx context.Context, d domain.Decision) (domain.D
 		next, noticeNext                           sql.NullTime
 	)
 	if p := d.Payout; p != nil {
-		approved, insured = sql.NullInt64{Int64: d.ApprovedAmountMinor, Valid: true}, sql.NullInt64{Int64: d.InsuredValueMinor, Valid: true}
+		approved, insured = sql.NullInt64{Int64: d.GrossAmountMinor, Valid: true}, sql.NullInt64{Int64: d.InsuredValueMinor, Valid: true}
 		deductible = sql.NullInt64{Int64: int64(d.DeductibleBasisPoints), Valid: true}
 		currency, key, beneficiary = optional(d.Currency), optional(p.Key), optional(p.BeneficiaryID)
 		payoutAmount = sql.NullInt64{Int64: p.AmountMinor, Valid: true}
@@ -153,7 +153,7 @@ func (s *DecisionStore) Decide(ctx context.Context, d domain.Decision) (domain.D
 			UPDATE claim SET status = $2 WHERE id = $1 AND status = ANY($3) RETURNING id
 		)
 		INSERT INTO claim_decision (claim_id, outcome, decided_by, decided_at,
-			approved_amount_minor, insured_value_minor, deductible_basis_points, currency,
+			gross_amount_minor, insured_value_minor, deductible_basis_points, currency,
 			payout_key, beneficiary_id, payout_amount_minor, bank_code, bank_name, account_type, account_number,
 			payout_status, next_attempt_at, rejection_reason, notice_to, notice_next_attempt_at)
 		SELECT id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22 FROM target

@@ -185,7 +185,7 @@ func TestARejectedPayoutIsAPaymentExceptionAndTheRetryPaysTheCorrectedAccount(t 
 	require.NoError(t, err)
 	assert.Equal(t, domain.PayoutRejected, d.Payout.Failure)
 	assert.Equal(t, "invalid_destination_account", d.Payout.GatewayCode)
-	assert.Equal(t, 435_000_000, int(d.ApprovedAmountMinor), "the approval is kept")
+	assert.Equal(t, 435_000_000, int(d.GrossAmountMinor), "the approval is kept")
 	require.Len(t, e.gateway.calls, 1, "a rejection is final: not retried automatically")
 
 	corregida := cuenta
