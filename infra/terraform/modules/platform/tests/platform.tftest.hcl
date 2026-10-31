@@ -798,8 +798,44 @@ run "audit_is_discoverable_by_origination" {
 
   assert {
     condition     = !contains(keys(var.human_routes), "audit")
-    error_message = "D-23 (c): the gateway still does not publish the evidence lookup of audit (that is HU-W4.2-02), although audit now gets AUTH_* for HU-M1.3-01."
+    error_message = "D-23 (c): audit is never a human route as a whole; the evidence lookup and the revocation of the compliance portal (HU-W4.2-02) are published only through human_subroutes."
   }
+}
+
+# --- HU-W4.2-02: the compliance portal reaches the evidence and the revocation of audit ---
+
+run "the_compliance_portal_reaches_only_the_consent_paths_of_audit" {
+  command = plan
+
+  assert {
+    condition = (
+      length(var.human_subroutes) == 1 &&
+      var.human_subroutes["audit/consents"].methods == tolist(["GET", "POST"]) &&
+      contains(keys(var.partner_routes), "audit/consents")
+    )
+    error_message = "GET /v1/audit/consents/{consent_id}, GET .../revocation and POST .../revocations and .../revocation-retries are published under the partner route audit/consents, with Cognito."
+  }
+
+  assert {
+    condition = (
+      length(module.apigateway.partner_paths) == 3 &&
+      !contains(keys(var.human_routes), "audit") &&
+      !contains(keys(var.public_routes), "audit") &&
+      !contains(module.apigateway.partner_paths, "/v1/audit/consent-verifications") &&
+      !contains(module.apigateway.partner_paths, "/v1/audit/decisions")
+    )
+    error_message = "The consent verification and the decision record of audit (no token) are in no route of the gateway."
+  }
+}
+
+run "the_internal_routes_of_audit_cannot_become_human_subroutes" {
+  command = plan
+
+  variables {
+    human_subroutes = { "audit/decisions" = { methods = ["POST"] } }
+  }
+
+  expect_failures = [var.human_subroutes]
 }
 
 run "only_origination_creates_accounts_in_the_user_pool" {
