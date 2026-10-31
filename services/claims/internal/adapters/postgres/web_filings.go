@@ -305,6 +305,50 @@ func (s *ClaimRecordStore) ListByOwner(ctx context.Context, subject string, f po
 	return out, nil
 }
 
+var _ ports.ClaimQueue = (*ClaimRecordStore)(nil)
+
+// ListByStatus returns the claims of every insured in one of the statuses,
+// oldest filed first, without supports or evidence (HU-W2.2-03). The index
+// claim_by_status (status, filed_at, id) serves it.
+func (s *ClaimRecordStore) ListByStatus(ctx context.Context, statuses []domain.Status, after *ports.ClaimCursor,
+	limit int) ([]domain.ClaimRecord, error) {
+	if len(statuses) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	names := make([]string, 0, len(statuses))
+	for _, st := range statuses {
+		names = append(names, string(st))
+	}
+	var afterAt sql.NullTime
+	var afterID string
+	if after != nil {
+		afterAt, afterID = sql.NullTime{Time: after.FiledAt, Valid: true}, after.ID
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM claim
+		WHERE status = ANY($1)
+		  AND ($2::timestamptz IS NULL OR (filed_at, id) > ($2, $3))
+		ORDER BY filed_at, id
+		LIMIT $4`,
+		names, afterAt, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list the claims by status: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.ClaimRecord
+	for rows.Next() {
+		c, _, err := scanRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list the claims by status: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the claims by status: %w", err)
+	}
+	return out, nil
+}
+
 // byFilingKey returns the claim with its supports and the fingerprint of what
 // was filed with the key.
 func (s *ClaimRecordStore) byFilingKey(ctx context.Context, subject, key string) (domain.ClaimRecord, string, error) {

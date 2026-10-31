@@ -43,15 +43,20 @@ func (d *Directory) HolderPolicies(ctx context.Context, subject string) ([]domai
 			slog.WarnContext(ctx, "the policy core returned an invalid policy; it is left out", "policy_id", p.PolicyID)
 			continue
 		}
-		covered := make([]domain.IncidentType, 0, len(p.CoveredIncidents))
-		for _, t := range p.CoveredIncidents {
-			covered = append(covered, domain.IncidentType(t))
-		}
-		out = append(out, domain.Policy{
-			ID: p.PolicyID, Line: domain.PolicyLine(p.Line), Product: p.Product, InsuredObject: p.InsuredObject,
-			Status: domain.PolicyStatus(p.Status), ValidFrom: p.ValidFrom.UTC(), ValidTo: p.ValidTo.UTC(),
-			CoveredIncidents: covered,
-		})
+		out = append(out, policyOf(p))
 	}
 	return out, nil
+}
+
+// policyOf maps a policy of the core to the domain.
+func policyOf(p corepolicies.Policy) domain.Policy {
+	covered := make([]domain.IncidentType, 0, len(p.CoveredIncidents))
+	for _, t := range p.CoveredIncidents {
+		covered = append(covered, domain.IncidentType(t))
+	}
+	return domain.Policy{
+		ID: p.PolicyID, Line: domain.PolicyLine(p.Line), Product: p.Product, InsuredObject: p.InsuredObject,
+		Status: domain.PolicyStatus(p.Status), ValidFrom: p.ValidFrom.UTC(), ValidTo: p.ValidTo.UTC(),
+		CoveredIncidents: covered,
+	}
 }

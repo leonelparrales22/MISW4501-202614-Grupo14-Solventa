@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.6.0
+  version: 0.7.0
   description: >-
     0.6.0 (HU-W2.2-01): the automatic priority of the claim (triage). Every
     claim that enters evaluation gets a level (Triage 1, 2 or 3) from the
@@ -637,6 +637,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/evaluations:
+    get:
+      summary: Claims in evaluation (HU-W2.2-03)
+      description: >-
+        The claims of every insured in the statuses the triage evaluates
+        (active and in_evaluation), oldest filed first, each with its estimated
+        amount and its priority, so operations opens one to evaluate it. The
+        order by priority is HU-W2.2-02. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: page_size
+          in: query
+          required: false
+          description: Claims per page, 1 to 50; 20 when absent.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+        - name: page_token
+          in: query
+          required: false
+          description: The next_page_token of the previous page; opaque.
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        "200":
+          description: One page of the claims in evaluation
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationQueue"
+        "400":
+          description: invalid_request - page_size out of 1 to 50 or a page token that is not valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/claims/{claim_id}:
     get:
       summary: Detail of one of the insured's claims (HU-W2.1-01)
@@ -667,6 +729,57 @@ paths:
                 $ref: "#/components/schemas/Error"
         "403":
           description: forbidden - not an insured, or the claim belongs to another insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/evaluation:
+    get:
+      summary: Everything operations decides a claim with (HU-W2.2-03)
+      description: >-
+        The claim with its supports and evidence (signed reads of 10 minutes),
+        its priority, the policy as the policy core describes it today with the
+        insured value and the deductible of each coverage, the coverage of the
+        incident of the claim and the insured with the payout account masked.
+        When the policy core does not answer the claim is still served with
+        policy_unavailable true and policy, coverage and holder null. Only
+        operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The claim and what it is evaluated with
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimEvaluation"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
           content:
             application/json:
               schema:
@@ -1685,6 +1798,152 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ClaimTriageSummary"
+    EvaluationQueue:
+      type: object
+      required: [items, next_page_token]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationQueueItem"
+        next_page_token:
+          type: string
+          nullable: true
+    EvaluationQueueItem:
+      allOf:
+        - $ref: "#/components/schemas/ClaimSummary"
+        - type: object
+          required: [estimated_amount_minor, triage]
+          properties:
+            estimated_amount_minor:
+              type: integer
+              format: int64
+              nullable: true
+              description: In cents of COP; null when the insured did not declare it.
+            triage:
+              $ref: "#/components/schemas/ClaimTriageSummary"
+    Coverage:
+      type: object
+      required: [incident, insured_value_minor, currency, deductible_basis_points]
+      properties:
+        incident:
+          type: string
+        insured_value_minor:
+          type: integer
+          format: int64
+          description: The most an indemnity can be, in cents of the currency.
+        currency:
+          type: string
+          example: COP
+        deductible_basis_points:
+          type: integer
+          minimum: 0
+          maximum: 10000
+          description: Share of the approved amount that is not paid; 500 is 5 percent.
+    CurrentPolicy:
+      type: object
+      required: [policy_id, line, product, insured_object, status, valid_from, valid_to, coverages]
+      properties:
+        policy_id:
+          type: string
+        line:
+          type: string
+        product:
+          type: string
+        insured_object:
+          type: string
+        status:
+          type: string
+        valid_from:
+          type: string
+          format: date-time
+        valid_to:
+          type: string
+          format: date-time
+        coverages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Coverage"
+    PayoutAccountMasked:
+      type: object
+      required: [bank_code, bank_name, account_type, masked_number]
+      properties:
+        bank_code:
+          type: string
+        bank_name:
+          type: string
+        account_type:
+          type: string
+        masked_number:
+          type: string
+          description: Only the last four digits; the full number never leaves the service in a read.
+    Holder:
+      type: object
+      required: [full_name, document_type, document_id, email, phone, payout_account]
+      properties:
+        full_name:
+          type: string
+        document_type:
+          type: string
+        document_id:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        payout_account:
+          $ref: "#/components/schemas/PayoutAccountMasked"
+    SupportFileLink:
+      type: object
+      required: [support_id, requirement_code, file_name, content_type, byte_size, sha256, download_url, download_expires_at]
+      properties:
+        support_id:
+          type: string
+        requirement_code:
+          type: string
+        file_name:
+          type: string
+        content_type:
+          type: string
+        byte_size:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+        download_url:
+          type: string
+          nullable: true
+          description: Signed read of 10 minutes; null when it could not be signed.
+        download_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    ClaimEvaluation:
+      type: object
+      required: [claim, support_files, triage, policy, coverage, holder, policy_unavailable]
+      properties:
+        claim:
+          $ref: "#/components/schemas/ClaimDetail"
+        support_files:
+          type: array
+          items:
+            $ref: "#/components/schemas/SupportFileLink"
+        triage:
+          $ref: "#/components/schemas/ClaimTriage"
+        policy:
+          allOf:
+            - $ref: "#/components/schemas/CurrentPolicy"
+          nullable: true
+        coverage:
+          allOf:
+            - $ref: "#/components/schemas/Coverage"
+          nullable: true
+        holder:
+          allOf:
+            - $ref: "#/components/schemas/Holder"
+          nullable: true
+        policy_unavailable:
+          type: boolean
     TriagePolicy:
       type: object
       required: [version, currency, amount_thresholds, severity, targets]

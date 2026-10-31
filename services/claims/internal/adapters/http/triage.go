@@ -198,14 +198,7 @@ func triageBatch(svc TriageReader) http.HandlerFunc {
 		}
 		out := triageListBody{Items: make([]triageSummaryBody, 0, len(summaries))}
 		for _, s := range summaries {
-			body := triageSummaryBody{ClaimID: s.ClaimID, State: string(s.State)}
-			if c := s.Current; c != nil {
-				a := c.Assessment
-				level, severity, band, target, at := int(a.Level), string(a.Severity), string(a.AmountBand),
-					targetBody(a.Target), c.AssessedAt.UTC()
-				body.Level, body.Severity, body.AmountBand, body.Target, body.AssessedAt = &level, &severity, &band, &target, &at
-			}
-			out.Items = append(out.Items, body)
+			out.Items = append(out.Items, summaryOfTriage(s.ClaimID, s.State, s.Current))
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
