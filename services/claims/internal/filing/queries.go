@@ -142,12 +142,10 @@ func (s *QueryService) Receipt(ctx context.Context, id string) (domain.ClaimReco
 
 func (q ClaimQuery) parse() (ports.ClaimFilter, int, *ports.ClaimCursor, error) {
 	var f ports.ClaimFilter
-	switch domain.Status(q.Status) {
-	case "", domain.StatusActive:
-		f.Status = domain.Status(q.Status)
-	default:
+	if q.Status != "" && !domain.Known(domain.Status(q.Status)) {
 		return f, 0, nil, fmt.Errorf("%w: status", ErrInvalidQuery)
 	}
+	f.Status = domain.Status(q.Status)
 	f.PolicyID = q.PolicyID
 	if q.From != "" {
 		day, err := time.ParseInLocation(time.DateOnly, q.From, domain.ColombiaTime)

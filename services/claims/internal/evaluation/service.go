@@ -51,6 +51,22 @@ type Service struct {
 	evidence EvidenceSigner
 	terms    ports.PolicyTermsReader
 	objects  ports.ObjectStore
+	// decisions is nil until WithDecisions: then the detail carries no
+	// decision.
+	decisions DecisionReader
+}
+
+// DecisionReader is the decision of a claim (HU-W2.2-03), or
+// ports.ErrDecisionNotFound.
+type DecisionReader interface {
+	Decision(ctx context.Context, claimID string) (domain.Decision, error)
+}
+
+// WithDecisions makes the detail carry the decision of the claim, when it has
+// one.
+func (s *Service) WithDecisions(decisions DecisionReader) *Service {
+	s.decisions = decisions
+	return s
 }
 
 // NewService builds the service. terms and objects may be nil: without the
@@ -80,6 +96,18 @@ type QueuePage struct {
 // it is filed (assumption S5 of HU-W2.2-01). The order by priority is
 // HU-W2.2-02; this list is what the evaluation needs to open a claim.
 func (s *Service) Queue(ctx context.Context, pageSize int, pageToken string) (QueuePage, error) {
+	return s.page(ctx, domain.TriageableStatuses(), pageSize, pageToken)
+}
+
+// Exceptions returns the payment exceptions, oldest filed first: the approved
+// claims whose payout failed and wait for the analyst to retry it (screen
+// O6b), with the priority they had when they were decided.
+func (s *Service) Exceptions(ctx context.Context, pageSize int, pageToken string) (QueuePage, error) {
+	return s.page(ctx, []domain.Status{domain.StatusPaymentException}, pageSize, pageToken)
+}
+
+// page returns one page of the claims in the statuses with their priority.
+func (s *Service) page(ctx context.Context, statuses []domain.Status, pageSize int, pageToken string) (QueuePage, error) {
 	switch {
 	case pageSize == 0:
 		pageSize = DefaultPageSize
@@ -91,9 +119,9 @@ func (s *Service) Queue(ctx context.Context, pageSize int, pageToken string) (Qu
 		return QueuePage{}, err
 	}
 	// One more than the page tells whether there is a next page.
-	claims, err := s.queue.ListByStatus(ctx, domain.TriageableStatuses(), after, pageSize+1)
+	claims, err := s.queue.ListByStatus(ctx, statuses, after, pageSize+1)
 	if err != nil {
-		return QueuePage{}, fmt.Errorf("list the claims in evaluation: %w", err)
+		return QueuePage{}, fmt.Errorf("list the claims in %v: %w", statuses, err)
 	}
 	var page QueuePage
 	if len(claims) > pageSize {
@@ -110,7 +138,7 @@ func (s *Service) Queue(ctx context.Context, pageSize int, pageToken string) (Qu
 	}
 	summaries, err := s.triage.Summaries(ctx, ids)
 	if err != nil {
-		return QueuePage{}, fmt.Errorf("read the priority of the claims in evaluation: %w", err)
+		return QueuePage{}, fmt.Errorf("read the priority of the claims: %w", err)
 	}
 	byID := make(map[string]triage.Summary, len(summaries))
 	for _, sum := range summaries {
@@ -148,6 +176,9 @@ type Evaluation struct {
 	// PolicyUnavailable is true when the policy core did not answer: the rest
 	// of the claim is still worth reading, but nothing can be decided on it.
 	PolicyUnavailable bool
+	// Decision is what operations decided, nil while the claim is in
+	// evaluation.
+	Decision *domain.Decision
 }
 
 // Detail returns the claim with everything around it, or ports.ErrClaimNotFound.
@@ -163,6 +194,16 @@ func (s *Service) Detail(ctx context.Context, claimID string) (Evaluation, error
 	out := Evaluation{Claim: c, Triage: view, Supports: s.supportLinks(ctx, c)}
 	if s.evidence != nil {
 		out.Evidence = s.evidence.EvidenceLinks(ctx, c)
+	}
+	if s.decisions != nil {
+		d, err := s.decisions.Decision(ctx, claimID)
+		switch {
+		case errors.Is(err, ports.ErrDecisionNotFound):
+		case err != nil:
+			return Evaluation{}, fmt.Errorf("read the decision of the claim: %w", err)
+		default:
+			out.Decision = &d
+		}
 	}
 
 	if s.terms == nil {

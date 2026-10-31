@@ -499,6 +499,11 @@ locals {
       # options, supports and web filings). Without it claims logs that those
       # routes are not mounted and answers 404 to the portal.
       POLICY_CORE_URL = "http://policy-core.${local.namespace}:${local.stubs["policy-core"]}"
+      # HU-W2.2-03: setting the gateway is what mounts the decision of a
+      # claim, whose approval pays the indemnity; the e-mail provider tells
+      # the insured a rejection and its reason.
+      PAYMENT_GATEWAY_URL = "http://payment-gateway.${local.namespace}:${local.stubs["payment-gateway"]}"
+      EMAIL_URL           = "http://email.${local.namespace}:${local.stubs.email}"
     }
   }
 

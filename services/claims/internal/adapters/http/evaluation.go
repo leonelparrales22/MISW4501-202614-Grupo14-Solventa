@@ -19,18 +19,21 @@ import (
 // EvaluationReader is what the routes of the evaluation read (HU-W2.2-03).
 type EvaluationReader interface {
 	Queue(ctx context.Context, pageSize int, pageToken string) (evaluation.QueuePage, error)
+	Exceptions(ctx context.Context, pageSize int, pageToken string) (evaluation.QueuePage, error)
 	Detail(ctx context.Context, claimID string) (evaluation.Evaluation, error)
 }
 
 // WithEvaluation mounts the reads of the evaluation of a claim (HU-W2.2-03):
-// the claims in evaluation and the detail of one, for operations only. They
+// the claims in evaluation, the payment exceptions and the detail of one, for
+// operations only. They
 // hang from /v1/claims, so the API Gateway already routes them through the
 // Cognito authorizer of the claims routes.
 func WithEvaluation(svc EvaluationReader, verifier security.Verifier) Option {
 	return func(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(noStore, security.Authenticate(verifier), security.RequireRole(security.RoleOperations))
-			r.Get("/v1/claims/evaluations", evaluationQueue(svc))
+			r.Get("/v1/claims/evaluations", evaluationQueue(svc.Queue))
+			r.Get("/v1/claims/payment-exceptions", evaluationQueue(svc.Exceptions))
 			r.Get("/v1/claims/{claim_id}/evaluation", evaluationDetail(svc))
 		})
 	}
@@ -102,9 +105,13 @@ type evaluationBody struct {
 	Coverage          *coverageBody      `json:"coverage"`
 	Holder            *holderBody        `json:"holder"`
 	PolicyUnavailable bool               `json:"policy_unavailable"`
+	Decision          *decisionBody      `json:"decision"`
 }
 
-func evaluationQueue(svc EvaluationReader) http.HandlerFunc {
+// queueReader reads one page of a list of claims for operations.
+type queueReader func(ctx context.Context, pageSize int, pageToken string) (evaluation.QueuePage, error)
+
+func evaluationQueue(read queueReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		query := req.URL.Query()
 		size := 0
@@ -121,13 +128,13 @@ func evaluationQueue(svc EvaluationReader) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_request", "the page token is not valid")
 			return
 		}
-		page, err := svc.Queue(req.Context(), size, token)
+		page, err := read(req.Context(), size, token)
 		switch {
 		case errors.Is(err, evaluation.ErrInvalidQuery):
 			writeError(w, http.StatusBadRequest, "invalid_request", "page_size must be between 1 and 50 and the page token valid")
 			return
 		case err != nil:
-			slog.ErrorContext(req.Context(), "could not list the claims in evaluation", "error", err)
+			slog.ErrorContext(req.Context(), "could not list the claims for operations", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "claims_unavailable", "the claims could not be read; retry")
 			return
 		}
@@ -206,6 +213,10 @@ func evaluationBodyOf(e evaluation.Evaluation) evaluationBody {
 	if c := e.Coverage; c != nil {
 		body := coverageBodyOf(*c)
 		out.Coverage = &body
+	}
+	if d := e.Decision; d != nil {
+		body := decisionBodyOf(*d)
+		out.Decision = &body
 	}
 	if h := e.Holder; h != nil {
 		a := h.PayoutAccount

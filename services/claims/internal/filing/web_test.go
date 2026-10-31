@@ -784,3 +784,13 @@ func TestThePolicyNotEligibleErrorNamesItsReason(t *testing.T) {
 	err := &filing.PolicyNotEligibleError{Reason: filing.ReasonPolicyNotActive}
 	assert.True(t, strings.HasSuffix(err.Error(), "policy_not_active"))
 }
+
+// HU-W2.2-03: el asegurado filtra sus siniestros también por los estados de
+// la decisión (Pagado, Rechazado).
+func TestTheInsuredFiltersByTheStatusesOfTheDecision(t *testing.T) {
+	q := filing.NewQueryService(memory.NewCaseStore(), &receipts{})
+	for _, st := range []string{"in_evaluation", "approved", "paid", "rejected", "payment_exception"} {
+		_, err := q.List(context.Background(), carolina, filing.ClaimQuery{Status: st})
+		assert.NoError(t, err, st)
+	}
+}

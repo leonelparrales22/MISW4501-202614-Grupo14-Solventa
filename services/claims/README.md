@@ -151,6 +151,40 @@ GET /v1/claims/triage-policy ────▶ severidad por tipo, umbrales y obje
   `ports.TriageStore.Current` dan el nivel vigente sin conocer el historial. El orden de la cola por prioridad es HU-W2.2-02.
 - **No publica ni consume eventos.**
 
+## Evaluación, aprobación y pago (HU-W2.2-03)
+
+El analista de operaciones abre un caso en evaluación con todo lo que necesita para decidir, lo aprueba con el monto a
+indemnizar —y el pago sale solo— o lo rechaza con su motivo. Contrato:
+[`docs/contratos/HU-W2.2-03-api.md`](../../docs/contratos/HU-W2.2-03-api.md).
+
+```
+GET  /v1/claims/evaluations ─────────▶ casos en active o in_evaluation con su monto estimado y su prioridad           [CA-1]
+GET  /v1/claims/{id}/evaluation ─────▶ caso, soportes y evidencia firmados, triage, póliza y cobertura de hoy
+                                       (core), asegurado con la cuenta enmascarada y la decisión                    [CA-1, CA-5]
+POST /v1/claims/{id}/approval ───────▶ costo bruto ≤ valor asegurado; paga bruto − deducible ──▶ approved          [CA-2]
+        decision.Worker ─────────────▶ pasarela POST /payouts, llave indemnizacion-<id> ──▶ paid
+                                       rechazo o 3 intentos sin respuesta ──▶ payment_exception                      [CA-4]
+POST /v1/claims/{id}/rejection ──────▶ motivo obligatorio ──▶ rejected; el worker envía el correo con el motivo      [CA-3]
+GET  /v1/claims/payment-exceptions ──▶ los casos en payment_exception (O6b)
+POST /v1/claims/{id}/payout-retry ───▶ destino corregido o el mismo, misma llave ──▶ approved y otra vez al worker    [CA-4]
+```
+
+- **Solo `operations`** decide y lee (HA-S01): asegurado y asesor reciben `403` [CA-6]. Cada decisión guarda quién la tomó
+  (el correo del analista), cuándo, el monto o el motivo [CA-5]; el asegurado ve el estado nuevo en su listado y puede
+  filtrar por él.
+- **Un desembolso por aprobación:** el pago usa el mecanismo de HA-D02 (`pkg/idempotency`): reclamo atómico en
+  `claim_decision`, una llave por caso que nunca cambia y resultados registrados solo mientras el reclamo sigue vigente. A
+  diferencia de la prima, la ventana es de **3 intentos** (2 s y 4 s entre ellos), no de 24 h: el analista necesita la
+  excepción en segundos para actuar (O6b).
+- **Bruto y neto:** el analista aprueba el costo bruto (`gross_amount_minor`); el deducible lo asume el asegurado y la
+  aseguradora paga el neto (`payout_amount_minor`), que es el "monto aprobado" de O6. El deducible se calcula solo aquí.
+- **El core de pólizas manda:** el valor asegurado, el deducible y la cuenta de pago se leen del core al decidir, no de la
+  copia de la radicación. Si el core no responde, la decisión responde `503 policy_unavailable` y el detalle lo dice con
+  `policy_unavailable`.
+- **La cuenta completa** se guarda porque hace falta para pagar, pero ninguna lectura la devuelve: solo `•••• 1234`.
+- **Estados nuevos:** `approved`, `paid`, `rejected` y `payment_exception`. Ninguno es de evaluación, así que el caso sale
+  de la cola y el triage deja de recalcularlo.
+
 ## Requisitos de calidad que gobiernan el servicio
 
 - Consulta de estado del siniestro p95 ≤ 2 s en la app móvil (EC-L02): caché de lectura en Redis con corte duro de 900 ms; ante timeout responde la última versión válida con `stale=true`.
@@ -159,7 +193,7 @@ GET /v1/claims/triage-policy ────▶ severidad por tipo, umbrales y obje
 
 ## Datos y eventos
 
-- **BD propia:** PostgreSQL (siniestros): `claim` (con `channel`, `policy_snapshot` y `catalog_version` desde HU-W2.1-01 y `estimated_amount_minor` desde HU-W2.2-01), `claim_evidence`, `support_file` (metadatos; el archivo vive en S3), `claim_support` y `claim_triage` (HU-W2.2-01: cada cálculo del nivel, solo se agregan filas) con su vista `claim_current_triage`. Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
+- **BD propia:** PostgreSQL (siniestros): `claim` (con `channel`, `policy_snapshot` y `catalog_version` desde HU-W2.1-01 y `estimated_amount_minor` desde HU-W2.2-01), `claim_evidence`, `support_file` (metadatos; el archivo vive en S3), `claim_support` y `claim_triage` (HU-W2.2-01: cada cálculo del nivel, solo se agregan filas) con su vista `claim_current_triage`, `claim_decision` (HU-W2.2-03: la decisión y el pago de la indemnización) y `claim_payout_retry` (cada reintento manual). Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
 - **Publica:** `ClaimApproved` (dispara notificación y pago paramétrico). Ver [catálogo de eventos](../../docs/events/README.md).
 - **Depende de:** `pkg/adapters` (`iot`, `payments`, `policies` desde HU-W2.1-01), `pkg/outbox`. HU-W2.1-01 no publica ni consume eventos.
 
@@ -186,6 +220,8 @@ Variables que el servicio lee:
 | `POLICY_CORE_URL` | HU-W2.1-01: las opciones, la declaración y confirmación de soportes y la radicación web no se montan (sin el core no se sabe qué pólizas son del asegurado) |
 | `POLICY_CORE_TIMEOUT_MS` | 700 ms por llamada al core de pólizas |
 | `TRIAGE_SWEEP_INTERVAL_SECONDS` | HU-W2.2-01: el barrido del triage corre cada 10 s. Entre 1 y 30; otro valor impide arrancar. Solo se acorta en local y en la e2e |
+| `PAYMENT_GATEWAY_URL` | HU-W2.2-03: aprobar, rechazar y reintentar el pago no se montan (una aprobación no tendría cómo pagarse). La lectura de la evaluación sí |
+| `EMAIL_URL` | HU-W2.2-03: los rechazos se registran igual y sus avisos esperan hasta que se configure |
 
 El `AUTH_ISSUER` del *user pool* permanente es
 `https://cognito-idp.us-east-2.amazonaws.com/us-east-2_EWwg8NL2C`. Las migraciones se aplican solas al arrancar.

@@ -213,3 +213,44 @@ func TestSiElTriageNoSeLeeElDetalleFalla(t *testing.T) {
 
 	assert.Error(t, err)
 }
+
+func TestLasExcepcionesDePagoSeListanAparte(t *testing.T) {
+	store := memory.NewCaseStore()
+	radicar(t, store, "k1", radicadoEn, domain.StatusActive)
+	excepcion := radicar(t, store, "k2", radicadoEn.Add(time.Hour), domain.StatusPaymentException)
+
+	page, err := servicio(store, nil, &triageFalso{}).Exceptions(context.Background(), 0, "")
+
+	require.NoError(t, err)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, excepcion, page.Items[0].Claim.ID)
+}
+
+type decisionesFalsas struct {
+	d   domain.Decision
+	err error
+}
+
+func (f decisionesFalsas) Decision(context.Context, string) (domain.Decision, error) {
+	return f.d, f.err
+}
+
+func TestElDetalleTraeLaDecisionCuandoLaHay(t *testing.T) {
+	store := memory.NewCaseStore()
+	id := radicar(t, store, "k1", radicadoEn, domain.StatusRejected)
+
+	sin, err := servicio(store, nil, &triageFalso{}).WithDecisions(decisionesFalsas{err: ports.ErrDecisionNotFound}).
+		Detail(context.Background(), id)
+	require.NoError(t, err)
+	assert.Nil(t, sin.Decision)
+
+	con, err := servicio(store, nil, &triageFalso{}).WithDecisions(decisionesFalsas{d: domain.Decision{ClaimID: id,
+		Outcome: domain.OutcomeRejected}}).Detail(context.Background(), id)
+	require.NoError(t, err)
+	require.NotNil(t, con.Decision)
+	assert.Equal(t, domain.OutcomeRejected, con.Decision.Outcome)
+
+	_, err = servicio(store, nil, &triageFalso{}).WithDecisions(decisionesFalsas{err: errors.New("se cayó")}).
+		Detail(context.Background(), id)
+	assert.Error(t, err)
+}
