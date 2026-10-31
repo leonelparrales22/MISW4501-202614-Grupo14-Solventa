@@ -12,13 +12,15 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/consents"
 )
 
-// HU-W4.2-02: the routes of the compliance portal are mounted only with a
-// verifier (AUTH_ISSUER) and only the operations role reaches them.
+// HU-W4.2-02 and HU-W4.2-01: the routes of the compliance portal (the
+// revocation and the list of consents) are mounted only with a verifier
+// (AUTH_ISSUER) and only the operations role reaches them.
 
 var complianceRoutes = []struct{ method, path string }{
 	{http.MethodGet, "/v1/audit/consents/cns-1/revocation"},
 	{http.MethodPost, "/v1/audit/consents/cns-1/revocations"},
 	{http.MethodPost, "/v1/audit/consents/cns-1/revocation-retries"},
+	{http.MethodGet, "/v1/audit/consents"},
 }
 
 func TestTheComplianceRoutesAreMountedOnlyWithAVerifier(t *testing.T) {
@@ -44,4 +46,6 @@ func TestTheComplianceRoutesAreMountedOnlyWithAVerifier(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, status(t, with, rt.method, rt.path, "insured"), "%s %s", rt.method, rt.path)
 	}
 	assert.Contains(t, buf.String(), "compliance revocation (HU-W4.2-02)")
+	assert.Contains(t, buf.String(), "compliance list (HU-W4.2-01): GET /v1/audit/consents for the operations role")
+	assert.Contains(t, buf.String(), "nor the list of consents (HU-W4.2-01)")
 }

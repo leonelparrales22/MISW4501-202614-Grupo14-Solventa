@@ -145,7 +145,7 @@ func main() {
 		opts = append(opts, consentOptions(svc, holders, revocations, verifier)...)
 		compliance := consents.NewComplianceService(consents.ComplianceDeps{
 			Revocations: revocations, Consents: consentStore, Events: eventStore, Records: revocationStore,
-			Clock: systemClock{}, Names: cfg.partnerNames,
+			List: postgres.NewComplianceListStore(db), Clock: systemClock{}, Names: cfg.partnerNames,
 		})
 		opts = append(opts, complianceOptions(compliance, verifier)...)
 		opts = append(opts, decisionOptions(decisions.NewService(postgres.NewDecisionStore(db), systemClock{}), verifier)...)
@@ -196,17 +196,27 @@ func consentOptions(svc *consents.Service, holders *consents.HolderService, revo
 		httpadapter.WithHolderRevocations(holders, revocations, verifier))
 }
 
-// complianceOptions mounts the revocation routes of the compliance portal
-// (HU-W4.2-02), human routes for the operations role: they need a verifier, so
-// without AUTH_ISSUER they are not mounted.
-func complianceOptions(svc httpadapter.ComplianceRevocationService, verifier security.Verifier) []httpadapter.Option {
+// complianceService is what the compliance portal uses: the revocation
+// (HU-W4.2-02) and the list of consents (HU-W4.2-01).
+type complianceService interface {
+	httpadapter.ComplianceRevocationService
+	httpadapter.ComplianceConsentLister
+}
+
+// complianceOptions mounts the routes of the compliance portal, human routes
+// for the operations role: the revocation (HU-W4.2-02) and the list of
+// consents (HU-W4.2-01). They need a verifier, so without AUTH_ISSUER they are
+// not mounted.
+func complianceOptions(svc complianceService, verifier security.Verifier) []httpadapter.Option {
 	if verifier == nil {
-		log.Printf("%s is not set: the revocation routes of the compliance portal (HU-W4.2-02) are not mounted", security.EnvIssuer)
+		log.Printf("%s is not set: the revocation routes of the compliance portal (HU-W4.2-02) are not mounted, "+
+			"nor the list of consents (HU-W4.2-01)", security.EnvIssuer)
 		return nil
 	}
 	log.Printf("compliance revocation (HU-W4.2-02): GET /v1/audit/consents/{consent_id}/revocation, " +
 		"POST /v1/audit/consents/{consent_id}/revocations and POST /v1/audit/consents/{consent_id}/revocation-retries for the operations role")
-	return []httpadapter.Option{httpadapter.WithComplianceRevocations(svc, verifier)}
+	log.Printf("compliance list (HU-W4.2-01): GET /v1/audit/consents for the operations role")
+	return []httpadapter.Option{httpadapter.WithComplianceRevocations(svc, verifier), httpadapter.WithComplianceConsents(svc, verifier)}
 }
 
 // newNoticeWorker builds the worker that notifies the entities of each
