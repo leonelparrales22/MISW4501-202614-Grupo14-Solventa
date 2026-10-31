@@ -37,6 +37,12 @@ func (f *fakeEvaluation) Queue(_ context.Context, size int, token string) (evalu
 	return f.page, f.err
 }
 
+func (f *fakeEvaluation) Exceptions(_ context.Context, size int, token string) (evaluation.QueuePage, error) {
+	f.callCount++
+	f.gotSize, f.gotToken = size, "excepciones:"+token
+	return f.page, f.err
+}
+
 func (f *fakeEvaluation) Detail(_ context.Context, id string) (evaluation.Evaluation, error) {
 	f.callCount++
 	f.gotClaim = id
@@ -106,6 +112,37 @@ func TestTheQueueListsTheClaimsWithTheirPriority(t *testing.T) {
 	assert.Equal(t, "active", item["status"])
 	assert.EqualValues(t, 480_000_000, item["estimated_amount_minor"])
 	assert.EqualValues(t, 2, item["triage"].(map[string]any)["level"])
+}
+
+func TestThePaymentExceptionsAreListedLikeTheQueue(t *testing.T) {
+	c := claimInEvaluation()
+	c.Status = domain.StatusPaymentException
+	f := &fakeEvaluation{page: evaluation.QueuePage{Items: []evaluation.QueueItem{{
+		Claim: c, Triage: triage.Summary{ClaimID: claimID, State: domain.TriageNotApplicable},
+	}}}}
+
+	rec := do(evaluationRouter(f), http.MethodGet, "/v1/claims/payment-exceptions?page_token=abc", "operations", nil, nil)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, "excepciones:abc", f.gotToken, "the exceptions are read, not the queue")
+	items := decode(t, rec)["items"].([]any)
+	require.Len(t, items, 1)
+	assert.Equal(t, "payment_exception", items[0].(map[string]any)["status"])
+	assert.Equal(t, http.StatusForbidden,
+		do(evaluationRouter(f), http.MethodGet, "/v1/claims/payment-exceptions", "insured", nil, nil).Code)
+}
+
+func TestTheDetailCarriesTheDecision(t *testing.T) {
+	f := &fakeEvaluation{detail: evaluation.Evaluation{Claim: claimInEvaluation(),
+		Triage: triage.View{ClaimID: claimID, State: domain.TriagePending}, Decision: &aprobacionFallida}}
+
+	rec := do(evaluationRouter(f), http.MethodGet, "/v1/claims/"+claimID+"/evaluation", "operations", nil, nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	decision := decode(t, rec)["decision"].(map[string]any)
+	assert.Equal(t, "payment_exception", decision["status"])
+	assert.Equal(t, "invalid_destination_account", decision["payout"].(map[string]any)["gateway_code"])
+	assert.NotContains(t, rec.Body.String(), "0123-4567-89", "the full account number never leaves the service")
 }
 
 func TestTheQueueRejectsAnInvalidPage(t *testing.T) {

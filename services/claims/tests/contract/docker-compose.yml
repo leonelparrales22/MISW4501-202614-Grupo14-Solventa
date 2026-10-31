@@ -1,5 +1,6 @@
 # Contract test of the claims routes (OBJ 05): the real service with its own
-# PostgreSQL, the policy core stub (HU-W2.1-01) and Moto as the Cognito of the
+# PostgreSQL, the policy core stub (HU-W2.1-01), the payment gateway and
+# e-mail stubs of the decision (HU-W2.2-03) and Moto as the Cognito of the
 # human routes, checked against api/openapi.yaml by Schemathesis. Run it with
 # ./run.sh. Build context is the repository root. Published ports (127.0.0.1
 # only): claims 8296, Moto 5122.
@@ -25,6 +26,22 @@ services:
     environment:
       - PORT=9060
 
+  # HU-W2.2-03: the approval pays through the gateway and the rejection is
+  # notified by e-mail.
+  payment-gateway:
+    build:
+      context: ../../../..
+      dockerfile: stubs/payment-gateway/Dockerfile
+    environment:
+      - PORT=9040
+
+  email:
+    build:
+      context: ../../../..
+      dockerfile: stubs/email/Dockerfile
+    environment:
+      - PORT=9030
+
   moto:
     image: motoserver/moto:5.2.3
     ports:
@@ -48,6 +65,8 @@ services:
       - PORT=8080
       - DATABASE_URL=postgres://claims:${PG_PASSWORD:-}@postgres-claims:5432/claims?sslmode=disable
       - POLICY_CORE_URL=http://policy-core:9060
+      - PAYMENT_GATEWAY_URL=http://payment-gateway:9040
+      - EMAIL_URL=http://email:9030
       # Object store of the supports and the evidence: the S3 of Moto, whose
       # bucket run.sh creates before claims starts. The credentials are the
       # dummy ones of the emulator.
@@ -66,6 +85,10 @@ services:
       moto:
         condition: service_healthy
       policy-core:
+        condition: service_started
+      payment-gateway:
+        condition: service_started
+      email:
         condition: service_started
 
   # Started on demand by run.sh (docker compose run --rm schemathesis ...).

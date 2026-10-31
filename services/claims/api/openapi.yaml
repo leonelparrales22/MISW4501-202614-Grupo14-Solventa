@@ -1,9 +1,20 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.7.0
+  version: 0.8.0
   description: >-
-    0.6.0 (HU-W2.2-01): the automatic priority of the claim (triage). Every
+    0.8.0 (HU-W2.2-03): the decision of operations on a claim. POST
+    /v1/claims/{claim_id}/approval approves it for an amount bounded by the
+    insured value of its coverage and pays the amount less the deductible to
+    the account of the insured, once per approval; POST
+    /v1/claims/{claim_id}/rejection rejects it with a reason the insured
+    receives by e-mail; a payout that fails leaves the claim in
+    payment_exception, listed by GET /v1/claims/payment-exceptions, and POST
+    /v1/claims/{claim_id}/payout-retry retries it with the same key. The
+    detail of the evaluation carries the decision, and a claim reaches the
+    statuses approved, paid, rejected and payment_exception. 0.7.0
+    (HU-W2.2-03): the claims in evaluation and the detail operations decides
+    with. 0.6.0 (HU-W2.2-01): the automatic priority of the claim (triage). Every
     claim that enters evaluation gets a level (Triage 1, 2 or 3) from the
     severity of its claim type and the band of its estimated amount, within 60
     seconds and with no manual step, and it is recalculated when that
@@ -126,7 +137,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [active]
+            enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
         - name: policy_id
           in: query
           required: false
@@ -699,6 +710,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/payment-exceptions:
+    get:
+      summary: Payment exceptions (HU-W2.2-03)
+      description: >-
+        The approved claims whose payout failed - the gateway rejected it or
+        the automatic attempts ran out - oldest filed first, with the same
+        items as the claims in evaluation (screen O6b). The detail of each one
+        carries its decision. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: page_size
+          in: query
+          required: false
+          description: Claims per page, 1 to 50; 20 when absent.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+        - name: page_token
+          in: query
+          required: false
+          description: The next_page_token of the previous page; opaque.
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        "200":
+          description: One page of the payment exceptions
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationQueue"
+        "400":
+          description: "invalid_request - page_size out of 1 to 50 or a page token that is not valid"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "unauthorized"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "forbidden - the token is not of operations"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: "claims_unavailable - retry"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/claims/{claim_id}:
     get:
       summary: Detail of one of the insured's claims (HU-W2.1-01)
@@ -741,6 +814,222 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/approval:
+    post:
+      summary: Approve a claim and pay its indemnity (HU-W2.2-03)
+      description: >-
+        The analyst approves a claim in evaluation for approved_amount_minor,
+        which cannot exceed the insured value of the coverage of its incident as
+        the policy core describes it now. The indemnity is that amount less the
+        deductible, and it is paid at once to the account the policy core has for
+        the insured, through the payment gateway under one idempotency key per
+        approval (HA-D02): one approval is exactly one disbursement. The answer
+        is 202 with the payout pending; the detail of the evaluation shows when
+        it is paid, or when it becomes a payment exception. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalRequest"
+      responses:
+        "202":
+          description: Approved; the payout is in course
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDecision"
+        "400":
+          description: "invalid_request - the body does not follow the schema"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "unauthorized"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "forbidden - the token is not of operations"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "claim_not_found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "claim_not_decidable - the claim is not in evaluation: it was already decided"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: "amount_exceeds_insured_value, nothing_to_pay (the deductible takes it all), not_covered or no_payout_account"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: "policy_unavailable (the terms of the policy could not be read) or claims_unavailable - retry"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/rejection:
+    post:
+      summary: Reject a claim with its reason (HU-W2.2-03)
+      description: >-
+        The analyst rejects a claim in evaluation with a reason, which is
+        required. The claim becomes rejected and the insured is told by e-mail,
+        with the reason, at the contact the policy core has for them; the
+        detail of the evaluation shows when the notice was sent. Only
+        operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectionRequest"
+      responses:
+        "200":
+          description: Rejected
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDecision"
+        "400":
+          description: "invalid_request - the body does not follow the schema"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "unauthorized"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "forbidden - the token is not of operations"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "claim_not_found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "claim_not_decidable - the claim is not in evaluation: it was already decided"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: "reason_required (only blanks), reason_too_long, not_covered (the core does not know the insured) or no_contact"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: "policy_unavailable (the insured could not be read) or claims_unavailable - retry"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/payout-retry:
+    post:
+      summary: Retry the payout of a payment exception (HU-W2.2-03)
+      description: >-
+        The analyst retries the payout of a claim in payment_exception, to the
+        corrected destination when the body carries one, or to the same one
+        when it does not. The idempotency key does not change, so a retry
+        never pays twice. The claim goes back to approved and the automatic
+        attempts start again. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PayoutRetryRequest"
+      responses:
+        "202":
+          description: Retried; the payout is in course
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDecision"
+        "400":
+          description: "invalid_request - the body does not follow the schema"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "unauthorized"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "forbidden - the token is not of operations"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "claim_not_found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "payout_not_retryable - the claim is not a payment exception"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: "claims_unavailable - retry"
           content:
             application/json:
               schema:
@@ -1443,7 +1732,7 @@ components:
             filed from the mobile app).
         status:
           type: string
-          enum: [active]
+          enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
         channel:
           type: string
           enum: [mobile, web]
@@ -1520,7 +1809,7 @@ components:
           type: string
         status:
           type: string
-          enum: [active]
+          enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
         channel:
           type: string
           enum: [mobile, web]
@@ -1920,7 +2209,7 @@ components:
           nullable: true
     ClaimEvaluation:
       type: object
-      required: [claim, support_files, triage, policy, coverage, holder, policy_unavailable]
+      required: [claim, support_files, triage, policy, coverage, holder, policy_unavailable, decision]
       properties:
         claim:
           $ref: "#/components/schemas/ClaimDetail"
@@ -1944,6 +2233,167 @@ components:
           nullable: true
         policy_unavailable:
           type: boolean
+        decision:
+          allOf:
+            - $ref: "#/components/schemas/ClaimDecision"
+          nullable: true
+          description: What operations decided; null while the claim is in evaluation.
+    ApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [approved_amount_minor]
+      properties:
+        approved_amount_minor:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The gross amount approved, in cents of the currency of the coverage, before the deductible.
+    RejectionRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Why the claim is rejected; the insured receives it.
+    PayoutDestination:
+      type: object
+      additionalProperties: false
+      required: [bank_code, account_type, account_number]
+      properties:
+        bank_code:
+          type: string
+          pattern: "^[0-9]{3,6}$"
+        bank_name:
+          type: string
+          maxLength: 80
+        account_type:
+          type: string
+          enum: [savings, checking]
+        account_number:
+          type: string
+          pattern: "^[0-9][0-9-]{4,22}[0-9]$"
+    PayoutRetryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        destination:
+          $ref: "#/components/schemas/PayoutDestination"
+    DecisionApproval:
+      type: object
+      required: [approved_amount_minor, insured_value_minor, deductible_basis_points, deductible_minor, payout_amount_minor, currency]
+      properties:
+        approved_amount_minor:
+          type: integer
+          format: int64
+        insured_value_minor:
+          type: integer
+          format: int64
+          description: The insured value the approved amount was checked against.
+        deductible_basis_points:
+          type: integer
+        deductible_minor:
+          type: integer
+          format: int64
+        payout_amount_minor:
+          type: integer
+          format: int64
+          description: What reaches the insured, the approved amount less the deductible.
+        currency:
+          type: string
+    Payout:
+      type: object
+      required: [payment_reference, status, destination, automatic_attempts, max_automatic_attempts, failure, gateway_code,
+        last_failure_at, gateway_reference, paid_at, manual_retries, last_retried_by, last_retried_at]
+      properties:
+        payment_reference:
+          type: string
+          description: The idempotency key of the payout; it never changes, however many times it is retried.
+        status:
+          type: string
+          enum: [pending, in_progress, paid, failed]
+        destination:
+          $ref: "#/components/schemas/PayoutAccountMasked"
+        automatic_attempts:
+          type: integer
+          description: Failed attempts since the approval or the last manual retry.
+        max_automatic_attempts:
+          type: integer
+        failure:
+          type: string
+          nullable: true
+          description: rejected (the gateway rejected it) or retries_exhausted; null unless the payout failed.
+        gateway_code:
+          type: string
+          nullable: true
+          description: The reason of the gateway for a rejection, e.g. invalid_destination_account.
+        last_failure_at:
+          type: string
+          format: date-time
+          nullable: true
+        gateway_reference:
+          type: string
+          nullable: true
+          description: The id of the payout at the gateway, once paid.
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        manual_retries:
+          type: integer
+        last_retried_by:
+          type: string
+          nullable: true
+        last_retried_at:
+          type: string
+          format: date-time
+          nullable: true
+    Rejection:
+      type: object
+      required: [reason, notified_at]
+      properties:
+        reason:
+          type: string
+        notified_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the insured was told; null while the notice is pending.
+    ClaimDecision:
+      type: object
+      required: [claim_id, filing_number, status, outcome, decided_by, decided_at, approval, payout, rejection]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+        status:
+          type: string
+          enum: [approved, paid, rejected, payment_exception]
+          description: The status the decision leaves the claim in.
+        outcome:
+          type: string
+          enum: [approved, rejected]
+        decided_by:
+          type: string
+          description: The analyst who decided (their e-mail).
+        decided_at:
+          type: string
+          format: date-time
+        approval:
+          allOf:
+            - $ref: "#/components/schemas/DecisionApproval"
+          nullable: true
+        payout:
+          allOf:
+            - $ref: "#/components/schemas/Payout"
+          nullable: true
+        rejection:
+          allOf:
+            - $ref: "#/components/schemas/Rejection"
+          nullable: true
     TriagePolicy:
       type: object
       required: [version, currency, amount_thresholds, severity, targets]

@@ -36,6 +36,16 @@ type Status string
 
 const StatusActive Status = "active"
 
+// Known tells whether s is a status a claim can be in: active, in evaluation
+// or one of the decision (HU-W2.2-03), so the insured can filter by any.
+func Known(s Status) bool {
+	switch s {
+	case StatusActive, StatusInEvaluation, StatusApproved, StatusPaid, StatusRejected, StatusPaymentException:
+		return true
+	}
+	return false
+}
+
 // Field validation codes. They are stable identifiers the client translates.
 const (
 	CodeRequired      = "required"

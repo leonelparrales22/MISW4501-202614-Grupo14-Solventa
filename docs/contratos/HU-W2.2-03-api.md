@@ -2,9 +2,9 @@
 
 Servicio: **siniestros** (`claims`). Consumidor: portal web del analista de operaciones (pantallas O6 y O6b).
 
-> **Alcance de este documento.** Cubre la **lectura** de la evaluación (PR 2a): la lista de casos en evaluación y el detalle
-> de un caso. La decisión (aprobar o rechazar), el desembolso y sus reintentos llegan en el PR 2b y se agregan aquí.
-> Contrato formal: `services/claims/api/openapi.yaml`.
+> **Alcance de este documento.** La **lectura** de la evaluación (secciones 2 y 3) y la **decisión**: aprobar con pago
+> automático, rechazar con aviso al asegurado y reintentar un pago fallido (secciones 4 a 7). Contrato formal:
+> `services/claims/api/openapi.yaml` (0.8.0).
 
 ---
 
@@ -15,11 +15,27 @@ Portal del analista (rol operations)                     claims                 
 ──────────────────────────────────────                   ─────────────────────────────        ────────────
 GET /v1/claims/evaluations ───────────────────────────▶ casos en evaluación + prioridad
 GET /v1/claims/{claim_id}/evaluation ─────────────────▶ caso, soportes, evidencia, triage ─▶ póliza y coberturas
-                                                                                         ─▶ asegurado y cuenta
+                                                         y decisión                       ─▶ asegurado y cuenta
+POST /v1/claims/{claim_id}/approval ──────────────────▶ valida contra la cobertura de hoy ─▶ (core)
+                                                         worker ──▶ pasarela POST /payouts (llave indemnizacion-<id>)
+POST /v1/claims/{claim_id}/rejection ─────────────────▶ rejected; worker ──▶ correo con el motivo
+GET  /v1/claims/payment-exceptions ───────────────────▶ casos en payment_exception
+POST /v1/claims/{claim_id}/payout-retry ──────────────▶ misma llave, destino corregido ──▶ worker
+```
+
+**Estados del caso**
+
+```
+active / in_evaluation ──aprobar──▶ approved ──pago confirmado──▶ paid
+          │                            │  ▲
+          │                            │  └──payout-retry──┐
+          │                            └──rechazo de la pasarela o 3 intentos sin respuesta──▶ payment_exception
+          └──rechazar──▶ rejected
 ```
 
 - Las dos rutas cuelgan de `/v1/claims`, así que el API Gateway ya las enruta con el autorizador de Cognito
   (`/v1/claims/{proxy+}`, GET). **Solo el rol `operations`**: asegurado, asesor y socio reciben `403`.
+- **Solo `operations`** aprueba, rechaza y reintenta (HA-S01, criterio 6).
 - **"En evaluación"** son los estados que evalúa el triage (`active` e `in_evaluation`): mientras no exista la revisión del
   asesor (HU-W2.1-03), un caso radicado entra a evaluación tal como llega (supuesto S5 de HU-W2.2-01). Un caso decidido
   (pagado o rechazado, PR 2b) sale de la lista y el triage deja de recalcularlo.
@@ -158,3 +174,105 @@ valida en el servicio; el portal solo lo muestra.
 | `503` | `claims_unavailable` | No se pudo leer el caso o su prioridad. Reintentable |
 
 Una caída del núcleo de pólizas **no** es un `503`: responde `200` con `policy_unavailable: true`.
+
+`decision` es `null` mientras el caso está en evaluación; después trae el mismo cuerpo de la sección 4.
+
+---
+
+## 4. `POST /v1/claims/{claim_id}/approval`
+
+```json
+{ "approved_amount_minor": 435000000 }
+```
+
+El monto **bruto** aprobado, en centavos. El servicio lee del núcleo la cobertura del incidente **en ese momento** y valida:
+
+| Regla | Si no se cumple |
+|---|---|
+| `approved_amount_minor` entero ≥ 1 | `400 invalid_request` |
+| No supera `insured_value_minor` de la cobertura | `422 amount_exceeds_insured_value` |
+| Después del deducible queda algo por pagar | `422 nothing_to_pay` |
+| La póliza cubre el incidente y el núcleo conoce al asegurado | `422 not_covered` |
+| El asegurado tiene cuenta de pago | `422 no_payout_account` |
+| El caso sigue en evaluación (nadie lo decidió antes) | `409 claim_not_decidable` |
+| El núcleo respondió | `503 policy_unavailable` (reintentable) |
+
+### Respuesta `202`
+
+```json
+{
+  "claim_id": "8f14e45f-…", "filing_number": "SIN-2026-01655",
+  "status": "approved", "outcome": "approved",
+  "decided_by": "analista@solventa.example", "decided_at": "2026-09-16T16:40:00Z",
+  "approval": {
+    "approved_amount_minor": 435000000, "insured_value_minor": 32000000000, "deductible_basis_points": 500,
+    "deductible_minor": 21750000, "payout_amount_minor": 413250000, "currency": "COP"
+  },
+  "payout": {
+    "payment_reference": "indemnizacion-8f14e45f-…", "status": "pending",
+    "destination": { "bank_code": "1007", "bank_name": "Banco Aliado", "account_type": "savings", "masked_number": "•••• 4512" },
+    "automatic_attempts": 0, "max_automatic_attempts": 3,
+    "failure": null, "gateway_code": null, "last_failure_at": null,
+    "gateway_reference": null, "paid_at": null,
+    "manual_retries": 0, "last_retried_by": null, "last_retried_at": null
+  },
+  "rejection": null
+}
+```
+
+- `202` porque el pago va aparte: el *worker* lo envía en cuanto se registra la aprobación (normalmente en menos de un
+  segundo). El portal vuelve a leer el detalle (sección 3) para ver `paid` o `payment_exception`.
+- **Deducible:** `deductible_minor = round(approved × basis_points / 10 000)` y `payout_amount_minor = approved − deductible`.
+  El ejemplo de O6: $ 4.350.000 − 5 % = **$ 4.132.500**.
+- **Un desembolso por aprobación (criterio 4, HA-D02):** el pago viaja con `Idempotency-Key: indemnizacion-<claim_id>`, la
+  misma en todos los intentos y reintentos, y la pasarela paga una llave una sola vez.
+
+## 5. `POST /v1/claims/{claim_id}/rejection`
+
+```json
+{ "reason": "La póliza excluye los daños por falta de mantenimiento." }
+```
+
+| Regla | Si no se cumple |
+|---|---|
+| `reason` presente | `400 invalid_request` |
+| No es solo espacios | `422 reason_required` |
+| Hasta 1000 caracteres | `422 reason_too_long` |
+| El núcleo conoce al asegurado y tiene correo | `422 not_covered` / `422 no_contact` |
+| El caso sigue en evaluación | `409 claim_not_decidable` |
+
+Responde `200` con el caso en `rejected`, `approval` y `payout` en `null` y
+`"rejection": { "reason": "…", "notified_at": null }`. El *worker* envía el correo al asegurado con el número de radicado y el
+motivo (llave `rechazo-<claim_id>`); `notified_at` se llena cuando el proveedor lo acepta, y un envío fallido se reintenta.
+
+## 6. Pago fallido: `payment_exception`
+
+El caso pasa a `payment_exception` cuando:
+
+| `payout.failure` | Qué pasó | `payout.gateway_code` |
+|---|---|---|
+| `rejected` | La pasarela respondió y rechazó el pago (no se reintenta solo) | El motivo, p. ej. `invalid_destination_account` |
+| `retries_exhausted` | 3 intentos sin respuesta clara (2 s y 4 s entre ellos), siempre con la misma llave | `null` |
+
+La aprobación **se conserva** con su `payment_reference` (criterio 4). `GET /v1/claims/payment-exceptions` los lista con la
+misma forma y paginación que la sección 2.
+
+**En la demo:** el stub de la pasarela rechaza toda cuenta terminada en `89`, así que un asegurado con esa cuenta lleva a O6b.
+
+## 7. `POST /v1/claims/{claim_id}/payout-retry`
+
+```json
+{ "destination": { "bank_code": "1007", "bank_name": "Banco Aliado", "account_type": "savings", "account_number": "0123-4567-12" } }
+```
+
+- `destination` es opcional: sin él se reintenta a la misma cuenta (útil cuando la pasarela no respondía).
+- `bank_code` 3–6 dígitos, `account_type` `savings` o `checking`, `account_number` de 6 a 24 dígitos y guiones; si no,
+  `400 invalid_request`.
+- Responde `202` con el caso de nuevo en `approved`, `automatic_attempts: 0`, `manual_retries` + 1 y quién reintentó. La llave
+  **no cambia**: un pago rechazado no movió dinero, y uno sin respuesta se resuelve con la misma llave sin pagar dos veces.
+- `409 payout_not_retryable` si el caso no está en `payment_exception`.
+
+## 8. Lo que ve el asegurado
+
+`GET /v1/claims` y `GET /v1/claims/{claim_id}` devuelven el estado nuevo (`approved`, `paid`, `rejected`,
+`payment_exception`), y el listado acepta `?status=` con cualquiera de ellos (criterio 5).
