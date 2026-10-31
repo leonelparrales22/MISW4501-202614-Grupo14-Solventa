@@ -93,8 +93,11 @@ echo "== Schemathesis as an insured user (their own consents, HU-M1.3-01, and th
 $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://audit:8080   -H "Authorization: Bearer $INSURED_TOKEN" --include-path-regex='^/v1/consents'   --checks=all --hypothesis-max-examples=100 --hypothesis-seed=3
 
 echo "== Schemathesis with no credentials (the routes that need none)"
+# /v1/audit/consents is the POST of the partner; its GET (HU-W4.2-01) needs the
+# token of operations and runs in the first session.
 $COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://audit:8080 \
   --include-path-regex='^/(health|v1/audit/(consent-terms|consent-verifications|consents$|decisions$))' \
+  --exclude-operation-id=listComplianceConsents \
   --checks=all --hypothesis-max-examples=100 --hypothesis-seed=2
 
 echo "== audit contract passed."
