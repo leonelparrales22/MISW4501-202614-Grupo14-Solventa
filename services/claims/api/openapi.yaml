@@ -1,9 +1,19 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.5.0
+  version: 0.6.0
   description: >-
-    0.5.0 (HU-W2.1-01): the supports of the web filing no longer go through
+    0.6.0 (HU-W2.2-01): the automatic priority of the claim (triage). Every
+    claim that enters evaluation gets a level (Triage 1, 2 or 3) from the
+    severity of its claim type and the band of its estimated amount, within 60
+    seconds and with no manual step, and it is recalculated when that
+    information changes. GET /v1/claims/{claim_id}/triage reads it (operations:
+    the full view with its history; the insured who filed the claim: the level
+    and the estimated resolution time), GET /v1/claims/triage reads the levels
+    of a page of claims at once (operations) and GET /v1/claims/triage-policy
+    the severity table, the amount thresholds and the target of each level
+    (operations). The web filing gains the optional estimated_amount_minor,
+    which the detail of a claim returns. 0.5.0 (HU-W2.1-01): the supports of the web filing no longer go through
     the service. POST /v1/claims/supports declares one file (name, type,
     size, sha256) and returns the signed URL with which the browser uploads
     it straight to the object store; POST
@@ -530,6 +540,103 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/triage:
+    get:
+      summary: Triage of a page of claims at once (HU-W2.2-01)
+      description: >-
+        The level, severity, amount band and target of each claim asked for,
+        in the order asked, so the queue of the analyst shows the priority of a
+        whole page of claims with one call. A claim that does not exist comes
+        back with state not_found instead of failing the call. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: claim_id
+          in: query
+          required: true
+          description: Ids of the claims, repeated (claim_id=a&claim_id=b), 1 to 50, without repeats.
+          style: form
+          explode: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 50
+            uniqueItems: true
+            items:
+              type: string
+              pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      responses:
+        "200":
+          description: The triage of each claim, in the order asked
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimTriageList"
+        "400":
+          description: >-
+            invalid_request - no claim_id, more than 50, a repeated one or one
+            that is not a claim id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/triage-policy:
+    get:
+      summary: The triage policy in force (HU-W2.2-01)
+      description: >-
+        The severity of each claim type, the amount thresholds and the target of
+        each level, for the indicators of the queue ("Triage 2 · target: 5
+        business days"). The policy is provisional until the business validates
+        it; its version changes when it does. Only operations.
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The policy in force
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriagePolicy"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/claims/{claim_id}:
     get:
       summary: Detail of one of the insured's claims (HU-W2.1-01)
@@ -612,6 +719,65 @@ paths:
                 $ref: "#/components/schemas/Error"
         "403":
           description: forbidden - not an insured, or the claim belongs to another insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/triage:
+    get:
+      summary: Priority of one claim (HU-W2.2-01)
+      description: >-
+        The level the triage gave the claim. Operations reads the full view: the
+        severity and the amount band that set the level, the target and every
+        calculation with its causes. The insured who filed the claim reads the
+        level and the estimated resolution time. Before the first calculation
+        (at most 60 seconds after the claim enters evaluation) the state is
+        pending; poll again in 5 seconds.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The triage of the claim, in the view of the role of the token
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ClaimTriage"
+                  - $ref: "#/components/schemas/ClaimTriageForInsured"
+                discriminator:
+                  propertyName: view
+                  mapping:
+                    operations: "#/components/schemas/ClaimTriage"
+                    insured: "#/components/schemas/ClaimTriageForInsured"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            forbidden - neither operations nor an insured, or the claim belongs
+            to another insured
           content:
             application/json:
               schema:
@@ -1057,6 +1223,19 @@ components:
           maxItems: 20
           items:
             $ref: "#/components/schemas/SupportGroup"
+        estimated_amount_minor:
+          $ref: "#/components/schemas/EstimatedAmountMinor"
+    EstimatedAmountMinor:
+      type: integer
+      format: int64
+      minimum: 1
+      maximum: 10000000000000
+      description: >-
+        What the insured estimates the loss at, in cents of COP (HU-W2.2-01).
+        Optional: without it the claim has no estimated amount and its triage
+        amount band is unknown. Outside the range, or not an integer, answers
+        422 with the field code out_of_range or invalid_format.
+      example: 480000000
     SupportGroup:
       type: object
       required: [requirement_code, support_ids]
@@ -1142,6 +1321,13 @@ components:
           type: string
           description: SIN-<year>-<five digits>, unique in the platform.
           example: SIN-2026-01712
+        estimated_amount_minor:
+          allOf:
+            - $ref: "#/components/schemas/EstimatedAmountMinor"
+          description: >-
+            The estimated amount the insured declared, in cents of COP
+            (HU-W2.2-01). Absent when it was not declared (always in a claim
+            filed from the mobile app).
         status:
           type: string
           enum: [active]
@@ -1292,3 +1478,256 @@ components:
           type: string
           format: date-time
           nullable: true
+    TriageLevel:
+      type: integer
+      enum: [1, 2, 3]
+      description: >-
+        Triage 1 when the severity is high or the amount band is high; Triage 3
+        when the severity is low and the amount band is low; Triage 2 otherwise.
+    Severity:
+      type: string
+      enum: [high, medium, low]
+      description: From the claim type and the coverage it affects.
+    AmountBand:
+      type: string
+      enum: [high, medium, low, unknown]
+      description: >-
+        low below the low threshold, high above the high threshold, medium in
+        between (both thresholds included), unknown when the claim has no
+        estimated amount. unknown never moves the level to 1 or to 3.
+    TriageCause:
+      type: string
+      enum:
+        - entered_evaluation
+        - estimated_amount_changed
+        - incident_type_changed
+        - coverage_changed
+        - provider_report_received
+        - policy_updated
+    TriageTarget:
+      type: object
+      required: [kind, business_days, resolution_business_days]
+      description: >-
+        The attention target of the level, shown next to it in the queue, and
+        the resolution time the insured is told.
+      properties:
+        kind:
+          type: string
+          enum: [immediate, business_days]
+          description: immediate for Triage 1 (attend first).
+        business_days:
+          type: integer
+          nullable: true
+          description: Attention target in business days; null when kind is immediate.
+          example: 5
+        resolution_business_days:
+          type: integer
+          description: Estimated resolution time in business days.
+          example: 5
+    TriageAssessment:
+      type: object
+      required: [level, severity, amount_band, estimated_amount_minor, currency, incident_type, coverage, policy_version, target, assessed_at]
+      properties:
+        level:
+          $ref: "#/components/schemas/TriageLevel"
+        severity:
+          $ref: "#/components/schemas/Severity"
+        amount_band:
+          $ref: "#/components/schemas/AmountBand"
+        estimated_amount_minor:
+          allOf:
+            - $ref: "#/components/schemas/EstimatedAmountMinor"
+          nullable: true
+          description: The amount the level was calculated with; null when there was none.
+        currency:
+          type: string
+          enum: [COP]
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        coverage:
+          type: string
+          description: The coverage of the policy the claim affects (today, the one of its claim type).
+          example: water_damage
+        policy_version:
+          type: string
+          example: triage-policy-v1
+        target:
+          $ref: "#/components/schemas/TriageTarget"
+        assessed_at:
+          type: string
+          format: date-time
+    TriageHistoryEntry:
+      type: object
+      required: [level, previous_level, severity, amount_band, estimated_amount_minor, incident_type, causes, actor, policy_version, assessed_at]
+      properties:
+        level:
+          $ref: "#/components/schemas/TriageLevel"
+        previous_level:
+          allOf:
+            - $ref: "#/components/schemas/TriageLevel"
+          nullable: true
+          description: Null in the first calculation. The same as level when the information changed but the level did not.
+        severity:
+          $ref: "#/components/schemas/Severity"
+        amount_band:
+          $ref: "#/components/schemas/AmountBand"
+        estimated_amount_minor:
+          allOf:
+            - $ref: "#/components/schemas/EstimatedAmountMinor"
+          nullable: true
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        causes:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TriageCause"
+        actor:
+          type: string
+          enum: [system]
+          description: The triage is always automatic.
+        policy_version:
+          type: string
+        assessed_at:
+          type: string
+          format: date-time
+    ClaimTriage:
+      type: object
+      required: [view, claim_id, state, current, history]
+      description: >-
+        The view of operations. state is pending before the first calculation,
+        not_applicable when the claim never entered evaluation, and assessed
+        once it has a level, which stays visible after the claim leaves
+        evaluation (paid, rejected, returned) although it is no longer
+        recalculated.
+      properties:
+        view:
+          type: string
+          enum: [operations]
+        claim_id:
+          type: string
+          example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
+        state:
+          type: string
+          enum: [pending, assessed, not_applicable]
+        current:
+          allOf:
+            - $ref: "#/components/schemas/TriageAssessment"
+          nullable: true
+          description: Null unless state is assessed.
+        history:
+          type: array
+          description: Every calculation, newest first. Empty before the first one.
+          items:
+            $ref: "#/components/schemas/TriageHistoryEntry"
+    ClaimTriageForInsured:
+      type: object
+      required: [view, claim_id, state, level, estimated_resolution_business_days, assessed_at]
+      description: >-
+        The view of the insured who filed the claim: the level and how long the
+        resolution is expected to take. Without severity, amount or history.
+      properties:
+        view:
+          type: string
+          enum: [insured]
+        claim_id:
+          type: string
+        state:
+          type: string
+          enum: [pending, assessed, not_applicable]
+        level:
+          allOf:
+            - $ref: "#/components/schemas/TriageLevel"
+          nullable: true
+        estimated_resolution_business_days:
+          type: integer
+          nullable: true
+          example: 5
+        assessed_at:
+          type: string
+          format: date-time
+          nullable: true
+    ClaimTriageSummary:
+      type: object
+      required: [claim_id, state, level, severity, amount_band, target, assessed_at]
+      description: The triage of one claim of a page. Everything but claim_id and state is null unless state is assessed.
+      properties:
+        claim_id:
+          type: string
+        state:
+          type: string
+          enum: [pending, assessed, not_applicable, not_found]
+        level:
+          allOf:
+            - $ref: "#/components/schemas/TriageLevel"
+          nullable: true
+        severity:
+          allOf:
+            - $ref: "#/components/schemas/Severity"
+          nullable: true
+        amount_band:
+          allOf:
+            - $ref: "#/components/schemas/AmountBand"
+          nullable: true
+        target:
+          allOf:
+            - $ref: "#/components/schemas/TriageTarget"
+          nullable: true
+        assessed_at:
+          type: string
+          format: date-time
+          nullable: true
+    ClaimTriageList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClaimTriageSummary"
+    TriagePolicy:
+      type: object
+      required: [version, currency, amount_thresholds, severity, targets]
+      properties:
+        version:
+          type: string
+          example: triage-policy-v1
+        currency:
+          type: string
+          enum: [COP]
+        amount_thresholds:
+          type: object
+          required: [low_below_minor, high_above_minor]
+          properties:
+            low_below_minor:
+              type: integer
+              format: int64
+              description: An amount below this one (in cents) is in the low band.
+              example: 500000000
+            high_above_minor:
+              type: integer
+              format: int64
+              description: An amount above this one (in cents) is in the high band.
+              example: 3000000000
+        severity:
+          type: array
+          items:
+            type: object
+            required: [line, incident_type, severity]
+            properties:
+              line:
+                $ref: "#/components/schemas/PolicyLine"
+              incident_type:
+                $ref: "#/components/schemas/IncidentType"
+              severity:
+                $ref: "#/components/schemas/Severity"
+        targets:
+          type: array
+          items:
+            type: object
+            required: [level, target]
+            properties:
+              level:
+                $ref: "#/components/schemas/TriageLevel"
+              target:
+                $ref: "#/components/schemas/TriageTarget"

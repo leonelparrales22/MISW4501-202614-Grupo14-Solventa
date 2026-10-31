@@ -267,6 +267,9 @@ type webFilingRequest struct {
 	Place        string             `json:"place"`
 	Description  string             `json:"description"`
 	Supports     []supportGroupBody `json:"supports"`
+	// EstimatedAmountMinor is kept raw (HU-W2.2-01): a text or a decimal is
+	// a field error of the filing, not a body that is not JSON.
+	EstimatedAmountMinor json.RawMessage `json:"estimated_amount_minor"`
 }
 
 type policyNotEligibleResponse struct {
@@ -299,7 +302,7 @@ func fileWebClaim(svc WebFilingService) http.HandlerFunc {
 		}
 		r := domain.WebFilingRequest{
 			PolicyID: in.PolicyID, IncidentType: in.IncidentType, OccurredAt: in.OccurredAt,
-			Place: in.Place, Description: in.Description,
+			Place: in.Place, Description: in.Description, EstimatedAmountMinor: rawAmount(in.EstimatedAmountMinor),
 		}
 		for _, g := range in.Supports {
 			r.Supports = append(r.Supports, domain.SupportGroup{RequirementCode: g.RequirementCode, SupportIDs: g.SupportIDs})
@@ -347,6 +350,16 @@ func fileWebClaim(svc WebFilingService) http.HandlerFunc {
 		}
 		writeJSON(w, status, detailBody(c, nil))
 	}
+}
+
+// rawAmount is the text of the estimated amount as it came: empty when it is
+// absent or null, the number as written, or a quoted text that the domain
+// reports as invalid_format.
+func rawAmount(raw json.RawMessage) string {
+	if text := string(raw); text != "null" {
+		return text
+	}
+	return ""
 }
 
 func writePolicyCoreError(w http.ResponseWriter, req *http.Request, err error) {
@@ -418,6 +431,10 @@ type claimDetailBody struct {
 	Description string              `json:"description"`
 	Supports    supportsSummaryBody `json:"supports"`
 	Evidence    []evidenceViewBody  `json:"evidence"`
+	// EstimatedAmountMinor is what the insured declared, in cents of COP
+	// (HU-W2.2-01); absent when it was not, so the detail of the claims
+	// filed without it does not change.
+	EstimatedAmountMinor *int64 `json:"estimated_amount_minor,omitempty"`
 }
 
 type claimListResponse struct {
@@ -465,7 +482,8 @@ func detailBody(c domain.ClaimRecord, links []filing.EvidenceLink) claimDetailBo
 		claimSummaryBody: summaryBody(c), Place: c.Place, Description: c.Description,
 		Supports: supportsSummaryBody{RequiredTotal: s.RequiredTotal, RequiredAttached: s.RequiredAttached,
 			Files: s.Files, Items: []supportItemBody{}},
-		Evidence: evidenceBodies(links),
+		Evidence:             evidenceBodies(links),
+		EstimatedAmountMinor: c.EstimatedAmountMinor,
 	}
 	for _, item := range s.Items {
 		body := supportItemBody{RequirementCode: item.RequirementCode, Label: item.Label, Files: []attachedFileBody{}}
