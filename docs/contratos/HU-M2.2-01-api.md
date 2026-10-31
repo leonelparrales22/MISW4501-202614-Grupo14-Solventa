@@ -56,6 +56,7 @@ al confirmar la declaración.
 | `details` | objeto | Opcional. Las respuestas de las preguntas que dependen del tipo de incidente: hasta 20 claves de 1 a 40 caracteres, con valores de hasta 200 |
 | `evidence` | arreglo | Entre 4 y 6 fotografías y hasta un video, ya subidos al repositorio de evidencia. Cada uno con su llave, su captura, su ubicación y su resumen de integridad: [contrato de HU-M2.1-01](HU-M2.1-01-api.md), sección 3 |
 | `declaration_accepted` | booleano | `true`. La declaración bajo gravedad de juramento es la que cierra la radicación |
+| `estimated_amount_minor` | entero | Opcional (paso 2, M11b). Lo que el asegurado estima del daño, en centavos de COP, con las reglas de la radicación web (HU-W2.2-01): de 1 a 10¹³; un decimal o un texto es `invalid_format` y fuera del rango `out_of_range`. Con él el triage calcula la banda de monto y operaciones precarga el costo de la evaluación (HU-W2.2-03). Cuenta en la huella de la radicación solo si viene: las radicaciones sin monto conservan la suya |
 
 ### Respuesta `201`
 
@@ -79,6 +80,7 @@ al confirmar la declaración.
 | `status` | string | `active` al crearse |
 | `filed_at` | RFC 3339, UTC | Instante de la radicación |
 | `evidence_count` | objeto | Lo que quedó asociado al caso: `photos` y `videos` |
+| `estimated_amount_minor` | entero | El monto declarado, en centavos de COP. No viene si no se declaró |
 
 ---
 

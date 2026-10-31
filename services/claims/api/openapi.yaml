@@ -1,9 +1,12 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.8.0
+  version: 0.9.0
   description: >-
-    0.8.0 (HU-W2.2-03): the decision of operations on a claim. POST
+    0.9.0 (HU-M2.2-01): the filing from the phone (POST /v1/claims) takes the
+    optional estimated_amount_minor with the rules of the web filing, and its
+    answer returns it when it was declared; it counts in the fingerprint of
+    the filing only then. 0.8.0 (HU-W2.2-03): the decision of operations on a claim. POST
     /v1/claims/{claim_id}/approval approves it for an amount bounded by the
     insured value of its coverage and pays the amount less the deductible to
     the account of the insured, once per approval; POST
@@ -1259,6 +1262,8 @@ components:
         declaration_accepted:
           type: boolean
           description: The declaration under oath. It must be true.
+        estimated_amount_minor:
+          $ref: "#/components/schemas/EstimatedAmountMinor"
     Claim:
       type: object
       required: [claim_id, filing_number, status, policy_id, incident_type, occurred_at, filed_at]
@@ -1286,6 +1291,10 @@ components:
           format: date-time
         evidence_count:
           $ref: "#/components/schemas/EvidenceCount"
+        estimated_amount_minor:
+          allOf:
+            - $ref: "#/components/schemas/EstimatedAmountMinor"
+          description: What the insured declared; absent when it was not.
     Error:
       type: object
       required: [error, message]
@@ -1634,8 +1643,8 @@ components:
       minimum: 1
       maximum: 10000000000000
       description: >-
-        What the insured estimates the loss at, in cents of COP (HU-W2.2-01).
-        Optional: without it the claim has no estimated amount and its triage
+        What the insured estimates the loss at, in cents of COP (HU-W2.2-01
+        on the web, HU-M2.2-01 on the phone). Optional: without it the claim has no estimated amount and its triage
         amount band is unknown. Outside the range, or not an integer, answers
         422 with the field code out_of_range or invalid_format.
       example: 480000000

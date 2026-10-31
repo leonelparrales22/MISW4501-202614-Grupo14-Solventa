@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -107,6 +108,10 @@ type FilingRequest struct {
 	// Evidence is what was captured in the place and already uploaded to the
 	// evidence store (HU-M2.1-01).
 	Evidence []EvidenceRequest
+	// EstimatedAmountMinor is the optional estimate of the loss in cents of
+	// COP as it came in the request, with the rules of the web filing
+	// (HU-W2.2-01): empty when it was not sent.
+	EstimatedAmountMinor string
 }
 
 // Claim is the filed case. The repository assigns FilingNumber.
@@ -128,6 +133,10 @@ type Claim struct {
 	Evidence []Evidence
 	Status   Status
 	FiledAt  time.Time
+	// EstimatedAmountMinor is what the insured estimated the loss at, in
+	// cents of COP, declared in either channel (HU-W2.2-01 on the web,
+	// HU-M2.2-01 on the phone); nil when it was not declared.
+	EstimatedAmountMinor *int64
 }
 
 // FilingNumber builds the number the insured sees and quotes to support:
@@ -137,8 +146,21 @@ func FilingNumber(at time.Time, sequence int64) string {
 }
 
 // Fingerprint summarizes what was filed. Two filings with the same key are
-// the same filing only when their fingerprints match.
+// the same filing only when their fingerprints match. The estimated amount
+// counts only when it was declared, so the claims filed before it keep their
+// fingerprint and their retries still find them.
 func (c Claim) Fingerprint() string {
+	if c.EstimatedAmountMinor == nil {
+		return c.factsFingerprint()
+	}
+	sum := sha256.Sum256([]byte(c.factsFingerprint() + "\nestimated_amount=" +
+		strconv.FormatInt(*c.EstimatedAmountMinor, 10)))
+	return hex.EncodeToString(sum[:])
+}
+
+// factsFingerprint summarizes the facts of the filing without the estimated
+// amount, which the web fingerprint adds on its own.
+func (c Claim) factsFingerprint() string {
 	keys := make([]string, 0, len(c.Details))
 	for k := range c.Details {
 		keys = append(keys, k)
@@ -205,6 +227,7 @@ func (r FilingRequest) Validate(now time.Time) (Claim, error) {
 
 	details := normalizeDetails(r.Details, bad)
 	evidence := validateEvidence(r.Evidence, occurredAt, now, bad)
+	amount := estimatedAmount(strings.TrimSpace(r.EstimatedAmountMinor), bad)
 
 	// The declaration under oath is a requirement of the filing, not a
 	// preference: without it there is nothing to file.
@@ -224,6 +247,8 @@ func (r FilingRequest) Validate(now time.Time) (Claim, error) {
 		Details:      details,
 		Evidence:     evidence,
 		Status:       StatusActive,
+
+		EstimatedAmountMinor: amount,
 	}, nil
 }
 

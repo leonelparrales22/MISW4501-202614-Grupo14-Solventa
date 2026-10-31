@@ -83,10 +83,9 @@ func TestEachCallReturnsItsOwnPolicy(t *testing.T) {
 func TestTheInputOfAClaim(t *testing.T) {
 	p := domain.TriagePolicyV1()
 	web := domain.ClaimRecord{
-		Claim:                domain.Claim{IncidentType: domain.IncidentWaterDamage},
-		Channel:              domain.ChannelWeb,
-		CatalogVersion:       domain.CatalogVersionV1,
-		EstimatedAmountMinor: amount(4_800_000_00),
+		Claim:          domain.Claim{IncidentType: domain.IncidentWaterDamage, EstimatedAmountMinor: amount(4_800_000_00)},
+		Channel:        domain.ChannelWeb,
+		CatalogVersion: domain.CatalogVersionV1,
 	}
 	in := p.InputOf(web)
 	assert.Equal(t, domain.TriageInput{
@@ -109,8 +108,8 @@ func TestTheCasesOfTheMockup(t *testing.T) {
 	p := domain.TriagePolicyV1()
 	claim := func(incident domain.IncidentType, cop int64) domain.ClaimRecord {
 		return domain.ClaimRecord{
-			Claim:          domain.Claim{IncidentType: incident},
-			CatalogVersion: domain.CatalogVersionV1, EstimatedAmountMinor: amount(cop * 100),
+			Claim:          domain.Claim{IncidentType: incident, EstimatedAmountMinor: amount(cop * 100)},
+			CatalogVersion: domain.CatalogVersionV1,
 		}
 	}
 
