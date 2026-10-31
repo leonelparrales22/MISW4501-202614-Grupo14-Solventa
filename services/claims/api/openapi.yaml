@@ -1,9 +1,16 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.4.0
+  version: 0.5.0
   description: >-
-    0.4.0 (HU-M2.1-01): the evidence of the claim. POST
+    0.5.0 (HU-W2.1-01): the supports of the web filing no longer go through
+    the service. POST /v1/claims/supports declares one file (name, type,
+    size, sha256) and returns the signed URL with which the browser uploads
+    it straight to the object store; POST
+    /v1/claims/supports/{support_id}/confirmation checks what arrived (size,
+    digest and the first bytes of the file) and only a confirmed support can be
+    attached to a claim. The detail of a claim now lists the evidence of the
+    phone, with a signed read of each file. 0.4.0 (HU-M2.1-01): the evidence of the claim. POST
     /v1/claims/evidence/upload-url issues the signed URL with which the phone
     uploads a photograph or a video straight to the evidence bucket, and the
     mobile filing of POST /v1/claims carries the evidence array, which is now
@@ -11,7 +18,7 @@ info:
     checks every key against the store, so a key that is not there answers 422
     with the field code not_stored, and the answer counts what ended up with
     the case. 0.3.0 (HU-W2.1-01): filing of the claim with supports from the web portal
-    (filing options, upload of a support, web filing), the insured's list of
+    (filing options, supports, web filing), the insured's list of
     claims, the detail of a claim and the filing receipt in PDF. 0.2.0
     (HU-M2.2-01): filing of the claim from the guided assistant of the mobile
     app.
@@ -281,33 +288,31 @@ paths:
                 $ref: "#/components/schemas/Error"
   /v1/claims/supports:
     post:
-      summary: Upload one support of a claim (HU-W2.1-01)
+      summary: Declare one support of a claim and get its signed upload (HU-W2.1-01)
       description: >-
-        Uploads one file, before the filing references it by its support_id.
-        The type is told by the content of the file, never by its extension
-        or by the declared Content-Type: JPG, PNG or PDF, of up to 10 MiB
-        (10485760 bytes). A rejected file does not affect the supports already
-        uploaded (criterion 5). The support belongs to the subject of the token
-        and can be attached to one claim only. Mounted only when the policy
-        core is configured (POLICY_CORE_URL). Provisional until HU-M2.1-01: the
-        file goes through the service; it will move to a signed upload URL.
+        Declares a file before the filing references it by its support_id. The
+        service checks the declaration (type JPG, PNG or PDF, of 1 byte to 10
+        MiB = 10485760 bytes, and its sha256) and returns a signed URL: the
+        browser uploads the file there with a PUT carrying exactly the
+        upload_headers, and then confirms it with
+        /v1/claims/supports/{support_id}/confirmation. The file never crosses
+        this service nor the API Gateway, so the 10 MB payload limit of the
+        gateway does not apply to it. A rejected file does not affect the
+        supports already declared (criterion 5). The support belongs to the
+        subject of the token and can be attached to one claim only. Mounted only
+        when the policy core (POLICY_CORE_URL) and the object store
+        (EVIDENCE_BUCKET) are configured.
       security:
         - cognitoJwt: []
       requestBody:
         required: true
         content:
-          multipart/form-data:
+          application/json:
             schema:
-              type: object
-              required: [file]
-              properties:
-                file:
-                  type: string
-                  format: binary
-                  description: Exactly one file part, named "file".
+              $ref: "#/components/schemas/SupportDeclaration"
       responses:
         "201":
-          description: The support was stored
+          description: The support was declared; upload the file to upload_url
           headers:
             Cache-Control:
               schema:
@@ -316,9 +321,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SupportFile"
+                $ref: "#/components/schemas/SupportUpload"
         "400":
-          description: invalid_request - the body is not multipart/form-data with exactly one "file" part
+          description: invalid_request - the body is not valid JSON
           content:
             application/json:
               schema:
@@ -336,27 +341,101 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "413":
-          description: file_too_large - the file is larger than 10 MiB
+          description: file_too_large - the declared size is larger than 10 MiB
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "415":
-          description: unsupported_file_type - the content is not JPG, PNG or PDF
+          description: unsupported_file_type - the declared type is not JPG, PNG or PDF
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "422":
-          description: empty_file - the file has no content
+          description: empty_file (the declared size is not positive) or validation_failed (the sha256)
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/ValidationError"
         "429":
           description: >-
             too_many_pending_supports - the insured already has 50 supports
             not attached to any claim
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: supports_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/supports/{support_id}/confirmation:
+    post:
+      summary: Confirm that the file of a support was uploaded (HU-W2.1-01)
+      description: >-
+        Checks the object that the browser uploaded against the declaration: it
+        is in the store, has the declared size and digest, and its first bytes
+        are the declared format. The type is told by the content, never by the
+        extension or the declared Content-Type: a renamed executable is
+        refused (415). Confirming twice is harmless. Until it is confirmed the
+        support cannot be attached to a claim (the filing answers not_found).
+        A support of another insured answers 404, the same as one that does
+        not exist.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: support_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^sup-[0-9a-f]{32}$'
+      responses:
+        "200":
+          description: The upload matches its declaration
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfirmedSupport"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: support_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: unsupported_file_type - the content is not the JPG, PNG or PDF that was declared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            support_not_uploaded (the file is not in the store yet; upload it
+            and confirm again) or support_mismatch (its size or digest are not
+            the declared ones)
           content:
             application/json:
               schema:
@@ -372,7 +451,7 @@ paths:
       summary: File a claim with its supports from the web portal (HU-W2.1-01)
       description: >-
         Creates the case in status active with its filing number, attached to
-        the supports already uploaded (criterion 4). The form is checked first
+        the supports already uploaded and confirmed (criterion 4). The form is checked first
         and every missing or invalid field and support is reported at once
         (criterion 2); then the policy is looked up among the insured's own:
         it must be active, cover the claim type and the incident must have
@@ -870,9 +949,27 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/FileFormat"
-    SupportFile:
+    SupportDeclaration:
       type: object
-      required: [support_id, file_name, content_type, byte_size, sha256, uploaded_at]
+      required: [file_name, content_type, byte_size, sha256]
+      description: What the portal declares about a file it holds, before uploading it.
+      properties:
+        file_name:
+          type: string
+          description: Shown to the insured; directories and control characters are removed, up to 120 characters.
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, application/pdf]
+        byte_size:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 10485760
+        sha256:
+          $ref: "#/components/schemas/SHA256"
+    SupportUpload:
+      type: object
+      required: [support_id, file_name, content_type, byte_size, sha256, upload_url, upload_headers, expires_at]
       properties:
         support_id:
           type: string
@@ -880,19 +977,50 @@ components:
         file_name:
           type: string
           maxLength: 120
-          description: The name the file was uploaded with, without directories or control characters.
         content_type:
           type: string
           enum: [image/jpeg, image/png, application/pdf]
-          description: Told by the content of the file.
         byte_size:
           type: integer
           minimum: 1
           maximum: 10485760
         sha256:
+          $ref: "#/components/schemas/SHA256"
+        upload_url:
           type: string
-          pattern: '^[0-9a-f]{64}$'
-        uploaded_at:
+          format: uri
+          description: Signed URL of the PUT. It expires in 10 minutes.
+        upload_headers:
+          type: object
+          description: >-
+            The headers the PUT has to carry, exactly these: the signature
+            covers them. Authorization is not one of them.
+          additionalProperties:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+    ConfirmedSupport:
+      type: object
+      required: [support_id, file_name, content_type, byte_size, sha256, confirmed_at]
+      properties:
+        support_id:
+          type: string
+          pattern: '^sup-[0-9a-f]{32}$'
+        file_name:
+          type: string
+          maxLength: 120
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, application/pdf]
+          description: Checked against the content of the file.
+        byte_size:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+        sha256:
+          $ref: "#/components/schemas/SHA256"
+        confirmed_at:
           type: string
           format: date-time
     WebFilingRequest:
@@ -922,8 +1050,10 @@ components:
         supports:
           type: array
           description: >-
-            The uploaded supports, grouped by the requirement of the catalog
-            they answer. At most 20 files in all.
+            The confirmed supports, grouped by the requirement of the catalog
+            they answer. At most 20 files in all. A support that does not
+            exist, is not the insured's, is repeated or was never confirmed
+            answers not_found.
           maxItems: 20
           items:
             $ref: "#/components/schemas/SupportGroup"
@@ -1003,7 +1133,7 @@ components:
                   $ref: "#/components/schemas/AttachedFile"
     ClaimDetail:
       type: object
-      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, place, description, filed_at, supports]
+      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, place, description, filed_at, supports, evidence]
       properties:
         claim_id:
           type: string
@@ -1034,6 +1164,53 @@ components:
           format: date-time
         supports:
           $ref: "#/components/schemas/SupportsSummary"
+        evidence:
+          type: array
+          description: >-
+            The photographs and the video that the insured captured in the
+            place of the incident, in the order of capture (HU-M2.1-01). Empty
+            in a claim filed on the web, whose files are the supports.
+          items:
+            $ref: "#/components/schemas/EvidenceView"
+    EvidenceView:
+      type: object
+      required: [kind, content_type, captured_at, latitude, longitude, accuracy_m, location_trusted, byte_size, duration_s, download_url, download_expires_at]
+      properties:
+        kind:
+          $ref: "#/components/schemas/EvidenceKind"
+        content_type:
+          type: string
+          enum: [image/jpeg, video/mp4]
+        captured_at:
+          type: string
+          format: date-time
+        latitude:
+          type: number
+        longitude:
+          type: number
+        accuracy_m:
+          type: number
+        location_trusted:
+          type: boolean
+          description: False when the precision of the location was worse than 50 m.
+        byte_size:
+          type: integer
+          format: int64
+        duration_s:
+          type: integer
+          description: Seconds of a video; 0 in a photograph.
+        download_url:
+          type: string
+          format: uri
+          nullable: true
+          description: >-
+            Signed URL that reads the file. It expires at download_expires_at
+            (10 minutes). Null when it could not be signed: the rest of the
+            detail is still valid.
+        download_expires_at:
+          type: string
+          format: date-time
+          nullable: true
     ClaimSummary:
       type: object
       required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, filed_at]

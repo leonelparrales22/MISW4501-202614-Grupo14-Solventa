@@ -13,16 +13,18 @@ Levanta el servicio real en Docker y corre [Schemathesis](https://schemathesis.r
 |---|---|
 | `postgres-claims` | Base de datos propia de `claims` (migraciones al arrancar) |
 | `policy-core` | Stub del core de pólizas (HU-W2.1-01), puerto 9060 |
-| `moto` | Cognito local: emite los tokens de las rutas humanas (sembrado con `tests/security/ha-s01/local/seed.sh`) |
-| `claims` | El servicio con `DATABASE_URL`, `POLICY_CORE_URL` y `AUTH_*` |
+| `moto` | Cognito local: emite los tokens de las rutas humanas (sembrado con `tests/security/ha-s01/local/seed.sh`), y S3 local: el *bucket* `claims-evidence` donde se firman las subidas de los soportes |
+| `claims` | El servicio con `DATABASE_URL`, `POLICY_CORE_URL`, `EVIDENCE_BUCKET`/`EVIDENCE_ENDPOINT_URL` y `AUTH_*` |
 | `schemathesis` | Se lanza bajo demanda con `docker compose run` |
 
 ## Qué prueba
 
-1. **Como asegurado:** la radicación móvil (HU-M2.2-01) y todas las rutas de HU-W2.1-01: opciones, subida de un soporte,
+1. **Como asegurado:** la radicación móvil (HU-M2.2-01) y todas las rutas de HU-W2.1-01: opciones, declaración y confirmación de un soporte,
    radicación web, listado, detalle y comprobante. Las pólizas generadas no son del asegurado y los ids no existen, así que se
    alcanzan las respuestas `422` y `404`.
 2. **Como asesor:** todas las rutas responden `403`.
+
+`POST /v1/claims` (móvil, HU-M2.1-01) pide de 4 a 6 elementos de evidencia con llaves propias, así que Hypothesis descarta casi todo lo que genera para esa ruta; por eso el script suprime el chequeo de salud `filter_too_much`. Las respuestas que sí alcanza se validan igual.
 
 El script termina con un código distinto de cero si algún chequeo falla, y siempre elimina el entorno (`down -v`).
 
