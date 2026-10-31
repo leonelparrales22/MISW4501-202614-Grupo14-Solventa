@@ -26,6 +26,17 @@ variable "tags" {
   default     = {}
 }
 
+variable "cors_allowed_origins" {
+  description = "Origins whose browsers may upload to and read from the bucket with signed URLs (HU-W2.1-01: the web portal uploads the supports of a claim straight to it). Empty keeps the bucket without CORS, as before."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for o in var.cors_allowed_origins : can(regex("^https?://[^/*]+$", o))])
+    error_message = "cors_allowed_origins must be origins (scheme and host, no path, no trailing slash and no wildcard)."
+  }
+}
+
 variable "extra_policy_json" {
   description = "Optional IAM policy JSON whose statements are merged into the bucket policy (for example, read access for a CloudFront distribution). Null keeps the TLS-only policy."
   type        = string
