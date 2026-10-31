@@ -144,8 +144,8 @@ func amount(cop int64) *int64 {
 func waterDamage(id string, cop *int64) domain.ClaimRecord {
 	return domain.ClaimRecord{
 		Claim: domain.Claim{ID: id, Subject: "sub-carolina", IncidentType: domain.IncidentWaterDamage,
-			Status: domain.StatusActive, FiledAt: filedAt},
-		Channel: domain.ChannelWeb, CatalogVersion: domain.CatalogVersionV1, EstimatedAmountMinor: cop,
+			Status: domain.StatusActive, FiledAt: filedAt, EstimatedAmountMinor: cop},
+		Channel: domain.ChannelWeb, CatalogVersion: domain.CatalogVersionV1,
 	}
 }
 

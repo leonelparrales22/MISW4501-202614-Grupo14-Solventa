@@ -84,9 +84,6 @@ type ClaimRecord struct {
 	Policy         *Policy
 	CatalogVersion string
 	Supports       []AttachedSupport
-	// EstimatedAmountMinor is what the insured estimated the loss at, in
-	// cents of COP (HU-W2.2-01); nil when it was not declared.
-	EstimatedAmountMinor *int64
 }
 
 // WebFingerprint summarizes a web filing. Two filings with the same key are
@@ -94,7 +91,7 @@ type ClaimRecord struct {
 func (c ClaimRecord) WebFingerprint() string {
 	var b strings.Builder
 	b.WriteString(string(ChannelWeb) + "\n")
-	b.WriteString(c.Fingerprint() + "\n")
+	b.WriteString(c.factsFingerprint() + "\n")
 	for _, s := range c.Supports {
 		b.WriteString(s.RequirementCode + "=" + s.File.ID + "\n")
 	}
@@ -178,11 +175,12 @@ func (r WebFilingRequest) Validate(now time.Time, catalog Catalog, subject strin
 			Description:  description,
 			Details:      map[string]string{},
 			Status:       StatusActive,
+
+			EstimatedAmountMinor: amount,
 		},
-		Channel:              ChannelWeb,
-		CatalogVersion:       catalog.Version,
-		Supports:             supports,
-		EstimatedAmountMinor: amount,
+		Channel:        ChannelWeb,
+		CatalogVersion: catalog.Version,
+		Supports:       supports,
 	}, nil
 }
 

@@ -62,9 +62,9 @@ func claimInEvaluation() domain.ClaimRecord {
 			ID: claimID, FilingNumber: "SIN-2026-01655", Subject: "sub-carolina", PolicyID: "HG-2025-880231",
 			IncidentType: domain.IncidentWaterDamage, OccurredAt: radicadoEn.Add(-21 * time.Hour),
 			Place: "Carrera 15 # 93-40", Description: "Filtración desde el apartamento superior.",
-			Status: domain.StatusActive, FiledAt: radicadoEn,
+			Status: domain.StatusActive, FiledAt: radicadoEn, EstimatedAmountMinor: &amount,
 		},
-		Channel: domain.ChannelWeb, EstimatedAmountMinor: &amount,
+		Channel: domain.ChannelWeb,
 	}
 }
 

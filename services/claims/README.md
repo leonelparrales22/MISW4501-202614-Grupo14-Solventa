@@ -33,6 +33,9 @@ y `GET /v1/claims/triage-policy`; la radicación web gana el monto estimado opci
 - **Tipos de incidente:** `collision`, `theft`, `third_party_damage` y `other`, los cuatro del prototipo.
 - **La declaración bajo gravedad de juramento** cierra la radicación: sin ella la solicitud se rechaza.
 - Las respuestas de las preguntas que dependen del tipo viajan en `details` y se guardan como JSON.
+- **Monto estimado, opcional:** `estimated_amount_minor` en centavos de COP, con las reglas de la web (HU-W2.2-01), en la misma
+  columna `claim.estimated_amount_minor`. Con él el triage calcula la banda de monto de los casos del móvil. Solo cuenta en la
+  huella si se declaró.
 
 La evidencia no viaja en este cuerpo: ya está en el repositorio cuando se radica, y aquí van sus llaves y sus
 metadatos. Entre 4 y 6 fotografías y hasta un video.
