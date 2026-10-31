@@ -452,3 +452,34 @@ func TestTheComplianceRoutesOnlyAnswerTheirMethods(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, complianceDo(h, http.MethodGet, "/v1/audit/consents/cns-c-active/revocation-retries", "operations", "", nil).Code)
 	assert.Equal(t, http.StatusMethodNotAllowed, complianceDo(h, http.MethodDelete, "/v1/audit/consents/cns-c-active/revocations", "operations", "", nil).Code)
 }
+
+// HU-W4.2-01 (decision D-3 a): the state carries what the detail of the
+// portal needs for its criterion 4, only adding fields.
+func TestTheStateCarriesTheGrantTheValidityThePurposeAndTheChannels(t *testing.T) {
+	h := complianceRouter(newComplianceFake())
+
+	active := decodeMap(t, complianceDo(h, http.MethodGet, "/v1/audit/consents/cns-c-active/revocation", "operations", "", nil))
+	assert.Equal(t, "2026-09-24T20:00:00Z", active["granted_at"])
+	assert.Equal(t, "2027-09-24T20:00:00Z", active["expires_at"], "12 months after the grant")
+	assert.Nil(t, active["ended_at"], "still current")
+	assert.Equal(t, "risk_profiling_mortgage_life_offer", active["purpose"])
+	assert.Equal(t, "embedded", active["grant_channel"])
+	assert.Equal(t, "v1", active["terms_version"])
+	granted := active["history"].([]any)[0].(map[string]any)
+	assert.Equal(t, "granted", granted["status"])
+	assert.Equal(t, "embedded", granted["channel"], "the channel of the grant")
+
+	partial := decodeMap(t, complianceDo(h, http.MethodGet, "/v1/audit/consents/cns-c-partial/revocation", "operations", "", nil))
+	assert.Equal(t, "2026-10-24T20:00:01.123456Z", partial["ended_at"], "it ended when the revocation took effect")
+	history := partial["history"].([]any)
+	require.Len(t, history, 4)
+	assert.Equal(t, "compliance_portal", history[1].(map[string]any)["channel"])
+	assert.Equal(t, "compliance_portal", history[2].(map[string]any)["channel"])
+	assert.Nil(t, history[3].(map[string]any)["channel"], "an event of an entity has no channel")
+
+	expired := decodeMap(t, complianceDo(h, http.MethodGet, "/v1/audit/consents/cns-c-expired/revocation", "operations", "", nil))
+	assert.Equal(t, "expired", expired["status"])
+	for _, key := range []string{"granted_at", "expires_at", "ended_at", "purpose", "grant_channel", "terms_version"} {
+		assert.Contains(t, expired, key)
+	}
+}
