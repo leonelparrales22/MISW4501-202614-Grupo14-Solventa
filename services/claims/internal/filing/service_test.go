@@ -24,13 +24,13 @@ type fixedClock struct{ t time.Time }
 
 func (c fixedClock) Now() time.Time { return c.t }
 
-func service() (*memory.ClaimStore, *filing.Service) {
+func service() (*memory.CaseStore, *filing.Service) {
 	claims, _, svc := serviceWithEvidence()
 	return claims, svc
 }
 
-func serviceWithEvidence() (*memory.ClaimStore, *evidenceFalsa, *filing.Service) {
-	claims := memory.NewClaimStore()
+func serviceWithEvidence() (*memory.CaseStore, *evidenceFalsa, *filing.Service) {
+	claims := memory.NewCaseStore()
 	store := nuevoAlmacenDeEvidencia()
 	for _, e := range request().Evidence {
 		store.guardar(e.ObjectKey, e.ByteSize, e.SHA256)

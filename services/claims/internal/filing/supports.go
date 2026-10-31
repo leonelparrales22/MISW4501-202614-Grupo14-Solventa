@@ -3,84 +3,141 @@ package filing
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
 )
 
+// SupportUploadTTL is how long a signed upload of a support is good for.
+const SupportUploadTTL = 10 * time.Minute
+
+// signatureBytes is how much of a stored file is read to tell its format: the
+// longest signature is the 8 bytes of a PNG.
+const signatureBytes = 8
+
 // SupportService receives the supports of a web filing, one file at a time
 // (HU-W2.1-01 criterion 5): a refused file never affects the ones already
-// uploaded.
-//
-// Provisional (HU-W2.1-01 §9): the file goes through the service. With the
-// evidence store of HU-M2.1-01 the client will upload it to S3 with a signed
-// URL and this service will only check what arrived.
+// uploaded. The file goes from the browser to the object store with a signed
+// URL; the service declares it, signs it and, once uploaded, checks it.
 type SupportService struct {
-	store ports.SupportStore
-	clock ports.Clock
-	newID func() (string, error)
+	store   ports.SupportStore
+	objects ports.ObjectStore
+	clock   ports.Clock
+	newID   func() (string, error)
 }
 
 // NewSupportService builds the service.
-func NewSupportService(store ports.SupportStore, clock ports.Clock) *SupportService {
-	return &SupportService{store: store, clock: clock, newID: newSupportID}
+func NewSupportService(store ports.SupportStore, objects ports.ObjectStore, clock ports.Clock) *SupportService {
+	return &SupportService{store: store, objects: objects, clock: clock, newID: newSupportID}
 }
 
-// Upload stores one support of the subject. The format is told by the content;
-// it reads at most one byte more than the limit, so a larger body is cut, not
-// loaded.
+// SupportUpload is the answer to a declaration: the support and how to put its
+// file in the store.
+type SupportUpload struct {
+	File      domain.SupportFile
+	URL       string
+	Headers   map[string]string
+	ExpiresAt time.Time
+}
+
+// Declare registers one support of the subject and signs the upload of its
+// file. The size and the type are checked here, from the declaration; the
+// content is checked by Confirm.
 //
 // Errors: domain.ErrTooManyPendingSupports, domain.ErrFileTooLarge,
-// domain.ErrEmptyFile and domain.ErrUnsupportedFileType.
-func (s *SupportService) Upload(ctx context.Context, subject, fileName string, body io.Reader) (domain.SupportFile, error) {
+// domain.ErrEmptyFile, domain.ErrUnsupportedFileType and *domain.ValidationError.
+func (s *SupportService) Declare(ctx context.Context, subject string, r domain.SupportUploadRequest) (SupportUpload, error) {
+	u, err := r.Validate()
+	if err != nil {
+		return SupportUpload{}, err
+	}
 	pending, err := s.store.CountPending(ctx, subject)
 	if err != nil {
-		return domain.SupportFile{}, fmt.Errorf("count the pending supports: %w", err)
+		return SupportUpload{}, fmt.Errorf("count the pending supports: %w", err)
 	}
 	if pending >= domain.MaxPendingSupports {
-		return domain.SupportFile{}, domain.ErrTooManyPendingSupports
-	}
-
-	content, err := io.ReadAll(io.LimitReader(body, domain.MaxSupportBytes+1))
-	if err != nil {
-		return domain.SupportFile{}, fmt.Errorf("read the file: %w", err)
-	}
-	switch {
-	case len(content) > domain.MaxSupportBytes:
-		return domain.SupportFile{}, domain.ErrFileTooLarge
-	case len(content) == 0:
-		return domain.SupportFile{}, domain.ErrEmptyFile
-	}
-	format, ok := domain.DetectFormat(content)
-	if !ok {
-		return domain.SupportFile{}, domain.ErrUnsupportedFileType
+		return SupportUpload{}, domain.ErrTooManyPendingSupports
 	}
 
 	id, err := s.newID()
 	if err != nil {
-		return domain.SupportFile{}, err
+		return SupportUpload{}, err
 	}
-	sum := sha256.Sum256(content)
 	f := domain.SupportFile{
 		ID:           id,
 		OwnerSubject: subject,
-		FileName:     domain.SanitizeFileName(fileName),
-		Format:       format,
-		ByteSize:     int64(len(content)),
-		SHA256:       hex.EncodeToString(sum[:]),
+		FileName:     u.FileName,
+		Format:       u.Format,
+		ByteSize:     u.ByteSize,
+		SHA256:       u.SHA256,
 		// PostgreSQL keeps microseconds: truncating here makes the value the
 		// caller gets equal to the stored one.
 		UploadedAt: s.clock.Now().UTC().Truncate(time.Microsecond),
 	}
-	if err := s.store.Save(ctx, f, content); err != nil {
-		return domain.SupportFile{}, fmt.Errorf("store the support: %w", err)
+	signed, err := s.objects.SignUpload(ctx, f.ObjectKey(), domain.Upload{
+		ContentType: f.ContentType(), ByteSize: f.ByteSize, SHA256: f.SHA256,
+	}, SupportUploadTTL)
+	if err != nil {
+		return SupportUpload{}, fmt.Errorf("sign the upload of the support: %w", err)
 	}
-	return f, nil
+	if err := s.store.Save(ctx, f); err != nil {
+		return SupportUpload{}, fmt.Errorf("store the support: %w", err)
+	}
+	return SupportUpload{File: f, URL: signed.URL, Headers: signed.Headers, ExpiresAt: signed.ExpiresAt}, nil
+}
+
+// Confirm checks the file the browser uploaded against its declaration: it is
+// in the store, has the declared size and digest, and its first bytes are the
+// format that was declared (the extension and the media type are never
+// trusted: a renamed executable is not a PDF). Confirming twice is harmless.
+//
+// Errors: domain.ErrSupportNotFound (it does not exist or is not the
+// subject's), domain.ErrSupportNotUploaded, domain.ErrSupportMismatch and
+// domain.ErrUnsupportedFileType.
+func (s *SupportService) Confirm(ctx context.Context, subject, id string) (domain.SupportFile, error) {
+	found, err := s.store.Find(ctx, []string{id})
+	if err != nil {
+		return domain.SupportFile{}, fmt.Errorf("read the support: %w", err)
+	}
+	f, ok := found[id]
+	if !ok || f.OwnerSubject != subject {
+		return domain.SupportFile{}, domain.ErrSupportNotFound
+	}
+	if f.Confirmed() {
+		return f, nil
+	}
+
+	stored, err := s.objects.Stat(ctx, f.ObjectKey())
+	switch {
+	case errors.Is(err, ports.ErrEvidenceNotFound):
+		return domain.SupportFile{}, domain.ErrSupportNotUploaded
+	case err != nil:
+		return domain.SupportFile{}, fmt.Errorf("read the file of the support: %w", err)
+	// The digest is compared only when the storage computes its own.
+	case stored.ByteSize != f.ByteSize, stored.SHA256 != "" && stored.SHA256 != f.SHA256:
+		return domain.SupportFile{}, domain.ErrSupportMismatch
+	}
+
+	head, err := s.objects.Head(ctx, f.ObjectKey(), signatureBytes)
+	switch {
+	case errors.Is(err, ports.ErrEvidenceNotFound):
+		return domain.SupportFile{}, domain.ErrSupportNotUploaded
+	case err != nil:
+		return domain.SupportFile{}, fmt.Errorf("read the start of the file of the support: %w", err)
+	}
+	if format, ok := domain.DetectFormat(head); !ok || format != f.Format {
+		return domain.SupportFile{}, domain.ErrUnsupportedFileType
+	}
+
+	confirmed, err := s.store.Confirm(ctx, id, s.clock.Now().UTC().Truncate(time.Microsecond))
+	if err != nil {
+		return domain.SupportFile{}, fmt.Errorf("confirm the support: %w", err)
+	}
+	return confirmed, nil
 }
 
 // newSupportID returns "sup-" and 128 random bits in hexadecimal.

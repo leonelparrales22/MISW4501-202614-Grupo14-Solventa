@@ -1,13 +1,10 @@
 package httpadapter
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
-	"mime/multipart"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -27,9 +24,11 @@ type WebFilingService interface {
 	File(ctx context.Context, subject, key string, r domain.WebFilingRequest) (domain.ClaimRecord, bool, error)
 }
 
-// SupportUploader is the use case behind the upload of a support.
+// SupportUploader is the use case behind the supports: the declaration of a
+// file, which returns where to upload it, and the confirmation of the upload.
 type SupportUploader interface {
-	Upload(ctx context.Context, subject, fileName string, body io.Reader) (domain.SupportFile, error)
+	Declare(ctx context.Context, subject string, r domain.SupportUploadRequest) (filing.SupportUpload, error)
+	Confirm(ctx context.Context, subject, id string) (domain.SupportFile, error)
 }
 
 // ClaimReader is the use case behind the reads of the insured's claims.
@@ -37,19 +36,8 @@ type ClaimReader interface {
 	List(ctx context.Context, subject string, q filing.ClaimQuery) (filing.ClaimPage, error)
 	Get(ctx context.Context, id string) (domain.ClaimRecord, error)
 	Receipt(ctx context.Context, id string) (domain.ClaimRecord, []byte, error)
+	EvidenceLinks(ctx context.Context, c domain.ClaimRecord) []filing.EvidenceLink
 }
-
-const (
-	// maxUploadBytes bounds the multipart body: one file of 10 MiB plus its
-	// envelope.
-	maxUploadBytes = domain.MaxSupportBytes + 64<<10
-	// uploadReadTimeout replaces the ReadTimeout of the server on the upload
-	// route only: 10 MiB on a slow connection takes longer than 10 s.
-	//
-	// Provisional (HU-W2.1-01 §9): with signed upload URLs the file no longer
-	// goes through the service.
-	uploadReadTimeout = 60 * time.Second
-)
 
 var (
 	claimIDPattern  = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
@@ -71,14 +59,15 @@ func WithClaimReads(svc ClaimReader, verifier security.Verifier) Option {
 }
 
 // WithWebFilings mounts the web filing with supports (HU-W2.1-01): the filing
-// options, the upload of a support and the filing. Only an insured files,
+// options, the declaration and confirmation of a support, and the filing. Only an insured files,
 // always on their own behalf.
 func WithWebFilings(svc WebFilingService, supports SupportUploader, verifier security.Verifier) Option {
 	return func(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(noStore, security.Authenticate(verifier), security.RequireRole(security.RoleInsured))
 			r.Get("/v1/claims/filing-options", filingOptions(svc))
-			r.Post("/v1/claims/supports", uploadSupport(supports))
+			r.Post("/v1/claims/supports", declareSupport(supports))
+			r.Post("/v1/claims/supports/{support_id}/confirmation", confirmSupport(supports))
 			r.Post("/v1/claims/web-filings", fileWebClaim(svc))
 		})
 	}
@@ -151,43 +140,55 @@ func filingOptions(svc WebFilingService) http.HandlerFunc {
 	}
 }
 
-// --- Upload of a support ----------------------------------------------------
+// --- Supports ---------------------------------------------------------------
 
-type supportFileResponse struct {
+type declareSupportRequest struct {
+	FileName    string `json:"file_name"`
+	ContentType string `json:"content_type"`
+	ByteSize    int64  `json:"byte_size"`
+	SHA256      string `json:"sha256"`
+}
+
+type declareSupportResponse struct {
+	SupportID   string `json:"support_id"`
+	FileName    string `json:"file_name"`
+	ContentType string `json:"content_type"`
+	ByteSize    int64  `json:"byte_size"`
+	SHA256      string `json:"sha256"`
+	UploadURL   string `json:"upload_url"`
+	// UploadHeaders are the headers the PUT has to carry, exactly these: the
+	// signature covers them.
+	UploadHeaders map[string]string `json:"upload_headers"`
+	ExpiresAt     time.Time         `json:"expires_at"`
+}
+
+type confirmedSupportResponse struct {
 	SupportID   string    `json:"support_id"`
 	FileName    string    `json:"file_name"`
 	ContentType string    `json:"content_type"`
 	ByteSize    int64     `json:"byte_size"`
 	SHA256      string    `json:"sha256"`
-	UploadedAt  time.Time `json:"uploaded_at"`
+	ConfirmedAt time.Time `json:"confirmed_at"`
 }
 
-// errExtraFilePart means the body brought more than one "file" part.
-var errExtraFilePart = errors.New("more than one file part")
-
-func uploadSupport(svc SupportUploader) http.HandlerFunc {
+func declareSupport(svc SupportUploader) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		// The server's ReadTimeout is too short for 10 MiB on a slow
-		// connection. A writer that cannot extend it (tests) keeps the default.
-		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(uploadReadTimeout))
-		req.Body = http.MaxBytesReader(w, req.Body, maxUploadBytes)
-
-		name, content, err := readFilePart(req)
-		var tooLarge *http.MaxBytesError
-		switch {
-		case errors.As(err, &tooLarge), errors.Is(err, domain.ErrFileTooLarge):
-			writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", "the file is larger than 10 MiB")
-			return
-		case err != nil:
-			writeError(w, http.StatusBadRequest, "invalid_request",
-				"the body must be multipart/form-data with exactly one part named \"file\"")
+		var in declareSupportRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, maxBodyBytes)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
 			return
 		}
 
 		claims, _ := security.ClaimsFromContext(req.Context())
-		f, err := svc.Upload(req.Context(), claims.Subject, name, content)
+		up, err := svc.Declare(req.Context(), claims.Subject, domain.SupportUploadRequest{
+			FileName: in.FileName, ContentType: in.ContentType, ByteSize: in.ByteSize, SHA256: in.SHA256,
+		})
+		var invalid *domain.ValidationError
 		switch {
 		case err == nil:
+		case errors.As(err, &invalid):
+			writeValidationError(w, invalid)
+			return
 		case errors.Is(err, domain.ErrFileTooLarge):
 			writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", "the file is larger than 10 MiB")
 			return
@@ -202,68 +203,54 @@ func uploadSupport(svc SupportUploader) http.HandlerFunc {
 				"there are too many supports not attached to a claim")
 			return
 		default:
-			slog.ErrorContext(req.Context(), "could not store the support", "error", err)
-			writeError(w, http.StatusServiceUnavailable, "supports_unavailable", "the support could not be stored; retry")
+			slog.ErrorContext(req.Context(), "could not declare the support", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "supports_unavailable", "the upload could not be prepared; retry")
 			return
 		}
-		writeJSON(w, http.StatusCreated, supportFileResponse{
-			SupportID: f.ID, FileName: f.FileName, ContentType: f.ContentType(), ByteSize: f.ByteSize,
-			SHA256: f.SHA256, UploadedAt: f.UploadedAt,
+		f := up.File
+		writeJSON(w, http.StatusCreated, declareSupportResponse{
+			SupportID: f.ID, FileName: f.FileName, ContentType: f.ContentType(), ByteSize: f.ByteSize, SHA256: f.SHA256,
+			UploadURL: up.URL, UploadHeaders: up.Headers, ExpiresAt: up.ExpiresAt.UTC(),
 		})
 	}
 }
 
-// readFilePart reads the only part named "file" of a multipart body, at most
-// one byte over the limit of a support. Other parts are skipped; a second
-// "file" part is an error.
-func readFilePart(req *http.Request) (string, io.Reader, error) {
-	mr, err := req.MultipartReader()
-	if err != nil {
-		return "", nil, err
-	}
-	var (
-		name    string
-		content []byte
-		found   bool
-	)
-	for {
-		part, err := mr.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
+func confirmSupport(svc SupportUploader) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		id := chi.URLParam(req, "support_id")
+		if !domain.ValidSupportID(id) {
+			writeError(w, http.StatusNotFound, "support_not_found", "there is no support with that id")
+			return
 		}
-		if err != nil {
-			return "", nil, err
+		claims, _ := security.ClaimsFromContext(req.Context())
+		f, err := svc.Confirm(req.Context(), claims.Subject, id)
+		switch {
+		case err == nil:
+		case errors.Is(err, domain.ErrSupportNotFound):
+			writeError(w, http.StatusNotFound, "support_not_found", "there is no support with that id")
+			return
+		case errors.Is(err, domain.ErrSupportNotUploaded):
+			writeError(w, http.StatusUnprocessableEntity, "support_not_uploaded",
+				"the file has not reached the storage yet; upload it and confirm again")
+			return
+		case errors.Is(err, domain.ErrSupportMismatch):
+			writeError(w, http.StatusUnprocessableEntity, "support_mismatch",
+				"the uploaded file is not the one declared (size or digest)")
+			return
+		case errors.Is(err, domain.ErrUnsupportedFileType):
+			writeError(w, http.StatusUnsupportedMediaType, "unsupported_file_type",
+				"the content of the file is not the JPG, PNG or PDF that was declared")
+			return
+		default:
+			slog.ErrorContext(req.Context(), "could not confirm the support", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "supports_unavailable", "the support could not be checked; retry")
+			return
 		}
-		if part.FormName() != "file" {
-			if _, err := io.Copy(io.Discard, part); err != nil {
-				return "", nil, err
-			}
-			continue
-		}
-		if found {
-			return "", nil, errExtraFilePart
-		}
-		found = true
-		name = part.FileName()
-		if content, err = readPart(part); err != nil {
-			return "", nil, err
-		}
+		writeJSON(w, http.StatusOK, confirmedSupportResponse{
+			SupportID: f.ID, FileName: f.FileName, ContentType: f.ContentType(), ByteSize: f.ByteSize,
+			SHA256: f.SHA256, ConfirmedAt: f.ConfirmedAt.UTC(),
+		})
 	}
-	if !found {
-		return "", nil, errors.New("no file part")
-	}
-	return name, bytes.NewReader(content), nil
-}
-
-func readPart(part *multipart.Part) ([]byte, error) {
-	content, err := io.ReadAll(io.LimitReader(part, domain.MaxSupportBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(content) > domain.MaxSupportBytes {
-		return nil, domain.ErrFileTooLarge
-	}
-	return content, nil
 }
 
 // --- Web filing -------------------------------------------------------------
@@ -358,7 +345,7 @@ func fileWebClaim(svc WebFilingService) http.HandlerFunc {
 			slog.InfoContext(req.Context(), "web claim filed",
 				"claim_id", c.ID, "filing_number", c.FilingNumber, "supports", len(c.Supports))
 		}
-		writeJSON(w, status, detailBody(c))
+		writeJSON(w, status, detailBody(c, nil))
 	}
 }
 
@@ -408,11 +395,29 @@ type claimSummaryBody struct {
 	FiledAt      time.Time         `json:"filed_at"`
 }
 
+// evidenceViewBody is a photograph or video captured by the insured in the place
+// of the incident (HU-M2.1-01). DownloadURL is signed and short-lived; it is
+// null when it could not be signed.
+type evidenceViewBody struct {
+	Kind              string     `json:"kind"`
+	ContentType       string     `json:"content_type"`
+	CapturedAt        time.Time  `json:"captured_at"`
+	Latitude          float64    `json:"latitude"`
+	Longitude         float64    `json:"longitude"`
+	AccuracyM         float64    `json:"accuracy_m"`
+	LocationTrusted   bool       `json:"location_trusted"`
+	ByteSize          int64      `json:"byte_size"`
+	DurationS         int        `json:"duration_s"`
+	DownloadURL       *string    `json:"download_url"`
+	DownloadExpiresAt *time.Time `json:"download_expires_at"`
+}
+
 type claimDetailBody struct {
 	claimSummaryBody
 	Place       string              `json:"place"`
 	Description string              `json:"description"`
 	Supports    supportsSummaryBody `json:"supports"`
+	Evidence    []evidenceViewBody  `json:"evidence"`
 }
 
 type claimListResponse struct {
@@ -433,12 +438,34 @@ func summaryBody(c domain.ClaimRecord) claimSummaryBody {
 	return out
 }
 
-func detailBody(c domain.ClaimRecord) claimDetailBody {
+func evidenceBodies(links []filing.EvidenceLink) []evidenceViewBody {
+	out := make([]evidenceViewBody, 0, len(links))
+	for _, l := range links {
+		e := l.Evidence
+		body := evidenceViewBody{
+			Kind: string(e.Kind), ContentType: e.Kind.ContentType(), CapturedAt: e.CapturedAt.UTC(),
+			Latitude: e.Latitude, Longitude: e.Longitude, AccuracyM: e.AccuracyM, LocationTrusted: e.LocationTrusted,
+			ByteSize: e.ByteSize, DurationS: e.DurationS,
+		}
+		if l.URL != "" {
+			url, expires := l.URL, l.ExpiresAt.UTC()
+			body.DownloadURL, body.DownloadExpiresAt = &url, &expires
+		}
+		out = append(out, body)
+	}
+	return out
+}
+
+// detailBody is the detail of a claim. links are the evidence of the claim,
+// signed by the caller; the answer of a filing passes none because a web
+// claim has no evidence.
+func detailBody(c domain.ClaimRecord, links []filing.EvidenceLink) claimDetailBody {
 	s := c.SupportSummary()
 	out := claimDetailBody{
 		claimSummaryBody: summaryBody(c), Place: c.Place, Description: c.Description,
 		Supports: supportsSummaryBody{RequiredTotal: s.RequiredTotal, RequiredAttached: s.RequiredAttached,
 			Files: s.Files, Items: []supportItemBody{}},
+		Evidence: evidenceBodies(links),
 	}
 	for _, item := range s.Items {
 		body := supportItemBody{RequirementCode: item.RequirementCode, Label: item.Label, Files: []attachedFileBody{}}
@@ -502,7 +529,7 @@ func getClaim(svc ClaimReader) http.HandlerFunc {
 		}
 		c, err := svc.Get(req.Context(), id)
 		if !writeReadError(w, req, err) {
-			writeJSON(w, http.StatusOK, detailBody(c))
+			writeJSON(w, http.StatusOK, detailBody(c, svc.EvidenceLinks(req.Context(), c)))
 		}
 	}
 }

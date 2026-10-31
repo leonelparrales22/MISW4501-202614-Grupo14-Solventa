@@ -1,8 +1,9 @@
-// Package s3 is a ports.EvidenceStore over an Amazon S3 bucket: the evidence
+// Package s3 is a ports.ObjectStore over an Amazon S3 bucket: the evidence
 // bucket of the platform (infra/terraform/modules/platform) keeps the
-// photographs and the videos of HU-M2.1-01. The file never crosses the
-// service: this adapter signs the URL the phone uploads to, and reads back
-// what the storage received.
+// photographs and the videos of HU-M2.1-01 and the supports of the web filing
+// of HU-W2.1-01. The file never crosses the service: this adapter signs the
+// URL the client uploads to, reads back what the storage received and signs
+// the reads.
 //
 // The signature pins the size, the media type and the digest of the object,
 // and S3 itself refuses a body whose digest does not match, so the integrity
@@ -15,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -41,14 +43,30 @@ type presignAPI interface {
 	PresignPutObject(ctx context.Context, in *awss3.PutObjectInput, opts ...func(*awss3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
 }
 
+// getAPI and presignGetAPI serve the first bytes of an object and the signed
+// reads (HU-W2.1-01).
+type getAPI interface {
+	GetObject(ctx context.Context, in *awss3.GetObjectInput, opts ...func(*awss3.Options)) (*awss3.GetObjectOutput, error)
+}
+
+type presignGetAPI interface {
+	PresignGetObject(ctx context.Context, in *awss3.GetObjectInput, opts ...func(*awss3.PresignOptions)) (*v4.PresignedHTTPRequest, error)
+}
+
 // Store keeps each evidence as an object of one bucket.
 type Store struct {
 	api     headAPI
 	presign presignAPI
 	bucket  string
+
+	get     getAPI
+	presGet presignGetAPI
 }
 
-var _ ports.EvidenceStore = (*Store)(nil)
+var (
+	_ ports.EvidenceStore = (*Store)(nil)
+	_ ports.ObjectStore   = (*Store)(nil)
+)
 
 // New builds a Store over the bucket with the given client. It does not call
 // S3: Check tells whether the bucket is reachable.
@@ -56,7 +74,13 @@ func New(client *awss3.Client, bucket string) (*Store, error) {
 	if client == nil {
 		return nil, errors.New("s3: the client is required")
 	}
-	return newStore(client, awss3.NewPresignClient(client), bucket)
+	presign := awss3.NewPresignClient(client)
+	store, err := newStore(client, presign, bucket)
+	if err != nil {
+		return nil, err
+	}
+	store.get, store.presGet = client, presign
+	return store, nil
 }
 
 func newStore(api headAPI, presign presignAPI, bucket string) (*Store, error) {
@@ -136,6 +160,49 @@ func (s *Store) Stat(ctx context.Context, key string) (ports.StoredEvidence, err
 		ByteSize: aws.ToInt64(out.ContentLength),
 		SHA256:   hexDigest(aws.ToString(out.ChecksumSHA256)),
 	}, nil
+}
+
+// Head reads the first n bytes of the object, which is enough to tell its
+// format.
+func (s *Store) Head(ctx context.Context, key string, n int64) ([]byte, error) {
+	if s.get == nil {
+		return nil, errors.New("s3: reading objects is not configured")
+	}
+	if n <= 0 {
+		return nil, fmt.Errorf("s3: %d is not a number of bytes to read", n)
+	}
+	out, err := s.get.GetObject(ctx, &awss3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+		Range:  aws.String(fmt.Sprintf("bytes=0-%d", n-1)),
+	})
+	if err != nil {
+		if notFound(err) {
+			return nil, ports.ErrEvidenceNotFound
+		}
+		return nil, fmt.Errorf("s3: could not read the start of %q: %w", key, err)
+	}
+	defer func() { _ = out.Body.Close() }()
+	head, err := io.ReadAll(io.LimitReader(out.Body, n))
+	if err != nil {
+		return nil, fmt.Errorf("s3: could not read the start of %q: %w", key, err)
+	}
+	return head, nil
+}
+
+// SignDownload signs a GET of the object that stops working after ttl.
+func (s *Store) SignDownload(ctx context.Context, key string, ttl time.Duration) (ports.SignedDownload, error) {
+	if s.presGet == nil {
+		return ports.SignedDownload{}, errors.New("s3: signing reads is not configured")
+	}
+	signed, err := s.presGet.PresignGetObject(ctx, &awss3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, awss3.WithPresignExpires(ttl))
+	if err != nil {
+		return ports.SignedDownload{}, fmt.Errorf("s3: could not sign the read of %q: %w", key, err)
+	}
+	return ports.SignedDownload{URL: signed.URL, ExpiresAt: time.Now().UTC().Add(ttl)}, nil
 }
 
 // base64Digest turns the hexadecimal digest of the contract into the base64

@@ -102,7 +102,7 @@ func claim(id, subject, key string) domain.Claim {
 }
 
 func TestTheFilingIsStoredAndReadBack(t *testing.T) {
-	s := postgres.NewClaimStore(newDB(t))
+	s := postgres.NewClaimRecordStore(newDB(t))
 
 	stored, created, err := s.Create(context.Background(), claim("cl-1", "sub-carolina", "draft-1"))
 
@@ -123,7 +123,7 @@ func TestTheFilingIsStoredAndReadBack(t *testing.T) {
 
 // A retry after a lost response finds the case instead of filing again.
 func TestTheSameKeyDoesNotFileTwice(t *testing.T) {
-	s := postgres.NewClaimStore(newDB(t))
+	s := postgres.NewClaimRecordStore(newDB(t))
 	first, _, err := s.Create(context.Background(), claim("cl-1", "sub-carolina", "draft-1"))
 	require.NoError(t, err)
 
@@ -136,7 +136,7 @@ func TestTheSameKeyDoesNotFileTwice(t *testing.T) {
 }
 
 func TestTheSameKeyWithAnotherFilingIsRefused(t *testing.T) {
-	s := postgres.NewClaimStore(newDB(t))
+	s := postgres.NewClaimRecordStore(newDB(t))
 	_, _, err := s.Create(context.Background(), claim("cl-1", "sub-carolina", "draft-1"))
 	require.NoError(t, err)
 
@@ -150,7 +150,7 @@ func TestTheSameKeyWithAnotherFilingIsRefused(t *testing.T) {
 
 // The key belongs to the person: two people may be filing their first draft.
 func TestTheKeyIsPerInsured(t *testing.T) {
-	s := postgres.NewClaimStore(newDB(t))
+	s := postgres.NewClaimRecordStore(newDB(t))
 
 	first, _, err := s.Create(context.Background(), claim("cl-1", "sub-ana", "draft-1"))
 	require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestTheKeyIsPerInsured(t *testing.T) {
 }
 
 func TestEachFilingTakesItsOwnNumber(t *testing.T) {
-	s := postgres.NewClaimStore(newDB(t))
+	s := postgres.NewClaimRecordStore(newDB(t))
 
 	first, _, err := s.Create(context.Background(), claim("cl-1", "sub-carolina", "draft-1"))
 	require.NoError(t, err)
@@ -176,7 +176,7 @@ func TestEachFilingTakesItsOwnNumber(t *testing.T) {
 // The phone may send the same filing twice at once when the network comes
 // back: only one case may be created, and both calls must answer the same.
 func TestTwoSimultaneousRetriesCreateOneCase(t *testing.T) {
-	s := postgres.NewClaimStore(newDB(t))
+	s := postgres.NewClaimRecordStore(newDB(t))
 	const attempts = 6
 
 	var (
@@ -208,7 +208,7 @@ func TestTwoSimultaneousRetriesCreateOneCase(t *testing.T) {
 }
 
 func TestAFilingWithoutDetailsReadsBackEmpty(t *testing.T) {
-	s := postgres.NewClaimStore(newDB(t))
+	s := postgres.NewClaimRecordStore(newDB(t))
 	c := claim("cl-1", "sub-carolina", "draft-1")
 	c.Details = nil
 
@@ -255,7 +255,7 @@ func conEvidencia(c domain.Claim) domain.Claim {
 }
 
 func TestTheEvidenceIsStoredWithTheCase(t *testing.T) {
-	s := postgres.NewClaimStore(newDB(t))
+	s := postgres.NewClaimRecordStore(newDB(t))
 	ctx := context.Background()
 	_, created, err := s.Create(ctx, conEvidencia(claim("cl-1", "sub-carolina", "draft-1")))
 	require.NoError(t, err)
@@ -287,7 +287,7 @@ func TestTheEvidenceIsStoredWithTheCase(t *testing.T) {
 // The evidence is part of what was filed: the same key with other
 // photographs is another filing, not a retry of this one.
 func TestTheSameKeyWithOtherEvidenceIsAnotherFiling(t *testing.T) {
-	s := postgres.NewClaimStore(newDB(t))
+	s := postgres.NewClaimRecordStore(newDB(t))
 	ctx := context.Background()
 	_, _, err := s.Create(ctx, conEvidencia(claim("cl-1", "sub-carolina", "draft-1")))
 	require.NoError(t, err)
@@ -304,7 +304,7 @@ func TestTheSameKeyWithOtherEvidenceIsAnotherFiling(t *testing.T) {
 // evidence.
 func TestAFilingThatFailsLeavesNoEvidenceBehind(t *testing.T) {
 	db := newDB(t)
-	s := postgres.NewClaimStore(db)
+	s := postgres.NewClaimRecordStore(db)
 	roto := conEvidencia(claim("cl-1", "sub-carolina", "draft-1"))
 	roto.Evidence[0].Kind = domain.EvidenceKind(strings.Repeat("x", 300))
 

@@ -3,17 +3,16 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
 )
 
-// SupportStore keeps the uploaded supports of the web filing in the
-// support_file table (HU-W2.1-01).
-//
-// Provisional (HU-W2.1-01 §9): the content is a BYTEA column until the
-// supports move to the evidence store of HU-M2.1-01.
+// SupportStore keeps the metadata of the supports of the web filing in the
+// support_file table (HU-W2.1-01). The file itself lives in the object store.
 type SupportStore struct {
 	db *sql.DB
 }
@@ -23,18 +22,27 @@ func NewSupportStore(db *sql.DB) *SupportStore { return &SupportStore{db: db} }
 
 var _ ports.SupportStore = (*SupportStore)(nil)
 
-// supportColumns are the columns of a support without its content, which is
-// never read back in this story.
-const supportColumns = `support_id, owner_sub, file_name, content_type, byte_size, sha256, uploaded_at`
+const supportColumns = `support_id, owner_sub, file_name, content_type, byte_size, sha256, uploaded_at, confirmed_at`
 
-// Save stores a new support with its content.
-func (s *SupportStore) Save(ctx context.Context, f domain.SupportFile, content []byte) error {
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO support_file (`+supportColumns+`, content)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		f.ID, f.OwnerSubject, f.FileName, f.ContentType(), f.ByteSize, f.SHA256, f.UploadedAt, content); err != nil {
+// Save stores a declared support, not confirmed yet.
+func (s *SupportStore) Save(ctx context.Context, f domain.SupportFile) error {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO support_file (support_id, owner_sub, file_name, content_type,
+		byte_size, sha256, uploaded_at, object_key) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		f.ID, f.OwnerSubject, f.FileName, f.ContentType(), f.ByteSize, f.SHA256, f.UploadedAt, f.ObjectKey()); err != nil {
 		return fmt.Errorf("store the support: %w", err)
 	}
 	return nil
+}
+
+// Confirm marks the support as checked. A support that was already confirmed
+// keeps its first confirmation.
+func (s *SupportStore) Confirm(ctx context.Context, id string, at time.Time) (domain.SupportFile, error) {
+	f, err := scanSupport(s.db.QueryRowContext(ctx, `UPDATE support_file SET confirmed_at = COALESCE(confirmed_at, $2)
+		WHERE support_id = $1 RETURNING `+supportColumns, id, at))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.SupportFile{}, domain.ErrSupportNotFound
+	}
+	return f, err
 }
 
 // Find returns the supports with the ids that exist, whoever owns them.
@@ -83,10 +91,18 @@ func scanSupport(row scanner, extra ...any) (domain.SupportFile, error) {
 	var (
 		f           domain.SupportFile
 		contentType string
+		confirmedAt sql.NullTime
 	)
-	dest := append([]any{&f.ID, &f.OwnerSubject, &f.FileName, &contentType, &f.ByteSize, &f.SHA256, &f.UploadedAt}, extra...)
+	dest := append([]any{&f.ID, &f.OwnerSubject, &f.FileName, &contentType, &f.ByteSize, &f.SHA256, &f.UploadedAt,
+		&confirmedAt}, extra...)
 	if err := row.Scan(dest...); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.SupportFile{}, err
+		}
 		return domain.SupportFile{}, fmt.Errorf("read a support: %w", err)
+	}
+	if confirmedAt.Valid {
+		f.ConfirmedAt = confirmedAt.Time.UTC()
 	}
 	format, ok := domain.FormatOf(contentType)
 	if !ok {

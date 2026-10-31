@@ -31,7 +31,8 @@ func (u *uploads) add(owner string, f domain.FileFormat, n int) []string {
 		u.next++
 		id := fmt.Sprintf("sup-%032x", u.next)
 		u.files[id] = domain.SupportFile{ID: id, OwnerSubject: owner, FileName: fmt.Sprintf("f%d", u.next),
-			Format: f, ByteSize: 1024, SHA256: strings.Repeat("a", 64)}
+			Format: f, ByteSize: 1024, SHA256: strings.Repeat("a", 64),
+			ConfirmedAt: time.Date(2026, 10, 23, 15, 0, 0, 0, time.UTC)}
 		ids = append(ids, id)
 	}
 	return ids
@@ -307,4 +308,22 @@ func TestTheWebFingerprintChangesWithTheSupports(t *testing.T) {
 	assert.Equal(t, a.WebFingerprint(), a.WebFingerprint())
 	assert.NotEqual(t, a.WebFingerprint(), b.WebFingerprint())
 	assert.NotEqual(t, a.Fingerprint(), a.WebFingerprint(), "a web filing never matches a mobile one")
+}
+
+func TestASupportThatWasNotConfirmedIsNotFound(t *testing.T) {
+	u := newUploads()
+	r := validWebFiling(u)
+	for id, f := range u.files {
+		f.ConfirmedAt = time.Time{}
+		u.files[id] = f
+	}
+
+	_, err := validateWeb(r, u)
+
+	var invalid *domain.ValidationError
+	require.ErrorAs(t, err, &invalid)
+	for _, f := range invalid.Fields {
+		assert.Equal(t, domain.CodeNotFound, f.Code, f.Field)
+	}
+	assert.NotEmpty(t, invalid.Fields)
 }

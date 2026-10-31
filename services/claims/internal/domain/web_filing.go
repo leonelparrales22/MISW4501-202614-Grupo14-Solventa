@@ -28,7 +28,7 @@ const (
 	// CodeNotApplicable is a support the claim type does not ask for.
 	CodeNotApplicable = "not_applicable"
 	// CodeNotFound is a support id that does not exist, belongs to another
-	// insured or is repeated.
+	// insured, is repeated or was never confirmed.
 	CodeNotFound = "not_found"
 )
 
@@ -190,7 +190,7 @@ func checkSupports(groups []SupportGroup, option IncidentOption, subject string,
 			id = strings.TrimSpace(id)
 			file, ok := uploaded[id]
 			switch {
-			case !ValidSupportID(id) || !ok || file.OwnerSubject != subject || seen[id]:
+			case !ValidSupportID(id) || !ok || file.OwnerSubject != subject || !file.Confirmed() || seen[id]:
 				problem = CodeNotFound
 			case checkFormat && !req.Accepts(file.Format) && problem == "":
 				problem = CodeInvalidFormat

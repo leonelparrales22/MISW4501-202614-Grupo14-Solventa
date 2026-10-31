@@ -47,15 +47,13 @@ type webStores struct {
 	db       *sql.DB
 	claims   *postgres.ClaimRecordStore
 	supports *postgres.SupportStore
-	mobile   *postgres.ClaimStore
 }
 
 func newWebStores(t *testing.T) webStores {
 	t.Helper()
 	requireDocker(t)
 	db := newDB(t)
-	return webStores{db: db, claims: postgres.NewClaimRecordStore(db), supports: postgres.NewSupportStore(db),
-		mobile: postgres.NewClaimStore(db)}
+	return webStores{db: db, claims: postgres.NewClaimRecordStore(db), supports: postgres.NewSupportStore(db)}
 }
 
 var uploadedAt = time.Date(2026, 10, 23, 14, 0, 0, 0, time.UTC)
@@ -66,8 +64,10 @@ func (s webStores) upload(t *testing.T, owner string, n int) []domain.SupportFil
 	for i := 0; i < n; i++ {
 		f := domain.SupportFile{ID: "sup-" + randomHex(t, 16), OwnerSubject: owner, FileName: fmt.Sprintf("foto %d.jpg", i),
 			Format: domain.FormatJPEG, ByteSize: 4, SHA256: strings.Repeat("c", 64), UploadedAt: uploadedAt}
-		require.NoError(t, s.supports.Save(context.Background(), f, []byte{0xFF, 0xD8, 0xFF, 0xE0}))
-		out = append(out, f)
+		require.NoError(t, s.supports.Save(context.Background(), f))
+		confirmed, err := s.supports.Confirm(context.Background(), f.ID, uploadedAt.Add(time.Minute))
+		require.NoError(t, err)
+		out = append(out, confirmed)
 	}
 	return out
 }
@@ -147,14 +147,14 @@ func TestTheSameWebFilingKeyReturnsTheClaimWithoutANewNumber(t *testing.T) {
 func TestTheFilingKeysAreSharedWithTheMobileFiling(t *testing.T) {
 	s := newWebStores(t)
 	ctx := context.Background()
-	_, _, err := s.mobile.Create(ctx, claim("m1", "sub-1", "key-1"))
+	_, _, err := s.claims.Create(ctx, claim("m1", "sub-1", "key-1"))
 	require.NoError(t, err)
 	_, _, err = s.claims.CreateWeb(ctx, webClaim("w1", "sub-1", "key-2"))
 	require.NoError(t, err)
 
 	_, _, err = s.claims.CreateWeb(ctx, webClaim("w2", "sub-1", "key-1"))
 	assert.ErrorIs(t, err, ports.ErrFilingKeyReused)
-	_, _, err = s.mobile.Create(ctx, claim("m2", "sub-1", "key-2"))
+	_, _, err = s.claims.Create(ctx, claim("m2", "sub-1", "key-2"))
 	assert.ErrorIs(t, err, ports.ErrFilingKeyReused)
 }
 
@@ -248,10 +248,10 @@ func TestTheDatabaseRefusesASupportLargerThan10MiB(t *testing.T) {
 	f := domain.SupportFile{ID: "sup-" + randomHex(t, 16), OwnerSubject: "sub-1", FileName: "big.pdf",
 		Format: domain.FormatPDF, ByteSize: domain.MaxSupportBytes + 1, SHA256: strings.Repeat("d", 64), UploadedAt: uploadedAt}
 
-	assert.Error(t, s.supports.Save(context.Background(), f, []byte("%PDF-")))
+	assert.Error(t, s.supports.Save(context.Background(), f))
 
 	f.ByteSize = domain.MaxSupportBytes
-	assert.NoError(t, s.supports.Save(context.Background(), f, []byte("%PDF-")))
+	assert.NoError(t, s.supports.Save(context.Background(), f))
 }
 
 func TestTheSupportsAreFoundAndCountedUntilAttached(t *testing.T) {
@@ -284,7 +284,7 @@ func TestTheListHasBothChannelsNewestFirstWithFiltersAndCursor(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		c := claim(fmt.Sprintf("m%d", i), "sub-1", fmt.Sprintf("draft-%d", i))
 		c.FiledAt = filedAt.Add(time.Duration(i) * time.Hour)
-		_, _, err := s.mobile.Create(ctx, c)
+		_, _, err := s.claims.Create(ctx, c)
 		require.NoError(t, err)
 	}
 	w := webClaim("w1", "sub-1", "form-1", s.upload(t, "sub-1", 1)...)
@@ -292,7 +292,7 @@ func TestTheListHasBothChannelsNewestFirstWithFiltersAndCursor(t *testing.T) {
 	w.PolicyID = "HG-2025-880231"
 	_, _, err := s.claims.CreateWeb(ctx, w)
 	require.NoError(t, err)
-	_, _, err = s.mobile.Create(ctx, claim("x", "sub-2", "draft-x"))
+	_, _, err = s.claims.Create(ctx, claim("x", "sub-2", "draft-x"))
 	require.NoError(t, err)
 
 	all, err := s.claims.ListByOwner(ctx, "sub-1", ports.ClaimFilter{}, nil, 10)
@@ -331,7 +331,12 @@ func TestMigration0003KeepsTheClaimsFiledBeforeIt(t *testing.T) {
 	first, err := migrations.FS.ReadFile("0001_claim.sql")
 	require.NoError(t, err)
 	require.NoError(t, postgres.MigrateFS(ctx, db, fstest.MapFS{"0001_claim.sql": {Data: first}}))
-	_, _, err = postgres.NewClaimStore(db).Create(ctx, claim("old", "sub-1", "draft-old"))
+	// A claim filed before 0003, with only the columns of 0001: the store of
+	// today writes the ones of 0003 too.
+	_, err = db.ExecContext(ctx, `INSERT INTO claim (id, filing_number, cognito_sub, filing_key, fingerprint, policy_id,
+		incident_type, occurred_at, place, description, details, status, filed_at)
+		VALUES ('old', 'SIN-2026-00001', 'sub-1', 'draft-old', 'f', 'AU-2025-118204', 'collision', $1, 'Calle 80',
+		'Choque por alcance.', '{"third_party":"yes"}', 'active', $1)`, filedAt)
 	require.NoError(t, err)
 
 	require.NoError(t, postgres.Migrate(ctx, db))
@@ -342,4 +347,111 @@ func TestMigration0003KeepsTheClaimsFiledBeforeIt(t *testing.T) {
 	assert.Nil(t, old.Policy)
 	assert.Empty(t, old.CatalogVersion)
 	assert.Equal(t, map[string]string{"third_party": "yes"}, old.Details)
+}
+
+func TestASupportIsConfirmedOnceAndOnlyIfItExists(t *testing.T) {
+	s := newWebStores(t)
+	ctx := context.Background()
+	f := domain.SupportFile{ID: "sup-" + randomHex(t, 16), OwnerSubject: "sub-1", FileName: "a.pdf",
+		Format: domain.FormatPDF, ByteSize: 10, SHA256: strings.Repeat("e", 64), UploadedAt: uploadedAt}
+	require.NoError(t, s.supports.Save(ctx, f))
+
+	found, err := s.supports.Find(ctx, []string{f.ID})
+	require.NoError(t, err)
+	assert.False(t, found[f.ID].Confirmed(), "a declared support is not confirmed")
+
+	first, err := s.supports.Confirm(ctx, f.ID, uploadedAt.Add(time.Minute))
+	require.NoError(t, err)
+	assert.Equal(t, uploadedAt.Add(time.Minute), first.ConfirmedAt)
+	again, err := s.supports.Confirm(ctx, f.ID, uploadedAt.Add(time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, first.ConfirmedAt, again.ConfirmedAt, "the first confirmation stays")
+
+	_, err = s.supports.Confirm(ctx, "sup-"+strings.Repeat("0", 32), uploadedAt)
+	assert.ErrorIs(t, err, domain.ErrSupportNotFound)
+}
+
+func TestTheObjectKeyOfASupportIsKept(t *testing.T) {
+	s := newWebStores(t)
+	f := s.upload(t, "sub-1", 1)[0]
+
+	var key string
+	require.NoError(t, s.db.QueryRow(`SELECT object_key FROM support_file WHERE support_id = $1`, f.ID).Scan(&key))
+
+	assert.Equal(t, "supports/sub-1/"+f.ID, key)
+	var hasContent int
+	require.NoError(t, s.db.QueryRow(`SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'support_file' AND column_name = 'content'`).Scan(&hasContent))
+	assert.Zero(t, hasContent, "the file no longer lives in the database")
+}
+
+func TestTheEvidenceOfAMobileClaimIsReadWithTheDetail(t *testing.T) {
+	s := newWebStores(t)
+	ctx := context.Background()
+	m := conEvidencia(claim("m1", "sub-1", "draft-1"))
+	_, _, err := s.claims.Create(ctx, m)
+	require.NoError(t, err)
+
+	got, err := s.claims.Get(ctx, "m1")
+	require.NoError(t, err)
+	assert.Equal(t, domain.ChannelMobile, got.Channel)
+	require.Len(t, got.Evidence, 2)
+	assert.Equal(t, domain.KindPhoto, got.Evidence[0].Kind)
+	assert.Empty(t, got.Supports)
+
+	list, err := s.claims.ListByOwner(ctx, "sub-1", ports.ClaimFilter{}, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Empty(t, list[0].Evidence, "the list does not load the evidence")
+}
+
+// rewindTo0003 leaves the database as it was before 0004: with the content
+// column and without the object key and the confirmation.
+func rewindTo0003(t *testing.T, db *sql.DB) {
+	t.Helper()
+	_, err := db.Exec(`ALTER TABLE support_file ADD COLUMN content BYTEA NOT NULL DEFAULT ''::bytea;
+		ALTER TABLE support_file DROP COLUMN object_key, DROP COLUMN confirmed_at;
+		DELETE FROM schema_migrations WHERE version = '0004_support_objects'`)
+	require.NoError(t, err)
+}
+
+func TestMigration0004DropsThePendingFilesAndKeepsTheSchemaTidy(t *testing.T) {
+	requireDocker(t)
+	ctx := context.Background()
+	db := newDB(t)
+	rewindTo0003(t, db)
+	_, err := db.Exec(`INSERT INTO support_file (support_id, owner_sub, file_name, content_type, byte_size, sha256, content, uploaded_at)
+		VALUES ('sup-old', 'sub-1', 'a.pdf', 'application/pdf', 5, $1, '\x255044462d', now())`, strings.Repeat("a", 64))
+	require.NoError(t, err)
+
+	require.NoError(t, postgres.Migrate(ctx, db))
+
+	var rows, hasContent int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM support_file`).Scan(&rows))
+	assert.Zero(t, rows, "a pending file is declared again, its content was about to disappear")
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'support_file' AND column_name IN ('content')`).Scan(&hasContent))
+	assert.Zero(t, hasContent)
+}
+
+func TestMigration0004RefusesToDropTheContentOfAttachedFiles(t *testing.T) {
+	requireDocker(t)
+	ctx := context.Background()
+	db := newDB(t)
+	rewindTo0003(t, db)
+	_, err := db.Exec(`INSERT INTO support_file (support_id, owner_sub, file_name, content_type, byte_size, sha256, content, uploaded_at)
+		VALUES ('sup-old', 'sub-1', 'a.pdf', 'application/pdf', 5, $1, '\x255044462d', now())`, strings.Repeat("a", 64))
+	require.NoError(t, err)
+	_, _, err = postgres.NewClaimRecordStore(db).Create(ctx, claim("old", "sub-1", "draft-old"))
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO claim_support (claim_id, position, requirement_code, support_id) VALUES ('old', 0, 'x', 'sup-old')`)
+	require.NoError(t, err)
+
+	err = postgres.Migrate(ctx, db)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upload them to the object store")
+	var rows int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM support_file`).Scan(&rows))
+	assert.Equal(t, 1, rows, "nothing was dropped")
 }

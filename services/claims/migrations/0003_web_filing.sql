@@ -1,7 +1,6 @@
 -- HU-W2.1-01: the filing of the claim with supports from the web portal.
 --
--- Numbered 0003 so it does not collide with 0002_claim_evidence of
--- HU-M2.1-01, which is still in its own branch.
+-- Numbered 0003, after 0002_claim_evidence of HU-M2.1-01.
 
 -- Where the claim was filed. The claims filed before this migration came
 -- from the mobile app (HU-M2.2-01).
@@ -23,9 +22,8 @@ CREATE INDEX IF NOT EXISTS claim_by_insured_status ON claim (cognito_sub, status
 -- An uploaded support. It belongs to whoever uploaded it and waits there
 -- until a filing attaches it.
 --
--- Provisional (HU-W2.1-01 §9): the content lives here until the supports move
--- to the evidence store of HU-M2.1-01 (S3 with a signed upload URL); then a
--- new migration drops the content column.
+-- The content lived here until 0004_support_objects moved the files to the
+-- object store (S3 with a signed upload URL) and dropped the content column.
 CREATE TABLE IF NOT EXISTS support_file (
     support_id   TEXT        PRIMARY KEY,
     owner_sub    TEXT        NOT NULL,

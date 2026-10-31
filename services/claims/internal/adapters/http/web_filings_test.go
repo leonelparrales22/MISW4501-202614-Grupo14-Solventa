@@ -1,13 +1,11 @@
 package httpadapter_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,25 +71,39 @@ func (f *fakeWeb) File(_ context.Context, subject, key string, r domain.WebFilin
 	return f.claim, f.created, f.err
 }
 
-// fakeUploads is the upload of the tests: it reads the whole file and keeps
-// what arrived.
+// fakeUploads is the supports use case of the tests.
 type fakeUploads struct {
 	err        error
 	gotSubject string
-	gotName    string
-	gotBytes   int
+	gotID      string
+	gotRequest domain.SupportUploadRequest
 	calls      int
 }
 
-func (f *fakeUploads) Upload(_ context.Context, subject, fileName string, body io.Reader) (domain.SupportFile, error) {
+func (f *fakeUploads) Declare(_ context.Context, subject string, r domain.SupportUploadRequest) (filing.SupportUpload, error) {
 	f.calls++
-	content, _ := io.ReadAll(body)
-	f.gotSubject, f.gotName, f.gotBytes = subject, fileName, len(content)
+	f.gotSubject, f.gotRequest = subject, r
+	if f.err != nil {
+		return filing.SupportUpload{}, f.err
+	}
+	format, _ := domain.FormatOf(r.ContentType)
+	return filing.SupportUpload{
+		File: domain.SupportFile{ID: "sup-" + strings.Repeat("a", 32), OwnerSubject: subject, FileName: r.FileName,
+			Format: format, ByteSize: r.ByteSize, SHA256: r.SHA256, UploadedAt: filedAt},
+		URL:       "https://bucket.test/supports/" + subject + "/sup-a?X-Amz-Signature=abc",
+		Headers:   map[string]string{"Content-Type": r.ContentType},
+		ExpiresAt: filedAt.Add(10 * time.Minute),
+	}, nil
+}
+
+func (f *fakeUploads) Confirm(_ context.Context, subject, id string) (domain.SupportFile, error) {
+	f.calls++
+	f.gotSubject, f.gotID = subject, id
 	if f.err != nil {
 		return domain.SupportFile{}, f.err
 	}
-	return domain.SupportFile{ID: "sup-" + strings.Repeat("a", 32), OwnerSubject: subject, FileName: fileName,
-		Format: domain.FormatPDF, ByteSize: int64(len(content)), SHA256: strings.Repeat("b", 64), UploadedAt: filedAt}, nil
+	return domain.SupportFile{ID: id, OwnerSubject: subject, FileName: "croquis.pdf", Format: domain.FormatPDF,
+		ByteSize: 482113, SHA256: strings.Repeat("b", 64), UploadedAt: filedAt, ConfirmedAt: filedAt.Add(time.Minute)}, nil
 }
 
 // fakeReads is the reads of the tests.
@@ -102,6 +114,11 @@ type fakeReads struct {
 	err     error
 	gotList filing.ClaimQuery
 	gotID   string
+	links   []filing.EvidenceLink
+}
+
+func (f *fakeReads) EvidenceLinks(context.Context, domain.ClaimRecord) []filing.EvidenceLink {
+	return f.links
 }
 
 func (f *fakeReads) List(_ context.Context, _ string, q filing.ClaimQuery) (filing.ClaimPage, error) {
@@ -159,28 +176,6 @@ func webClaim() domain.ClaimRecord {
 	}
 }
 
-// multipartBody builds a body with the parts: name → (file name, content). A
-// part without a file name is a plain field.
-func multipartBody(t *testing.T, parts ...[3]string) (io.Reader, string) {
-	t.Helper()
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	for _, p := range parts {
-		var part io.Writer
-		var err error
-		if p[1] == "" {
-			part, err = w.CreateFormField(p[0])
-		} else {
-			part, err = w.CreateFormFile(p[0], p[1])
-		}
-		require.NoError(t, err)
-		_, err = part.Write([]byte(p[2]))
-		require.NoError(t, err)
-	}
-	require.NoError(t, w.Close())
-	return &buf, w.FormDataContentType()
-}
-
 // --- Authorization matrix ---------------------------------------------------
 
 func TestEveryNewRouteNeedsAnInsured(t *testing.T) {
@@ -190,6 +185,7 @@ func TestEveryNewRouteNeedsAnInsured(t *testing.T) {
 		{http.MethodGet, "/v1/claims/" + claimID + "/filing-receipt"},
 		{http.MethodGet, "/v1/claims/filing-options"},
 		{http.MethodPost, "/v1/claims/supports"},
+		{http.MethodPost, "/v1/claims/supports/sup-" + strings.Repeat("a", 32) + "/confirmation"},
 		{http.MethodPost, "/v1/claims/web-filings"},
 	}
 	for _, rt := range routes {
@@ -255,67 +251,39 @@ func TestThePolicyCoreDownIs503(t *testing.T) {
 	}
 }
 
-// --- Upload of a support ----------------------------------------------------
+// --- Supports ---------------------------------------------------------------
 
-func TestASupportIsUploaded(t *testing.T) {
+const declarationBody = `{"file_name":"croquis.pdf","content_type":"application/pdf","byte_size":482113,
+	"sha256":"` + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" + `"}`
+
+func declare(h http.Handler, body string) *httptest.ResponseRecorder {
+	return do(h, http.MethodPost, "/v1/claims/supports", "insured", strings.NewReader(body),
+		map[string]string{"Content-Type": "application/json"})
+}
+
+func TestASupportIsDeclaredAndTheSignedUploadReturned(t *testing.T) {
 	uploads := &fakeUploads{}
-	body, contentType := multipartBody(t, [3]string{"note", "", "ignored"}, [3]string{"file", "croquis.pdf", "%PDF-1.7 ..."})
 
-	rec := do(webRouter(&fakeWeb{}, uploads, &fakeReads{}), http.MethodPost, "/v1/claims/supports", "insured", body,
-		map[string]string{"Content-Type": contentType})
+	rec := declare(webRouter(&fakeWeb{}, uploads, &fakeReads{}), declarationBody)
 
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 	assert.Equal(t, "sub-carolina", uploads.gotSubject)
-	assert.Equal(t, "croquis.pdf", uploads.gotName)
-	assert.Equal(t, len("%PDF-1.7 ..."), uploads.gotBytes)
+	assert.Equal(t, "croquis.pdf", uploads.gotRequest.FileName)
+	assert.Equal(t, int64(482113), uploads.gotRequest.ByteSize)
 	m := decode(t, rec)
 	assert.Equal(t, "application/pdf", m["content_type"])
 	assert.Equal(t, "sup-"+strings.Repeat("a", 32), m["support_id"])
-	assert.Equal(t, "2026-10-23T15:00:00Z", m["uploaded_at"])
+	assert.Contains(t, m["upload_url"], "https://bucket.test/supports/sub-carolina/")
+	assert.Equal(t, map[string]any{"Content-Type": "application/pdf"}, m["upload_headers"])
+	assert.Equal(t, "2026-10-23T15:10:00Z", m["expires_at"])
+	assert.NotContains(t, m, "uploaded_at", "nothing was uploaded yet")
 }
 
-func TestTheSizeOfTheUploadedFileIsBounded(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		size int
-		want int
-	}{
-		{"exactly 10 MiB", domain.MaxSupportBytes, http.StatusCreated},
-		{"one byte over 10 MiB", domain.MaxSupportBytes + 1, http.StatusRequestEntityTooLarge},
-		{"far over the body limit", domain.MaxSupportBytes + 200<<10, http.StatusRequestEntityTooLarge},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			uploads := &fakeUploads{}
-			body, contentType := multipartBody(t, [3]string{"file", "big.pdf", strings.Repeat("x", tt.size)})
-
-			rec := do(webRouter(&fakeWeb{}, uploads, &fakeReads{}), http.MethodPost, "/v1/claims/supports", "insured", body,
-				map[string]string{"Content-Type": contentType})
-
-			assert.Equal(t, tt.want, rec.Code)
-			if tt.want != http.StatusCreated {
-				assert.Equal(t, "file_too_large", decode(t, rec)["error"])
-				assert.Zero(t, uploads.calls)
-			}
-		})
-	}
-}
-
-func TestAMalformedUploadIsRefused(t *testing.T) {
-	twoFiles, twoType := multipartBody(t, [3]string{"file", "a.pdf", "%PDF-"}, [3]string{"file", "b.pdf", "%PDF-"})
-	noFile, noFileType := multipartBody(t, [3]string{"note", "", "x"})
-	for name, tt := range map[string]struct {
-		body        io.Reader
-		contentType string
-	}{
-		"not multipart":      {strings.NewReader(`{"file":"x"}`), "application/json"},
-		"two file parts":     {twoFiles, twoType},
-		"no file part":       {noFile, noFileType},
-		"broken multipart":   {strings.NewReader("--x\r\nbroken"), "multipart/form-data; boundary=x"},
-		"no boundary at all": {strings.NewReader("data"), "multipart/form-data"},
-	} {
+func TestTheDeclarationMustBeJSON(t *testing.T) {
+	for name, body := range map[string]string{"not JSON": "data", "empty": "", "a list": "[1]"} {
 		uploads := &fakeUploads{}
-		rec := do(webRouter(&fakeWeb{}, uploads, &fakeReads{}), http.MethodPost, "/v1/claims/supports", "insured", tt.body,
-			map[string]string{"Content-Type": tt.contentType})
+		rec := declare(webRouter(&fakeWeb{}, uploads, &fakeReads{}), body)
 
 		assert.Equal(t, http.StatusBadRequest, rec.Code, name)
 		assert.Equal(t, "invalid_request", decode(t, rec)["error"], name)
@@ -323,21 +291,72 @@ func TestAMalformedUploadIsRefused(t *testing.T) {
 	}
 }
 
-func TestTheRefusalsOfAnUploadAreTranslated(t *testing.T) {
+func TestTheRefusalsOfADeclarationAreTranslated(t *testing.T) {
 	for err, want := range map[error][2]any{
 		domain.ErrUnsupportedFileType:    {http.StatusUnsupportedMediaType, "unsupported_file_type"},
 		domain.ErrFileTooLarge:           {http.StatusRequestEntityTooLarge, "file_too_large"},
 		domain.ErrEmptyFile:              {http.StatusUnprocessableEntity, "empty_file"},
 		domain.ErrTooManyPendingSupports: {http.StatusTooManyRequests, "too_many_pending_supports"},
-		errors.New("disk is full"):       {http.StatusServiceUnavailable, "supports_unavailable"},
+		errors.New("the bucket is down"): {http.StatusServiceUnavailable, "supports_unavailable"},
 	} {
-		body, contentType := multipartBody(t, [3]string{"file", "a.exe", "MZ"})
-		rec := do(webRouter(&fakeWeb{}, &fakeUploads{err: err}, &fakeReads{}), http.MethodPost, "/v1/claims/supports",
-			"insured", body, map[string]string{"Content-Type": contentType})
+		rec := declare(webRouter(&fakeWeb{}, &fakeUploads{err: err}, &fakeReads{}), declarationBody)
+
+		assert.Equal(t, want[0], rec.Code, err)
+		assert.Equal(t, want[1], decode(t, rec)["error"], err)
+		assert.NotContains(t, rec.Body.String(), "bucket is down", "the cause is not detailed")
+	}
+}
+
+func TestAnInvalidDigestIsAValidationError(t *testing.T) {
+	err := &domain.ValidationError{Fields: []domain.FieldError{{Field: "sha256", Code: domain.CodeInvalidFormat}}}
+
+	rec := declare(webRouter(&fakeWeb{}, &fakeUploads{err: err}, &fakeReads{}), declarationBody)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+	assert.JSONEq(t, `{"error":"validation_failed","message":"one or more fields are missing or invalid",
+		"fields":[{"field":"sha256","code":"invalid_format"}]}`, rec.Body.String())
+}
+
+func confirm(h http.Handler, id string) *httptest.ResponseRecorder {
+	return do(h, http.MethodPost, "/v1/claims/supports/"+id+"/confirmation", "insured", nil, nil)
+}
+
+func TestAnUploadIsConfirmed(t *testing.T) {
+	uploads := &fakeUploads{}
+	id := "sup-" + strings.Repeat("c", 32)
+
+	rec := confirm(webRouter(&fakeWeb{}, uploads, &fakeReads{}), id)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, "sub-carolina", uploads.gotSubject)
+	assert.Equal(t, id, uploads.gotID)
+	assert.JSONEq(t, `{"support_id":"`+id+`","file_name":"croquis.pdf","content_type":"application/pdf","byte_size":482113,
+		"sha256":"`+strings.Repeat("b", 64)+`","confirmed_at":"2026-10-23T15:01:00Z"}`, rec.Body.String())
+}
+
+func TestTheRefusalsOfAConfirmationAreTranslated(t *testing.T) {
+	for err, want := range map[error][2]any{
+		domain.ErrSupportNotFound:        {http.StatusNotFound, "support_not_found"},
+		domain.ErrSupportNotUploaded:     {http.StatusUnprocessableEntity, "support_not_uploaded"},
+		domain.ErrSupportMismatch:        {http.StatusUnprocessableEntity, "support_mismatch"},
+		domain.ErrUnsupportedFileType:    {http.StatusUnsupportedMediaType, "unsupported_file_type"},
+		errors.New("the bucket is down"): {http.StatusServiceUnavailable, "supports_unavailable"},
+	} {
+		rec := confirm(webRouter(&fakeWeb{}, &fakeUploads{err: err}, &fakeReads{}), "sup-"+strings.Repeat("c", 32))
 
 		assert.Equal(t, want[0], rec.Code, err)
 		assert.Equal(t, want[1], decode(t, rec)["error"], err)
 	}
+}
+
+func TestAnIdThatIsNotASupportIdIsNotLookedUp(t *testing.T) {
+	uploads := &fakeUploads{}
+	for _, id := range []string{"sup-1", "123", "sup-" + strings.Repeat("Z", 32), "..%2f"} {
+		rec := confirm(webRouter(&fakeWeb{}, uploads, &fakeReads{}), id)
+
+		assert.Equal(t, http.StatusNotFound, rec.Code, id)
+	}
+	assert.Zero(t, uploads.calls)
 }
 
 // --- Web filing -------------------------------------------------------------
@@ -368,7 +387,7 @@ func TestAWebFilingAnswersWithTheClaimDetail(t *testing.T) {
 	assert.JSONEq(t, `{"claim_id":"`+claimID+`","filing_number":"SIN-2026-01712","status":"active","channel":"web",
 		"policy":{"policy_id":"AU-2025-118204","line":"auto","product":"Autos","insured_object":"KJT-482"},
 		"incident_type":"other","occurred_at":"2026-09-14T23:40:00Z","filed_at":"2026-10-23T15:00:00Z",
-		"place":"Calle 80","description":"Un golpe por detrás.",
+		"place":"Calle 80","description":"Un golpe por detrás.","evidence":[],
 		"supports":{"required_total":1,"required_attached":1,"files":1,"items":[{"requirement_code":"supporting_document",
 			"label":"Documento de soporte","files":[{"support_id":"sup-`+strings.Repeat("c", 32)+`","file_name":"croquis.pdf",
 			"content_type":"application/pdf","byte_size":482113}]}]}}`, rec.Body.String())
@@ -481,6 +500,45 @@ func TestTheDetailAndTheReceipt(t *testing.T) {
 	assert.Equal(t, `attachment; filename="radicado-SIN-2026-01712.pdf"`, rec.Header().Get("Content-Disposition"))
 	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 	assert.Equal(t, "%PDF-1.3 receipt", rec.Body.String())
+}
+
+func TestTheDetailOfAMobileClaimListsItsEvidenceWithSignedReads(t *testing.T) {
+	mobile := webClaim()
+	mobile.Channel, mobile.Policy, mobile.CatalogVersion, mobile.Supports = domain.ChannelMobile, nil, "", nil
+	altitude := 2640.0
+	mobile.Evidence = []domain.Evidence{
+		{ObjectKey: "evidence/sub-carolina/a.jpg", Kind: domain.KindPhoto, CapturedAt: time.Date(2026, 9, 14, 23, 50, 0, 0, time.UTC),
+			Latitude: 4.711, Longitude: -74.072, AltitudeM: &altitude, AccuracyM: 8, LocationTrusted: true, SHA256: strings.Repeat("a", 64), ByteSize: 310000},
+		{ObjectKey: "evidence/sub-carolina/b.mp4", Kind: domain.KindVideo, CapturedAt: time.Date(2026, 9, 14, 23, 55, 0, 0, time.UTC),
+			Latitude: 4.711, Longitude: -74.072, AccuracyM: 80, SHA256: strings.Repeat("b", 64), ByteSize: 5_000_000, DurationS: 12},
+	}
+	expires := filedAt.Add(10 * time.Minute)
+	reads := &fakeReads{claim: mobile, links: []filing.EvidenceLink{
+		{Evidence: mobile.Evidence[0], URL: "https://bucket.test/a.jpg?sig=1", ExpiresAt: expires},
+		{Evidence: mobile.Evidence[1]},
+	}}
+
+	rec := do(webRouter(&fakeWeb{}, &fakeUploads{}, reads), http.MethodGet, "/v1/claims/"+claimID, "insured", nil, nil)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	m := decode(t, rec)
+	assert.Nil(t, m["policy"].(map[string]any)["line"], "a mobile claim has no policy copy")
+	assert.JSONEq(t, `[
+		{"kind":"photo","content_type":"image/jpeg","captured_at":"2026-09-14T23:50:00Z","latitude":4.711,"longitude":-74.072,
+		 "accuracy_m":8,"location_trusted":true,"byte_size":310000,"duration_s":0,
+		 "download_url":"https://bucket.test/a.jpg?sig=1","download_expires_at":"2026-10-23T15:10:00Z"},
+		{"kind":"video","content_type":"video/mp4","captured_at":"2026-09-14T23:55:00Z","latitude":4.711,"longitude":-74.072,
+		 "accuracy_m":80,"location_trusted":false,"byte_size":5000000,"duration_s":12,
+		 "download_url":null,"download_expires_at":null}]`, mustJSON(t, m["evidence"]))
+	assert.NotContains(t, rec.Body.String(), "sha256", "the digest is not part of the detail")
+	assert.NotContains(t, rec.Body.String(), "object_key", "the key of the store is internal")
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(raw)
 }
 
 func TestTheReadsOfOneClaimTranslateTheirErrors(t *testing.T) {
