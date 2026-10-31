@@ -292,25 +292,33 @@ locals {
 
   # /v1/<route> and /v1/<route>/{proxy+} for every human route, plus the
   # /v1/<key>/{proxy+} of every human sub-route (HU-W4.2-02), which hangs from a
-  # partner route and so has no root of its own here.
+  # partner route. A sub-route with root_methods (HU-W4.2-01) also takes the
+  # exact path of that partner route, the resource of the partner, for those
+  # methods only.
+  human_subroute_roots = { for r, h in var.human_subroutes : r => h.root_methods if length(h.root_methods) > 0 }
+
   human_resources = merge(
     { for r in keys(var.human_routes) : r => { route = r, proxy = false } },
     { for r in keys(var.human_routes) : "${r}/{proxy+}" => { route = r, proxy = true } },
     { for r in keys(var.human_subroutes) : "${r}/{proxy+}" => { route = r, proxy = true } },
+    { for r in keys(local.human_subroute_roots) : r => { route = r, proxy = false } },
   )
 
   human_resource_ids = merge(
     { for r, res in aws_api_gateway_resource.human : r => res.id },
     { for r, res in aws_api_gateway_resource.human_proxy : "${r}/{proxy+}" => res.id },
     { for r, res in aws_api_gateway_resource.human_subproxy : "${r}/{proxy+}" => res.id },
+    { for r in keys(local.human_subroute_roots) : r => lookup(local.partner_resource_ids, r, null) },
   )
 
   # Methods of each human resource: the root takes root_methods when it is set
-  # (T5), every sub-path takes methods.
+  # (T5), every sub-path takes methods, and the exact path of a sub-route takes
+  # its root_methods (HU-W4.2-01).
   human_resource_methods = merge(
     { for r, h in var.human_routes : r => h.root_methods != null ? h.root_methods : h.methods },
     { for r, h in var.human_routes : "${r}/{proxy+}" => h.methods },
     { for r, h in var.human_subroutes : "${r}/{proxy+}" => h.methods },
+    local.human_subroute_roots,
   )
 
   # A resource without human methods (a root given to a partner route) has no
@@ -884,6 +892,14 @@ resource "aws_api_gateway_method" "partner" {
       )
       error_message = "A method of a partner route repeats a human method on the same root: set root_methods of the human route without it."
     }
+
+    precondition {
+      condition = (
+        !contains(keys(local.human_subroute_roots), each.value.route) ||
+        !contains(lookup(local.human_subroute_roots, each.value.route, []), each.value.http_method)
+      )
+      error_message = "A method of a partner route is also in root_methods of the human sub-route of the same key: the exact path cannot ask for the API key and for the token at once (HU-W4.2-01)."
+    }
   }
 }
 
@@ -909,7 +925,10 @@ resource "aws_api_gateway_integration" "partner" {
 # POST /v1/audit/consents. Publishing the whole of audit as a human route would
 # also expose the internal consent verification and the underwriting decision
 # record (no token), so only the {proxy+} of that partner route is created. The
-# method, integration and preflight come from the human_* maps above.
+# method, integration and preflight come from the human_* maps above. Since
+# HU-W4.2-01, root_methods publishes the list of the portal
+# (GET /v1/audit/consents) on the resource of the partner route itself, next to
+# its POST with the API key: the authorization is per method.
 resource "aws_api_gateway_resource" "human_subproxy" {
   for_each = var.human_subroutes
 

@@ -811,9 +811,11 @@ run "the_compliance_portal_reaches_only_the_consent_paths_of_audit" {
     condition = (
       length(var.human_subroutes) == 1 &&
       var.human_subroutes["audit/consents"].methods == tolist(["GET", "POST"]) &&
-      contains(keys(var.partner_routes), "audit/consents")
+      var.human_subroutes["audit/consents"].root_methods == tolist(["GET"]) &&
+      contains(keys(var.partner_routes), "audit/consents") &&
+      !contains(var.partner_routes["audit/consents"].methods, "GET")
     )
-    error_message = "GET /v1/audit/consents/{consent_id}, GET .../revocation and POST .../revocations and .../revocation-retries are published under the partner route audit/consents, with Cognito."
+    error_message = "GET /v1/audit/consents (the list, HU-W4.2-01), GET /v1/audit/consents/{consent_id}, GET .../revocation and POST .../revocations and .../revocation-retries are published with Cognito; the partner keeps only its POST."
   }
 
   assert {
