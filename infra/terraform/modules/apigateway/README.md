@@ -50,6 +50,7 @@ module "apigateway" {
 | `payment_tokenization` | `null` | Ruta pública `POST /pasarela/tokens` de la pasarela simulada, con `backend_path` (`/tokens`), `rate_limit` (5) y `burst_limit` (10) (T5) |
 | `registration_route` | `null` | Ruta pública `POST /v1/registrations` del registro del asegurado, con `backend_path` (`/v1/registrations`), `rate_limit` (2) y `burst_limit` (5) (HU-M1.1-01) |
 | `partner_routes` | `{}` | Rutas de socio en rutas exactas bajo `/v1` (1 a 3 segmentos), con API key y sin authorizer (T5) |
+| `human_subroutes` | `{}` | Subrutas humanas bajo una ruta de socio: la llave es la de una `partner_routes` (p. ej. `audit/consents`) y solo se crea su `{proxy+}`, con Cognito y *preflight* (HU-W4.2-02) |
 
 Salidas: `rest_api_id`, `stage_name`, `invoke_url`, `usage_plan_ids`, `api_key_ids`, `api_key_values` (sensible; claves de
 prueba para los guiones k6 de la ventana), `public_paths` (HA-D02), `cognito_authorizer_id` (HA-S01; `null` sin user pool) y
@@ -185,6 +186,33 @@ conviven en `/v1/offers` el `POST` del aliado (API key) y `GET /v1/offers/{id}`,
 Con `partner_routes = {}` y sin `root_methods` (los valores por defecto) no se crea nada nuevo, la API queda igual y el *hash* de
 redespliegue no cambia: `staging/ha-l01` y `staging/ha-s01` no se ven afectados.
 
+## Subrutas humanas bajo una ruta de socio (HU-W4.2-02)
+
+El portal de cumplimiento lee y revoca un consentimiento por `/v1/audit/consents/{consent_id}/…`, debajo de la ruta de socio
+`POST /v1/audit/consents`. Declarar `audit` como `human_routes` publicaría todo `/v1/audit/*`, incluida la verificación interna del
+consentimiento (`GET /v1/audit/consent-verifications`) y el registro de decisiones (`POST /v1/audit/decisions`), que no llevan token.
+Por eso `human_subroutes` crea **solo** el recurso `{proxy+}` de una ruta de socio:
+
+```
+/v1/audit/consents                POST       → API key del socio   partner_routes."audit/consents"
+/v1/audit/consents/{proxy+}       GET, POST  → Cognito             human_subroutes."audit/consents"
+/v1/audit/consent-verifications   —          → no existe (403)
+/v1/audit/decisions               —          → no existe (403)
+```
+
+La subruta usa los mismos recursos que las rutas humanas (autorizador de Cognito, `api_key_required = false`, `HTTP_PROXY` a
+`/v1/<llave>/{proxy}`, *preflight* `OPTIONS` sin autorización). El rol lo decide el servicio, que vuelve a verificar el JWT.
+
+| Regla | Cómo se aplica |
+|---|---|
+| Formato y métodos | Validación de la variable: 1 a 3 segmentos; métodos `GET`, `POST`, `PUT`, `PATCH`, `DELETE` sin repetir |
+| Rutas internas | `audit/consent-verifications` y `audit/decisions` se rechazan en la variable, ni siquiera detrás del autorizador |
+| Ruta de socio | La llave debe existir en `partner_routes` (*precondition*): la raíz sigue siendo del socio |
+| Ruta humana | La llave no puede ser también una clave de `human_routes` (el `{proxy+}` se crearía dos veces) |
+| Autorizador | Exige `cognito_user_pool_arns` (*precondition*): nunca se publica sin Cognito |
+
+Con `human_subroutes = {}` (el valor por defecto) no se crea nada y la API queda igual.
+
 ## Validación local (sin AWS)
 
 ```bash
@@ -203,3 +231,7 @@ limitado en el stage, que sin ella no existe ninguna ruta `/pasarela` y que `bac
 de socio exigen API key sin authorizer ni *preflight*, construyen sus recursos por profundidad, toman la raíz de una ruta humana sin
 tocar sus subrutas, que `root_methods` por defecto repite `methods`, y que se rechazan `risk-profiles`, una ruta pública, una ruta
 profunda bajo una humana y un método repetido en la raíz.
+
+Desde HU-W4.2-02 afirma además que `human_subroutes` crea solo el `{proxy+}` bajo la ruta de socio, con Cognito, sin API key y con
+*preflight*, que la raíz de socio no cambia y que no existen `consent-verifications` ni `decisions`; y que se rechazan una llave que
+no es ruta de socio, una ruta interna, una llave que también es ruta humana y una subruta sin user pool.

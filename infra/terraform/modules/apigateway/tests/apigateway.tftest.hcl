@@ -771,3 +771,169 @@ run "partner_routes_reject_a_method_of_the_human_root" {
 
   expect_failures = [aws_api_gateway_method.partner]
 }
+
+# --- Human sub-paths under a partner route (HU-W4.2-02) ---------------------------------
+
+run "human_subroutes_default_creates_nothing" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+  }
+
+  assert {
+    condition     = length(aws_api_gateway_resource.human_subproxy) == 0 && length(aws_api_gateway_method.human) == 0
+    error_message = "Without human_subroutes there is no extra resource and no human method."
+  }
+}
+
+run "human_subroutes_publish_only_the_proxy_under_a_partner_route" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes = {
+      "audit/consent-terms/current" = { methods = ["GET"] }
+      "audit/consents"              = { methods = ["POST"] }
+    }
+    human_subroutes = { "audit/consents" = { methods = ["GET", "POST"] } }
+  }
+
+  assert {
+    condition = (
+      keys(aws_api_gateway_resource.human_subproxy) == ["audit/consents"] &&
+      aws_api_gateway_resource.human_subproxy["audit/consents"].path_part == "{proxy+}" &&
+      aws_api_gateway_resource.human_subproxy["audit/consents"].parent_id == aws_api_gateway_resource.partner_l2["audit/consents"].id
+    )
+    error_message = "Only the {proxy+} under /v1/audit/consents is created."
+  }
+
+  assert {
+    condition = (
+      toset(keys(aws_api_gateway_method.human)) == toset(["audit/consents/{proxy+} GET", "audit/consents/{proxy+} POST"]) &&
+      alltrue([
+        for m in aws_api_gateway_method.human :
+        m.authorization == "COGNITO_USER_POOLS" && m.api_key_required == false && m.authorizer_id != null
+      ])
+    )
+    error_message = "The sub-route uses the Cognito authorizer and never asks for an API key."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_integration.human["audit/consents/{proxy+} GET"].uri == "http://internal-alb.example.com/v1/audit/consents/{proxy}" &&
+      aws_api_gateway_integration.human["audit/consents/{proxy+} POST"].uri == "http://internal-alb.example.com/v1/audit/consents/{proxy}" &&
+      alltrue([for i in aws_api_gateway_integration.human : i.type == "HTTP_PROXY" && i.timeout_milliseconds == 5000])
+    )
+    error_message = "The sub-route is proxied to /v1/audit/consents/{proxy} of the backend."
+  }
+
+  assert {
+    condition = (
+      keys(aws_api_gateway_method.human_options) == ["audit/consents/{proxy+}"] &&
+      aws_api_gateway_method.human_options["audit/consents/{proxy+}"].authorization == "NONE" &&
+      aws_api_gateway_integration_response.human_options["audit/consents/{proxy+}"].response_parameters["method.response.header.Access-Control-Allow-Methods"] == "'GET,POST,OPTIONS'"
+    )
+    error_message = "The sub-route has a CORS preflight without authorization."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_method.partner["audit/consents POST"].resource_id == aws_api_gateway_resource.partner_l2["audit/consents"].id &&
+      aws_api_gateway_method.partner["audit/consents POST"].api_key_required == true &&
+      aws_api_gateway_method.partner["audit/consents POST"].authorization == "NONE"
+    )
+    error_message = "POST /v1/audit/consents stays a partner route with API key."
+  }
+
+  assert {
+    condition = (
+      length(aws_api_gateway_resource.partner_l1) == 1 && keys(aws_api_gateway_resource.partner_l1) == ["audit"] &&
+      length(aws_api_gateway_method.partner) == 2 &&
+      !contains(keys(aws_api_gateway_resource.human), "audit")
+    )
+    error_message = "audit is not a human route: no resource exists for audit/consent-verifications or audit/decisions."
+  }
+}
+
+run "human_subroutes_do_not_change_the_human_routes" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { consents = { methods = ["GET", "POST"], root_methods = ["GET"] } }
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "audit/consents" = { methods = ["GET", "POST"] } }
+  }
+
+  assert {
+    condition = toset(keys(aws_api_gateway_method.human)) == toset([
+      "consents GET", "consents/{proxy+} GET", "consents/{proxy+} POST",
+      "audit/consents/{proxy+} GET", "audit/consents/{proxy+} POST",
+    ])
+    error_message = "The human routes keep their methods; the sub-route adds its own."
+  }
+}
+
+run "human_subroutes_reject_a_key_that_is_not_a_partner_route" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "audit/other" = { methods = ["GET"] } }
+  }
+
+  expect_failures = [aws_api_gateway_resource.human_subproxy]
+}
+
+run "human_subroutes_reject_the_internal_routes_of_audit" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_subroutes = {
+      "audit/consent-verifications" = { methods = ["GET"] }
+      "audit/decisions"             = { methods = ["GET"] }
+    }
+  }
+
+  expect_failures = [var.human_subroutes]
+}
+
+run "human_subroutes_reject_a_human_route_key" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { offers = { methods = ["GET", "POST"], root_methods = [] } }
+    partner_routes         = { offers = { methods = ["POST"] } }
+    human_subroutes        = { offers = { methods = ["GET"] } }
+  }
+
+  expect_failures = [aws_api_gateway_resource.human_subproxy]
+}
+
+run "human_subroutes_need_the_authorizer" {
+  command = plan
+
+  variables {
+    partner_routes  = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes = { "audit/consents" = { methods = ["GET"] } }
+  }
+
+  expect_failures = [aws_api_gateway_resource.human_subproxy]
+}
+
+run "human_subroutes_reject_repeated_or_unknown_methods" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "audit/consents" = { methods = ["GET", "GET"] } }
+  }
+
+  expect_failures = [var.human_subroutes]
+}

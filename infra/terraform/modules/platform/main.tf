@@ -271,6 +271,7 @@ module "apigateway" {
   cognito_user_pool_arns = [local.cognito.user_pool_arn]
   human_routes           = var.human_routes
   partner_routes         = var.partner_routes
+  human_subroutes        = var.human_subroutes
   public_routes          = var.public_routes
   binary_media_types     = ["*/*"]
   cors_allow_origin      = var.cors_allow_origin

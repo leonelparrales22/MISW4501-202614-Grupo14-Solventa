@@ -150,6 +150,31 @@ variable "partner_routes" {
   }
 }
 
+variable "human_subroutes" {
+  description = "Human-channel sub-paths under a partner route (HU-W4.2-02). Key: the key of a partner route (for example audit/consents); only its {proxy+} resource is created, with the Cognito authorizer, the listed methods and a CORS preflight, proxied to /v1/<key>/{proxy} of the backend. The partner route itself keeps its API key on the exact path. Unlike human_routes, this never publishes the first segment as a whole: siblings such as audit/consent-verifications stay unpublished. Empty: nothing is created and nothing changes."
+  type = map(object({
+    methods = list(string)
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for k in keys(var.human_subroutes) : can(regex("^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*){0,2}$", k))])
+    error_message = "human_subroutes keys must be 1 to 3 lowercase path segments under /v1 (for example audit/consents)."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in values(var.human_subroutes) : length(r.methods) > 0 && length(distinct(r.methods)) == length(r.methods) && alltrue([for m in r.methods : contains(["GET", "POST", "PUT", "PATCH", "DELETE"], m)])
+    ])
+    error_message = "Each human sub-route needs at least one method among GET, POST, PUT, PATCH and DELETE, without repetitions (OPTIONS is added automatically, without authorization)."
+  }
+
+  validation {
+    condition     = alltrue([for k in keys(var.human_subroutes) : !contains(["audit/consent-verifications", "audit/decisions"], k)])
+    error_message = "audit/consent-verifications and audit/decisions are internal to the VPC (no token): they can never be published, not even behind the authorizer."
+  }
+}
+
 # --- Public routes (HA-D02) ------------------------------------------------------------
 
 variable "public_routes" {

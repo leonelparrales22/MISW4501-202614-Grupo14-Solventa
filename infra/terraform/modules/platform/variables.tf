@@ -244,6 +244,21 @@ variable "partner_routes" {
   }
 }
 
+variable "human_subroutes" {
+  description = "Human-channel sub-paths under a partner route, behind the Cognito authorizer (HU-W4.2-02). Key: the key of a partner route. Default: /v1/audit/consents/{proxy+} with GET and POST, which publishes the evidence of the consent (GET /v1/audit/consents/{consent_id}, HU-W1.2-01, decision D-23 c) and the revocation of the compliance portal (GET .../revocation, POST .../revocations and .../revocation-retries). Only that {proxy+} is created: audit is never a human route, because GET /v1/audit/consent-verifications and POST /v1/audit/decisions are internal to the VPC and carry no token."
+  type = map(object({
+    methods = list(string)
+  }))
+  default = {
+    "audit/consents" = { methods = ["GET", "POST"] }
+  }
+
+  validation {
+    condition     = alltrue([for k in keys(var.human_subroutes) : !contains(["audit/consent-verifications", "audit/decisions"], k)])
+    error_message = "The consent verification and the decision record of audit are internal to the VPC (HU-W1.2-01, HU-W4.1-01): they can never be published, not even behind the authorizer."
+  }
+}
+
 variable "public_routes" {
   description = "Read-only routes without session or API key (key: path segment under /v1). Default: the signed link of the contractual document, GET /v1/documents/{token} (HU-W1.3-03, HA-D02), throttled at 10 req/s with a burst of 20 (decision D-5), since no usage plan covers it."
   type = map(object({

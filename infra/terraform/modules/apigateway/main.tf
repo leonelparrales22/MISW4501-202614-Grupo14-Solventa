@@ -290,15 +290,19 @@ resource "aws_api_gateway_usage_plan_key" "partner" {
 locals {
   auth_enabled = length(var.cognito_user_pool_arns) > 0
 
-  # /v1/<route> and /v1/<route>/{proxy+} for every human route.
+  # /v1/<route> and /v1/<route>/{proxy+} for every human route, plus the
+  # /v1/<key>/{proxy+} of every human sub-route (HU-W4.2-02), which hangs from a
+  # partner route and so has no root of its own here.
   human_resources = merge(
     { for r in keys(var.human_routes) : r => { route = r, proxy = false } },
     { for r in keys(var.human_routes) : "${r}/{proxy+}" => { route = r, proxy = true } },
+    { for r in keys(var.human_subroutes) : "${r}/{proxy+}" => { route = r, proxy = true } },
   )
 
   human_resource_ids = merge(
     { for r, res in aws_api_gateway_resource.human : r => res.id },
     { for r, res in aws_api_gateway_resource.human_proxy : "${r}/{proxy+}" => res.id },
+    { for r, res in aws_api_gateway_resource.human_subproxy : "${r}/{proxy+}" => res.id },
   )
 
   # Methods of each human resource: the root takes root_methods when it is set
@@ -306,6 +310,7 @@ locals {
   human_resource_methods = merge(
     { for r, h in var.human_routes : r => h.root_methods != null ? h.root_methods : h.methods },
     { for r, h in var.human_routes : "${r}/{proxy+}" => h.methods },
+    { for r, h in var.human_subroutes : "${r}/{proxy+}" => h.methods },
   )
 
   # A resource without human methods (a root given to a partner route) has no
@@ -895,4 +900,37 @@ resource "aws_api_gateway_integration" "partner" {
   connection_id           = var.vpc_link_v2_id
   integration_target      = local.private_integration ? var.integration_target_arn : null
   timeout_milliseconds    = var.integration_timeout_ms
+}
+
+# --- Human sub-paths under a partner route (HU-W4.2-02) -----------------------------
+#
+# The compliance portal reads and revokes a consent through
+# /v1/audit/consents/{consent_id}/..., a path under the partner route
+# POST /v1/audit/consents. Publishing the whole of audit as a human route would
+# also expose the internal consent verification and the underwriting decision
+# record (no token), so only the {proxy+} of that partner route is created. The
+# method, integration and preflight come from the human_* maps above.
+resource "aws_api_gateway_resource" "human_subproxy" {
+  for_each = var.human_subroutes
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = lookup(local.partner_resource_ids, each.key, null)
+  path_part   = "{proxy+}"
+
+  lifecycle {
+    precondition {
+      condition     = local.auth_enabled
+      error_message = "human_subroutes need cognito_user_pool_arns: a human route is never published without the Cognito authorizer (HA-S01 CA-1)."
+    }
+
+    precondition {
+      condition     = contains(keys(var.partner_routes), each.key)
+      error_message = "A human sub-route hangs from a partner route: its key must also be in partner_routes (HU-W4.2-02)."
+    }
+
+    precondition {
+      condition     = !contains(keys(var.human_routes), each.key)
+      error_message = "A human sub-route cannot also be a human route: the same {proxy+} would be created twice."
+    }
+  }
 }
