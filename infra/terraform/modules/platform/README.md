@@ -94,7 +94,8 @@ cuando esos datos estén en PostgreSQL. Un reinicio de la tarea borra lo que est
 | `origination` | `/v1/risk-profiles*`, `/v1/offers*`, `/v1/acceptances*`, `/v1/assisted-quotes*`, `/v1/customers*`, `/v1/policies*`, `/v1/documents*`, `/v1/review-requests*`, `/v1/issuance-exceptions*` (9 prefijos, 2 reglas del ALB) | Implementados |
 | `audit` | `/v1/audit*` (bancos, API key) y `/v1/consents*` (personas, Cognito; HU-M1.3-01, D-3 a: un prefijo por recurso) | Consentimiento de HU-W1.2-01, consulta del asegurado de HU-M1.3-01 y su revocación de HU-M1.3-02 |
 | `claims` | `/v1/claims*` | Radicación móvil (HU-M2.2-01) y web con soportes, listado, detalle y comprobante (HU-W2.1-01) |
-| `partners`, `notifications` | `/v1/partners*`, `/v1/notifications*` | Reservados (solo `GET /health`); un target group necesita al menos una regla |
+| `partners` | `/v1/partners*` (Cognito, ruta humana `partners`) | Socios comerciales y sus credenciales (HU-W3.1-01): administra API keys y usage plans del *stage* (sentencias IAM `ManageThePartnerApiKeys`, `ManageThePartnerUsagePlans` y `ReadTheStageOfThePartnerPlans`, solo para `partners`) y publica en el tópico `partners`, al que se suscribe la cola de `audit` |
+| `notifications` | `/v1/notifications*` | Reservado (solo `GET /health`); un target group necesita al menos una regla |
 | stub `policy-core` | — (solo Cloud Map, puerto 9060) | Core de pólizas que consulta `claims` dentro de la VPC (HU-W2.1-01); el navegador nunca lo llama, por eso no está en `local.lb_stubs` |
 | stub `payment-gateway` | `/tokens` (prioridad 6) | Tokenización de la tarjeta desde el navegador (T5, `local.lb_stubs`); el resto del simulador no se alcanza por el ALB |
 

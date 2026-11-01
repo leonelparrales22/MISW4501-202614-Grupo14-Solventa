@@ -224,6 +224,12 @@ variable "human_routes" {
     # /v1/consents/{consent_id}/revocations; GET .../revocation-receipt is a
     # GET); the root /v1/consents stays read-only.
     consents = { methods = ["GET", "POST"], root_methods = ["GET"] }
+    # The operations portal manages the commercial partners (HU-W3.1-01):
+    # GET and POST /v1/partners (list and registration), GET
+    # /v1/partners/{partner_id}, POST .../approval and
+    # .../credential-rotations. partners has no internal route, so the whole
+    # prefix is human.
+    partners = { methods = ["GET", "POST"] }
   }
 }
 
