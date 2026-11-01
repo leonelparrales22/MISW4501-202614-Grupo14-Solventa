@@ -51,6 +51,9 @@ type filingRequest struct {
 	Details             map[string]string `json:"details"`
 	Evidence            []evidenceBody    `json:"evidence"`
 	DeclarationAccepted bool              `json:"declaration_accepted"`
+	// EstimatedAmountMinor is kept raw, as in the web filing: a text or a
+	// decimal is a field error, not a broken request (HU-M2.2-01).
+	EstimatedAmountMinor json.RawMessage `json:"estimated_amount_minor"`
 }
 
 // evidenceBody is one capture already uploaded to the evidence store: here
@@ -79,6 +82,10 @@ type filingResponse struct {
 	FiledAt      string `json:"filed_at"`
 	// EvidenceCount is what ended up associated with the case.
 	EvidenceCount evidenceCount `json:"evidence_count"`
+	// EstimatedAmountMinor is what the insured declared, in cents of COP;
+	// absent when it was not, so the answer of a filing without it does not
+	// change.
+	EstimatedAmountMinor *int64 `json:"estimated_amount_minor,omitempty"`
 }
 
 type evidenceCount struct {
@@ -107,6 +114,8 @@ func fileClaim(svc FilingService) http.HandlerFunc {
 			Place: in.Place, Description: in.Description, Details: in.Details,
 			Evidence:            evidenceOf(in.Evidence),
 			DeclarationAccepted: in.DeclarationAccepted,
+
+			EstimatedAmountMinor: rawAmount(in.EstimatedAmountMinor),
 		})
 
 		var invalid *domain.ValidationError
@@ -141,6 +150,8 @@ func fileClaim(svc FilingService) http.HandlerFunc {
 			OccurredAt:    c.OccurredAt.UTC().Format(time.RFC3339),
 			FiledAt:       c.FiledAt.UTC().Format(time.RFC3339Nano),
 			EvidenceCount: countOf(c.Evidence),
+
+			EstimatedAmountMinor: c.EstimatedAmountMinor,
 		})
 	}
 }

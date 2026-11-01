@@ -192,6 +192,8 @@ el estado remoto cifrado del bucket de T4.
 | `EVIDENCE_BUCKET` | Bucket `evidence` del ambiente | Evidencia del siniestro con URL firmada (HU-M2.1-01) |
 | `AWS_REGION` | Región del proveedor (`us-east-2`) | Región del SDK de AWS |
 | `POLICY_CORE_URL` | Stub `policy-core` por Cloud Map (9060) | Enciende la radicación web con soportes (HU-W2.1-01): opciones, subida de soportes y radicación. Sin ella `claims` no monta esas rutas y responde `404` |
+| `PAYMENT_GATEWAY_URL` | Stub `payment-gateway` por Cloud Map (9040) | Enciende la decisión del siniestro (HU-W2.2-03): aprobar paga la indemnización. Sin ella `claims` no monta aprobar, rechazar ni reintentar el pago |
+| `EMAIL_URL` | Stub `email` por Cloud Map (9030) | Avisa al asegurado el rechazo y su motivo (HU-W2.2-03). Sin ella los avisos esperan |
 | `DATABASE_URL` (secreto) | `<nombre>/claims/database` | Base propia de `claims` |
 
 ## Pendientes conocidos

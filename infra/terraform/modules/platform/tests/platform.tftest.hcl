@@ -366,6 +366,12 @@ run "the_policy_core_runs_behind_cloud_map_for_claims" {
   }
 
   assert {
+    condition = (local.service_environment.claims.PAYMENT_GATEWAY_URL == "http://payment-gateway.solventa-test.local:9040"
+    && local.service_environment.claims.EMAIL_URL == "http://email.solventa-test.local:9030")
+    error_message = "Claims pays the indemnities through the payment gateway and notifies the rejections by e-mail (HU-W2.2-03)."
+  }
+
+  assert {
     condition     = !contains(keys(local.lb_stubs), "policy-core") && !contains(keys(module.alb.target_group_arns), "policy-core")
     error_message = "The browser never calls the policy core: it has no rule in the ALB."
   }

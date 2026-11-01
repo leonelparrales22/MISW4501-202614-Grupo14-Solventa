@@ -92,6 +92,17 @@ func main() {
 		}
 		log.Printf("triage (HU-W2.2-01): sweep every %s, policy %s", interval, priorities.Policy().Version)
 		opts = append(opts, httpadapter.WithTriage(priorities, verifier))
+		// HU-W2.2-03: what operations reads to evaluate a claim, with the
+		// terms of its policy when the policy core is configured, and the
+		// decision on it, which pays the indemnity or notifies the rejection.
+		terms := policyTerms(os.Getenv)
+		decisions, err := decisionStoreOf(records)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		opts = append(opts, httpadapter.WithEvaluation(
+			evaluationService(records, priorities, evidences, terms).WithDecisions(decisions), verifier))
+		opts = append(opts, decisionRoutes(context.Background(), records, decisions, terms, verifier, os.Getenv)...)
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)
 	}

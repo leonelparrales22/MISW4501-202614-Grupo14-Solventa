@@ -132,6 +132,37 @@ func (s *CaseStore) ListByOwner(_ context.Context, subject string, f ports.Claim
 	return out, nil
 }
 
+var _ ports.ClaimQueue = (*CaseStore)(nil)
+
+// ListByStatus returns the claims of every insured in one of the statuses,
+// oldest filed first, without supports or evidence (HU-W2.2-03).
+func (s *CaseStore) ListByStatus(_ context.Context, statuses []domain.Status, after *ports.ClaimCursor,
+	limit int) ([]domain.ClaimRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	wanted := make(map[domain.Status]bool, len(statuses))
+	for _, st := range statuses {
+		wanted[st] = true
+	}
+	var out []domain.ClaimRecord
+	for _, c := range s.byID {
+		if !wanted[c.Status] || (after != nil && !newerThan(c, *after)) {
+			continue
+		}
+		c = copyRecord(c)
+		c.Supports, c.Evidence = nil, nil
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return olderThan(out[i], ports.ClaimCursor{FiledAt: out[j].FiledAt, ID: out[j].ID})
+	})
+	if limit >= 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // Save stores a declared support, not confirmed yet.
 func (s *CaseStore) Save(_ context.Context, f domain.SupportFile) error {
 	s.mu.Lock()
@@ -212,6 +243,15 @@ func olderThan(c domain.ClaimRecord, cursor ports.ClaimCursor) bool {
 		return c.FiledAt.Before(cursor.FiledAt)
 	}
 	return c.ID < cursor.ID
+}
+
+// newerThan tells whether c comes after the cursor in the order of the queue:
+// filed later, or at the same instant with a greater id.
+func newerThan(c domain.ClaimRecord, cursor ports.ClaimCursor) bool {
+	if !c.FiledAt.Equal(cursor.FiledAt) {
+		return c.FiledAt.After(cursor.FiledAt)
+	}
+	return c.ID > cursor.ID
 }
 
 // copyRecord returns a claim that shares no slice, map or pointer with c, so
