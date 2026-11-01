@@ -9,6 +9,7 @@ Los servicios publican hechos de negocio en Amazon SNS (un tópico por dominio) 
 | `OfferGenerated` | `OfertaGenerada` | origination | audit | **Publicación pendiente (HU-W4.1-01).** Oferta personalizada generada (HU-W1.2-03); hoy solo queda en la tabla `offer` |
 | `OfferRequoted` | `OfertaRecotizada` | origination | audit, notifications | **Publicación pendiente (HU-W4.1-01).** Una oferta provisional se reemplazó por una normal al volver la fuente (HU-W1.2-03); hoy el aviso al cliente es el correo `offer-requoted:<id>` |
 | `ClaimApproved` | `SiniestroAprobado` | claims | notifications, audit | Dispara notificación y pago paramétrico |
+| `ParametricPayoutCompleted` | `PagoParametricoRealizado` | claims | notifications (HU-M3.1-01) | **Contrato definido en HU-M3.1-01; la publicación es del motor paramétrico (`claims/internal/parametric`, reservado).** El pago automático de un siniestro paramétrico quedó confirmado: `notifications` registra la notificación y envía el *push* en ≤ 60 s. Hoy lo publica el ensayo local `tests/e2e/hu-m3.1` |
 | `CustomerLinked` | `ClienteVinculado` | origination | audit | La cuenta del asegurado (`sub` de Cognito) quedó vinculada a su documento al terminar el registro (HU-M1.1-01); `audit` lo usa para reconocer al titular de sus consentimientos (HU-M1.3-01). **Primer evento publicado con *outbox*** |
 | `PartnerCredentialsIssued`, `PartnerCredentialsRotated`, `PartnerCredentialsRevoked` | `CredencialesSocioEmitidas`, `CredencialesSocioRotadas`, `CredencialesSocioRevocadas` | partners | audit | Se generaron las credenciales de un socio al aprobarlo, se rotaron o se revocó la anterior al vencer la transición (HU-W3.1-01); `audit` las guarda en el registro de auditoría de suscripción con la fecha y el emisor. **Primer evento del tópico `partners`** |
 
@@ -117,5 +118,32 @@ Los escribe `partners` **en la misma transacción** que el cambio de la credenci
 **Cómo se consume:** la cola de `audit` también se suscribe al tópico `partners`. El manejador es **idempotente por `event_id`** (tabla
 `partner_credential_record`, *append-only*, `UNIQUE (event_id)`): el mismo evento otra vez no cambia nada. Un *payload* inválido es error
 y el mensaje termina en la DLQ tras los reintentos.
+
+## `ParametricPayoutCompleted` (HU-M3.1-01)
+
+Lo publicará `claims` (motor paramétrico) en su tópico, con *outbox*, **cuando la pasarela confirme el pago automático**: el instante de esa
+confirmación (`paid_at`) es el inicio de los 60 s del criterio 1. Lo consume `notifications` desde su cola (suscrita al tópico `claims`,
+entrega *raw*, DLQ con 5 recepciones).
+
+**Sobre:** el común de `pkg/events.Envelope`, con `event_id` = `parametric-payout-completed-<payout_id>`, `event_type` =
+`ParametricPayoutCompleted`, `event_version` = `1`, `source` = `claims` y `occurred_at` = `paid_at`.
+
+**Payload:**
+
+| Campo | Descripción |
+|---|---|
+| `payout_id` | Identifica el pago; clave de idempotencia del consumidor (una notificación por pago, `ntf-<payout_id>`) |
+| `claim_id`, `policy_id` | Siniestro paramétrico y póliza que lo pagó |
+| `subject` | `sub` de la cuenta del asegurado: el destinatario del centro y del *push* |
+| `amount_minor`, `currency` | Monto pagado en unidades menores (centavos) y moneda ISO 4217 |
+| `trigger` | `parameter` (`flight_delay`…), `event_reference` (el vuelo `AV-8421`), `threshold`, `observed`, `unit` (`minutes`…), `observed_at` |
+| `payment_method` | `brand` y `last4`; nunca el número ni el token |
+| `idempotency_key` | Clave con la que se hizo el pago (HA-D02) |
+| `paid_at` | Confirmación del pago (UTC); si falta, el consumidor usa `occurred_at` |
+
+**Cómo se consume:** idempotente por `payout_id`; el mismo evento otra vez no crea otra notificación ni otro *push*. La notificación y una
+entrega por cada dispositivo del asegurado con permiso se escriben en una transacción; un trabajador envía los *push* con la misma clave de
+idempotencia y los reintenta hasta 24 h. Varios pagos el mismo día son notificaciones distintas (criterio 6). Un *payload* inválido o la base
+caída no borran el mensaje: reaparece al vencer la visibilidad y termina en la DLQ.
 
 Los esquemas de los demás eventos se agregarán aquí al implementarlos. Los consumidores exactos pueden cambiar; confirmar en la Wiki ([Arquitectura final](https://github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/wiki/Arquitectura_final)).
