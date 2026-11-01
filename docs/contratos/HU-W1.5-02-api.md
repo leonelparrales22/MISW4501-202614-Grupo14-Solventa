@@ -42,6 +42,9 @@ Todos exigen el ID token de Cognito con rol `insured` y solo ven y renuevan **su
 
 ### `GET /v1/policies` → `200`
 
+> **Desde HU-M1.2-01 (0.13.0)** esta lista la arma la billetera: agrega las pólizas del núcleo de pólizas y los campos `source`, `line`,
+> `product`, `insured_object`, `status`, `holder` y `partial`. Lo de abajo sigue valiendo; ver [`HU-M1.2-01-api.md`](HU-M1.2-01-api.md).
+
 ```json
 { "items": [ {
   "policy_id": "pol-acc-…", "holder_name": "Carolina Pérez", "premium": 142300, "currency": "COP", "insured_amount": 68000000,
