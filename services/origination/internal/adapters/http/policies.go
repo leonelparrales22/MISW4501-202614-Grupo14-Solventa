@@ -15,23 +15,22 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/renewal"
 )
 
-// RenewalService is the use case behind the policy and renewal routes
-// (HU-W1.5-02).
+// RenewalService is the use case behind the renewal routes (HU-W1.5-02).
+// The list of the policies moved to the wallet (HU-M1.2-01, WithPolicyWallet).
 type RenewalService interface {
-	ListPolicies(ctx context.Context) ([]renewal.PolicyView, error)
 	Conditions(ctx context.Context, policyID string) (renewal.Conditions, error)
 	Accept(ctx context.Context, policyID string) (renewal.Accepted, error)
 	Status(ctx context.Context, policyID string) (domain.Renewal, domain.Charge, error)
 }
 
-// WithPolicies mounts the policies of the insured and their online renewal
-// (HU-W1.5-02, screens A1, A4 and A4b). They are human routes: only the insured
-// who owns the policy reads or renews it. Register it after WithObservability.
+// WithPolicies mounts the online renewal of a policy (HU-W1.5-02, screens A4
+// and A4b). They are human routes: only the insured who owns the policy reads
+// or renews it. The list of screen A1 is GET /v1/policies of the wallet
+// (WithPolicyWallet, HU-M1.2-01). Register it after WithObservability.
 func WithPolicies(svc RenewalService, verifier security.Verifier) Option {
 	return func(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(noStore, security.Authenticate(verifier), security.RequireRole(security.RoleInsured))
-			r.Get("/v1/policies", listPolicies(svc))
 			r.Get("/v1/policies/{policy_id}/renewal", getRenewalConditions(svc))
 			r.Post("/v1/policies/{policy_id}/renewal", acceptRenewal(svc))
 			r.Get("/v1/policies/{policy_id}/renewal/status", getRenewalStatus(svc))
@@ -90,38 +89,6 @@ func toRenewalSummary(r domain.Renewal) renewalSummaryBody {
 type windowBody struct {
 	OpensAt  time.Time `json:"opens_at"`
 	ClosesAt time.Time `json:"closes_at"`
-}
-
-type policyListItemBody struct {
-	policyBody
-	RenewalWindow windowBody          `json:"renewal_window"`
-	CanRenew      bool                `json:"can_renew"`
-	Renewal       *renewalSummaryBody `json:"renewal"`
-}
-
-type policyListResponse struct {
-	Items []policyListItemBody `json:"items"`
-}
-
-func listPolicies(svc RenewalService) http.HandlerFunc {
-	return func(w http.ResponseWriter, req *http.Request) {
-		views, err := svc.ListPolicies(req.Context())
-		if err != nil {
-			respondRenewalError(w, req, err)
-			return
-		}
-		out := policyListResponse{Items: make([]policyListItemBody, 0, len(views))}
-		for _, v := range views {
-			item := policyListItemBody{policyBody: toPolicyBody(v.Policy), CanRenew: v.CanRenew,
-				RenewalWindow: windowBody{OpensAt: v.WindowOpensAt.UTC(), ClosesAt: v.WindowClosesAt.UTC()}}
-			if v.Renewal != nil {
-				s := toRenewalSummary(*v.Renewal)
-				item.Renewal = &s
-			}
-			out.Items = append(out.Items, item)
-		}
-		writeJSON(w, http.StatusOK, out)
-	}
 }
 
 type renewalTermsBody struct {

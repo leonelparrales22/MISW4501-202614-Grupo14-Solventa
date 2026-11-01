@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.12.0
+  version: 0.13.0
 paths:
   /health:
     get:
@@ -1159,15 +1159,27 @@ paths:
                 $ref: "#/components/schemas/Error"
   /v1/policies:
     get:
-      summary: List the policies of the insured with their renewal state (HU-W1.5-02)
+      summary: List every policy of the insured (HU-W1.5-02, HU-M1.2-01)
       description: >
-        Screen A1. Returns the policies the caller owns, the ones ending last
-        first. A policy appears when the premium is charged and its coverage is
-        activated. renewal_window says when the renewal opens (RENEWAL_WINDOW_DAYS
-        before the coverage ends, 30 by default) and closes (when the coverage
-        ends); can_renew is true only inside the window and while the period has
-        no renewal yet. renewal is the outcome of the current period, once there
-        is one. Needs PostgreSQL and the premium charge. Only the insured.
+        Screen A1 of the portal and M4 "Mis pólizas" of the mobile app, which
+        keeps a copy of the list to show it without a connection. Returns the
+        policies the caller owns from two sources. First the ones origination
+        issued (source origination, line life), the ones ending last first: a
+        policy appears when the premium is charged and its coverage is
+        activated; renewal_window says when the renewal opens
+        (RENEWAL_WINDOW_DAYS before the coverage ends, 30 by default) and closes
+        (when the coverage ends), can_renew is true only inside the window and
+        while the period has no renewal yet, and renewal is the outcome of the
+        current period, once there is one. Then the auto, home, travel and life
+        policies of the policy core (source policy_core, POLICY_CORE_URL), with
+        the insured value of each coverage and the holder's profile as their
+        main insured; the core keeps no premiums (premium null) and origination
+        cannot renew them (renewal_window null, can_renew false, renewal null).
+        When the policy core does not answer, the list is still 200 with
+        partial true and only origination's policies: a client keeps the copy it
+        had instead of taking the missing ones as cancelled. Mounted when at
+        least one source is configured (the premium charge with PostgreSQL, or
+        the policy core). Only the insured.
       security:
         - cognitoJwt: []
       responses:
@@ -3092,29 +3104,113 @@ components:
           type: string
           format: date-time
           nullable: true
+    WalletCoverage:
+      type: object
+      required: [code, insured_amount]
+      properties:
+        code:
+          type: string
+          description: >
+            What the coverage pays for. Origination's are death and
+            total_permanent_disability; the policy core's are its incidents
+            (collision, theft, third_party_damage, glass, other, water_damage,
+            flight_delay, death).
+        insured_amount:
+          type: number
+          description: The insured value of the coverage, in units of the policy currency.
+    PolicyHolder:
+      type: object
+      required: [full_name, document_type, document_id]
+      description: The main insured of the policy, without their contact.
+      properties:
+        full_name:
+          type: string
+        document_type:
+          type: string
+          nullable: true
+          description: CC, CE…; null when the source does not keep it.
+        document_id:
+          type: string
+          nullable: true
     PolicyListItem:
-      allOf:
-        - $ref: "#/components/schemas/PolicySummary"
-        - type: object
-          required: [renewal_window, can_renew, renewal]
-          properties:
-            renewal_window:
-              $ref: "#/components/schemas/RenewalWindow"
-            can_renew:
-              type: boolean
-            renewal:
-              nullable: true
-              allOf:
-                - $ref: "#/components/schemas/RenewalSummary"
+      type: object
+      required: [policy_id, source, line, product, insured_object, status, holder_name, holder, premium, currency,
+        insured_amount, coverages, coverage_start, coverage_end, renewal_of, renewal_window, can_renew, renewal]
+      properties:
+        policy_id:
+          type: string
+        source:
+          type: string
+          enum: [origination, policy_core]
+          description: Who keeps the policy. Only origination's can be renewed here.
+        line:
+          type: string
+          enum: [life, auto, home, travel]
+          description: The kind of insurance. A client names it in its own language.
+        product:
+          type: string
+          nullable: true
+          description: The product name the policy core gives (Autos, Hogar…); null for origination's.
+        insured_object:
+          type: string
+          nullable: true
+          description: What is insured (a plate, an address, a trip); null when the source does not say.
+        status:
+          type: string
+          enum: [active, expired, cancelled]
+          description: Origination's are active until their coverage ends and expired afterwards.
+        holder_name:
+          type: string
+          description: The main insured's name. Kept from 0.12.0; holder carries it too.
+        holder:
+          $ref: "#/components/schemas/PolicyHolder"
+        premium:
+          type: number
+          nullable: true
+          description: The monthly premium; null for a policy of the core, which keeps no premiums.
+        currency:
+          type: string
+        insured_amount:
+          type: number
+          description: The insured value of the policy; for the core's, the largest of its coverages.
+        coverages:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/WalletCoverage"
+        coverage_start:
+          type: string
+          format: date-time
+        coverage_end:
+          type: string
+          format: date-time
+        renewal_of:
+          type: string
+          nullable: true
+          description: The policy this one renews; null for new business and for the core's.
+        renewal_window:
+          nullable: true
+          description: Null for a policy of the core.
+          allOf:
+            - $ref: "#/components/schemas/RenewalWindow"
+        can_renew:
+          type: boolean
+        renewal:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/RenewalSummary"
     PolicyList:
       type: object
-      required: [items]
+      required: [items, partial]
       properties:
         items:
           type: array
           maxItems: 500
           items:
             $ref: "#/components/schemas/PolicyListItem"
+        partial:
+          type: boolean
+          description: True when the policy core did not answer and its policies are missing from items.
     RenewalTerms:
       type: object
       required: [premium, currency, insured_amount, coverages, coverage_start, coverage_end]
