@@ -5,7 +5,12 @@
 > `internal/adapters/email/review_notifier.go`, `cmd/origination/main.go`) y de respuestas **capturadas del binario en ejecución**
 > el 2026-10-17 (Cognito local de Moto con verificación JWT RS256 real de `pkg/security`, cobro de HA-D02 con PostgreSQL y el stub de
 > correo de HU-W1.3-03). Los identificadores y las fechas de los ejemplos son los de esa ejecución. Contrato formal:
-> `services/origination/api/openapi.yaml` (versión 0.8.0).
+> `services/origination/api/openapi.yaml` (versión 0.8.0; desde el fix C5, 0.10.1, sin cambios de forma).
+>
+> **Fix C5 (2026-10-23):** con `DATABASE_URL`, la bandeja, las decisiones, el estado del aviso y las ofertas ajustadas están en
+> PostgreSQL (`internal/adapters/postgres/reviews.go` y `adjusted_offers.go`) y **sobreviven a un reinicio**; el *claim* de la
+> decisión funciona con varias tareas. El asesor nunca queda como dueño ni solicitante de una oferta, una aceptación o una póliza: solo
+> figura en `decision.advisor` (`decided_by`). La API no cambió.
 
 ---
 
@@ -30,7 +35,7 @@ GET /v1/acceptances/{id} (E6b/E6c) ◀── objeto review con el resultado y la
 | CA-1 La solicitud enrutada aparece en la bandeja con solicitante, oferta, motivo, llegada y estado pendiente | Sí | `GET /v1/review-requests` (por defecto `status=pending`) con `applicant`, `offer`, `reason`, `received_at`, `status` |
 | CA-2 Tres decisiones; observaciones obligatorias al ajustar o rechazar | Sí | `POST …/decision` con `type` `accept` \| `adjust` \| `reject`; `400 observations_required` si faltan |
 | CA-3 El flujo continúa solo según el tipo y el caso queda decidido | Sí | accept → emisión; adjust → oferta nueva que se acepta por el mismo `POST` de HU-W1.3-01; reject → cierre y correo al cliente. El caso pasa a `decided` y sale de pendientes |
-| CA-4 Registro auditable con asesor, fecha y hora, tipo y observaciones | Sí, salvo reinicio | `decision` con `advisor` (`sub` y `email` del token), `decided_at`, `type`, `observations`, `premium_adjustment_pct` y `adjusted_offer`; *append-only*. **Se pierde si el servicio se reinicia** (memoria, §8) |
+| CA-4 Registro auditable con asesor, fecha y hora, tipo y observaciones | Sí | `decision` con `advisor` (`sub` y `email` del token), `decided_at`, `type`, `observations`, `premium_adjustment_pct` y `adjusted_offer`; *append-only* en PostgreSQL (`human_decision` rechaza `UPDATE`, `DELETE` y `TRUNCATE`) y **sobrevive a un reinicio** con `DATABASE_URL` (fix C5; sin ella, en memoria, §8) |
 | CA-5 Filtro por estado y orden por llegada | Sí | `?status=pending\|decided&order=asc\|desc` (y `reason` opcional) |
 
 **Dos asesores a la vez (corrección del 2026-10-17):** la decisión se registra primero con un *claim* atómico y solo quien lo gana
@@ -246,7 +251,8 @@ Correos reales capturados (sin enlace y sin las observaciones del asesor; clave 
 
 | Pieza | Estado hoy | Efecto visible para el front | Pendiente de |
 |---|---|---|---|
-| Bandeja y decisiones | **En memoria** (con *claim* atómico) | Se pierden al reiniciar el servicio, igual que las aceptaciones | PostgreSQL de origination |
+| Bandeja y decisiones | **PostgreSQL** con `DATABASE_URL` (fix C5), con *claim* atómico entre tareas; sin ella, en memoria | Sobreviven a un reinicio, igual que las aceptaciones; un caso de demostración pendiente se abre y se decide igual tras el reinicio (la solicitud guarda la foto de su oferta) | — |
+| Ofertas de demostración `demo-*` | En memoria (decisión #77 B) | Tras un reinicio, `GET /v1/offers/demo-…` da `404` hasta que el asegurado la vuelva a abrir; los casos ya en la bandeja no se afectan | — |
 | Registro de auditoría de largo plazo | En origination, *append-only* | Se consulta con estas rutas | HU-W4.1-01 (servicio `audit`) |
 | Datos del solicitante | Los de `domain.Applicant` (nombre, documento, correo). Con las ofertas de demostración, el nombre es el `cognito:username` (en Moto, el `sub`) y el documento `demo-document` | Edad, ciudad, ingresos, valor asegurado y consentimiento de S5 no existen | HU-W1.2-03, HU-W1.2-01 |
 | Detalle de la oferta ajustada en E3 | **No hay endpoint de detalle de oferta** | E3 muestra la oferta de demostración; E6b sí muestra la prima ajustada (`review.adjusted_offer`) | HU-W1.2-03 |

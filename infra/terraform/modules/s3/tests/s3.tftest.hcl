@@ -118,6 +118,42 @@ run "extra_statements_are_merged" {
   }
 }
 
+run "no_cors_by_default" {
+  command = plan
+
+  assert {
+    condition     = length(aws_s3_bucket_cors_configuration.this) == 0
+    error_message = "Without origins the bucket has no CORS configuration."
+  }
+}
+
+run "cors_lets_only_the_listed_origins_upload_and_read" {
+  command = plan
+
+  variables {
+    cors_allowed_origins = ["https://d1234abcd.cloudfront.net"]
+  }
+
+  assert {
+    condition = (
+      length(aws_s3_bucket_cors_configuration.this) == 1 &&
+      one(aws_s3_bucket_cors_configuration.this[0].cors_rule).allowed_origins == toset(["https://d1234abcd.cloudfront.net"]) &&
+      one(aws_s3_bucket_cors_configuration.this[0].cors_rule).allowed_methods == toset(["GET", "PUT"])
+    )
+    error_message = "The portal origin may PUT and GET with signed URLs, and nothing else."
+  }
+}
+
+run "rejects_a_wildcard_or_a_path_as_origin" {
+  command = plan
+
+  variables {
+    cors_allowed_origins = ["*"]
+  }
+
+  expect_failures = [var.cors_allowed_origins]
+}
+
 run "rejects_extra_policy_that_is_not_json" {
   command = plan
 

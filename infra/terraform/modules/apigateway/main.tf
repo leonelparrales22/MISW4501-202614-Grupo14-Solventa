@@ -19,6 +19,12 @@
 #   HU-W1.3-03 (GET /v1/documents/{token}); each method can be throttled at the
 #   stage, since no usage plan covers it. binary_media_types lets a PDF through
 #   intact. Without them nothing of this is created and nothing changes.
+# - Public sign-up of the insured (HU-M1.1-01, optional): with
+#   registration_route, POST /v1/registrations reaches origination without
+#   session or API key, throttled at the stage. It is public because the
+#   account does not exist yet, so the caller has no token; it is the only
+#   public write route under /v1. Without it nothing of this is created and
+#   nothing changes.
 # - Public card tokenization (T5, optional): with payment_tokenization,
 #   POST /pasarela/tokens (outside /v1; the name is fixed by the HU-W1.3-02
 #   contract) reaches the simulated payment gateway behind the load balancer
@@ -160,6 +166,7 @@ resource "aws_api_gateway_deployment" "this" {
         aws_api_gateway_integration.resolve_post,
         aws_api_gateway_integration.customer_get,
       ])],
+      [jsonencode(aws_api_gateway_gateway_response.rate_limited)],
       local.auth_enabled ? [jsonencode([
         aws_api_gateway_authorizer.cognito,
         aws_api_gateway_method.human,
@@ -182,6 +189,14 @@ resource "aws_api_gateway_deployment" "this" {
         aws_api_gateway_resource.partner_l3,
         aws_api_gateway_method.partner,
         aws_api_gateway_integration.partner,
+      ])] : [],
+      local.registration_enabled ? [jsonencode([
+        aws_api_gateway_resource.registrations,
+        aws_api_gateway_method.registrations_post,
+        aws_api_gateway_integration.registrations_post,
+        aws_api_gateway_resource.registration_document_reads,
+        aws_api_gateway_method.registration_document_reads_post,
+        aws_api_gateway_integration.registration_document_reads_post,
       ])] : [],
       local.payment_tokenization_enabled ? [jsonencode([
         aws_api_gateway_resource.payment_gateway,
@@ -276,22 +291,35 @@ resource "aws_api_gateway_usage_plan_key" "partner" {
 locals {
   auth_enabled = length(var.cognito_user_pool_arns) > 0
 
-  # /v1/<route> and /v1/<route>/{proxy+} for every human route.
+  # /v1/<route> and /v1/<route>/{proxy+} for every human route, plus the
+  # /v1/<key>/{proxy+} of every human sub-route (HU-W4.2-02), which hangs from a
+  # partner route. A sub-route with root_methods (HU-W4.2-01) also takes the
+  # exact path of that partner route, the resource of the partner, for those
+  # methods only.
+  human_subroute_roots = { for r, h in var.human_subroutes : r => h.root_methods if length(h.root_methods) > 0 }
+
   human_resources = merge(
     { for r in keys(var.human_routes) : r => { route = r, proxy = false } },
     { for r in keys(var.human_routes) : "${r}/{proxy+}" => { route = r, proxy = true } },
+    { for r in keys(var.human_subroutes) : "${r}/{proxy+}" => { route = r, proxy = true } },
+    { for r in keys(local.human_subroute_roots) : r => { route = r, proxy = false } },
   )
 
   human_resource_ids = merge(
     { for r, res in aws_api_gateway_resource.human : r => res.id },
     { for r, res in aws_api_gateway_resource.human_proxy : "${r}/{proxy+}" => res.id },
+    { for r, res in aws_api_gateway_resource.human_subproxy : "${r}/{proxy+}" => res.id },
+    { for r in keys(local.human_subroute_roots) : r => lookup(local.partner_resource_ids, r, null) },
   )
 
   # Methods of each human resource: the root takes root_methods when it is set
-  # (T5), every sub-path takes methods.
+  # (T5), every sub-path takes methods, and the exact path of a sub-route takes
+  # its root_methods (HU-W4.2-01).
   human_resource_methods = merge(
     { for r, h in var.human_routes : r => h.root_methods != null ? h.root_methods : h.methods },
     { for r, h in var.human_routes : "${r}/{proxy+}" => h.methods },
+    { for r, h in var.human_subroutes : "${r}/{proxy+}" => h.methods },
+    local.human_subroute_roots,
   )
 
   # A resource without human methods (a root given to a partner route) has no
@@ -477,6 +505,32 @@ resource "aws_api_gateway_gateway_response" "cors" {
   }
 }
 
+# --- Partner quota exceeded: standard 429 (HU-W3.1-01 CA-2) ----------------------
+#
+# Each partner has its own usage plan (created here for the static partners and
+# by the partners service for the approved ones), so the gateway answers 429
+# only to the partner that exhausted its daily quota (QUOTA_EXCEEDED) or its
+# burst (THROTTLED); the others keep their own plans. Both carry the standard
+# Solventa error body instead of the AWS default message. With the human
+# channels they also carry the CORS headers, like the other 4XX responses.
+
+resource "aws_api_gateway_gateway_response" "rate_limited" {
+  for_each = toset(["QUOTA_EXCEEDED", "THROTTLED"])
+
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  response_type = each.key
+  status_code   = "429"
+
+  response_parameters = local.auth_enabled ? {
+    "gatewayresponse.header.Access-Control-Allow-Origin"  = "'${var.cors_allow_origin}'"
+    "gatewayresponse.header.Access-Control-Allow-Headers" = "'${local.cors_allow_headers}'"
+  } : {}
+
+  response_templates = {
+    "application/json" = "{\"error\":\"rate_limited\",\"message\":\"The request quota of this credential was exceeded; try again later.\"}"
+  }
+}
+
 # --- Public routes: no session, no API key (HA-D02) ------------------------------
 
 locals {
@@ -575,6 +629,127 @@ resource "aws_api_gateway_method_settings" "public" {
     caching_enabled        = false
     throttling_rate_limit  = coalesce(var.public_routes[each.value.route].rate_limit, -1)
     throttling_burst_limit = coalesce(var.public_routes[each.value.route].burst_limit, -1)
+  }
+
+  depends_on = [aws_api_gateway_method_settings.all]
+}
+
+# --- Public sign-up of the insured (HU-M1.1-01) -----------------------------------
+
+locals {
+  registration_enabled = var.registration_route != null
+}
+
+# The only public write route under /v1. It has to be public because the
+# account does not exist yet: the caller has no token to send. The user pool
+# creates accounts administratively, so the service behind this route is what
+# decides whether an account is created at all.
+resource "aws_api_gateway_resource" "registrations" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.v1.id
+  path_part   = "registrations"
+}
+
+# Only POST: reading a registration needs a session and goes through the
+# human routes.
+resource "aws_api_gateway_method" "registrations_post" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id      = aws_api_gateway_rest_api.this.id
+  resource_id      = aws_api_gateway_resource.registrations[0].id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "registrations_post" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.registrations[0].id
+  http_method             = aws_api_gateway_method.registrations_post[0].http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "POST"
+  uri                     = "${local.backend}${var.registration_route.backend_path}"
+  connection_type         = local.connection_type
+  connection_id           = var.vpc_link_v2_id
+  integration_target      = local.private_integration ? var.integration_target_arn : null
+  # Not the 5 s of the quoting routes: the sign-up waits for the identity
+  # provider (up to 10 s, kyc.IdentityTimeout) before creating the account.
+  timeout_milliseconds = var.registration_route.timeout_ms
+}
+
+# POST /v1/registrations/document-reads: the identity provider reads the
+# document so the person confirms the data before signing up (HU-M1.1-01,
+# criterion 1). Public for the same reason as the sign-up, and throttled the
+# same way: nothing is stored.
+resource "aws_api_gateway_resource" "registration_document_reads" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = aws_api_gateway_resource.registrations[0].id
+  path_part   = "document-reads"
+}
+
+resource "aws_api_gateway_method" "registration_document_reads_post" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id      = aws_api_gateway_rest_api.this.id
+  resource_id      = aws_api_gateway_resource.registration_document_reads[0].id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "registration_document_reads_post" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id             = aws_api_gateway_rest_api.this.id
+  resource_id             = aws_api_gateway_resource.registration_document_reads[0].id
+  http_method             = aws_api_gateway_method.registration_document_reads_post[0].http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "POST"
+  uri                     = "${local.backend}${var.registration_route.backend_path}/document-reads"
+  connection_type         = local.connection_type
+  connection_id           = var.vpc_link_v2_id
+  integration_target      = local.private_integration ? var.integration_target_arn : null
+  timeout_milliseconds    = var.registration_route.timeout_ms
+}
+
+# No usage plan covers a route without API key: the throttle lives at the
+# stage. It is lower than the tokenization one because a sign-up happens once
+# per person, while a tokenization happens on every purchase.
+resource "aws_api_gateway_method_settings" "registrations" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "v1/registrations/POST"
+
+  settings {
+    metrics_enabled        = true
+    caching_enabled        = false
+    throttling_rate_limit  = var.registration_route.rate_limit
+    throttling_burst_limit = var.registration_route.burst_limit
+  }
+
+  depends_on = [aws_api_gateway_method_settings.all]
+}
+
+resource "aws_api_gateway_method_settings" "registration_document_reads" {
+  count = local.registration_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "v1/registrations/document-reads/POST"
+
+  settings {
+    metrics_enabled        = true
+    caching_enabled        = false
+    throttling_rate_limit  = var.registration_route.rate_limit
+    throttling_burst_limit = var.registration_route.burst_limit
   }
 
   depends_on = [aws_api_gateway_method_settings.all]
@@ -744,6 +919,14 @@ resource "aws_api_gateway_method" "partner" {
       )
       error_message = "A method of a partner route repeats a human method on the same root: set root_methods of the human route without it."
     }
+
+    precondition {
+      condition = (
+        !contains(keys(local.human_subroute_roots), each.value.route) ||
+        !contains(lookup(local.human_subroute_roots, each.value.route, []), each.value.http_method)
+      )
+      error_message = "A method of a partner route is also in root_methods of the human sub-route of the same key: the exact path cannot ask for the API key and for the token at once (HU-W4.2-01)."
+    }
   }
 }
 
@@ -760,4 +943,40 @@ resource "aws_api_gateway_integration" "partner" {
   connection_id           = var.vpc_link_v2_id
   integration_target      = local.private_integration ? var.integration_target_arn : null
   timeout_milliseconds    = var.integration_timeout_ms
+}
+
+# --- Human sub-paths under a partner route (HU-W4.2-02) -----------------------------
+#
+# The compliance portal reads and revokes a consent through
+# /v1/audit/consents/{consent_id}/..., a path under the partner route
+# POST /v1/audit/consents. Publishing the whole of audit as a human route would
+# also expose the internal consent verification and the underwriting decision
+# record (no token), so only the {proxy+} of that partner route is created. The
+# method, integration and preflight come from the human_* maps above. Since
+# HU-W4.2-01, root_methods publishes the list of the portal
+# (GET /v1/audit/consents) on the resource of the partner route itself, next to
+# its POST with the API key: the authorization is per method.
+resource "aws_api_gateway_resource" "human_subproxy" {
+  for_each = var.human_subroutes
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = lookup(local.partner_resource_ids, each.key, null)
+  path_part   = "{proxy+}"
+
+  lifecycle {
+    precondition {
+      condition     = local.auth_enabled
+      error_message = "human_subroutes need cognito_user_pool_arns: a human route is never published without the Cognito authorizer (HA-S01 CA-1)."
+    }
+
+    precondition {
+      condition     = contains(keys(var.partner_routes), each.key)
+      error_message = "A human sub-route hangs from a partner route: its key must also be in partner_routes (HU-W4.2-02)."
+    }
+
+    precondition {
+      condition     = !contains(keys(var.human_routes), each.key)
+      error_message = "A human sub-route cannot also be a human route: the same {proxy+} would be created twice."
+    }
+  }
 }

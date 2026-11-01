@@ -52,6 +52,15 @@ type OfferWriter interface {
 	Create(ctx context.Context, offer domain.Offer) error
 }
 
+// AdjustedOfferStore keeps the offers an advisor adjusts (HU-W1.1-02, decision
+// D-1 a of the fix C5): Create stores the offer of a recorded adjust decision,
+// idempotent by id and never overwriting it, and Get reads it back
+// (ErrOfferNotFound for an unknown id). An adjusted offer is immutable.
+type AdjustedOfferStore interface {
+	OfferRepository
+	OfferWriter
+}
+
 // ReviewOutcomeNotifier tells the customer that their request was adjusted or
 // rejected by an advisor (decision D-3 c). It is idempotent by the notice key.
 type ReviewOutcomeNotifier interface {

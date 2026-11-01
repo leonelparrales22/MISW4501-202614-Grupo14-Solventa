@@ -17,8 +17,10 @@ import (
 type memRepo struct {
 	mu   sync.Mutex
 	rows map[string]domain.Charge
+	// actions is the history Resume records, as the PostgreSQL one does.
+	actions []domain.IssuanceAction
 
-	createErr, getErr, listErr, writeErr, claimErr error
+	createErr, getErr, listErr, writeErr, claimErr, declineErr error
 }
 
 var _ ports.ChargeRepository = (*memRepo)(nil)
@@ -118,6 +120,78 @@ func (r *memRepo) ListExceptions(_ context.Context, limit int) ([]domain.Charge,
 	return out, nil
 }
 
+func (r *memRepo) ListIssuances(_ context.Context, f domain.IssuanceFilter) ([]domain.Issuance, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	out := []domain.Issuance{}
+	for _, c := range r.rows {
+		i := domain.Issuance{
+			AcceptanceID: c.AcceptanceID, OfferID: c.OfferID, CustomerID: c.CustomerID,
+			Status: domain.IssuanceStatusOf(c.Status), AcceptedAt: c.AcceptedAt, UpdatedAt: c.UpdatedAt,
+			AmountMinor: c.AmountMinor, Currency: c.Currency, Attempts: c.Attempts, PolicyID: c.PolicyID,
+			FailureReason: domain.IssuanceFailureReason(c.FailureReason), FailedAt: c.LastFailureAt, ResumeCount: c.ResumeCount,
+			LastResumedAt: c.LastResumedAt, LastResumedBy: c.LastResumedBy,
+			CustomerName: c.Holder.FullName, Channel: c.Channel, Step: domain.StepPremiumCharge,
+		}
+		if (f.Status != "" && i.Status != f.Status) || (f.Channel != "" && i.Channel != f.Channel) ||
+			(!f.From.IsZero() && i.AcceptedAt.Before(f.From)) || (!f.To.IsZero() && i.AcceptedAt.After(f.To)) {
+			continue
+		}
+		out = append(out, i)
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].AcceptedAt.After(out[b].AcceptedAt) })
+	if len(out) > f.Limit {
+		out = out[:f.Limit]
+	}
+	return out, nil
+}
+
+func (r *memRepo) CountIssuances(_ context.Context, dayFrom, now time.Time) (domain.IssuanceCounts, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.listErr != nil {
+		return domain.IssuanceCounts{}, r.listErr
+	}
+	var out domain.IssuanceCounts
+	for _, c := range r.rows {
+		switch domain.IssuanceStatusOf(c.Status) {
+		case domain.IssuanceCharging:
+			out.Charging++
+			if c.Attempts > 0 {
+				out.ChargingWithRetries++
+			}
+		case domain.IssuanceActive:
+			if !c.ActivatedAt.Before(dayFrom) {
+				out.ActiveToday++
+			}
+		case domain.IssuanceException:
+			out.Exceptions++
+			if !c.LastFailureAt.After(now.Add(-domain.EscalationAfter)) {
+				out.Unattended++
+			}
+		}
+	}
+	return out, nil
+}
+
+func (r *memRepo) ListActions(_ context.Context, acceptanceID string) ([]domain.IssuanceAction, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	out := []domain.IssuanceAction{}
+	for i := len(r.actions) - 1; i >= 0; i-- {
+		if r.actions[i].AcceptanceID == acceptanceID {
+			out = append(out, r.actions[i])
+		}
+	}
+	return out, nil
+}
+
 func (r *memRepo) Claim(_ context.Context, id string, now time.Time, lease time.Duration) (domain.Charge, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -205,6 +279,10 @@ func (r *memRepo) Resume(_ context.Context, id string, res domain.ChargeResumpti
 	row.ResumeCount++
 	row.LastResumedBy, row.LastResumedAt, row.ResumeNote = res.By, res.At, res.Note
 	r.rows[id] = row
+	r.actions = append(r.actions, domain.IssuanceAction{
+		ID: int64(len(r.actions) + 1), AcceptanceID: id, Action: domain.IssuanceActionResume,
+		Actor: res.By, Note: res.Note, CreatedAt: res.At,
+	})
 	return row, nil
 }
 
@@ -348,6 +426,26 @@ func (r *memRepo) AttachPaymentMethod(_ context.Context, id string,
 	row = row.WithPaymentMethod(m, now)
 	r.rows[id] = row
 	return row, nil
+}
+
+func (r *memRepo) RecordDecline(_ context.Context, id, code, reference string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.declineErr != nil {
+		return r.declineErr
+	}
+	row, ok := r.rows[id]
+	if !ok || row.Status != domain.ChargeFailed || row.FailureReason != domain.ChargePaymentRejected {
+		return nil
+	}
+	if code != "" {
+		row.DeclineCode = code
+	}
+	if reference != "" {
+		row.ProviderReference = reference
+	}
+	r.rows[id] = row
+	return nil
 }
 
 func (r *memRepo) ExpireWithoutPaymentMethod(_ context.Context, now time.Time) ([]string, error) {

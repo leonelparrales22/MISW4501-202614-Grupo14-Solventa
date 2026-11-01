@@ -56,6 +56,32 @@ func TestOfferTermsOfTheDemoAndAdjustedOffersAreTheDemonstrationOnes(t *testing.
 	assert.Equal(t, domain.CoverageDeath, again.Coverages[0].Code, "every call gets its own copy")
 }
 
+// D-5 a (fix C5): the adjusted offer of a personalized offer carries its terms
+// and activates them; the adjusted offer of a demo offer carries none and keeps
+// the demonstration terms.
+func TestOfferTermsOfAnAdjustedOfferAreTheTermsItCarries(t *testing.T) {
+	terms := billing.OfferTerms(demoCoverage())
+	o := offer("acc-1")
+	o.ID, o.Terms = "adj-acc-1", personalizedTerms()
+
+	got, err := terms(o)
+	require.NoError(t, err)
+	assert.Equal(t, personalizedTerms(), got)
+	got.Coverages[0].InsuredAmount = 1
+	assert.InDelta(t, 180_000_000, o.Terms.Coverages[0].InsuredAmount, 0.001, "the offer is never changed through its terms")
+
+	o.Terms = domain.CoverageTerms{}
+	got, err = terms(o)
+	require.NoError(t, err)
+	assert.Equal(t, demoCoverage(), got, "an adjusted offer without terms keeps the demonstration ones")
+
+	o.Terms = personalizedTerms()
+	o.Terms.TermMonths = 0
+	_, err = terms(o)
+	assert.ErrorIs(t, err, billing.ErrIncompleteTerms, "incomplete terms are never completed with invented values")
+	assert.Contains(t, err.Error(), "adj-acc-1")
+}
+
 func TestOfferTermsRefuseAPersonalizedOfferWithIncompleteTerms(t *testing.T) {
 	cases := map[string]func(*domain.CoverageTerms){
 		"no terms at all":              func(t *domain.CoverageTerms) { *t = domain.CoverageTerms{} },

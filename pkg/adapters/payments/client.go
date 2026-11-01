@@ -5,6 +5,7 @@
 // classifies each answer the way the idempotent retries need it (EC-D02 §7):
 // a success, an explicit rejection (final), an ambiguous answer (the charge
 // may have happened: retry with the same key) or a call that was never sent.
+// Indemnity payouts (HU-W2.2-03) go through the same rules.
 package payments
 
 import (
@@ -75,18 +76,34 @@ type Charge struct {
 	Currency       string `json:"currency"`
 }
 
-// RejectedError is the explicit rejection of a charge. It matches ErrRejected.
+// ErrInvalidPayout is returned for a payout without idempotency key,
+// reference, beneficiary, positive amount, currency or destination account.
+// Like ErrInvalidCharge, it never reaches the gateway.
+var ErrInvalidPayout = errors.New("idempotency key, reference, beneficiary id, a positive amount, currency, bank code and account number are required")
+
+// RejectedError is the explicit rejection of a charge or a payout. It matches
+// ErrRejected.
 type RejectedError struct {
 	// StatusCode is the HTTP status of the answer (402 or 422, usually).
 	StatusCode int
-	// Code is the gateway's error code, e.g. payment_declined.
+	// Code is the gateway's error code, e.g. payment_declined or
+	// invalid_destination_account.
 	Code string
 	// DeclineCode is the issuer's reason, when the gateway gives one.
 	DeclineCode string
+	// Reference is the gateway's id for the declined charge or payout, when it
+	// gives one. It is what the customer quotes to the issuer (screen E4c).
+	Reference string
+	// Operation is what was rejected: "charge" (the default) or "payout".
+	Operation string
 }
 
 func (e *RejectedError) Error() string {
-	msg := fmt.Sprintf("payment gateway rejected the charge (status %d", e.StatusCode)
+	operation := e.Operation
+	if operation == "" {
+		operation = "charge"
+	}
+	msg := fmt.Sprintf("payment gateway rejected the %s (status %d", operation, e.StatusCode)
 	if e.Code != "" {
 		msg += ", code " + e.Code
 	}
@@ -139,10 +156,40 @@ func NewClient(cfg Config) *Client {
 // BreakerState exposes the circuit state ("closed", "open", "half-open").
 func (c *Client) BreakerState() string { return c.breaker.State() }
 
+// PayoutDestination is the bank account an indemnity is paid to.
+type PayoutDestination struct {
+	BankCode      string `json:"bank_code"`
+	AccountType   string `json:"account_type"`
+	AccountNumber string `json:"account_number"`
+}
+
+// PayoutRequest is one indemnity payout (HU-W2.2-03). AmountMinor is in minor
+// units of Currency and is what reaches the beneficiary, after the deductible.
+type PayoutRequest struct {
+	// IdempotencyKey identifies the payout: the gateway pays a key once. A
+	// rejected payout moved no money and does not bind the key, so the same
+	// key is retried after correcting the destination.
+	IdempotencyKey string            `json:"-"`
+	Reference      string            `json:"reference"`
+	BeneficiaryID  string            `json:"beneficiary_id"`
+	AmountMinor    int64             `json:"amount_minor"`
+	Currency       string            `json:"currency"`
+	Destination    PayoutDestination `json:"destination"`
+}
+
+// Payout is the gateway's record of a payout made.
+type Payout struct {
+	ID             string `json:"payout_id"`
+	Status         string `json:"status"`
+	IdempotencyKey string `json:"idempotency_key"`
+	AmountMinor    int64  `json:"amount_minor"`
+	Currency       string `json:"currency"`
+}
+
 // answer is what one call produced. A rejection is a valid answer of a
 // healthy gateway, so it does not count against the circuit breaker.
-type answer struct {
-	charge   Charge
+type answer[T any] struct {
+	value    T
 	rejected *RejectedError
 }
 
@@ -154,61 +201,95 @@ func (c *Client) Charge(ctx context.Context, req ChargeRequest) (Charge, error) 
 	if req.IdempotencyKey == "" || req.Reference == "" || req.CustomerID == "" || req.AmountMinor <= 0 || req.Currency == "" {
 		return Charge{}, ErrInvalidCharge
 	}
-	ans, err := resilience.Execute(c.breaker, func() (answer, error) { return c.charge(ctx, req) })
+	return call[Charge](ctx, c, "/charges", "charge", req.IdempotencyKey, req)
+}
+
+// Payout asks the gateway to pay the request, with the same classification
+// as Charge: the payout on success, a *RejectedError (ErrRejected) when the
+// gateway rejects it (an invalid destination account, for one), ErrAmbiguous
+// when the outcome is unknown and ErrUnavailable when the call was not sent.
+// Retrying with the same IdempotencyKey never pays twice.
+func (c *Client) Payout(ctx context.Context, req PayoutRequest) (Payout, error) {
+	d := req.Destination
+	if req.IdempotencyKey == "" || req.Reference == "" || req.BeneficiaryID == "" || req.AmountMinor <= 0 ||
+		req.Currency == "" || d.BankCode == "" || d.AccountNumber == "" {
+		return Payout{}, ErrInvalidPayout
+	}
+	return call[Payout](ctx, c, "/payouts", "payout", req.IdempotencyKey, req)
+}
+
+// call sends one idempotent request through the circuit breaker and maps the
+// outcome to the errors of this package.
+func call[T any](ctx context.Context, c *Client, path, operation, key string, payload any) (T, error) {
+	var zero T
+	ans, err := resilience.Execute(c.breaker, func() (answer[T], error) {
+		return send[T](ctx, c, path, operation, key, payload)
+	})
 	switch {
 	case errors.Is(err, resilience.ErrOpen):
-		return Charge{}, ErrUnavailable
+		return zero, ErrUnavailable
 	case err != nil:
-		return Charge{}, fmt.Errorf("%w: %w", ErrAmbiguous, err)
+		return zero, fmt.Errorf("%w: %w", ErrAmbiguous, err)
 	case ans.rejected != nil:
-		return Charge{}, ans.rejected
+		return zero, ans.rejected
 	}
-	return ans.charge, nil
+	return ans.value, nil
 }
 
 type errorBody struct {
 	Error       string `json:"error"`
 	DeclineCode string `json:"decline_code"`
+	ChargeID    string `json:"charge_id"`
+	PayoutID    string `json:"payout_id"`
 }
 
-func (c *Client) charge(ctx context.Context, req ChargeRequest) (answer, error) {
+func send[T any](ctx context.Context, c *Client, path, operation, key string, payload any) (answer[T], error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	payload, err := json.Marshal(req)
+	raw, err := json.Marshal(payload)
 	if err != nil {
-		return answer{}, err
+		return answer[T]{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/charges", bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(raw))
 	if err != nil {
-		return answer{}, err
+		return answer[T]{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Idempotency-Key", req.IdempotencyKey)
+	httpReq.Header.Set("Idempotency-Key", key)
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
 		// Refused, cut or timed out: the gateway may have processed it.
-		return answer{}, err
+		return answer[T]{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body := io.LimitReader(resp.Body, maxBodyBytes)
 
 	switch {
 	case resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated:
-		// 201 = charged now, 200 = already charged with this key.
-		var ch Charge
-		if err := json.NewDecoder(body).Decode(&ch); err != nil {
-			// The answer was cut: the charge probably happened, and a retry
-			// with the same key returns it without charging again.
-			return answer{}, fmt.Errorf("decode the charge: %w", err)
+		// 201 = processed now, 200 = already processed with this key.
+		var value T
+		if err := json.NewDecoder(body).Decode(&value); err != nil {
+			// The answer was cut: the operation probably happened, and a
+			// retry with the same key returns it without repeating it.
+			return answer[T]{}, fmt.Errorf("decode the %s: %w", operation, err)
 		}
-		return answer{charge: ch}, nil
+		return answer[T]{value: value}, nil
 	case retryableStatus(resp.StatusCode):
-		return answer{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
+		return answer[T]{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
 	default:
 		var eb errorBody
 		_ = json.NewDecoder(body).Decode(&eb)
-		return answer{rejected: &RejectedError{StatusCode: resp.StatusCode, Code: eb.Error, DeclineCode: eb.DeclineCode}}, nil
+		reference := eb.ChargeID
+		if reference == "" {
+			reference = eb.PayoutID
+		}
+		rejected := &RejectedError{StatusCode: resp.StatusCode, Code: eb.Error, DeclineCode: eb.DeclineCode,
+			Reference: reference}
+		if operation != "charge" {
+			rejected.Operation = operation
+		}
+		return answer[T]{rejected: rejected}, nil
 	}
 }
 

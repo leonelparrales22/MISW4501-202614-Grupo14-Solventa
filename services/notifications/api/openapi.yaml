@@ -1,7 +1,15 @@
 openapi: 3.0.3
 info:
   title: Solventa - notifications service
-  version: 0.1.0
+  version: 0.2.0
+  description: >
+    The notification center of the insured and the pushes of the automatic
+    parametric payments (HU-M3.1-01). The notifications are recorded from the
+    event ParametricPayoutCompleted of the claims service (SQS queue of the
+    service, docs/events/README.md) and pushed to every device of the insured
+    that granted the permission, with retries; they stay in the center whatever
+    happens to the push. Guide for the mobile app:
+    docs/contratos/HU-M3.1-01-api.md.
 paths:
   /health:
     get:
@@ -9,3 +17,332 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/notifications:
+    get:
+      summary: List the notifications of the insured, the newest first (HU-M3.1-01)
+      description: >
+        Screen M15 of the mobile app. Every notification the insured received,
+        including the ones whose push never reached a device (criteria 5 and
+        7); several payments the same day are each their own entry (criterion
+        6). unread_count counts all of them, not only the page. Only the
+        insured, who sees only their own.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+          description: How many to return; a value above 100 takes the default.
+      responses:
+        "200":
+          description: The notifications of the caller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationList"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/notifications/read-all:
+    post:
+      summary: Mark every notification of the insured read (HU-M3.1-01)
+      description: The "Marcar todas como leídas" of screen M15. Idempotent.
+      security:
+        - cognitoJwt: []
+      responses:
+        "204":
+          description: Every notification is read
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/notifications/{notification_id}:
+    get:
+      summary: Read one notification of the insured (HU-M3.1-01)
+      description: >
+        What the push opens (criterion 4): screen M10b of the mobile app, the
+        parametric payment resolved automatically, with the parameter, the
+        threshold, the observed value and the idempotency key of the payment.
+        A notification of another insured answers 404, like one that does not
+        exist.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/NotificationID"
+      responses:
+        "200":
+          description: The notification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/notifications/{notification_id}/read:
+    post:
+      summary: Mark one notification read (HU-M3.1-01)
+      description: Idempotent; reading it again keeps the first time.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/NotificationID"
+      responses:
+        "204":
+          description: The notification is read
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/devices/{installation_id}:
+    put:
+      summary: Register a device of the insured (HU-M3.1-01)
+      description: >
+        Creates or replaces one installation of the app: its push token, its
+        language and whether the user granted the notification permission
+        (criterion 3). Without the permission (push_enabled false) the token
+        is not kept and no push is sent: the notifications wait in the center
+        (criterion 5). An installation registered by another account moves to
+        the caller. The token is never answered back.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: installation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceRequest"
+      responses:
+        "200":
+          description: The device as registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "400":
+          description: The body is not a valid device (invalid_request, invalid_device)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+components:
+  securitySchemes:
+    cognitoJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: ID token of the Cognito user pool with the insured role.
+  parameters:
+    NotificationID:
+      name: notification_id
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 128
+  responses:
+    InvalidRequest:
+      description: The request is not valid (invalid_request)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: No valid token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: The token is not of an insured
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: The notification does not exist or is another insured's (notification_not_found)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: The notifications could not be read (notifications_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+    NotificationList:
+      type: object
+      required: [items, unread_count]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/Notification"
+        unread_count:
+          type: integer
+          minimum: 0
+    Notification:
+      type: object
+      required: [notification_id, kind, occurred_at, created_at, read_at, payout]
+      properties:
+        notification_id:
+          type: string
+          description: ntf-<payout_id>; one per payout.
+        kind:
+          type: string
+          enum: [parametric_payout]
+          description: The app writes the texts of each kind in its own language.
+        occurred_at:
+          type: string
+          format: date-time
+          description: When the fact happened (the payment confirmation).
+        created_at:
+          type: string
+          format: date-time
+          description: When the service recorded it.
+        read_at:
+          type: string
+          format: date-time
+          nullable: true
+        payout:
+          nullable: true
+          description: The automatic payment, for kind parametric_payout.
+          allOf:
+            - $ref: "#/components/schemas/ParametricPayout"
+    ParametricPayout:
+      type: object
+      required: [payout_id, claim_id, policy_id, amount, currency, trigger, payment_method, idempotency_key, paid_at]
+      properties:
+        payout_id:
+          type: string
+        claim_id:
+          type: string
+        policy_id:
+          type: string
+        amount:
+          type: number
+          description: The amount paid, in units of the currency.
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        trigger:
+          $ref: "#/components/schemas/Trigger"
+        payment_method:
+          type: object
+          required: [brand, last4]
+          properties:
+            brand:
+              type: string
+            last4:
+              type: string
+        idempotency_key:
+          type: string
+          description: The key the payment was made with (HA-D02).
+        paid_at:
+          type: string
+          format: date-time
+    Trigger:
+      type: object
+      required: [parameter, event_reference, threshold, observed, unit, observed_at]
+      properties:
+        parameter:
+          type: string
+          description: What the policy measures (flight_delay…).
+        event_reference:
+          type: string
+          description: The event briefly (the flight AV-8421).
+        threshold:
+          type: number
+        observed:
+          type: number
+        unit:
+          type: string
+          description: Unit of threshold and observed (minutes…).
+        observed_at:
+          type: string
+          format: date-time
+          nullable: true
+    DeviceRequest:
+      type: object
+      required: [platform, push_enabled, locale]
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [android]
+        token:
+          type: string
+          maxLength: 4096
+          description: The push token of the device; required when push_enabled.
+        push_enabled:
+          type: boolean
+          description: Whether the user granted the notification permission.
+        locale:
+          type: string
+          enum: [es, en]
+          description: The language of the app; the push is written in it.
+    Device:
+      type: object
+      required: [installation_id, platform, push_enabled, locale, updated_at]
+      properties:
+        installation_id:
+          type: string
+        platform:
+          type: string
+        push_enabled:
+          type: boolean
+        locale:
+          type: string
+        updated_at:
+          type: string
+          format: date-time

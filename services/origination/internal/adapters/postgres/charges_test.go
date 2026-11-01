@@ -98,6 +98,7 @@ func charge(id string) domain.Charge {
 	acc := domain.Acceptance{ID: id, OfferID: "demo-active-" + id, CustomerID: "cust-1", Channel: domain.ChannelWeb,
 		AcceptedAt: t0.Add(-time.Minute)}
 	offer := domain.Offer{ID: "demo-active-" + id, CustomerID: "cust-1", Premium: 89_500, Currency: "COP",
+		ExpiresAt: t0.Add(26 * time.Hour),
 		Applicant: domain.Applicant{FullName: "Ana Pérez", DocumentID: "demo-document", Email: "ana@example.com"}}
 	terms := domain.CoverageTerms{InsuredAmount: 250_000_000, TermMonths: 120, Coverages: []domain.Coverage{
 		{Code: domain.CoverageDeath, InsuredAmount: 250_000_000},
@@ -294,6 +295,62 @@ func TestFailForTheWindowAndForARejection(t *testing.T) {
 	_, ok, err := s.Claim(context.Background(), "acc-w", t0.Add(time.Hour), time.Second)
 	require.NoError(t, err)
 	assert.False(t, ok, "a failed charge is never claimed")
+}
+
+// What screen E4c shows about a decline is written after the failure, and
+// only onto the charge it belongs to (HU-W1.3-02).
+func TestRecordDeclineKeepsTheCodeAndTheReference(t *testing.T) {
+	s := postgres.NewChargeStore(newDB(t))
+	create(t, s, "acc-r")
+	c := claim(t, s, "acc-r", t0)
+	_, err := s.Fail(context.Background(), c, t0.Add(time.Second), idempotency.ReasonRejected, "declined")
+	require.NoError(t, err)
+
+	require.NoError(t, s.RecordDecline(context.Background(), "acc-r", "51", "ch-7"))
+
+	got, err := s.Get(context.Background(), "acc-r")
+	require.NoError(t, err)
+	assert.Equal(t, "51", got.DeclineCode)
+	assert.Equal(t, "ch-7", got.ProviderReference)
+	assert.Equal(t, t0.Add(26*time.Hour), got.OfferExpiresAt, "the validity snapshotted when the charge was created")
+}
+
+func TestRecordDeclineOnlyTouchesARejectedCharge(t *testing.T) {
+	s := postgres.NewChargeStore(newDB(t))
+	create(t, s, "acc-w")
+	c := claim(t, s, "acc-w", t0)
+	// The window ran out: there is no issuer answer, so nothing to write.
+	_, err := s.Fail(context.Background(), c, t0.Add(time.Second), idempotency.ReasonWindowExpired, "no answer")
+	require.NoError(t, err)
+
+	require.NoError(t, s.RecordDecline(context.Background(), "acc-w", "51", "ch-7"))
+	require.NoError(t, s.RecordDecline(context.Background(), "acc-unknown", "51", "ch-7"))
+
+	got, err := s.Get(context.Background(), "acc-w")
+	require.NoError(t, err)
+	assert.Empty(t, got.DeclineCode)
+	assert.Empty(t, got.ProviderReference)
+}
+
+// Paying again with another card must not leave the previous decline on
+// screen: it belonged to the method that is gone (HU-W1.3-02).
+func TestAnotherPaymentMethodClearsTheDeclineOfTheOldOne(t *testing.T) {
+	s := postgres.NewChargeStore(newDB(t))
+	create(t, s, "acc-1")
+	c := claim(t, s, "acc-1", t0)
+	_, err := s.Fail(context.Background(), c, t0.Add(time.Second), idempotency.ReasonRejected, "declined")
+	require.NoError(t, err)
+	require.NoError(t, s.RecordDecline(context.Background(), "acc-1", "51", "ch-7"))
+
+	got, err := s.AttachPaymentMethod(context.Background(), "acc-1",
+		domain.PaymentMethod{Kind: domain.PaymentPSE, BankCode: "1007", PayerType: domain.PayerLegal, Installments: 1},
+		t0.Add(time.Minute))
+	require.NoError(t, err)
+
+	assert.Empty(t, got.DeclineCode)
+	assert.Empty(t, got.ProviderReference)
+	assert.Equal(t, domain.PayerLegal, got.PaymentMethod.PayerType, "PSE keeps whether the payer is a person or a company")
+	assert.Equal(t, domain.ChargePending, got.Status)
 }
 
 func TestConfirmSetsThePolicyAndKeepsTheClaimToPublish(t *testing.T) {
@@ -534,14 +591,24 @@ func TestAChargeWithoutAPaymentMethodExpiresAsAnIssuanceException(t *testing.T) 
 	assert.ErrorIs(t, err, ports.ErrChargeNotPayable, "only operations can resume it")
 }
 
-// Migration 0004 upgrades a database already migrated with 0001-0003, as
-// the ones of the other environments are: the old constraint refused the
-// reason, the new one takes it and still refuses an unknown one.
+// Migration 0004 upgrades a database that does not have it yet, as the ones
+// of the other environments are: the old constraint refused the reason, the
+// new one takes it and still refuses an unknown one.
+//
+// The database is built with every other migration, not with the first three:
+// so the test keeps asking about the constraint of 0004 and not about which
+// columns existed the day it was written.
 func TestMigration0004LetsAnExistingDatabaseStorePaymentMethodMissing(t *testing.T) {
 	db := newUnmigratedDB(t)
 	ctx := context.Background()
 	old := fstest.MapFS{}
-	for _, name := range []string{"0001_charge_attempt.sql", "0002_charge_payment_method.sql", "0003_offer.sql"} {
+	entries, err := migrations.FS.ReadDir(".")
+	require.NoError(t, err)
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".sql") || strings.HasPrefix(name, "0004_") {
+			continue
+		}
 		data, err := migrations.FS.ReadFile(name)
 		require.NoError(t, err)
 		old[name] = &fstest.MapFile{Data: data}
@@ -550,7 +617,7 @@ func TestMigration0004LetsAnExistingDatabaseStorePaymentMethodMissing(t *testing
 	s := postgres.NewChargeStore(db)
 	waiting := createWaitingForCard(t, s, "acc-before-0004")
 
-	_, err := s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt)
+	_, err = s.ExpireWithoutPaymentMethod(ctx, waiting.WindowEndsAt)
 	require.Error(t, err, "without 0004 the CHECK of 0001 refuses payment_method_missing")
 	assert.Contains(t, err.Error(), "charge_attempt_failure_reason_check")
 
@@ -609,4 +676,251 @@ func TestOpenFailsForAnUnreachableDatabase(t *testing.T) {
 	assert.Error(t, err)
 	_, err = postgres.Open(ctx, "://not a url")
 	assert.Error(t, err)
+}
+
+// insertAcceptance stores an acceptance with no charge, as the processor
+// leaves it while underwriting is pending.
+func insertAcceptance(t *testing.T, db *sql.DB, id, status string, acceptedAt time.Time) {
+	t.Helper()
+	_, err := db.ExecContext(context.Background(), `INSERT INTO acceptance (acceptance_id, offer_id, customer_id, channel, accepted_at, status)
+		VALUES ($1, $2, 'cust-1', 'web', $3, $4)`, id, "off-"+id, acceptedAt, status)
+	require.NoError(t, err)
+}
+
+// confirmed stores a charge, confirms it at t0 and returns the activation it produced.
+func confirmed(t *testing.T, s *postgres.ChargeStore, id string) domain.Charge {
+	t.Helper()
+	c := create(t, s, id)
+	c, err := s.Confirm(context.Background(), claim(t, s, c.AcceptanceID, t0), t0, idempotency.Outcome{Reference: "ch-" + id})
+	require.NoError(t, err)
+	return c
+}
+
+// contractOf is the contractual issuance a confirmed charge starts.
+func contractOf(c domain.Charge, status domain.ContractStatus, notification domain.NotificationStatus) domain.ContractIssuance {
+	ci := domain.ContractIssuance{
+		Event: domain.CoverageActivated{
+			EventID: c.ActivationEventID, PolicyID: c.PolicyID, AcceptanceID: c.AcceptanceID, CustomerID: c.CustomerID,
+			Holder: c.Holder, Premium: domain.FromMinorUnits(c.AmountMinor), Currency: c.Currency,
+			InsuredAmount: c.Terms.InsuredAmount, Coverages: c.Terms.Coverages,
+			ActivatedAt: t0, CoverageStart: t0, CoverageEnd: t0.AddDate(10, 0, 0),
+		},
+		Status: status, NotificationStatus: notification, NotificationChannel: domain.ChannelEmail,
+		NextAttemptAt: t0, ReceivedAt: t0, UpdatedAt: t0,
+	}
+	return ci
+}
+
+func TestTheMonitorListsEveryStatusAndFiltersByStatusDateAndChannel(t *testing.T) {
+	db := newDB(t)
+	s := postgres.NewChargeStore(db)
+	contracts := postgres.NewContractStore(db)
+	ctx := context.Background()
+
+	// accepted: no charge yet. In review has no issuance to monitor.
+	insertAcceptance(t, db, "acc-accepted", "issuance_pending", t0.Add(-4*time.Hour))
+	insertAcceptance(t, db, "acc-review", "in_review", t0.Add(-4*time.Hour))
+	create(t, s, "acc-charging")           // pending with its payment method: charging
+	createWaitingForCard(t, s, "acc-card") // charging, waiting for the payment method (E4)
+	failed := create(t, s, "acc-exception")
+	_, err := s.Fail(ctx, claim(t, s, failed.AcceptanceID, t0), t0.Add(time.Hour), idempotency.ReasonWindowExpired, "x")
+	require.NoError(t, err)
+	// Confirmed: no contract yet and a contract being issued are both active; completed is notified; failed is an exception.
+	_ = confirmed(t, s, "acc-active")
+	withDoc := confirmed(t, s, "acc-doc-ready")
+	ci := contractOf(withDoc, domain.ContractDocumentReady, domain.NotificationPending)
+	ci.Document = &domain.ContractDocument{ID: "doc-1", PolicyID: withDoc.PolicyID, Version: 1, StorageKey: "k", ContentType: "application/pdf", SizeBytes: 1, Checksum: "c", GeneratedAt: t0}
+	_, _, err = contracts.Create(ctx, ci)
+	require.NoError(t, err)
+	done := confirmed(t, s, "acc-notified")
+	ci = contractOf(done, domain.ContractCompleted, domain.NotificationSent)
+	ci.NotifiedAt = t0.Add(time.Minute)
+	_, _, err = contracts.Create(ctx, ci)
+	require.NoError(t, err)
+	noDoc := confirmed(t, s, "acc-doc-failed")
+	ci = contractOf(noDoc, domain.ContractFailed, domain.NotificationFailed)
+	ci.Attempts, ci.LastFailureAt, ci.LastFailure, ci.NextAttemptAt = 12, t0.Add(2*time.Hour), "generator down", time.Time{}
+	_, _, err = contracts.Create(ctx, ci)
+	require.NoError(t, err)
+	noMail := confirmed(t, s, "acc-mail-failed")
+	ci = contractOf(noMail, domain.ContractFailed, domain.NotificationFailed)
+	ci.Document = &domain.ContractDocument{ID: "doc-2", PolicyID: noMail.PolicyID, Version: 1, StorageKey: "k", ContentType: "application/pdf", SizeBytes: 1, Checksum: "c", GeneratedAt: t0}
+	ci.Attempts, ci.LastFailureAt, ci.NextAttemptAt = 12, t0.Add(3*time.Hour), time.Time{}
+	_, _, err = contracts.Create(ctx, ci)
+	require.NoError(t, err)
+
+	all, err := s.ListIssuances(ctx, domain.IssuanceFilter{Limit: 50})
+	require.NoError(t, err)
+	type row struct {
+		status domain.IssuanceStatus
+		step   domain.IssuanceStep
+		reason domain.IssuanceFailureReason
+	}
+	got := map[string]row{}
+	for _, i := range all {
+		got[i.AcceptanceID] = row{i.Status, i.Step, i.FailureReason}
+	}
+	assert.Equal(t, map[string]row{
+		"acc-accepted":    {domain.IssuanceAccepted, domain.StepUnderwriting, ""},
+		"acc-charging":    {domain.IssuanceCharging, domain.StepPremiumCharge, ""},
+		"acc-card":        {domain.IssuanceCharging, domain.StepAwaitingPaymentMethod, ""},
+		"acc-exception":   {domain.IssuanceException, domain.StepPremiumCharge, domain.ReasonRetryWindowExpired},
+		"acc-active":      {domain.IssuanceActive, domain.StepContractDocument, ""},
+		"acc-doc-ready":   {domain.IssuanceActive, domain.StepNotification, ""},
+		"acc-notified":    {domain.IssuanceNotified, domain.StepCompleted, ""},
+		"acc-doc-failed":  {domain.IssuanceException, domain.StepContractDocument, domain.ReasonDocumentGenerationFails},
+		"acc-mail-failed": {domain.IssuanceException, domain.StepNotification, domain.ReasonNotificationFailed},
+	}, got, "an acceptance in review is not an issuance")
+	assert.Equal(t, "acc-accepted", all[len(all)-1].AcceptanceID, "the latest accepted first")
+
+	for status, want := range map[domain.IssuanceStatus][]string{
+		domain.IssuanceAccepted:  {"acc-accepted"},
+		domain.IssuanceCharging:  {"acc-card", "acc-charging"},
+		domain.IssuanceActive:    {"acc-active", "acc-doc-ready"},
+		domain.IssuanceNotified:  {"acc-notified"},
+		domain.IssuanceException: {"acc-doc-failed", "acc-exception", "acc-mail-failed"},
+	} {
+		list, err := s.ListIssuances(ctx, domain.IssuanceFilter{Status: status, Limit: 50})
+		require.NoError(t, err)
+		var ids []string
+		for _, i := range list {
+			ids = append(ids, i.AcceptanceID)
+		}
+		assert.ElementsMatch(t, want, ids, status)
+	}
+
+	byID := map[string]domain.Issuance{}
+	for _, i := range all {
+		byID[i.AcceptanceID] = i
+	}
+	assert.Equal(t, "Ana Pérez", byID["acc-charging"].CustomerName, "the holder of the charge")
+	assert.Equal(t, domain.ChannelWeb, byID["acc-charging"].Channel)
+	assert.Equal(t, "pol-acc-notified", byID["acc-notified"].PolicyID)
+	assert.True(t, byID["acc-notified"].NotifiedAt.Equal(t0.Add(time.Minute)))
+	assert.True(t, byID["acc-exception"].FailedAt.Equal(t0.Add(time.Hour)))
+	assert.True(t, byID["acc-doc-failed"].FailedAt.Equal(t0.Add(2*time.Hour)), "the last failure of the contractual issuance")
+	assert.Equal(t, 12, byID["acc-doc-failed"].Attempts, "the attempts of the contractual issuance, not of the charge")
+	assert.EqualValues(t, 8_950_000, byID["acc-active"].AmountMinor)
+
+	mobile, err := s.ListIssuances(ctx, domain.IssuanceFilter{Channel: domain.ChannelMobile, Limit: 50})
+	require.NoError(t, err)
+	assert.Empty(t, mobile, "everything here came by the web")
+	web, err := s.ListIssuances(ctx, domain.IssuanceFilter{Channel: domain.ChannelWeb, Limit: 50})
+	require.NoError(t, err)
+	assert.Len(t, web, 9)
+
+	recent, err := s.ListIssuances(ctx, domain.IssuanceFilter{From: t0.Add(-time.Hour), Limit: 50})
+	require.NoError(t, err)
+	assert.Len(t, recent, 8, "the accepted one is older than the range")
+	old, err := s.ListIssuances(ctx, domain.IssuanceFilter{To: t0.Add(-2 * time.Hour), Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, old, 1)
+	assert.Equal(t, "acc-accepted", old[0].AcceptanceID)
+	limited, _ := s.ListIssuances(ctx, domain.IssuanceFilter{Limit: 2})
+	assert.Len(t, limited, 2)
+}
+
+func TestTheMonitorCountsEveryIssuanceWhateverTheFilter(t *testing.T) {
+	db := newDB(t)
+	s := postgres.NewChargeStore(db)
+	contracts := postgres.NewContractStore(db)
+	ctx := context.Background()
+	insertAcceptance(t, db, "acc-accepted", "registered", t0)
+	create(t, s, "acc-charging")
+	retrying := create(t, s, "acc-retrying")
+	_, err := s.Reschedule(ctx, claim(t, s, retrying.AcceptanceID, t0), t0, t0.Add(time.Minute), "gateway down")
+	require.NoError(t, err)
+	failed := create(t, s, "acc-exception")
+	_, err = s.Fail(ctx, claim(t, s, failed.AcceptanceID, t0), t0.Add(time.Hour), idempotency.ReasonRejected, "declined")
+	require.NoError(t, err)
+	fresh := create(t, s, "acc-fresh-exception")
+	_, err = s.Fail(ctx, claim(t, s, fresh.AcceptanceID, t0), t0.Add(2*time.Hour), idempotency.ReasonRejected, "declined")
+	require.NoError(t, err)
+	_ = confirmed(t, s, "acc-active") // activated at t0
+	done := confirmed(t, s, "acc-notified")
+	ci := contractOf(done, domain.ContractCompleted, domain.NotificationSent)
+	ci.NotifiedAt = t0.Add(time.Minute)
+	_, _, err = contracts.Create(ctx, ci)
+	require.NoError(t, err)
+
+	now := t0.Add(2*time.Hour + 10*time.Minute)
+	counts, err := s.CountIssuances(ctx, t0.Add(-time.Hour), now)
+	require.NoError(t, err)
+	assert.Equal(t, domain.IssuanceCounts{
+		Accepted: 1, Charging: 2, ChargingWithRetries: 1, ActiveToday: 2, NotifiedToday: 1, Exceptions: 2, Unattended: 1,
+	}, counts, "an exception 10 minutes old is not unattended; one of 70 minutes is")
+
+	tomorrow, err := s.CountIssuances(ctx, t0.Add(24*time.Hour), now)
+	require.NoError(t, err)
+	assert.Zero(t, tomorrow.ActiveToday)
+	assert.Zero(t, tomorrow.NotifiedToday)
+	assert.Equal(t, 2, tomorrow.Exceptions, "the others are not about today")
+}
+
+func TestTheMonitorWithNoMatchIsAnEmptyList(t *testing.T) {
+	s := postgres.NewChargeStore(newDB(t))
+
+	got, err := s.ListIssuances(context.Background(), domain.IssuanceFilter{Status: domain.IssuanceActive, Limit: 10})
+
+	require.NoError(t, err)
+	assert.NotNil(t, got)
+	assert.Empty(t, got)
+	actions, err := s.ListActions(context.Background(), "acc-none")
+	require.NoError(t, err)
+	assert.NotNil(t, actions)
+	assert.Empty(t, actions)
+}
+
+func TestAResumptionRecordsItsActionAndARefusedOneDoesNot(t *testing.T) {
+	db := newDB(t)
+	s := postgres.NewChargeStore(db)
+	ctx := context.Background()
+	c := create(t, s, "acc-1")
+	_, err := s.Fail(ctx, claim(t, s, c.AcceptanceID, t0), t0.Add(time.Hour), idempotency.ReasonRejected, "declined")
+	require.NoError(t, err)
+
+	_, err = s.Resume(ctx, "acc-1", domain.ChargeResumption{By: "ops-1", Note: "fixed the card", At: t0.Add(2 * time.Hour),
+		WindowEndsAt: t0.Add(26 * time.Hour)})
+	require.NoError(t, err)
+	_, err = s.Resume(ctx, "acc-1", domain.ChargeResumption{By: "ops-2", Note: "again", At: t0.Add(3 * time.Hour)})
+	require.ErrorIs(t, err, ports.ErrChargeNotResumable)
+	_, err = s.Resume(ctx, "acc-none", domain.ChargeResumption{By: "ops-2", Note: "x", At: t0})
+	require.ErrorIs(t, err, ports.ErrChargeNotFound)
+
+	got, err := s.ListActions(ctx, "acc-1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, domain.IssuanceActionResume, got[0].Action)
+	assert.Equal(t, "ops-1", got[0].Actor)
+	assert.Equal(t, "fixed the card", got[0].Note)
+	assert.True(t, got[0].CreatedAt.Equal(t0.Add(2*time.Hour)))
+	assert.Positive(t, got[0].ID)
+}
+
+func TestTheActionsAreListedLatestFirstAndAreAppendOnly(t *testing.T) {
+	db := newDB(t)
+	s := postgres.NewChargeStore(db)
+	ctx := context.Background()
+	create(t, s, "acc-1")
+	for i, who := range []string{"ops-1", "ops-2"} {
+		c := claim(t, s, "acc-1", t0.Add(time.Duration(i)*time.Hour))
+		_, err := s.Fail(ctx, c, t0.Add(time.Duration(i)*time.Hour), idempotency.ReasonRejected, "x")
+		require.NoError(t, err)
+		_, err = s.Resume(ctx, "acc-1", domain.ChargeResumption{By: who, Note: "note " + who,
+			At: t0.Add(time.Duration(i)*time.Hour + time.Minute), WindowEndsAt: t0.Add(48 * time.Hour)})
+		require.NoError(t, err)
+	}
+
+	got, err := s.ListActions(ctx, "acc-1")
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, []string{"ops-2", "ops-1"}, []string{got[0].Actor, got[1].Actor})
+
+	for _, stmt := range []string{
+		`UPDATE issuance_action SET note = 'edited'`, `DELETE FROM issuance_action`, `TRUNCATE issuance_action`,
+	} {
+		_, err := db.ExecContext(ctx, stmt)
+		require.Error(t, err, stmt)
+		assert.Contains(t, err.Error(), "append-only", stmt)
+	}
 }

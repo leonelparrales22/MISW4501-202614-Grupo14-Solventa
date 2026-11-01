@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/payments"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/idempotency"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/resilience"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/billing"
@@ -128,6 +129,52 @@ func TestARejectedChargeEndsInAnExceptionWithoutActivation(t *testing.T) {
 	assert.Equal(t, domain.ChargePaymentRejected, c.FailureReason)
 	assert.Equal(t, 1, e.gw.count(), "a rejection is not retried")
 	assert.Empty(t, e.h.received())
+}
+
+func TestARejectedChargeKeepsWhatTheIssuerSaid(t *testing.T) {
+	e := newEnv(t)
+	// The typed rejection of the gateway client: what screen E4c turns into
+	// "the issuer declined it for insufficient funds" (HU-W1.3-02).
+	e.gw.set(fmt.Errorf("%w: %w", idempotency.ErrRejected,
+		&payments.RejectedError{StatusCode: 402, Code: "payment_declined", DeclineCode: "51", Reference: "ch-7"}))
+	e.start(t, "acc-1")
+
+	e.worker.ProcessDue(context.Background())
+
+	c := e.repo.get("acc-1")
+	assert.Equal(t, domain.ChargeFailed, c.Status)
+	assert.Equal(t, "51", c.DeclineCode)
+	assert.Equal(t, "ch-7", c.ProviderReference, "the reference the customer quotes to the issuer")
+}
+
+func TestTheWindowRunningOutLeavesNoDeclineCode(t *testing.T) {
+	e := newEnv(t)
+	e.gw.set(errDown)
+	e.start(t, "acc-1")
+
+	for i := 0; i < 2000 && e.repo.get("acc-1").Status != domain.ChargeFailed; i++ {
+		e.worker.ProcessDue(context.Background())
+		e.untilDue("acc-1")
+	}
+
+	c := e.repo.get("acc-1")
+	assert.Equal(t, domain.ChargeRetryWindowExpired, c.FailureReason)
+	assert.Empty(t, c.DeclineCode, "the issuer never answered, so there is nothing to show")
+}
+
+func TestADeclineThatCannotBeKeptStillLeavesTheChargeFailed(t *testing.T) {
+	e := newEnv(t)
+	e.repo.declineErr = errors.New("the database is down")
+	e.gw.set(fmt.Errorf("%w: %w", idempotency.ErrRejected,
+		&payments.RejectedError{StatusCode: 402, Code: "payment_declined", DeclineCode: "51"}))
+	e.start(t, "acc-1")
+
+	e.worker.ProcessDue(context.Background())
+
+	c := e.repo.get("acc-1")
+	assert.Equal(t, domain.ChargeFailed, c.Status)
+	assert.Equal(t, domain.ChargePaymentRejected, c.FailureReason)
+	assert.Empty(t, c.DeclineCode)
 }
 
 func TestTheWindowEndsInAnExceptionWithoutActivation(t *testing.T) {

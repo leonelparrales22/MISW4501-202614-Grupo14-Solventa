@@ -1,0 +1,65 @@
+# HU-M1.2-01 local backend for the mobile wallet: the real origination service
+# with the policy core stub it reads the auto, home, travel and life policies
+# from (POLICY_CORE_URL), seeded with the policies of the prototype for the
+# subject of the insured (POLICY_SEED_FILE, written by app-local.sh). The
+# human routes verify the tokens of the permanent user pool, so the insured
+# signs in on the emulator. Build context is the repository root.
+#
+# Without DATABASE_URL and the payment gateway origination issues no policies
+# here: GET /v1/policies lists the ones of the policy core.
+#
+# Published ports (127.0.0.1 only, configurable, chosen not to collide with
+# tests/e2e/hu-m1.3): origination 8392 and the policy core 9392.
+name: hu-m1-2-local
+
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # Required by origination's profiling; the wallet does not use it.
+  openfinance:
+    build:
+      context: ../../..
+      dockerfile: stubs/openfinance/Dockerfile
+    environment:
+      PORT: "9000"
+
+  policy-core:
+    build:
+      context: ../../..
+      dockerfile: stubs/policy-core/Dockerfile
+    ports:
+      - "127.0.0.1:${POLICY_CORE_PORT:-9392}:9060"
+    environment:
+      PORT: "9060"
+      POLICY_SEED_FILE: /seed/policy-seed.json
+    volumes:
+      - ./generated:/seed:ro
+
+  origination:
+    build:
+      context: ../../..
+      dockerfile: services/origination/Dockerfile
+    ports:
+      - "127.0.0.1:${ORIGINATION_PORT:-8392}:8080"
+    environment:
+      PORT: "8080"
+      REDIS_ADDR: redis:6379
+      OPEN_FINANCE_URL: http://openfinance:9000
+      POLICY_CORE_URL: http://policy-core:9060
+      # Human routes against the permanent user pool, written by app-local.sh.
+      AUTH_ISSUER: ${AUTH_ISSUER:-}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
+      AUTH_CLIENT_IDS: ${AUTH_CLIENT_IDS:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      openfinance:
+        condition: service_started
+      policy-core:
+        condition: service_started

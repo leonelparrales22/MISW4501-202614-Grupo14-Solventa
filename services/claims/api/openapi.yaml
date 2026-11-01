@@ -1,7 +1,51 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.1.0
+  version: 0.9.0
+  description: >-
+    0.9.0 (HU-M2.2-01): the filing from the phone (POST /v1/claims) takes the
+    optional estimated_amount_minor with the rules of the web filing, and its
+    answer returns it when it was declared; it counts in the fingerprint of
+    the filing only then. 0.8.0 (HU-W2.2-03): the decision of operations on a claim. POST
+    /v1/claims/{claim_id}/approval approves it for an amount bounded by the
+    insured value of its coverage and pays the amount less the deductible to
+    the account of the insured, once per approval; POST
+    /v1/claims/{claim_id}/rejection rejects it with a reason the insured
+    receives by e-mail; a payout that fails leaves the claim in
+    payment_exception, listed by GET /v1/claims/payment-exceptions, and POST
+    /v1/claims/{claim_id}/payout-retry retries it with the same key. The
+    detail of the evaluation carries the decision, and a claim reaches the
+    statuses approved, paid, rejected and payment_exception. 0.7.0
+    (HU-W2.2-03): the claims in evaluation and the detail operations decides
+    with. 0.6.0 (HU-W2.2-01): the automatic priority of the claim (triage). Every
+    claim that enters evaluation gets a level (Triage 1, 2 or 3) from the
+    severity of its claim type and the band of its estimated amount, within 60
+    seconds and with no manual step, and it is recalculated when that
+    information changes. GET /v1/claims/{claim_id}/triage reads it (operations:
+    the full view with its history; the insured who filed the claim: the level
+    and the estimated resolution time), GET /v1/claims/triage reads the levels
+    of a page of claims at once (operations) and GET /v1/claims/triage-policy
+    the severity table, the amount thresholds and the target of each level
+    (operations). The web filing gains the optional estimated_amount_minor,
+    which the detail of a claim returns. 0.5.0 (HU-W2.1-01): the supports of the web filing no longer go through
+    the service. POST /v1/claims/supports declares one file (name, type,
+    size, sha256) and returns the signed URL with which the browser uploads
+    it straight to the object store; POST
+    /v1/claims/supports/{support_id}/confirmation checks what arrived (size,
+    digest and the first bytes of the file) and only a confirmed support can be
+    attached to a claim. The detail of a claim now lists the evidence of the
+    phone, with a signed read of each file. 0.4.0 (HU-M2.1-01): the evidence of the claim. POST
+    /v1/claims/evidence/upload-url issues the signed URL with which the phone
+    uploads a photograph or a video straight to the evidence bucket, and the
+    mobile filing of POST /v1/claims carries the evidence array, which is now
+    required: between 4 and 6 photographs and up to one video. The filing
+    checks every key against the store, so a key that is not there answers 422
+    with the field code not_stored, and the answer counts what ended up with
+    the case. 0.3.0 (HU-W2.1-01): filing of the claim with supports from the web portal
+    (filing options, supports, web filing), the insured's list of
+    claims, the detail of a claim and the filing receipt in PDF. 0.2.0
+    (HU-M2.2-01): filing of the claim from the guided assistant of the mobile
+    app.
 paths:
   /health:
     get:
@@ -9,3 +53,2406 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/claims:
+    post:
+      summary: File a claim (HU-M2.2-01)
+      description: >-
+        Creates the case with its filing number. The case belongs to the
+        subject of the token. The filing is identified by Idempotency-Key:
+        repeating the call with the same key and the same body answers 200
+        with the case that already exists.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Identifier of the filing; the mobile app sends its draft id.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FilingRequest"
+      responses:
+        "201":
+          description: The case was created
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Claim"
+        "200":
+          description: The same filing key had already created this case
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Claim"
+        "400":
+          description: invalid_request - the body is not valid JSON, or the key is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed or idempotency_key_reused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "503":
+          description: filing_unavailable - retry with the same key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: List the insured's own claims (HU-W2.1-01)
+      description: >-
+        The claims filed by the subject of the token, from both channels
+        (mobile and web), newest first. A claim filed from the mobile app has
+        no policy snapshot, so its policy line, product and insured object are
+        null.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
+        - name: policy_id
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9-]{3,40}$'
+        - name: from
+          in: query
+          required: false
+          description: >-
+            Only the claims filed on or after this day, from 00:00 in
+            America/Bogota.
+          schema:
+            type: string
+            format: date
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: page_token
+          in: query
+          required: false
+          description: The next_page_token of the previous page, unchanged.
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        "200":
+          description: One page of the insured's claims
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimList"
+        "400":
+          description: invalid_request - a filter or the page token is not valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/evidence/upload-url:
+    post:
+      summary: Sign the upload of one evidence (HU-M2.1-01)
+      description: >-
+        Issues the URL with which the client uploads one evidence. The file
+        never passes through this service: it goes from the phone to the
+        evidence bucket, which is what lets a video of 30 seconds fit. The
+        signature fixes the media type, the size and the SHA-256 digest, and
+        the key is derived from the subject of the token and the digest, so
+        one insured cannot write in the directory of another. Asking twice for
+        the same file answers the same key.
+      security:
+        - cognitoJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadRequest"
+      responses:
+        "201":
+          description: The signed upload
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignedUpload"
+        "400":
+          description: invalid_request - the body is not valid JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - the declaration breaks its rules
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "503":
+          description: evidence_unavailable - the upload could not be prepared; retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/filing-options:
+    get:
+      summary: Policies the insured can file a claim on, with the supports of each type (HU-W2.1-01)
+      description: >-
+        Only the insured's policies that are active now and whose line has
+        claim types that are filed (auto and home; travel is parametric and is
+        not filed). For each policy, the claim types it covers and, for each
+        type, the supports of the catalog with the required ones marked
+        (criterion 1). Mounted only when the policy core is configured
+        (POLICY_CORE_URL).
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The filing options of the insured
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FilingOptions"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: policy_directory_unavailable - the policy core did not answer; retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/supports:
+    post:
+      summary: Declare one support of a claim and get its signed upload (HU-W2.1-01)
+      description: >-
+        Declares a file before the filing references it by its support_id. The
+        service checks the declaration (type JPG, PNG or PDF, of 1 byte to 10
+        MiB = 10485760 bytes, and its sha256) and returns a signed URL: the
+        browser uploads the file there with a PUT carrying exactly the
+        upload_headers, and then confirms it with
+        /v1/claims/supports/{support_id}/confirmation. The file never crosses
+        this service nor the API Gateway, so the 10 MB payload limit of the
+        gateway does not apply to it. A rejected file does not affect the
+        supports already declared (criterion 5). The support belongs to the
+        subject of the token and can be attached to one claim only. Mounted only
+        when the policy core (POLICY_CORE_URL) and the object store
+        (EVIDENCE_BUCKET) are configured.
+      security:
+        - cognitoJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SupportDeclaration"
+      responses:
+        "201":
+          description: The support was declared; upload the file to upload_url
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportUpload"
+        "400":
+          description: invalid_request - the body is not valid JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: file_too_large - the declared size is larger than 10 MiB
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: unsupported_file_type - the declared type is not JPG, PNG or PDF
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: empty_file (the declared size is not positive) or validation_failed (the sha256)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/ValidationError"
+        "429":
+          description: >-
+            too_many_pending_supports - the insured already has 50 supports
+            not attached to any claim
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: supports_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/supports/{support_id}/confirmation:
+    post:
+      summary: Confirm that the file of a support was uploaded (HU-W2.1-01)
+      description: >-
+        Checks the object that the browser uploaded against the declaration: it
+        is in the store, has the declared size and digest, and its first bytes
+        are the declared format. The type is told by the content, never by the
+        extension or the declared Content-Type: a renamed executable is
+        refused (415). Confirming twice is harmless. Until it is confirmed the
+        support cannot be attached to a claim (the filing answers not_found).
+        A support of another insured answers 404, the same as one that does
+        not exist.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: support_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^sup-[0-9a-f]{32}$'
+      responses:
+        "200":
+          description: The upload matches its declaration
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfirmedSupport"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: support_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: unsupported_file_type - the content is not the JPG, PNG or PDF that was declared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            support_not_uploaded (the file is not in the store yet; upload it
+            and confirm again) or support_mismatch (its size or digest are not
+            the declared ones)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: supports_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/web-filings:
+    post:
+      summary: File a claim with its supports from the web portal (HU-W2.1-01)
+      description: >-
+        Creates the case in status active with its filing number, attached to
+        the supports already uploaded and confirmed (criterion 4). The form is checked first
+        and every missing or invalid field and support is reported at once
+        (criterion 2); then the policy is looked up among the insured's own:
+        it must be active, cover the claim type and the incident must have
+        happened within its validity (criterion 3). A policy of another insured
+        answers as one that does not exist. The filing is identified by
+        Idempotency-Key, as in POST /v1/claims: the same key and the same body
+        answer 200 with the case that already exists. Mounted only when the
+        policy core is configured (POLICY_CORE_URL).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Identifier of the filing; the web portal sends a new UUID per form.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebFilingRequest"
+      responses:
+        "201":
+          description: The case was created
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDetail"
+        "200":
+          description: The same filing key had already created this case
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDetail"
+        "400":
+          description: invalid_request - the body is not valid JSON, or the key is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            validation_failed or idempotency_key_reused (WebValidationError),
+            or policy_not_eligible (PolicyNotEligible)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/WebValidationError"
+                  - $ref: "#/components/schemas/PolicyNotEligible"
+        "503":
+          description: >-
+            policy_directory_unavailable (the policy core did not answer; no
+            case was created) or filing_unavailable - retry with the same key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/triage:
+    get:
+      summary: Triage of a page of claims at once (HU-W2.2-01)
+      description: >-
+        The level, severity, amount band and target of each claim asked for,
+        in the order asked, so the queue of the analyst shows the priority of a
+        whole page of claims with one call. A claim that does not exist comes
+        back with state not_found instead of failing the call. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: claim_id
+          in: query
+          required: true
+          description: Ids of the claims, repeated (claim_id=a&claim_id=b), 1 to 50, without repeats.
+          style: form
+          explode: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 50
+            uniqueItems: true
+            items:
+              type: string
+              pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      responses:
+        "200":
+          description: The triage of each claim, in the order asked
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimTriageList"
+        "400":
+          description: >-
+            invalid_request - no claim_id, more than 50, a repeated one or one
+            that is not a claim id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/triage-policy:
+    get:
+      summary: The triage policy in force (HU-W2.2-01)
+      description: >-
+        The severity of each claim type, the amount thresholds and the target of
+        each level, for the indicators of the queue ("Triage 2 · target: 5
+        business days"). The policy is provisional until the business validates
+        it; its version changes when it does. Only operations.
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The policy in force
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriagePolicy"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/evaluations:
+    get:
+      summary: Claims in evaluation (HU-W2.2-03)
+      description: >-
+        The claims of every insured in the statuses the triage evaluates
+        (active and in_evaluation), oldest filed first, each with its estimated
+        amount and its priority, so operations opens one to evaluate it. The
+        order by priority is HU-W2.2-02. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: page_size
+          in: query
+          required: false
+          description: Claims per page, 1 to 50; 20 when absent.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+        - name: page_token
+          in: query
+          required: false
+          description: The next_page_token of the previous page; opaque.
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        "200":
+          description: One page of the claims in evaluation
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationQueue"
+        "400":
+          description: invalid_request - page_size out of 1 to 50 or a page token that is not valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/payment-exceptions:
+    get:
+      summary: Payment exceptions (HU-W2.2-03)
+      description: >-
+        The approved claims whose payout failed - the gateway rejected it or
+        the automatic attempts ran out - oldest filed first, with the same
+        items as the claims in evaluation (screen O6b). The detail of each one
+        carries its decision. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: page_size
+          in: query
+          required: false
+          description: Claims per page, 1 to 50; 20 when absent.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+        - name: page_token
+          in: query
+          required: false
+          description: The next_page_token of the previous page; opaque.
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        "200":
+          description: One page of the payment exceptions
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationQueue"
+        "400":
+          description: "invalid_request - page_size out of 1 to 50 or a page token that is not valid"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "unauthorized"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "forbidden - the token is not of operations"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: "claims_unavailable - retry"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}:
+    get:
+      summary: Detail of one of the insured's claims (HU-W2.1-01)
+      description: >-
+        What the confirmation of the filing shows: number, status, policy,
+        incident and supports. Only the insured who filed the claim reads it.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The claim
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDetail"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - not an insured, or the claim belongs to another insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/approval:
+    post:
+      summary: Approve a claim and pay its indemnity (HU-W2.2-03)
+      description: >-
+        The analyst approves a claim in evaluation for gross_amount_minor, the
+        cost of the repair before the deductible,
+        which cannot exceed the insured value of the coverage of its incident as
+        the policy core describes it now. The indemnity is that amount less the
+        deductible, and it is paid at once to the account the policy core has for
+        the insured, through the payment gateway under one idempotency key per
+        approval (HA-D02): one approval is exactly one disbursement. The answer
+        is 202 with the payout pending; the detail of the evaluation shows when
+        it is paid, or when it becomes a payment exception. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalRequest"
+      responses:
+        "202":
+          description: Approved; the payout is in course
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDecision"
+        "400":
+          description: "invalid_request - the body does not follow the schema"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "unauthorized"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "forbidden - the token is not of operations"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "claim_not_found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "claim_not_decidable - the claim is not in evaluation: it was already decided"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: "amount_exceeds_insured_value, nothing_to_pay (the deductible takes it all), not_covered or no_payout_account"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: "policy_unavailable (the terms of the policy could not be read) or claims_unavailable - retry"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/rejection:
+    post:
+      summary: Reject a claim with its reason (HU-W2.2-03)
+      description: >-
+        The analyst rejects a claim in evaluation with a reason, which is
+        required. The claim becomes rejected and the insured is told by e-mail,
+        with the reason, at the contact the policy core has for them; the
+        detail of the evaluation shows when the notice was sent. Only
+        operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectionRequest"
+      responses:
+        "200":
+          description: Rejected
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDecision"
+        "400":
+          description: "invalid_request - the body does not follow the schema"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "unauthorized"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "forbidden - the token is not of operations"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "claim_not_found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "claim_not_decidable - the claim is not in evaluation: it was already decided"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: "reason_required (only blanks), reason_too_long, not_covered (the core does not know the insured) or no_contact"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: "policy_unavailable (the insured could not be read) or claims_unavailable - retry"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/payout-retry:
+    post:
+      summary: Retry the payout of a payment exception (HU-W2.2-03)
+      description: >-
+        The analyst retries the payout of a claim in payment_exception, to the
+        corrected destination when the body carries one, or to the same one
+        when it does not. The idempotency key does not change, so a retry
+        never pays twice. The claim goes back to approved and the automatic
+        attempts start again. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PayoutRetryRequest"
+      responses:
+        "202":
+          description: Retried; the payout is in course
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimDecision"
+        "400":
+          description: "invalid_request - the body does not follow the schema"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "unauthorized"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "forbidden - the token is not of operations"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "claim_not_found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "payout_not_retryable - the claim is not a payment exception"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: "claims_unavailable - retry"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/evaluation:
+    get:
+      summary: Everything operations decides a claim with (HU-W2.2-03)
+      description: >-
+        The claim with its supports and evidence (signed reads of 10 minutes),
+        its priority, the policy as the policy core describes it today with the
+        insured value and the deductible of each coverage, the coverage of the
+        incident of the claim and the insured with the payout account masked.
+        When the policy core does not answer the claim is still served with
+        policy_unavailable true and policy, coverage and holder null. Only
+        operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The claim and what it is evaluated with
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimEvaluation"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/filing-receipt:
+    get:
+      summary: Filing receipt of one of the insured's claims, in PDF (HU-W2.1-01)
+      description: >-
+        The receipt the insured downloads after filing (criterion 4): filing
+        number, status, date and time of the filing, policy, incident and
+        supports. It is built from the stored case on every call.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The receipt
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+            Content-Disposition:
+              schema:
+                type: string
+                example: attachment; filename="radicado-SIN-2026-01712.pdf"
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - not an insured, or the claim belongs to another insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/triage:
+    get:
+      summary: Priority of one claim (HU-W2.2-01)
+      description: >-
+        The level the triage gave the claim. Operations reads the full view: the
+        severity and the amount band that set the level, the target and every
+        calculation with its causes. The insured who filed the claim reads the
+        level and the estimated resolution time. Before the first calculation
+        (at most 60 seconds after the claim enters evaluation) the state is
+        pending; poll again in 5 seconds.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The triage of the claim, in the view of the role of the token
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ClaimTriage"
+                  - $ref: "#/components/schemas/ClaimTriageForInsured"
+                discriminator:
+                  propertyName: view
+                  mapping:
+                    operations: "#/components/schemas/ClaimTriage"
+                    insured: "#/components/schemas/ClaimTriageForInsured"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            forbidden - neither operations nor an insured, or the claim belongs
+            to another insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  parameters:
+    ClaimID:
+      name: claim_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
+  securitySchemes:
+    cognitoJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: ID token of the Cognito user pool (HA-S01).
+  schemas:
+    FilingRequest:
+      type: object
+      required: [policy_id, incident_type, occurred_at, place, description, evidence, declaration_accepted]
+      properties:
+        policy_id:
+          type: string
+          pattern: '^[A-Za-z0-9-]{3,40}$'
+          example: AU-2025-118204
+        incident_type:
+          type: string
+          enum: [collision, theft, third_party_damage, other]
+        occurred_at:
+          type: string
+          format: date-time
+          description: Not in the future, and no older than five years.
+        place:
+          type: string
+          minLength: 3
+          maxLength: 160
+        description:
+          type: string
+          minLength: 10
+          maxLength: 1000
+        details:
+          type: object
+          description: >-
+            Answers to the questions that depend on the incident type: up to
+            20 keys of 1 to 40 characters, with values of up to 200.
+          maxProperties: 20
+          additionalProperties:
+            type: string
+            maxLength: 200
+        evidence:
+          type: array
+          description: >-
+            What was captured at the place, already uploaded to the evidence
+            bucket (HU-M2.1-01): between 4 and 6 photographs and up to one
+            video. The video does not count towards the minimum.
+          minItems: 4
+          maxItems: 7
+          items:
+            $ref: "#/components/schemas/EvidenceItem"
+        declaration_accepted:
+          type: boolean
+          description: The declaration under oath. It must be true.
+        estimated_amount_minor:
+          $ref: "#/components/schemas/EstimatedAmountMinor"
+    Claim:
+      type: object
+      required: [claim_id, filing_number, status, policy_id, incident_type, occurred_at, filed_at]
+      properties:
+        claim_id:
+          type: string
+          example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
+        filing_number:
+          type: string
+          description: SIN-<year>-<five digits>, unique in the platform.
+          example: SIN-2026-01877
+        status:
+          type: string
+          enum: [active]
+        policy_id:
+          type: string
+        incident_type:
+          type: string
+          enum: [collision, theft, third_party_damage, other]
+        occurred_at:
+          type: string
+          format: date-time
+        filed_at:
+          type: string
+          format: date-time
+        evidence_count:
+          $ref: "#/components/schemas/EvidenceCount"
+        estimated_amount_minor:
+          allOf:
+            - $ref: "#/components/schemas/EstimatedAmountMinor"
+          description: What the insured declared; absent when it was not.
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+    ValidationError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed, idempotency_key_reused]
+        message:
+          type: string
+        fields:
+          type: array
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+              code:
+                type: string
+                description: >-
+                  not_stored is the key that is not in the evidence bucket, is
+                  not the token subject's, or whose size or digest is not the
+                  declared one (HU-M2.1-01).
+                enum: [required, invalid_format, out_of_range, not_stored]
+    UploadRequest:
+      type: object
+      required: [kind, content_type, byte_size, sha256]
+      description: What the insured declares before uploading one evidence.
+      properties:
+        kind:
+          $ref: "#/components/schemas/EvidenceKind"
+        content_type:
+          type: string
+          description: image/jpeg for a photo, video/mp4 for a video.
+          enum: [image/jpeg, video/mp4]
+        byte_size:
+          type: integer
+          format: int64
+          description: >-
+            1 KiB to 2 MB in a photograph; 1 KiB to 60 MB in a video.
+          minimum: 1024
+          maximum: 60000000
+        sha256:
+          $ref: "#/components/schemas/SHA256"
+    SignedUpload:
+      type: object
+      required: [object_key, upload_url, upload_headers, expires_at]
+      properties:
+        object_key:
+          type: string
+          description: >-
+            Key of the object in the evidence bucket, derived from the subject
+            of the token and the digest. It is the one that travels with the
+            filing.
+          example: evidence/9f4ce9cd-85c7-4603-b8e9-0def7c3e1ddd/9f2c4a1e8b0d6f35.jpg
+        upload_url:
+          type: string
+          format: uri
+          description: Signed URL of the PUT. It expires in 10 minutes.
+        upload_headers:
+          type: object
+          description: >-
+            The headers the PUT has to carry, exactly these: the signature
+            covers them. The set is decided by the signature, so the client
+            sends them as they arrive. Authorization is not one of them.
+          additionalProperties:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+    EvidenceItem:
+      type: object
+      required: [object_key, kind, captured_at, latitude, longitude, accuracy_m, location_trusted, sha256, byte_size]
+      description: >-
+        One capture that travels with the filing: its key and its capture.
+      properties:
+        object_key:
+          type: string
+          description: >-
+            The key the signed upload answered. It has to exist in the bucket
+            and belong to the subject of the token.
+        kind:
+          $ref: "#/components/schemas/EvidenceKind"
+        captured_at:
+          type: string
+          format: date-time
+          description: Not in the future and not before the incident happened.
+        latitude:
+          type: number
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          minimum: -180
+          maximum: 180
+        altitude_m:
+          type: number
+          description: Optional. Metres above sea level.
+        accuracy_m:
+          type: number
+          description: Accuracy of the location, in metres.
+          minimum: 0
+        location_trusted:
+          type: boolean
+          description: >-
+            False when the accuracy is worse than 50 m or there was no recent
+            reading. The service downgrades it when the accuracy does not
+            support it, whatever the client says.
+        sha256:
+          $ref: "#/components/schemas/SHA256"
+        byte_size:
+          type: integer
+          format: int64
+        duration_s:
+          type: integer
+          description: Only in a video. Up to 30 seconds.
+          minimum: 1
+          maximum: 30
+    EvidenceCount:
+      type: object
+      description: What ended up associated with the case.
+      required: [photos, videos]
+      properties:
+        photos:
+          type: integer
+        videos:
+          type: integer
+    EvidenceKind:
+      type: string
+      enum: [photo, video]
+    SHA256:
+      type: string
+      description: >-
+        Digest of the file, in lowercase hexadecimal. It has to match the one
+        of the stored object.
+      pattern: '^[0-9a-f]{64}$'
+    IncidentType:
+      type: string
+      description: >-
+        Every claim type of the platform. The mobile filing (HU-M2.2-01)
+        accepts collision, theft, third_party_damage and other; the web
+        filing (HU-W2.1-01) accepts the types of catalog claim-catalog-v1.
+      enum: [collision, theft, third_party_damage, glass, water_damage, other]
+    PolicyLine:
+      type: string
+      enum: [auto, home]
+    FileFormat:
+      type: string
+      enum: [jpeg, png, pdf]
+    FilingOptions:
+      type: object
+      required: [catalog_version, policies]
+      properties:
+        catalog_version:
+          type: string
+          example: claim-catalog-v1
+        policies:
+          type: array
+          description: Empty when the insured has no active policy with filed claim types.
+          items:
+            $ref: "#/components/schemas/EligiblePolicy"
+    EligiblePolicy:
+      type: object
+      required: [policy_id, line, product, insured_object, valid_from, valid_to, incident_types]
+      properties:
+        policy_id:
+          type: string
+          example: AU-2025-118204
+        line:
+          $ref: "#/components/schemas/PolicyLine"
+        product:
+          type: string
+          example: Autos
+        insured_object:
+          type: string
+          description: What the policy insures, as the core of the policies names it (a plate, an address).
+          example: KJT-482
+        valid_from:
+          type: string
+          format: date-time
+        valid_to:
+          type: string
+          format: date-time
+          description: First instant the policy no longer covers.
+        incident_types:
+          type: array
+          items:
+            $ref: "#/components/schemas/IncidentOption"
+    IncidentOption:
+      type: object
+      required: [code, label, requirements]
+      properties:
+        code:
+          $ref: "#/components/schemas/IncidentType"
+        label:
+          type: string
+          example: Colisión con daños al vehículo
+        requirements:
+          type: array
+          items:
+            $ref: "#/components/schemas/Requirement"
+    Requirement:
+      type: object
+      required: [code, label, required, min_files, max_files, formats]
+      properties:
+        code:
+          type: string
+          example: vehicle_photos
+        label:
+          type: string
+          example: Fotos del vehículo
+        required:
+          type: boolean
+        min_files:
+          type: integer
+          minimum: 0
+          description: 0 when the support is optional.
+        max_files:
+          type: integer
+          minimum: 1
+        formats:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileFormat"
+    SupportDeclaration:
+      type: object
+      required: [file_name, content_type, byte_size, sha256]
+      description: What the portal declares about a file it holds, before uploading it.
+      properties:
+        file_name:
+          type: string
+          description: Shown to the insured; directories and control characters are removed, up to 120 characters.
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, application/pdf]
+        byte_size:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 10485760
+        sha256:
+          $ref: "#/components/schemas/SHA256"
+    SupportUpload:
+      type: object
+      required: [support_id, file_name, content_type, byte_size, sha256, upload_url, upload_headers, expires_at]
+      properties:
+        support_id:
+          type: string
+          pattern: '^sup-[0-9a-f]{32}$'
+        file_name:
+          type: string
+          maxLength: 120
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, application/pdf]
+        byte_size:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+        sha256:
+          $ref: "#/components/schemas/SHA256"
+        upload_url:
+          type: string
+          format: uri
+          description: Signed URL of the PUT. It expires in 10 minutes.
+        upload_headers:
+          type: object
+          description: >-
+            The headers the PUT has to carry, exactly these: the signature
+            covers them. Authorization is not one of them.
+          additionalProperties:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+    ConfirmedSupport:
+      type: object
+      required: [support_id, file_name, content_type, byte_size, sha256, confirmed_at]
+      properties:
+        support_id:
+          type: string
+          pattern: '^sup-[0-9a-f]{32}$'
+        file_name:
+          type: string
+          maxLength: 120
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, application/pdf]
+          description: Checked against the content of the file.
+        byte_size:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+        sha256:
+          $ref: "#/components/schemas/SHA256"
+        confirmed_at:
+          type: string
+          format: date-time
+    WebFilingRequest:
+      type: object
+      required: [policy_id, incident_type, occurred_at, place, description, supports]
+      properties:
+        policy_id:
+          type: string
+          pattern: '^[A-Za-z0-9-]{3,40}$'
+          example: AU-2025-118204
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        occurred_at:
+          type: string
+          format: date-time
+          description: >-
+            Not in the future, no older than five years, and within the
+            validity of the policy.
+        place:
+          type: string
+          minLength: 3
+          maxLength: 160
+        description:
+          type: string
+          minLength: 10
+          maxLength: 1000
+        supports:
+          type: array
+          description: >-
+            The confirmed supports, grouped by the requirement of the catalog
+            they answer. At most 20 files in all. A support that does not
+            exist, is not the insured's, is repeated or was never confirmed
+            answers not_found.
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/SupportGroup"
+        estimated_amount_minor:
+          $ref: "#/components/schemas/EstimatedAmountMinor"
+    EstimatedAmountMinor:
+      type: integer
+      format: int64
+      minimum: 1
+      maximum: 10000000000000
+      description: >-
+        What the insured estimates the loss at, in cents of COP (HU-W2.2-01
+        on the web, HU-M2.2-01 on the phone). Optional: without it the claim has no estimated amount and its triage
+        amount band is unknown. Outside the range, or not an integer, answers
+        422 with the field code out_of_range or invalid_format.
+      example: 480000000
+    SupportGroup:
+      type: object
+      required: [requirement_code, support_ids]
+      properties:
+        requirement_code:
+          type: string
+          pattern: '^[a-z_]{1,40}$'
+          example: vehicle_photos
+        support_ids:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            pattern: '^sup-[0-9a-f]{32}$'
+    PolicySummary:
+      type: object
+      required: [policy_id, line, product, insured_object]
+      description: >-
+        The policy as it was when the claim was filed. A claim filed from the
+        mobile app has no snapshot: line, product and insured_object are null.
+      properties:
+        policy_id:
+          type: string
+        line:
+          allOf:
+            - $ref: "#/components/schemas/PolicyLine"
+          nullable: true
+        product:
+          type: string
+          nullable: true
+        insured_object:
+          type: string
+          nullable: true
+    AttachedFile:
+      type: object
+      required: [support_id, file_name, content_type, byte_size]
+      properties:
+        support_id:
+          type: string
+        file_name:
+          type: string
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, application/pdf]
+        byte_size:
+          type: integer
+    SupportsSummary:
+      type: object
+      required: [required_total, required_attached, files, items]
+      description: All zero and empty for a claim filed from the mobile app.
+      properties:
+        required_total:
+          type: integer
+          description: Required supports of the claim type.
+        required_attached:
+          type: integer
+          description: Required supports that have their files.
+        files:
+          type: integer
+          description: Files attached to the claim.
+        items:
+          type: array
+          items:
+            type: object
+            required: [requirement_code, label, files]
+            properties:
+              requirement_code:
+                type: string
+              label:
+                type: string
+              files:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttachedFile"
+    ClaimDetail:
+      type: object
+      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, place, description, filed_at, supports, evidence]
+      properties:
+        claim_id:
+          type: string
+          example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
+        filing_number:
+          type: string
+          description: SIN-<year>-<five digits>, unique in the platform.
+          example: SIN-2026-01712
+        estimated_amount_minor:
+          allOf:
+            - $ref: "#/components/schemas/EstimatedAmountMinor"
+          description: >-
+            The estimated amount the insured declared, in cents of COP
+            (HU-W2.2-01). Absent when it was not declared (always in a claim
+            filed from the mobile app).
+        status:
+          type: string
+          enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
+        channel:
+          type: string
+          enum: [mobile, web]
+        policy:
+          $ref: "#/components/schemas/PolicySummary"
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        occurred_at:
+          type: string
+          format: date-time
+        place:
+          type: string
+        description:
+          type: string
+        filed_at:
+          type: string
+          format: date-time
+        supports:
+          $ref: "#/components/schemas/SupportsSummary"
+        evidence:
+          type: array
+          description: >-
+            The photographs and the video that the insured captured in the
+            place of the incident, in the order of capture (HU-M2.1-01). Empty
+            in a claim filed on the web, whose files are the supports.
+          items:
+            $ref: "#/components/schemas/EvidenceView"
+    EvidenceView:
+      type: object
+      required: [kind, content_type, captured_at, latitude, longitude, accuracy_m, location_trusted, byte_size, duration_s, download_url, download_expires_at]
+      properties:
+        kind:
+          $ref: "#/components/schemas/EvidenceKind"
+        content_type:
+          type: string
+          enum: [image/jpeg, video/mp4]
+        captured_at:
+          type: string
+          format: date-time
+        latitude:
+          type: number
+        longitude:
+          type: number
+        accuracy_m:
+          type: number
+        location_trusted:
+          type: boolean
+          description: False when the precision of the location was worse than 50 m.
+        byte_size:
+          type: integer
+          format: int64
+        duration_s:
+          type: integer
+          description: Seconds of a video; 0 in a photograph.
+        download_url:
+          type: string
+          format: uri
+          nullable: true
+          description: >-
+            Signed URL that reads the file. It expires at download_expires_at
+            (10 minutes). Null when it could not be signed: the rest of the
+            detail is still valid.
+        download_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    ClaimSummary:
+      type: object
+      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, filed_at]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+        status:
+          type: string
+          enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
+        channel:
+          type: string
+          enum: [mobile, web]
+        policy:
+          $ref: "#/components/schemas/PolicySummary"
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        occurred_at:
+          type: string
+          format: date-time
+        filed_at:
+          type: string
+          format: date-time
+    ClaimList:
+      type: object
+      required: [items, next_page_token]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClaimSummary"
+        next_page_token:
+          type: string
+          nullable: true
+          description: Null on the last page.
+    WebValidationError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed, idempotency_key_reused]
+        message:
+          type: string
+        fields:
+          type: array
+          description: >-
+            Every invalid field at once. A support is named
+            supports.<requirement_code>; the list itself, supports.
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                example: supports.traffic_report
+              code:
+                type: string
+                enum: [required, invalid_format, out_of_range, missing, too_few, too_many, not_applicable, not_found]
+    PolicyNotEligible:
+      type: object
+      required: [error, message, reason, valid_from, valid_to]
+      properties:
+        error:
+          type: string
+          enum: [policy_not_eligible]
+        message:
+          type: string
+        reason:
+          type: string
+          enum: [policy_not_found, policy_not_active, incident_not_covered, occurred_outside_validity]
+        valid_from:
+          type: string
+          format: date-time
+          nullable: true
+          description: Validity of the policy; null when the reason is policy_not_found.
+        valid_to:
+          type: string
+          format: date-time
+          nullable: true
+    TriageLevel:
+      type: integer
+      enum: [1, 2, 3]
+      description: >-
+        Triage 1 when the severity is high or the amount band is high; Triage 3
+        when the severity is low and the amount band is low; Triage 2 otherwise.
+    Severity:
+      type: string
+      enum: [high, medium, low]
+      description: From the claim type and the coverage it affects.
+    AmountBand:
+      type: string
+      enum: [high, medium, low, unknown]
+      description: >-
+        low below the low threshold, high above the high threshold, medium in
+        between (both thresholds included), unknown when the claim has no
+        estimated amount. unknown never moves the level to 1 or to 3.
+    TriageCause:
+      type: string
+      enum:
+        - entered_evaluation
+        - estimated_amount_changed
+        - incident_type_changed
+        - coverage_changed
+        - provider_report_received
+        - policy_updated
+    TriageTarget:
+      type: object
+      required: [kind, business_days, resolution_business_days]
+      description: >-
+        The attention target of the level, shown next to it in the queue, and
+        the resolution time the insured is told.
+      properties:
+        kind:
+          type: string
+          enum: [immediate, business_days]
+          description: immediate for Triage 1 (attend first).
+        business_days:
+          type: integer
+          nullable: true
+          description: Attention target in business days; null when kind is immediate.
+          example: 5
+        resolution_business_days:
+          type: integer
+          description: Estimated resolution time in business days.
+          example: 5
+    TriageAssessment:
+      type: object
+      required: [level, severity, amount_band, estimated_amount_minor, currency, incident_type, coverage, policy_version, target, assessed_at]
+      properties:
+        level:
+          $ref: "#/components/schemas/TriageLevel"
+        severity:
+          $ref: "#/components/schemas/Severity"
+        amount_band:
+          $ref: "#/components/schemas/AmountBand"
+        estimated_amount_minor:
+          allOf:
+            - $ref: "#/components/schemas/EstimatedAmountMinor"
+          nullable: true
+          description: The amount the level was calculated with; null when there was none.
+        currency:
+          type: string
+          enum: [COP]
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        coverage:
+          type: string
+          description: The coverage of the policy the claim affects (today, the one of its claim type).
+          example: water_damage
+        policy_version:
+          type: string
+          example: triage-policy-v1
+        target:
+          $ref: "#/components/schemas/TriageTarget"
+        assessed_at:
+          type: string
+          format: date-time
+    TriageHistoryEntry:
+      type: object
+      required: [level, previous_level, severity, amount_band, estimated_amount_minor, incident_type, causes, actor, policy_version, assessed_at]
+      properties:
+        level:
+          $ref: "#/components/schemas/TriageLevel"
+        previous_level:
+          allOf:
+            - $ref: "#/components/schemas/TriageLevel"
+          nullable: true
+          description: Null in the first calculation. The same as level when the information changed but the level did not.
+        severity:
+          $ref: "#/components/schemas/Severity"
+        amount_band:
+          $ref: "#/components/schemas/AmountBand"
+        estimated_amount_minor:
+          allOf:
+            - $ref: "#/components/schemas/EstimatedAmountMinor"
+          nullable: true
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        causes:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TriageCause"
+        actor:
+          type: string
+          enum: [system]
+          description: The triage is always automatic.
+        policy_version:
+          type: string
+        assessed_at:
+          type: string
+          format: date-time
+    ClaimTriage:
+      type: object
+      required: [view, claim_id, state, current, history]
+      description: >-
+        The view of operations. state is pending before the first calculation,
+        not_applicable when the claim never entered evaluation, and assessed
+        once it has a level, which stays visible after the claim leaves
+        evaluation (paid, rejected, returned) although it is no longer
+        recalculated.
+      properties:
+        view:
+          type: string
+          enum: [operations]
+        claim_id:
+          type: string
+          example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
+        state:
+          type: string
+          enum: [pending, assessed, not_applicable]
+        current:
+          allOf:
+            - $ref: "#/components/schemas/TriageAssessment"
+          nullable: true
+          description: Null unless state is assessed.
+        history:
+          type: array
+          description: Every calculation, newest first. Empty before the first one.
+          items:
+            $ref: "#/components/schemas/TriageHistoryEntry"
+    ClaimTriageForInsured:
+      type: object
+      required: [view, claim_id, state, level, estimated_resolution_business_days, assessed_at]
+      description: >-
+        The view of the insured who filed the claim: the level and how long the
+        resolution is expected to take. Without severity, amount or history.
+      properties:
+        view:
+          type: string
+          enum: [insured]
+        claim_id:
+          type: string
+        state:
+          type: string
+          enum: [pending, assessed, not_applicable]
+        level:
+          allOf:
+            - $ref: "#/components/schemas/TriageLevel"
+          nullable: true
+        estimated_resolution_business_days:
+          type: integer
+          nullable: true
+          example: 5
+        assessed_at:
+          type: string
+          format: date-time
+          nullable: true
+    ClaimTriageSummary:
+      type: object
+      required: [claim_id, state, level, severity, amount_band, target, assessed_at]
+      description: The triage of one claim of a page. Everything but claim_id and state is null unless state is assessed.
+      properties:
+        claim_id:
+          type: string
+        state:
+          type: string
+          enum: [pending, assessed, not_applicable, not_found]
+        level:
+          allOf:
+            - $ref: "#/components/schemas/TriageLevel"
+          nullable: true
+        severity:
+          allOf:
+            - $ref: "#/components/schemas/Severity"
+          nullable: true
+        amount_band:
+          allOf:
+            - $ref: "#/components/schemas/AmountBand"
+          nullable: true
+        target:
+          allOf:
+            - $ref: "#/components/schemas/TriageTarget"
+          nullable: true
+        assessed_at:
+          type: string
+          format: date-time
+          nullable: true
+    ClaimTriageList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClaimTriageSummary"
+    EvaluationQueue:
+      type: object
+      required: [items, next_page_token]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationQueueItem"
+        next_page_token:
+          type: string
+          nullable: true
+    EvaluationQueueItem:
+      allOf:
+        - $ref: "#/components/schemas/ClaimSummary"
+        - type: object
+          required: [estimated_amount_minor, triage]
+          properties:
+            estimated_amount_minor:
+              type: integer
+              format: int64
+              nullable: true
+              description: In cents of COP; null when the insured did not declare it.
+            triage:
+              $ref: "#/components/schemas/ClaimTriageSummary"
+    Coverage:
+      type: object
+      required: [incident, insured_value_minor, currency, deductible_basis_points]
+      properties:
+        incident:
+          type: string
+        insured_value_minor:
+          type: integer
+          format: int64
+          description: The most an indemnity can be, in cents of the currency.
+        currency:
+          type: string
+          example: COP
+        deductible_basis_points:
+          type: integer
+          minimum: 0
+          maximum: 10000
+          description: Share of the gross amount that is not paid; 500 is 5 percent.
+    CurrentPolicy:
+      type: object
+      required: [policy_id, line, product, insured_object, status, valid_from, valid_to, coverages]
+      properties:
+        policy_id:
+          type: string
+        line:
+          type: string
+        product:
+          type: string
+        insured_object:
+          type: string
+        status:
+          type: string
+        valid_from:
+          type: string
+          format: date-time
+        valid_to:
+          type: string
+          format: date-time
+        coverages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Coverage"
+    PayoutAccountMasked:
+      type: object
+      required: [bank_code, bank_name, account_type, masked_number]
+      properties:
+        bank_code:
+          type: string
+        bank_name:
+          type: string
+        account_type:
+          type: string
+        masked_number:
+          type: string
+          description: Only the last four digits; the full number never leaves the service in a read.
+    Holder:
+      type: object
+      required: [full_name, document_type, document_id, email, phone, payout_account]
+      properties:
+        full_name:
+          type: string
+        document_type:
+          type: string
+        document_id:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        payout_account:
+          $ref: "#/components/schemas/PayoutAccountMasked"
+    SupportFileLink:
+      type: object
+      required: [support_id, requirement_code, file_name, content_type, byte_size, sha256, download_url, download_expires_at]
+      properties:
+        support_id:
+          type: string
+        requirement_code:
+          type: string
+        file_name:
+          type: string
+        content_type:
+          type: string
+        byte_size:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+        download_url:
+          type: string
+          nullable: true
+          description: Signed read of 10 minutes; null when it could not be signed.
+        download_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    ClaimEvaluation:
+      type: object
+      required: [claim, support_files, triage, policy, coverage, holder, policy_unavailable, decision]
+      properties:
+        claim:
+          $ref: "#/components/schemas/ClaimDetail"
+        support_files:
+          type: array
+          items:
+            $ref: "#/components/schemas/SupportFileLink"
+        triage:
+          $ref: "#/components/schemas/ClaimTriage"
+        policy:
+          allOf:
+            - $ref: "#/components/schemas/CurrentPolicy"
+          nullable: true
+        coverage:
+          allOf:
+            - $ref: "#/components/schemas/Coverage"
+          nullable: true
+        holder:
+          allOf:
+            - $ref: "#/components/schemas/Holder"
+          nullable: true
+        policy_unavailable:
+          type: boolean
+        decision:
+          allOf:
+            - $ref: "#/components/schemas/ClaimDecision"
+          nullable: true
+          description: What operations decided; null while the claim is in evaluation.
+    ApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [gross_amount_minor]
+      properties:
+        gross_amount_minor:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >-
+            The cost the analyst approves, before the deductible, in cents of
+            the currency of the coverage. What the insurer pays (the approved
+            amount of screen O6) is payout_amount_minor of the answer.
+    RejectionRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Why the claim is rejected; the insured receives it.
+    PayoutDestination:
+      type: object
+      additionalProperties: false
+      required: [bank_code, account_type, account_number]
+      properties:
+        bank_code:
+          type: string
+          pattern: "^[0-9]{3,6}$"
+        bank_name:
+          type: string
+          maxLength: 80
+        account_type:
+          type: string
+          enum: [savings, checking]
+        account_number:
+          type: string
+          pattern: "^[0-9][0-9-]{4,22}[0-9]$"
+    PayoutRetryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        destination:
+          $ref: "#/components/schemas/PayoutDestination"
+    DecisionApproval:
+      type: object
+      required: [gross_amount_minor, insured_value_minor, deductible_basis_points, deductible_minor, payout_amount_minor, currency]
+      properties:
+        gross_amount_minor:
+          type: integer
+          format: int64
+        insured_value_minor:
+          type: integer
+          format: int64
+          description: The insured value the gross amount was checked against.
+        deductible_basis_points:
+          type: integer
+        deductible_minor:
+          type: integer
+          format: int64
+        payout_amount_minor:
+          type: integer
+          format: int64
+          description: >-
+            What the insurer pays and reaches the insured: the gross amount
+            less the deductible, which the insured bears. It is the approved
+            amount screen O6 shows.
+        currency:
+          type: string
+    Payout:
+      type: object
+      required: [payment_reference, status, destination, automatic_attempts, max_automatic_attempts, failure, gateway_code,
+        last_failure_at, gateway_reference, paid_at, manual_retries, last_retried_by, last_retried_at]
+      properties:
+        payment_reference:
+          type: string
+          description: The idempotency key of the payout; it never changes, however many times it is retried.
+        status:
+          type: string
+          enum: [pending, in_progress, paid, failed]
+        destination:
+          $ref: "#/components/schemas/PayoutAccountMasked"
+        automatic_attempts:
+          type: integer
+          description: Failed attempts since the approval or the last manual retry.
+        max_automatic_attempts:
+          type: integer
+        failure:
+          type: string
+          nullable: true
+          description: rejected (the gateway rejected it) or retries_exhausted; null unless the payout failed.
+        gateway_code:
+          type: string
+          nullable: true
+          description: The reason of the gateway for a rejection, e.g. invalid_destination_account.
+        last_failure_at:
+          type: string
+          format: date-time
+          nullable: true
+        gateway_reference:
+          type: string
+          nullable: true
+          description: The id of the payout at the gateway, once paid.
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        manual_retries:
+          type: integer
+        last_retried_by:
+          type: string
+          nullable: true
+        last_retried_at:
+          type: string
+          format: date-time
+          nullable: true
+    Rejection:
+      type: object
+      required: [reason, notified_at]
+      properties:
+        reason:
+          type: string
+        notified_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the insured was told; null while the notice is pending.
+    ClaimDecision:
+      type: object
+      required: [claim_id, filing_number, status, outcome, decided_by, decided_at, approval, payout, rejection]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+        status:
+          type: string
+          enum: [approved, paid, rejected, payment_exception]
+          description: The status the decision leaves the claim in.
+        outcome:
+          type: string
+          enum: [approved, rejected]
+        decided_by:
+          type: string
+          description: The analyst who decided (their e-mail).
+        decided_at:
+          type: string
+          format: date-time
+        approval:
+          allOf:
+            - $ref: "#/components/schemas/DecisionApproval"
+          nullable: true
+        payout:
+          allOf:
+            - $ref: "#/components/schemas/Payout"
+          nullable: true
+        rejection:
+          allOf:
+            - $ref: "#/components/schemas/Rejection"
+          nullable: true
+    TriagePolicy:
+      type: object
+      required: [version, currency, amount_thresholds, severity, targets]
+      properties:
+        version:
+          type: string
+          example: triage-policy-v1
+        currency:
+          type: string
+          enum: [COP]
+        amount_thresholds:
+          type: object
+          required: [low_below_minor, high_above_minor]
+          properties:
+            low_below_minor:
+              type: integer
+              format: int64
+              description: An amount below this one (in cents) is in the low band.
+              example: 500000000
+            high_above_minor:
+              type: integer
+              format: int64
+              description: An amount above this one (in cents) is in the high band.
+              example: 3000000000
+        severity:
+          type: array
+          items:
+            type: object
+            required: [line, incident_type, severity]
+            properties:
+              line:
+                $ref: "#/components/schemas/PolicyLine"
+              incident_type:
+                $ref: "#/components/schemas/IncidentType"
+              severity:
+                $ref: "#/components/schemas/Severity"
+        targets:
+          type: array
+          items:
+            type: object
+            required: [level, target]
+            properties:
+              level:
+                $ref: "#/components/schemas/TriageLevel"
+              target:
+                $ref: "#/components/schemas/TriageTarget"

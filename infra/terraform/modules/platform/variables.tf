@@ -43,8 +43,8 @@ variable "image_tag_overrides" {
   default     = {}
 
   validation {
-    condition     = alltrue([for k in keys(var.image_tag_overrides) : contains(["origination", "claims", "partners", "audit", "notifications", "openfinance", "opendata", "kyc", "email", "payment-gateway"], k)])
-    error_message = "image_tag_overrides keys must be image names: origination, claims, partners, audit, notifications, openfinance, opendata, kyc, email or payment-gateway."
+    condition     = alltrue([for k in keys(var.image_tag_overrides) : contains(["origination", "claims", "partners", "audit", "notifications", "openfinance", "opendata", "kyc", "email", "payment-gateway", "policy-core"], k)])
+    error_message = "image_tag_overrides keys must be image names: origination, claims, partners, audit, notifications, openfinance, opendata, kyc, email, payment-gateway or policy-core."
   }
 }
 
@@ -83,8 +83,8 @@ variable "stub_desired_count_overrides" {
   default     = {}
 
   validation {
-    condition     = alltrue([for k in keys(var.stub_desired_count_overrides) : contains(["openfinance", "opendata", "kyc", "email", "payment-gateway"], k)])
-    error_message = "stub_desired_count_overrides keys must be stub names: openfinance, opendata, kyc, email or payment-gateway."
+    condition     = alltrue([for k in keys(var.stub_desired_count_overrides) : contains(["openfinance", "opendata", "kyc", "email", "payment-gateway", "policy-core"], k)])
+    error_message = "stub_desired_count_overrides keys must be stub names: openfinance, opendata, kyc, email, payment-gateway or policy-core."
   }
 
   validation {
@@ -94,16 +94,16 @@ variable "stub_desired_count_overrides" {
 }
 
 variable "origination_environment" {
-  description = "Extra environment variables of origination, for a test window (for example RETRY_WINDOW_SECONDS and CHARGE_RETRY_MAX_MS, decision D-6 of HA-D02). It cannot replace what the platform sets: PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, any *_URL, AUTH_*, DOCUMENTS_* or DOCUMENT_LINK_*."
+  description = "Extra environment variables of origination, for a test window (for example RETRY_WINDOW_SECONDS and CHARGE_RETRY_MAX_MS, decision D-6 of HA-D02). It cannot replace what the platform sets: PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, any *_URL, AUTH_*, COGNITO_*, DOCUMENTS_*, DOCUMENT_LINK_* or EVENTS_*."
   type        = map(string)
   default     = {}
 
   validation {
     condition = alltrue([
       for k in keys(var.origination_environment) :
-      can(regex("^[A-Z][A-Z0-9_]*$", k)) && !can(regex("^(PORT|REDIS_ADDR|AWS_REGION|DATABASE_URL|.*_URL|AUTH_.*|DOCUMENTS_.*|DOCUMENT_LINK_.*)$", k))
+      can(regex("^[A-Z][A-Z0-9_]*$", k)) && !can(regex("^(PORT|REDIS_ADDR|AWS_REGION|DATABASE_URL|.*_URL|AUTH_.*|COGNITO_.*|DOCUMENTS_.*|DOCUMENT_LINK_.*|EVENTS_.*)$", k))
     ])
-    error_message = "origination_environment keys must be UPPER_SNAKE_CASE and cannot replace a value of the platform (PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, *_URL, AUTH_*, DOCUMENTS_*, DOCUMENT_LINK_*)."
+    error_message = "origination_environment keys must be UPPER_SNAKE_CASE and cannot replace a value of the platform (PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, *_URL, AUTH_*, COGNITO_*, DOCUMENTS_*, DOCUMENT_LINK_*, EVENTS_*)."
   }
 }
 
@@ -177,6 +177,17 @@ variable "portal_partner" {
   default     = "portal-embebido"
 }
 
+variable "partner_display_names" {
+  description = "Display names of the financial entities the consents authorize, by partner code (HU-M1.3-01, decision D-2 a); audit receives them as PARTNER_DISPLAY_NAMES. A code without a name is shown as it is. Default: the partner of screen E1 of the portal."
+  type        = map(string)
+  default     = { "aliado-banco-1" = "Banco Aliado" }
+
+  validation {
+    condition     = alltrue([for k, v in var.partner_display_names : can(regex("^[A-Za-z0-9_-]+$", k)) && length(trimspace(v)) > 0])
+    error_message = "partner_display_names keys are partner codes (letters, digits, - or _) and the names cannot be empty."
+  }
+}
+
 variable "human_routes" {
   description = "Routes of the portal web and mobile app behind the Cognito authorizer (key: path segment under /v1). Default: the authenticated routes of origination. root_methods (optional) sets the methods of the root /v1/<route> alone; [] gives the root to a partner route (partner_routes)."
   type = map(object({
@@ -201,6 +212,24 @@ variable "human_routes" {
     # operations; their resumption is POST /v1/acceptances/{id}/charge/resume.
     review-requests     = { methods = ["GET", "POST"] }
     issuance-exceptions = { methods = ["GET"] }
+    # Filing of the claim from the guided assistant of the mobile app
+    # (HU-M2.2-01) and from the web portal (HU-W2.1-01). GET reads the list of
+    # claims (/v1/claims), the filing options, the detail and the filing
+    # receipt; POST files the claim, from the root, and uploads the supports
+    # and the web filing, from the subroutes.
+    claims = { methods = ["GET", "POST"] }
+    # The insured reads their own consents from the mobile app (HU-M1.3-01):
+    # GET /v1/consents and GET /v1/consents/{consent_id}. The revocation of
+    # HU-M1.3-02 adds POST under the consent (POST
+    # /v1/consents/{consent_id}/revocations; GET .../revocation-receipt is a
+    # GET); the root /v1/consents stays read-only.
+    consents = { methods = ["GET", "POST"], root_methods = ["GET"] }
+    # The operations portal manages the commercial partners (HU-W3.1-01):
+    # GET and POST /v1/partners (list and registration), GET
+    # /v1/partners/{partner_id}, POST .../approval and
+    # .../credential-rotations. partners has no internal route, so the whole
+    # prefix is human.
+    partners = { methods = ["GET", "POST"] }
   }
 }
 
@@ -218,6 +247,24 @@ variable "partner_routes" {
   validation {
     condition     = !contains(keys(var.partner_routes), "audit/consent-verifications")
     error_message = "The consent verification of audit is internal to the VPC (HU-W1.2-01): /v1/audit/consent-verifications can never be published."
+  }
+}
+
+variable "human_subroutes" {
+  description = "Human-channel sub-paths under a partner route, behind the Cognito authorizer (HU-W4.2-02). Key: the key of a partner route. Default: /v1/audit/consents/{proxy+} with GET and POST, which publishes the evidence of the consent (GET /v1/audit/consents/{consent_id}, HU-W1.2-01, decision D-23 c) and the revocation of the compliance portal (GET .../revocation, POST .../revocations and .../revocation-retries), plus root_methods GET on the exact path for the list of the portal (HU-W4.2-01). Only that {proxy+} and that GET are created: audit is never a human route, because GET /v1/audit/consent-verifications and POST /v1/audit/decisions are internal to the VPC and carry no token."
+  type = map(object({
+    methods      = list(string)
+    root_methods = optional(list(string), [])
+  }))
+  default = {
+    # HU-W4.2-01: root_methods publishes also the list of the compliance portal
+    # (GET /v1/audit/consents) with Cognito, next to the POST of the partner.
+    "audit/consents" = { methods = ["GET", "POST"], root_methods = ["GET"] }
+  }
+
+  validation {
+    condition     = alltrue([for k in keys(var.human_subroutes) : !contains(["audit/consent-verifications", "audit/decisions"], k)])
+    error_message = "The consent verification and the decision record of audit are internal to the VPC (HU-W1.2-01, HU-W4.1-01): they can never be published, not even behind the authorizer."
   }
 }
 

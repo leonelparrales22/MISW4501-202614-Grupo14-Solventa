@@ -124,7 +124,8 @@ func newEnv(t *testing.T) *env {
 	require.NoError(t, postgres.Migrate(ctx, db))
 
 	clk := &clock{now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
-	svc := consents.NewService(postgres.NewConsentStore(db), clk)
+	// As in cmd/audit: Verify answers with the derived status (HU-M1.3-02).
+	svc := consents.NewService(postgres.NewConsentStore(db), clk, consents.WithEvents(postgres.NewConsentEventStore(db)))
 	verifier := tokenVerifier{
 		"operations": {Subject: "u-ops", Roles: []security.Role{security.RoleOperations}},
 		"advisor":    {Subject: "u-adv", Roles: []security.Role{security.RoleAdvisor}},

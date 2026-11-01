@@ -118,7 +118,7 @@ func TestBillingWithTheDocumentsInS3KeepsItsRequirements(t *testing.T) {
 	cfg, err := loadConfig(env(inS3()))
 	require.NoError(t, err)
 	assert.True(t, cfg.billing.enabled)
-	assert.Equal(t, "solventa-stg-documents-368083581678", cfg.contracts.documentsBucket)
+	assert.Equal(t, "solventa-stg-documents-368083581678", cfg.documents.bucket)
 
 	for missing, want := range map[string]string{
 		"DATABASE_URL": "DATABASE_URL is required",
@@ -185,13 +185,14 @@ func TestWithoutBillingTheLogSaysWhy(t *testing.T) {
 	assert.Contains(t, buf.String(), "no contractual document will be issued")
 }
 
+// The charge runs over the shared pool of newStores (decision D-4 a of the fix
+// C5): without it, it is never wired.
 func TestNewBillingFailsWithoutADatabase(t *testing.T) {
 	cfg, err := loadConfig(env(billingEnv()))
 	require.NoError(t, err)
-	cfg.billing.databaseURL = "postgres://nobody:nothing@127.0.0.1:1/none?sslmode=disable&connect_timeout=1"
 
-	_, err = newBilling(context.Background(), cfg.billing, recordingConsumer())
-	assert.Error(t, err)
+	_, err = newBilling(context.Background(), cfg.billing, nil, nil, recordingConsumer())
+	assert.ErrorContains(t, err, "DATABASE_URL")
 }
 
 // consumer records the coverage activations it receives.
@@ -239,9 +240,12 @@ func TestNewBillingMigratesChargesAndActivatesTheCoverage(t *testing.T) {
 	require.NoError(t, err)
 	sink := recordingConsumer()
 
-	wiring, err := newBilling(ctx, cfg.billing, sink)
+	// The single pool of the process, opened and migrated by newStores.
+	st, err := newStores(ctx, cfg.offers.databaseURL, systemClock{})
 	require.NoError(t, err)
-	defer func() { _ = wiring.db.Close() }()
+	defer func() { _ = st.db.Close() }()
+	wiring, err := newBilling(ctx, cfg.billing, st.db, nil, sink)
+	require.NoError(t, err)
 
 	require.NoError(t, wiring.starter.Start(ctx,
 		domain.Acceptance{ID: "acc-1", OfferID: "demo-active-1", CustomerID: "cust-1", AcceptedAt: time.Now()},

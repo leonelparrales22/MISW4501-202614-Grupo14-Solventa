@@ -156,15 +156,21 @@ func (p *Processor) advance(ctx context.Context, a *domain.Acceptance) error {
 	switch a.Decision.Outcome {
 	case domain.UnderwritingHumanReview:
 		next = domain.AcceptanceInReview
+		// The request keeps a snapshot of the routed offer, so the inbox never
+		// reads it again (decision D-7 a of the fix C5).
 		err = p.reviews.Enqueue(ctx, domain.ReviewRequest{
-			AcceptanceID: a.ID,
-			OfferID:      offer.ID,
-			CustomerID:   offer.CustomerID,
-			Applicant:    offer.Applicant,
-			Premium:      offer.Premium,
-			Currency:     offer.Currency,
-			Reason:       a.Decision.Reason,
-			ReceivedAt:   p.clock.Now().UTC(),
+			AcceptanceID:   a.ID,
+			OfferID:        offer.ID,
+			CustomerID:     offer.CustomerID,
+			Applicant:      offer.Applicant,
+			Premium:        offer.Premium,
+			Currency:       offer.Currency,
+			Reason:         a.Decision.Reason,
+			ReceivedAt:     p.clock.Now().UTC(),
+			OfferMode:      offer.Mode,
+			ProfileScore:   offer.ProfileScore,
+			OfferExpiresAt: offer.ExpiresAt,
+			Terms:          copyTerms(offer.Terms),
 		})
 	default:
 		err = p.issuance.Start(ctx, *a, offer)
@@ -177,6 +183,13 @@ func (p *Processor) advance(ctx context.Context, a *domain.Acceptance) error {
 	a.NextAttemptAt = time.Time{}
 	a.UpdatedAt = p.clock.Now().UTC()
 	return p.acceptances.Update(ctx, *a)
+}
+
+// copyTerms copies the coverage terms, so the request never shares the
+// coverages of the offer it was taken from.
+func copyTerms(t domain.CoverageTerms) domain.CoverageTerms {
+	t.Coverages = append([]domain.Coverage(nil), t.Coverages...)
+	return t
 }
 
 // backoff returns the wait before the next attempt after the given number of

@@ -28,6 +28,14 @@
 // it: the conventional test card 4111 1111 1111 1111 is approved and anything
 // ending in 0002 is declined for insufficient funds, which is what makes
 // screen E4c reachable in a demo. A charge without a token behaves as before.
+//
+// POST /payouts pays an indemnity to a bank account (HU-W2.2-03) with the same
+// idempotency rules: a key pays once, and a retry gets the same payout. Two
+// differences follow from what a payout is. An account number ending in 89 is
+// rejected as an invalid destination (422), which is what makes screen O6b
+// reachable in a demo. And a rejected payout moved no money, so it does not
+// bind its key: the analyst corrects the account and retries with the same
+// key, which is what keeps one approval to exactly one disbursement.
 package main
 
 import (
@@ -57,7 +65,45 @@ const (
 	insufficientFunds  = "insufficient_funds"
 	tokenPrefix        = "tok_"
 	maxTokenLength     = 128
+
+	// The account ending that the stub rejects as an invalid destination, the
+	// one screen O6b shows (0123-4567-89).
+	invalidAccountSuffix = "89"
+	statusPaid           = "paid"
 )
+
+// payoutDestination is the bank account an indemnity is paid to.
+type payoutDestination struct {
+	BankCode      string `json:"bank_code"`
+	AccountType   string `json:"account_type"`
+	AccountNumber string `json:"account_number"`
+}
+
+type payoutRequest struct {
+	Reference     string            `json:"reference"`
+	BeneficiaryID string            `json:"beneficiary_id"`
+	AmountMinor   int64             `json:"amount_minor"`
+	Currency      string            `json:"currency"`
+	Destination   payoutDestination `json:"destination"`
+}
+
+type payout struct {
+	ID             string            `json:"payout_id"`
+	Status         string            `json:"status"`
+	IdempotencyKey string            `json:"idempotency_key"`
+	Reference      string            `json:"reference"`
+	BeneficiaryID  string            `json:"beneficiary_id"`
+	AmountMinor    int64             `json:"amount_minor"`
+	Currency       string            `json:"currency"`
+	Destination    payoutDestination `json:"destination"`
+	CreatedAt      time.Time         `json:"created_at"`
+}
+
+// payoutResult is the stored payout of a key: what a retry with it gets.
+type payoutResult struct {
+	req  payoutRequest
+	body payout
+}
 
 type chargeRequest struct {
 	Reference   string `json:"reference"`
@@ -103,9 +149,15 @@ type charge struct {
 }
 
 type errorBody struct {
-	Error       string `json:"error"`
-	Message     string `json:"message"`
+	Error   string `json:"error"`
+	Message string `json:"message"`
+	// ChargeID is the gateway's reference for the declined charge. A real
+	// gateway hands one over whatever the outcome, and the customer needs it
+	// to talk to the issuer about the decline (screen E4c, HU-W1.3-02).
+	ChargeID    string `json:"charge_id,omitempty"`
 	DeclineCode string `json:"decline_code,omitempty"`
+	// PayoutID is the gateway's reference for a rejected payout.
+	PayoutID string `json:"payout_id,omitempty"`
 }
 
 // result is the stored answer of a key: what a retry with the same key gets.
@@ -127,6 +179,13 @@ type gateway struct {
 	total       int
 	seq         int
 	tokenSeq    int
+
+	// Payouts are counted apart from charges, so the figures of the charge
+	// experiment (EC-D02) are not mixed with indemnities.
+	payoutByKey    map[string]payoutResult
+	payoutRequests map[string]int
+	realPayouts    map[string]int
+	payoutSeq      int
 }
 
 func main() {
@@ -145,6 +204,7 @@ func newHandler(delay time.Duration, supportsIdempotency bool) http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("POST /tokens", g.tokenise)
 	mux.HandleFunc("POST /charges", g.charge)
+	mux.HandleFunc("POST /payouts", g.payout)
 	mux.HandleFunc("GET /debug/charges", g.debug)
 	mux.HandleFunc("POST /debug/reset", func(w http.ResponseWriter, _ *http.Request) {
 		g.reset()
@@ -159,6 +219,8 @@ func (g *gateway) reset() {
 	g.byKey, g.requests, g.realCharges = map[string]result{}, map[string]int{}, map[string]int{}
 	g.byToken = map[string]tokenInfo{}
 	g.total, g.seq, g.tokenSeq = 0, 0, 0
+	g.payoutByKey, g.payoutRequests, g.realPayouts = map[string]payoutResult{}, map[string]int{}, map[string]int{}
+	g.payoutSeq = 0
 }
 
 // tokenise turns a card into a token. This is the endpoint the browser calls
@@ -286,8 +348,10 @@ func (g *gateway) process(key string, in chargeRequest) (status int, body any, n
 
 	var res result
 	if declined {
+		g.seq++
 		res = result{req: in, status: http.StatusPaymentRequired, body: errorBody{
-			Error: "payment_declined", Message: reason, DeclineCode: declineCode}}
+			Error: "payment_declined", Message: reason, ChargeID: "ch-" + strconv.Itoa(g.seq),
+			DeclineCode: declineCode}}
 	} else {
 		g.seq++
 		g.realCharges[key]++
@@ -336,6 +400,72 @@ func valid(in chargeRequest) bool {
 	return true
 }
 
+// payout pays an indemnity. Like a charge, it is recorded before the answer
+// is written, so a cut answer still leaves the payout made.
+func (g *gateway) payout(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" || len(key) > maxKeyLength {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_request", Message: "the Idempotency-Key header (up to 255 characters) is required"})
+		return
+	}
+	var in payoutRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_request", Message: "the body is not valid JSON"})
+		return
+	}
+	if !validPayout(in) {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_request",
+			Message: "reference, beneficiary_id, a positive amount_minor, currency and a destination with bank_code and a 6 to 20 digit account_number are required"})
+		return
+	}
+
+	status, body, newPayout := g.processPayout(key, in)
+	log.Printf("payout request key=%s reference=%s status=%d new_payout=%t", key, in.Reference, status, newPayout)
+	if g.delay > 0 {
+		time.Sleep(g.delay)
+	}
+	writeJSON(w, status, body)
+}
+
+func (g *gateway) processPayout(key string, in payoutRequest) (status int, body any, newPayout bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.payoutRequests[key]++
+
+	if prev, seen := g.payoutByKey[key]; seen && g.supportsIdempotency {
+		if prev.req != in {
+			return http.StatusUnprocessableEntity, errorBody{Error: "idempotency_key_reused",
+				Message: "this Idempotency-Key already paid a different payout"}, false
+		}
+		return http.StatusOK, prev.body, false
+	}
+
+	g.payoutSeq++
+	id := "po-" + strconv.Itoa(g.payoutSeq)
+	if strings.HasSuffix(onlyDigits(in.Destination.AccountNumber), invalidAccountSuffix) {
+		// Nothing was paid, so the key stays free for the corrected account.
+		return http.StatusUnprocessableEntity, errorBody{Error: "invalid_destination_account",
+			Message: "the destination account number is not valid according to the bank", PayoutID: id}, false
+	}
+
+	g.realPayouts[key]++
+	paid := payout{
+		ID: id, Status: statusPaid, IdempotencyKey: key, Reference: in.Reference, BeneficiaryID: in.BeneficiaryID,
+		AmountMinor: in.AmountMinor, Currency: in.Currency, Destination: in.Destination, CreatedAt: time.Now().UTC(),
+	}
+	g.payoutByKey[key] = payoutResult{req: in, body: paid}
+	return http.StatusCreated, paid, true
+}
+
+func validPayout(in payoutRequest) bool {
+	account := onlyDigits(in.Destination.AccountNumber)
+	return in.Reference != "" && in.BeneficiaryID != "" && in.AmountMinor > 0 && in.Currency != "" &&
+		len(in.Reference) <= maxFieldLength && len(in.BeneficiaryID) <= maxFieldLength && len(in.Currency) <= 8 &&
+		in.Destination.BankCode != "" && len(in.Destination.BankCode) <= 16 &&
+		len(in.Destination.AccountType) <= 32 && len(account) >= 6 && len(account) <= 20 &&
+		len(in.Destination.AccountNumber) <= 32
+}
+
 // debug lists, per key, the requests received and the real charges made.
 func (g *gateway) debug(w http.ResponseWriter, _ *http.Request) {
 	g.mu.Lock()
@@ -350,12 +480,25 @@ func (g *gateway) debug(w http.ResponseWriter, _ *http.Request) {
 		totalReal += v
 	}
 	total := g.total
+	payoutRequests := make(map[string]int, len(g.payoutRequests))
+	for k, v := range g.payoutRequests {
+		payoutRequests[k] = v
+	}
+	paid := make(map[string]int, len(g.realPayouts))
+	totalPaid := 0
+	for k, v := range g.realPayouts {
+		paid[k] = v
+		totalPaid += v
+	}
 	g.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"requests":             requests,
 		"real_charges":         charged,
 		"total_requests":       total,
 		"total_real_charges":   totalReal,
+		"payout_requests":      payoutRequests,
+		"real_payouts":         paid,
+		"total_real_payouts":   totalPaid,
 		"supports_idempotency": g.supportsIdempotency,
 	})
 }

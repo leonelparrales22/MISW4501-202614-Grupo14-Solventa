@@ -117,15 +117,18 @@ se reanudan como siempre, vencidos de inmediato.
   `policy_id` hoy es `pol-<acceptance_id>` (fijado por HU-W1.3-03). Los eventos `ChargeCompleted` / `PolicyIssued` en SNS con *outbox*
   siguen pendientes de esa historia.
 - HU-W1.3-04 construye O1/O1b sobre las dos rutas de operaciones; el escalamiento a los 30 min, los filtros y otros tipos de excepción
-  son suyos.
+  son suyos. Ya están en [`HU-W1.3-04-api.md`](HU-W1.3-04-api.md): `GET /v1/issuances` (con filtros, conteos y la marca `unattended`),
+  `POST /v1/issuances/{id}/retry` y `GET /v1/issuances/{id}/actions` (historial de acciones).
 
 ## 4. Lo que todavía es provisional
 
-- Monto asegurado, plazo y coberturas del evento de activación: los de la oferta personalizada (HU-W1.2-03) cuando la oferta lo es;
-  las de demostración (`demo-…`) y las ajustadas (`adj-…`) activan los de demostración (250 000 000 COP, 120 meses, muerte e
-  incapacidad total y permanente). Una personalizada sin términos completos no se cobra (fase AWS, D-16).
-- Las aceptaciones siguen en memoria (HU-W1.3-01): una aceptación aún sin cobro se pierde con un reinicio; un cobro ya creado no. Por
-  eso originación corre con una sola tarea en AWS (C5).
+- Monto asegurado, plazo y coberturas del evento de activación: los de la oferta personalizada (HU-W1.2-03) cuando la oferta lo es, y
+  los de la oferta que ajustó cuando es una ajustada (`adj-…`, D-5 a del fix C5); las de demostración (`demo-…`) y sus ajustadas activan
+  los de demostración (250 000 000 COP, 120 meses, muerte e incapacidad total y permanente). Una personalizada sin términos completos
+  no se cobra (fase AWS, D-16).
+- Desde el fix C5 las aceptaciones están en PostgreSQL con `DATABASE_URL` (HU-W1.3-01): una aceptación aún sin cobro ya no se pierde
+  con un reinicio. El cobro y las aceptaciones comparten el pool único de originación. Originación sigue con una sola tarea en AWS:
+  pasar a varias tareas lo decide Nicolás aparte (las escrituras de la aceptación entre tareas son el bloqueo conocido, D-3 c).
 - En AWS (fase AWS de HA-D02, `infra/terraform/modules/platform`): originación recibe su `DATABASE_URL` de Secrets Manager, los stubs
   `payment-gateway` y `email` corren detrás de Cloud Map, y `GET /v1/issuance-exceptions` y `POST …/charge/resume` pasan por el API
   Gateway con el authorizer de Cognito.

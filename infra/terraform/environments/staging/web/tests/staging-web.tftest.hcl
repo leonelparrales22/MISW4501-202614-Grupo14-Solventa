@@ -66,12 +66,12 @@ run "site_reads_the_platform_and_its_user_pool" {
   }
 }
 
-run "cd_trusts_develop_by_default" {
+run "cd_trusts_develop_and_main_by_default" {
   command = plan
 
   assert {
-    condition     = var.cd_branches == tolist(["develop"])
-    error_message = "By default the publishing role of staging trusts develop only."
+    condition     = var.cd_branches == tolist(["develop", "main"])
+    error_message = "By default the publishing role of staging trusts develop (on demand) and main (every merge)."
   }
 }
 
@@ -79,7 +79,7 @@ run "a_window_adds_its_branch_by_variable" {
   command = plan
 
   variables {
-    cd_branches = ["develop", "chore/T5-web-portal-hosting"]
+    cd_branches = ["develop", "main", "chore/T5-web-portal-hosting"]
   }
 
   assert {
@@ -88,11 +88,11 @@ run "a_window_adds_its_branch_by_variable" {
   }
 }
 
-run "the_role_never_trusts_main" {
+run "the_role_always_trusts_develop" {
   command = plan
 
   variables {
-    cd_branches = ["develop", "main"]
+    cd_branches = ["main"]
   }
 
   expect_failures = [var.cd_branches]

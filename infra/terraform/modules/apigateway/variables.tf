@@ -150,6 +150,39 @@ variable "partner_routes" {
   }
 }
 
+variable "human_subroutes" {
+  description = "Human-channel sub-paths under a partner route (HU-W4.2-02). Key: the key of a partner route (for example audit/consents); its {proxy+} resource is created, with the Cognito authorizer, the listed methods and a CORS preflight, proxied to /v1/<key>/{proxy} of the backend. The partner route itself keeps its API key on the exact path. root_methods (HU-W4.2-01, optional, empty by default) adds human methods on that exact path too, with the authorizer, no API key and a preflight, proxied to /v1/<key>; a method cannot be both in root_methods and in the partner route of the same key. Unlike human_routes, this never publishes the first segment as a whole: siblings such as audit/consent-verifications stay unpublished. Empty: nothing is created and nothing changes."
+  type = map(object({
+    methods      = list(string)
+    root_methods = optional(list(string), [])
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for k in keys(var.human_subroutes) : can(regex("^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*){0,2}$", k))])
+    error_message = "human_subroutes keys must be 1 to 3 lowercase path segments under /v1 (for example audit/consents)."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in values(var.human_subroutes) : length(r.methods) > 0 && length(distinct(r.methods)) == length(r.methods) && alltrue([for m in r.methods : contains(["GET", "POST", "PUT", "PATCH", "DELETE"], m)])
+    ])
+    error_message = "Each human sub-route needs at least one method among GET, POST, PUT, PATCH and DELETE, without repetitions (OPTIONS is added automatically, without authorization)."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in values(var.human_subroutes) : length(distinct(r.root_methods)) == length(r.root_methods) && alltrue([for m in r.root_methods : contains(["GET", "POST", "PUT", "PATCH", "DELETE"], m)])
+    ])
+    error_message = "root_methods of a human sub-route must be among GET, POST, PUT, PATCH and DELETE, without repetitions (it can be empty)."
+  }
+
+  validation {
+    condition     = alltrue([for k in keys(var.human_subroutes) : !contains(["audit/consent-verifications", "audit/decisions"], k)])
+    error_message = "audit/consent-verifications and audit/decisions are internal to the VPC (no token): they can never be published, not even behind the authorizer."
+  }
+}
+
 # --- Public routes (HA-D02) ------------------------------------------------------------
 
 variable "public_routes" {
@@ -195,6 +228,32 @@ variable "cors_allow_origin" {
 }
 
 # --- Public card tokenization (T5) -------------------------------------------------------
+
+variable "registration_route" {
+  description = "Public POST /v1/registrations and POST /v1/registrations/document-reads routes of the insured sign-up (HU-M1.1-01): the account does not exist yet, so the calls carry no token and no API key. rate_limit and burst_limit (requests per second) throttle each one at the stage, since no usage plan covers a route without API key. backend_path is the path of origination behind the load balancer. timeout_ms is the integration timeout: the sign-up waits for the identity provider (up to 10 s) before creating the account, so it cannot use the 5 s of the quoting routes. Null: nothing is created."
+  type = object({
+    backend_path = optional(string, "/v1/registrations")
+    rate_limit   = optional(number, 2)
+    burst_limit  = optional(number, 5)
+    timeout_ms   = optional(number, 15000)
+  })
+  default = null
+
+  validation {
+    condition     = var.registration_route == null || can(regex("^/[A-Za-z0-9/_-]*$", var.registration_route.backend_path))
+    error_message = "registration_route.backend_path must be an absolute path (for example /v1/registrations)."
+  }
+
+  validation {
+    condition     = var.registration_route == null || try(var.registration_route.rate_limit > 0 && var.registration_route.burst_limit > 0, false)
+    error_message = "registration_route.rate_limit and burst_limit must be greater than 0."
+  }
+
+  validation {
+    condition     = var.registration_route == null || try(var.registration_route.timeout_ms >= 50 && var.registration_route.timeout_ms <= 29000, false)
+    error_message = "registration_route.timeout_ms must be between 50 and 29000 (the limit of a REST API integration)."
+  }
+}
 
 variable "payment_tokenization" {
   description = "Public POST /pasarela/tokens route of the simulated payment gateway (outside /v1; the name is fixed by the HU-W1.3-02 contract, section 8): the web client sends the card straight to the gateway, so the number never goes through Solventa. No session and no API key; rate_limit and burst_limit (requests per second) throttle it at the stage. backend_path is the path of the gateway behind the load balancer. Null: nothing is created."

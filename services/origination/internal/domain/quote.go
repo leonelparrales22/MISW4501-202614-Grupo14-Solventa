@@ -37,7 +37,34 @@ type Customer struct {
 	FullName   string
 	Email      string
 	BirthDate  time.Time
+	// CognitoSub is the subject of the account in the user pool. Empty while
+	// the registration has not created it (HU-M1.1-01).
+	CognitoSub string
+	// DocumentFrontKey and DocumentBackKey are where the two faces of the
+	// identity document went in the document store (HU-M1.1-01). Both are
+	// empty for a customer an advisor quoted for, who captured no document.
+	DocumentFrontKey string
+	DocumentBackKey  string
+	// IdentityStatus is where the identity check of the sign-up stands
+	// (HU-M1.1-01); IdentityUnchecked for a customer an advisor quoted for.
+	// IdentityRejection, IdentityVerificationID and IdentityCheckedAt record
+	// the provider's last answer.
+	IdentityStatus         IdentityStatus
+	IdentityRejection      IdentityRejection
+	IdentityVerificationID string
+	IdentityCheckedAt      time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
+
+// SignUpClosed tells whether this document can no longer sign up: the
+// provider found the person on a restrictive list.
+func (c Customer) SignUpClosed() bool {
+	return c.IdentityStatus == IdentityRejected && c.IdentityRejection.Final()
+}
+
+// Registered tells whether the customer already has an account to sign in with.
+func (c Customer) Registered() bool { return c.CognitoSub != "" }
 
 // Applicant returns the customer data shown to an advisor reviewing a request.
 func (c Customer) Applicant() Applicant {

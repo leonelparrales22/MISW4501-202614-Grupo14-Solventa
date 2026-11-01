@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"math"
@@ -32,15 +33,19 @@ import (
 	odadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/opendata"
 	ofadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/openfinance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/pdf"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
 	redisadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/redis"
 	s3adapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/s3"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/formalization"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/issuance"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/orchestrator"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/profiling"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/rating"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/renewal"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/underwriting"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/wallet"
 )
 
 const serviceName = "origination"
@@ -68,11 +73,24 @@ func main() {
 		resolverOptions(cfg)...,
 	)
 
-	offers, err := newOfferWiring(context.Background(), cfg, resolver)
+	// One switch and one pool (fix C5, decisions D-2 a and D-4 a): with
+	// DATABASE_URL every store of origination is in PostgreSQL, over a single
+	// pool opened and migrated here; without it every store is in memory.
+	st, err := newStores(context.Background(), cfg.offers.databaseURL, systemClock{})
 	if err != nil {
-		log.Fatalf("could not set up the personalized offers: %v", err)
+		log.Fatalf("could not set up origination's database: %v", err)
 	}
-	cfg.acceptances.offers, cfg.acceptances.acceptanceStore = offers.router, offers.acceptances
+	// HU-M1.3-01: the relay publishes the outbox (CustomerLinked) to the
+	// topic of origination; without EVENTS_TOPIC_ARN the events stay there.
+	relay, err := newEventRelay(context.Background(), cfg.events, st.outbox)
+	if err != nil {
+		log.Fatalf("could not set up the domain events: %v", err)
+	}
+	if relay != nil {
+		go relay.Run(context.Background())
+	}
+	offers := newOfferWiring(context.Background(), cfg, resolver, st)
+	cfg.acceptances.offers, cfg.acceptances.acceptanceStore, cfg.acceptances.reviewStore = offers.router, offers.acceptances, offers.reviews
 
 	// WithObservability must come first: chi only accepts middlewares before
 	// the routes are registered.
@@ -84,17 +102,41 @@ func main() {
 		}
 		var starter ports.IssuanceStarter = memory.NewIssuanceStub()
 		var activations []ports.CoverageActivationHandler
+		// HU-W1.3-04: wakes the worker of the contractual issuance after an
+		// analyst retries a failed one.
+		var wakeContracts func()
 		// HU-W1.1-02: the adjust and reject decisions are e-mailed to the
 		// customer through the same provider client, so it keeps a single
 		// circuit breaker.
 		var reviewNotifier ports.ReviewOutcomeNotifier
+		// HU-W1.1-03: the confirmation code reaches the customer by e-mail
+		// through the same client; without the provider no purchase is
+		// formalized, because it could not get the customer's consent.
+		var consentSender ports.ConsentCodeSender = formalization.UnavailableSender{}
+		// HU-W1.5-02: the not-renewed notice goes out through the same client.
+		var renewalNotifier ports.RenewalNotifier
+		// One repository for every document of the service: the contractual
+		// PDF (HU-W1.3-03) and the faces of the identity document of the
+		// sign-up (HU-M1.1-01) go to the same bucket, so they share one client.
+		var documents ports.DocumentStore
+		var documentsAt string
+		if cfg.documents.configured() {
+			store, where, err := newDocumentStore(context.Background(), cfg.documents)
+			if err != nil {
+				log.Fatalf("could not open the document repository: %v", err)
+			}
+			documents, documentsAt = store, where
+		}
 		if cfg.contracts.enabled {
-			contract, err := newContractWiring(context.Background(), cfg.contracts)
+			contract, err := newContractWiring(context.Background(), cfg.contracts, documents, documentsAt, st.db)
 			if err != nil {
 				log.Fatalf("could not set up the contractual document: %v", err)
 			}
 			activations = append(activations, contract.service)
+			wakeContracts = contract.service.Notify
 			reviewNotifier = emailadapter.NewReviewNotifier(contract.emailClient)
+			consentSender = emailadapter.NewConsentNotifier(contract.emailClient)
+			renewalNotifier = emailadapter.NewRenewalNotifier(contract.emailClient)
 			opts = append(opts, httpadapter.WithContractDocuments(contract.reader, verifier))
 		} else {
 			log.Printf("%s is not set: the contractual document and its notification (HU-W1.3-03) are not wired", envEmailURL)
@@ -102,22 +144,50 @@ func main() {
 		// HA-D02: with a payment gateway, an approved acceptance is charged and
 		// only a confirmed charge activates the coverage (CA-4); without it,
 		// the issuance start is only recorded.
+		// The customers (HU-M1.1-01) are in origination's stores: PostgreSQL
+		// with DATABASE_URL, with or without the payment gateway.
+		customers := st.customers
+		// HU-M1.2-01: the wallet lists the policies origination issued (with
+		// the premium charge) next to the ones of the policy core.
+		var issued wallet.RenewalLister
 		if cfg.billing.enabled {
-			charges, err := newBilling(context.Background(), cfg.billing, activations...)
+			// HU-W1.5-02: every activation is also projected into the
+			// policies the insured sees and renews.
+			activations = append(activations, renewal.NewProjector(postgres.NewPolicyStore(st.db)))
+			charges, err := newBilling(context.Background(), cfg.billing, st.db, wakeContracts, activations...)
 			if err != nil {
 				log.Fatalf("could not set up the premium charge: %v", err)
 			}
 			starter = charges.starter
 			opts = append(opts, httpadapter.WithCharges(charges.service, verifier))
+			renewals, err := newRenewalService(context.Background(), cfg.renewal, st.db, resolver, renewalNotifier, charges.wake)
+			if err != nil {
+				log.Fatalf("could not set up the policy renewal: %v", err)
+			}
+			opts = append(opts, httpadapter.WithPolicies(renewals, verifier))
+			issued = renewals
 		} else {
 			logWithoutBilling(cfg.contracts.enabled)
 		}
+		opts = append(opts, walletOptions(issued, newPolicyPortfolio(cfg.policyCore), verifier)...)
 		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
 			httpadapter.WithAcceptances(acceptances, verifier),
 			httpadapter.WithOffers(offers.service, verifier),
-			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver), verifier),
+			httpadapter.WithAssistedQuotes(newAssistedQuoteService(resolver, customers, st.quotes), verifier),
+			httpadapter.WithFormalizations(formalization.New(formalization.Deps{
+				Quotes: st.quotes, Customers: customers, Offers: st.offers, Formalized: st.formalized, Challenges: st.consentCodes,
+				Sender: consentSender, Acceptances: acceptances, Clock: systemClock{},
+			}), verifier),
 			httpadapter.WithReviews(reviews, verifier))
+		// Sign-up of the insured (HU-M1.1-01). It needs the user pool: the
+		// account is created from here, never by the client.
+		if registration, err := newRegistrationService(context.Background(), cfg.registration, customers,
+			documents, documentsAt); err != nil {
+			log.Fatalf("could not set up the registration of the insured: %v", err)
+		} else if registration != nil {
+			opts = append(opts, httpadapter.WithRegistrations(registration))
+		}
 	} else {
 		log.Printf("%s is not set: the human routes (offer acceptance HU-W1.3-01, assisted quote HU-W1.1-01, contract documents HU-W1.3-03, advisor inbox HU-W1.1-02, offer read and renewal HU-W1.2-03) are not mounted", security.EnvIssuer)
 	}
@@ -178,17 +248,32 @@ type config struct {
 	// Offer acceptance (HU-W1.3-01).
 	acceptances acceptanceConfig
 
+	// Document repository, shared by the contractual document (HU-W1.3-03)
+	// and the identity documents of the sign-up (HU-M1.1-01).
+	documents documentsConfig
+
 	// Contractual document and notification (HU-W1.3-03).
 	contracts contractConfig
 
+	// Sign-up of the insured (HU-M1.1-01).
+	registration registrationConfig
+
 	// Premium charge (HA-D02).
 	billing billingConfig
+	// renewal configures the online renewal of a policy (HU-W1.5-02).
+	renewal renewalConfig
 
 	// Explicit consent verified with the audit service (HU-W1.2-01).
 	audit auditConfig
 
+	// Domain events published from the outbox (HU-M1.3-01).
+	events eventsConfig
+
 	// Personalized offer (HU-W1.2-03).
 	offers offerConfig
+
+	// Policy core read by the wallet (HU-M1.2-01).
+	policyCore policyCoreConfig
 }
 
 // acceptanceConfig configures the offer acceptance (HU-W1.3-01). Its routes
@@ -203,17 +288,26 @@ type acceptanceConfig struct {
 	// underwriting routes a normal offer to the advisor (decision #40).
 	reviewScoreThreshold float64
 	// offers serves the offers of the acceptance, the advisor inbox and the
-	// charge (HU-W1.2-03); acceptanceStore is where acceptances are written. The
-	// personalized offer service and the requote worker share them. When nil,
-	// newAcceptanceService builds its own in-memory ones.
-	offers          *memory.OfferRouter
-	acceptanceStore *memory.AcceptanceStore
+	// charge (HU-W1.2-03); acceptanceStore is where acceptances are written and
+	// reviewStore is the advisor inbox (HU-W1.1-02). The personalized offer
+	// service and the requote worker share them; with DATABASE_URL they are in
+	// PostgreSQL (newStores). When nil, newAcceptanceService builds its own
+	// in-memory ones.
+	offers          offerStore
+	acceptanceStore ports.AcceptanceRepository
+	reviewStore     ports.ReviewRepository
+}
+
+// offerStore reads every offer and writes the adjusted ones (the OfferRouter).
+type offerStore interface {
+	ports.OfferRepository
+	ports.OfferWriter
 }
 
 // newAcceptanceService wires the offer acceptance (HU-W1.3-01) and the advisor
-// inbox (HU-W1.1-02) over one set of in-memory adapters (PENDING: PostgreSQL,
-// HU-W1.2-03 offers and the underwriting engine) and starts the processor that
-// runs underwriting asynchronously and resumes failed acceptances. The
+// inbox (HU-W1.1-02) over the stores it is given (PostgreSQL with DATABASE_URL,
+// memory otherwise; PENDING: the underwriting engine) and starts the processor
+// that runs underwriting asynchronously and resumes failed acceptances. The
 // underwriting approves the offers an advisor adjusted (decision D-5 a). When
 // notifier is not nil, a worker e-mails the adjust and reject decisions to the
 // customer (decision D-3 c); otherwise no notice is sent.
@@ -228,23 +322,26 @@ func newAcceptanceService(ctx context.Context, cfg acceptanceConfig, starter por
 	if acceptances == nil {
 		acceptances = memory.NewAcceptanceStore()
 	}
-	reviews := memory.NewReviewQueueStub()
+	reviews := cfg.reviewStore
+	if reviews == nil {
+		reviews = memory.NewReviewQueueStub()
+	}
 	underwriter := underwriting.NewHumanAdjustedUnderwriter(reviews,
 		memory.NewUnderwriterStub(clock, cfg.flakyFailures, cfg.reviewScoreThreshold), clock)
 	processor := issuance.NewProcessor(offers, acceptances, underwriter, reviews, starter, clock, cfg.processor)
 	go processor.Run(ctx)
-	log.Printf("offer acceptance: in-memory adapters (pending PostgreSQL and the real dependencies), poll every %s, retry from %s up to %s, profile scores above %g go to the advisor",
+	log.Printf("offer acceptance: poll every %s, retry from %s up to %s, profile scores above %g go to the advisor (provisional underwriting rules)",
 		cfg.processor.PollInterval, cfg.processor.RetryBase, cfg.processor.RetryMax, cfg.reviewScoreThreshold)
 
 	deps := underwriting.ReviewDeps{
-		Reviews: reviews, Acceptances: acceptances, Offers: offers, OfferWriter: offers, Clock: clock,
+		Reviews: reviews, Acceptances: acceptances, OfferWriter: offers, Clock: clock,
 		AcceptanceResumed: processor.Notify,
 	}
 	if notifier != nil {
 		worker := underwriting.NewReviewNotificationWorker(reviews, notifier, clock, underwriting.NotificationConfig{})
 		go worker.Run(ctx)
 		deps.NotificationScheduled = worker.Notify
-		log.Printf("advisor inbox: in-memory requests and decisions (pending PostgreSQL); the adjust and reject decisions are e-mailed to the customer")
+		log.Printf("advisor inbox: the adjust and reject decisions are e-mailed to the customer")
 	} else {
 		log.Printf("%s is not set: the review outcome e-mails (HU-W1.1-02) are not sent", envEmailURL)
 	}
@@ -261,21 +358,25 @@ type contractWiring struct {
 }
 
 // newContractWiring wires the contractual issuance (HU-W1.3-03): the PDF
-// generator, the document store (S3 in AWS or a local directory, HA-D02), the
-// signed links, the e-mail provider and the in-memory repository and audit log
-// (PENDING: PostgreSQL and the audit service). It starts the worker that
+// generator, the document store it receives (S3 in AWS or a local directory,
+// HA-D02), the signed links, the e-mail provider and the in-memory repository
+// and audit log (PENDING: the audit service). The repository is PostgreSQL
+// with a database (HU-W1.3-04: the monitoring of the issuances reads it and it
+// survives a restart) and in memory without one. It starts the worker that
 // issues the documents.
-func newContractWiring(ctx context.Context, cfg contractConfig) (contractWiring, error) {
-	store, where, err := newDocumentStore(ctx, cfg)
-	if err != nil {
-		return contractWiring{}, err
-	}
+func newContractWiring(ctx context.Context, cfg contractConfig, store ports.DocumentStore,
+	where string, db *sql.DB) (contractWiring, error) {
 	signer, err := links.NewSigner(cfg.linkSecret)
 	if err != nil {
 		return contractWiring{}, err
 	}
 	clock := systemClock{}
-	repo, audit := memory.NewContractStore(), memory.NewIssuanceAuditLog()
+	var repo ports.ContractRepository = memory.NewContractStore()
+	repository := "in-memory repository"
+	if db != nil {
+		repo, repository = postgres.NewContractStore(db), "PostgreSQL repository"
+	}
+	audit := memory.NewIssuanceAuditLog()
 	emailClient := email.NewClient(email.Config{
 		BaseURL: cfg.emailURL, Timeout: cfg.emailTimeout, Breaker: resilience.DefaultConfig(),
 	})
@@ -284,8 +385,8 @@ func newContractWiring(ctx context.Context, cfg contractConfig) (contractWiring,
 		Repo: repo, Generator: pdf.New(), Store: store, Signer: signer, Notifier: notifier, Audit: audit, Clock: clock,
 	}, cfg.service)
 	go service.Run(ctx)
-	log.Printf("contractual document: PDF in %s, e-mail via %s, links valid %s, in-memory repository and audit log (pending PostgreSQL and the audit service)",
-		where, cfg.emailURL, cfg.service.LinkTTL)
+	log.Printf("contractual document: PDF in %s, e-mail via %s, links valid %s, %s and in-memory audit log (pending the audit service)",
+		where, cfg.emailURL, cfg.service.LinkTTL, repository)
 	return contractWiring{
 		service:     service,
 		reader:      issuance.NewContractReader(repo, store, audit, signer, clock),
@@ -296,14 +397,15 @@ func newContractWiring(ctx context.Context, cfg contractConfig) (contractWiring,
 // documentStoreCheckTimeout bounds the check of the documents bucket at start.
 const documentStoreCheckTimeout = 10 * time.Second
 
-// newDocumentStore opens the document repository of the contractual issuance
-// (decision D-3 a of HA-D02): the S3 bucket of DOCUMENTS_BUCKET, with the
-// credentials and the region of the environment (the task role and AWS_REGION
-// in ECS) and checked before serving, or the directory of DOCUMENTS_DIR. It
-// returns where the documents go, for the log.
-func newDocumentStore(ctx context.Context, cfg contractConfig) (ports.DocumentStore, string, error) {
-	if cfg.documentsBucket == "" {
-		store, err := filestore.New(cfg.documentsDir)
+// newDocumentStore opens the document repository (decision D-3 a of HA-D02):
+// the S3 bucket of DOCUMENTS_BUCKET, with the credentials and the region of
+// the environment (the task role and AWS_REGION in ECS) and checked before
+// serving, or the directory of DOCUMENTS_DIR. The contractual document
+// (HU-W1.3-03) and the identity documents of the sign-up (HU-M1.1-01) share
+// it. It returns where the documents go, for the log.
+func newDocumentStore(ctx context.Context, cfg documentsConfig) (ports.DocumentStore, string, error) {
+	if cfg.bucket == "" {
+		store, err := filestore.New(cfg.dir)
 		if err != nil {
 			return nil, "", err
 		}
@@ -313,7 +415,7 @@ func newDocumentStore(ctx context.Context, cfg contractConfig) (ports.DocumentSt
 	if err != nil {
 		return nil, "", fmt.Errorf("could not load the AWS configuration for %s: %w", envDocumentsBucket, err)
 	}
-	store, err := s3adapter.New(awss3.NewFromConfig(awsCfg), cfg.documentsBucket)
+	store, err := s3adapter.New(awss3.NewFromConfig(awsCfg), cfg.bucket)
 	if err != nil {
 		return nil, "", err
 	}
@@ -326,11 +428,13 @@ func newDocumentStore(ctx context.Context, cfg contractConfig) (ports.DocumentSt
 }
 
 // newAssistedQuoteService wires the advisor quote (HU-W1.1-01) over the
-// in-memory customer and quote stores (PENDING: PostgreSQL), the shared
-// profiling Resolver and the rating engine.
-func newAssistedQuoteService(resolver *profiling.Resolver) *orchestrator.AssistedQuoteService {
-	log.Printf("assisted quote: in-memory customer and quote stores (pending PostgreSQL), rating %s", rating.Version)
-	return orchestrator.NewAssistedQuoteService(memory.NewCustomerStore(), memory.NewQuoteStore(), resolver, rating.New(), systemClock{})
+// customer and quote repositories it receives (PostgreSQL with DATABASE_URL,
+// memory otherwise: newStores), the shared profiling Resolver and the rating
+// engine.
+func newAssistedQuoteService(resolver *profiling.Resolver,
+	customers ports.CustomerRepository, quotes ports.QuoteRepository) *orchestrator.AssistedQuoteService {
+	log.Printf("assisted quote: rating %s", rating.Version)
+	return orchestrator.NewAssistedQuoteService(customers, quotes, resolver, rating.New(), systemClock{})
 }
 
 // newHTTPClient builds the client shared by the external-source adapters: one
@@ -455,7 +559,29 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if err := loadAcceptanceConfig(getenv, &cfg.acceptances); err != nil {
 		return config{}, err
 	}
+	if err := loadDocumentsConfig(getenv, &cfg.documents); err != nil {
+		return config{}, err
+	}
 	if err := loadContractConfig(getenv, cfg.port, &cfg.contracts); err != nil {
+		return config{}, err
+	}
+	if err := loadRegistrationConfig(getenv, &cfg.registration); err != nil {
+		return config{}, err
+	}
+	// The contractual document (HU-W1.3-03) and the sign-up of the insured
+	// (HU-M1.1-01) both write to the document repository: whoever is wired
+	// needs it, and the service does not start without it.
+	if !cfg.documents.configured() {
+		switch {
+		case cfg.contracts.enabled:
+			return config{}, fmt.Errorf("%s (an S3 bucket, in AWS) or %s (a local directory) is required when %s is set",
+				envDocumentsBucket, envDocumentsDir, envEmailURL)
+		case cfg.registration.enabled:
+			return config{}, fmt.Errorf("%s (an S3 bucket, in AWS) or %s (a local directory) is required when %s is set: the faces of the identity document are kept there",
+				envDocumentsBucket, envDocumentsDir, envCognitoUserPoolID)
+		}
+	}
+	if err := loadRenewalConfig(getenv, &cfg.renewal); err != nil {
 		return config{}, err
 	}
 	if err := loadBillingConfig(getenv, &cfg.billing); err != nil {
@@ -465,6 +591,12 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadOfferConfig(getenv, &cfg.offers); err != nil {
+		return config{}, err
+	}
+	if err := loadEventsConfig(getenv, &cfg.events); err != nil {
+		return config{}, err
+	}
+	if err := loadPolicyCoreConfig(getenv, &cfg.policyCore); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
@@ -524,18 +656,39 @@ const (
 	envDocumentsDir    = "DOCUMENTS_DIR"
 )
 
+// documentsConfig is the document repository: an S3 bucket in AWS (bucket) or
+// a directory locally (dir), never both. The contractual document
+// (HU-W1.3-03) and the identity documents of the sign-up (HU-M1.1-01) share
+// it, so it is read whether or not the contractual document is wired.
+type documentsConfig struct {
+	bucket string
+	dir    string
+}
+
+// configured reports whether a repository was named.
+func (c documentsConfig) configured() bool { return c.bucket != "" || c.dir != "" }
+
+// loadDocumentsConfig reads the repository of the documents. Naming both is an
+// error; naming neither is one only for whoever needs it.
+func loadDocumentsConfig(getenv func(string) string, cfg *documentsConfig) error {
+	cfg.bucket = getenv(envDocumentsBucket)
+	cfg.dir = getenv(envDocumentsDir)
+	if cfg.bucket != "" && cfg.dir != "" {
+		return fmt.Errorf("%s and %s are both set: set only one, the S3 bucket in AWS or the local directory",
+			envDocumentsBucket, envDocumentsDir)
+	}
+	return nil
+}
+
 // contractConfig configures the contractual document and its notification
 // (HU-W1.3-03). It is enabled when EMAIL_URL is set; then the signing secret
-// and exactly one document repository are required too: an S3 bucket in AWS
-// (documentsBucket) or a directory locally (documentsDir).
+// and the document repository (documentsConfig) are required too.
 type contractConfig struct {
-	enabled         bool
-	emailURL        string
-	emailTimeout    time.Duration
-	documentsBucket string
-	documentsDir    string
-	linkSecret      string
-	service         issuance.ContractConfig
+	enabled      bool
+	emailURL     string
+	emailTimeout time.Duration
+	linkSecret   string
+	service      issuance.ContractConfig
 }
 
 // loadContractConfig reads the HU-W1.3-03 variables. publicPort is the port of
@@ -546,17 +699,7 @@ func loadContractConfig(getenv func(string) string, publicPort string, cfg *cont
 		return nil
 	}
 	cfg.enabled = true
-	cfg.documentsBucket = getenv(envDocumentsBucket)
-	cfg.documentsDir = getenv(envDocumentsDir)
 	cfg.linkSecret = getenv("DOCUMENT_LINK_SECRET")
-	switch {
-	case cfg.documentsBucket == "" && cfg.documentsDir == "":
-		return fmt.Errorf("%s (an S3 bucket, in AWS) or %s (a local directory) is required when %s is set",
-			envDocumentsBucket, envDocumentsDir, envEmailURL)
-	case cfg.documentsBucket != "" && cfg.documentsDir != "":
-		return fmt.Errorf("%s and %s are both set: set only one, the S3 bucket in AWS or the local directory",
-			envDocumentsBucket, envDocumentsDir)
-	}
 	if len(cfg.linkSecret) < links.MinSecretLength {
 		return fmt.Errorf("DOCUMENT_LINK_SECRET (at least %d characters) is required when %s is set", links.MinSecretLength, envEmailURL)
 	}

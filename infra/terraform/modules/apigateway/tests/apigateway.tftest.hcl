@@ -345,6 +345,7 @@ run "defaults_change_nothing" {
         aws_api_gateway_integration.resolve_post,
         aws_api_gateway_integration.customer_get,
       ]),
+      jsonencode(aws_api_gateway_gateway_response.rate_limited),
       jsonencode([
         aws_api_gateway_authorizer.cognito,
         aws_api_gateway_method.human,
@@ -355,11 +356,120 @@ run "defaults_change_nothing" {
         aws_api_gateway_gateway_response.cors,
       ]),
     ]))
-    error_message = "Without public routes or binary types the redeployment hash is the one of HA-L01 and HA-S01."
+    error_message = "Without public routes or binary types the redeployment hash is the one of HA-L01, HA-S01 and the 429 of HU-W3.1-01."
   }
 }
 
 # --- Public card tokenization (T5) -------------------------------------------------------
+
+run "registration_is_public_post_only" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { policies = { methods = ["GET"] } }
+    registration_route     = {}
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_resource.registrations[0].parent_id == aws_api_gateway_resource.v1.id &&
+      aws_api_gateway_resource.registrations[0].path_part == "registrations"
+    )
+    error_message = "The sign-up route is /v1/registrations."
+  }
+
+  assert {
+    condition = (
+      length(aws_api_gateway_method.registrations_post) == 1 &&
+      aws_api_gateway_method.registrations_post[0].http_method == "POST" &&
+      aws_api_gateway_method.registrations_post[0].authorization == "NONE" &&
+      aws_api_gateway_method.registrations_post[0].api_key_required == false &&
+      aws_api_gateway_method.registrations_post[0].authorizer_id == null
+    )
+    error_message = "Sign-up is a single POST without session and without API key: the account does not exist yet."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_integration.registrations_post[0].type == "HTTP_PROXY" &&
+      aws_api_gateway_integration.registrations_post[0].integration_http_method == "POST" &&
+      aws_api_gateway_integration.registrations_post[0].uri == "http://internal-alb.example.com/v1/registrations" &&
+      aws_api_gateway_integration.registrations_post[0].timeout_milliseconds == 15000
+    )
+    error_message = "The route is proxied to /v1/registrations of origination behind the load balancer, with 15 s for the identity check."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_resource.registration_document_reads[0].parent_id == aws_api_gateway_resource.registrations[0].id &&
+      aws_api_gateway_resource.registration_document_reads[0].path_part == "document-reads" &&
+      aws_api_gateway_method.registration_document_reads_post[0].http_method == "POST" &&
+      aws_api_gateway_method.registration_document_reads_post[0].authorization == "NONE" &&
+      aws_api_gateway_method.registration_document_reads_post[0].api_key_required == false &&
+      aws_api_gateway_integration.registration_document_reads_post[0].uri == "http://internal-alb.example.com/v1/registrations/document-reads" &&
+      aws_api_gateway_integration.registration_document_reads_post[0].timeout_milliseconds == 15000 &&
+      aws_api_gateway_method_settings.registration_document_reads[0].method_path == "v1/registrations/document-reads/POST" &&
+      aws_api_gateway_method_settings.registration_document_reads[0].settings[0].throttling_rate_limit == 2
+    )
+    error_message = "The read of the document (HU-M1.1-01, criterion 1) is a public POST under /v1/registrations, proxied to origination and throttled like the sign-up."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_method_settings.registrations[0].method_path == "v1/registrations/POST" &&
+      aws_api_gateway_method_settings.registrations[0].settings[0].throttling_rate_limit == 2 &&
+      aws_api_gateway_method_settings.registrations[0].settings[0].throttling_burst_limit == 5 &&
+      aws_api_gateway_method_settings.registrations[0].settings[0].caching_enabled == false
+    )
+    error_message = "The route is throttled at the stage (2 req/s, burst 5) and never cached."
+  }
+
+  assert {
+    condition     = output.registration_path == "/v1/registrations"
+    error_message = "The module exposes the sign-up path."
+  }
+
+  assert {
+    condition     = alltrue([for m in aws_api_gateway_method.human : m.authorization == "COGNITO_USER_POOLS"])
+    error_message = "The human routes keep the Cognito authorizer next to the public sign-up."
+  }
+}
+
+run "registration_defaults_change_nothing" {
+  command = plan
+
+  assert {
+    condition = (
+      length(aws_api_gateway_resource.registrations) == 0 &&
+      length(aws_api_gateway_method.registrations_post) == 0 &&
+      length(aws_api_gateway_integration.registrations_post) == 0 &&
+      length(aws_api_gateway_method_settings.registrations) == 0 &&
+      output.registration_path == null
+    )
+    error_message = "Without registration_route nothing of the sign-up route is created."
+  }
+}
+
+run "registration_rejects_relative_backend_path" {
+  command = plan
+
+  variables {
+    registration_route = { backend_path = "v1/registrations" }
+  }
+
+  expect_failures = [var.registration_route]
+}
+
+run "registration_rejects_a_throttle_of_zero" {
+  command = plan
+
+  variables {
+    registration_route = { rate_limit = 0 }
+  }
+
+  expect_failures = [var.registration_route]
+}
 
 run "payment_tokenization_is_public_post_only" {
   command = apply
@@ -661,4 +771,313 @@ run "partner_routes_reject_a_method_of_the_human_root" {
   }
 
   expect_failures = [aws_api_gateway_method.partner]
+}
+
+# --- Human sub-paths under a partner route (HU-W4.2-02) ---------------------------------
+
+run "human_subroutes_default_creates_nothing" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+  }
+
+  assert {
+    condition     = length(aws_api_gateway_resource.human_subproxy) == 0 && length(aws_api_gateway_method.human) == 0
+    error_message = "Without human_subroutes there is no extra resource and no human method."
+  }
+}
+
+run "human_subroutes_publish_only_the_proxy_under_a_partner_route" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes = {
+      "audit/consent-terms/current" = { methods = ["GET"] }
+      "audit/consents"              = { methods = ["POST"] }
+    }
+    human_subroutes = { "audit/consents" = { methods = ["GET", "POST"] } }
+  }
+
+  assert {
+    condition = (
+      keys(aws_api_gateway_resource.human_subproxy) == ["audit/consents"] &&
+      aws_api_gateway_resource.human_subproxy["audit/consents"].path_part == "{proxy+}" &&
+      aws_api_gateway_resource.human_subproxy["audit/consents"].parent_id == aws_api_gateway_resource.partner_l2["audit/consents"].id
+    )
+    error_message = "Only the {proxy+} under /v1/audit/consents is created."
+  }
+
+  assert {
+    condition = (
+      toset(keys(aws_api_gateway_method.human)) == toset(["audit/consents/{proxy+} GET", "audit/consents/{proxy+} POST"]) &&
+      alltrue([
+        for m in aws_api_gateway_method.human :
+        m.authorization == "COGNITO_USER_POOLS" && m.api_key_required == false && m.authorizer_id != null
+      ])
+    )
+    error_message = "The sub-route uses the Cognito authorizer and never asks for an API key."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_integration.human["audit/consents/{proxy+} GET"].uri == "http://internal-alb.example.com/v1/audit/consents/{proxy}" &&
+      aws_api_gateway_integration.human["audit/consents/{proxy+} POST"].uri == "http://internal-alb.example.com/v1/audit/consents/{proxy}" &&
+      alltrue([for i in aws_api_gateway_integration.human : i.type == "HTTP_PROXY" && i.timeout_milliseconds == 5000])
+    )
+    error_message = "The sub-route is proxied to /v1/audit/consents/{proxy} of the backend."
+  }
+
+  assert {
+    condition = (
+      keys(aws_api_gateway_method.human_options) == ["audit/consents/{proxy+}"] &&
+      aws_api_gateway_method.human_options["audit/consents/{proxy+}"].authorization == "NONE" &&
+      aws_api_gateway_integration_response.human_options["audit/consents/{proxy+}"].response_parameters["method.response.header.Access-Control-Allow-Methods"] == "'GET,POST,OPTIONS'"
+    )
+    error_message = "The sub-route has a CORS preflight without authorization."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_method.partner["audit/consents POST"].resource_id == aws_api_gateway_resource.partner_l2["audit/consents"].id &&
+      aws_api_gateway_method.partner["audit/consents POST"].api_key_required == true &&
+      aws_api_gateway_method.partner["audit/consents POST"].authorization == "NONE"
+    )
+    error_message = "POST /v1/audit/consents stays a partner route with API key."
+  }
+
+  assert {
+    condition = (
+      length(aws_api_gateway_resource.partner_l1) == 1 && keys(aws_api_gateway_resource.partner_l1) == ["audit"] &&
+      length(aws_api_gateway_method.partner) == 2 &&
+      !contains(keys(aws_api_gateway_resource.human), "audit")
+    )
+    error_message = "audit is not a human route: no resource exists for audit/consent-verifications or audit/decisions."
+  }
+}
+
+run "human_subroutes_do_not_change_the_human_routes" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { consents = { methods = ["GET", "POST"], root_methods = ["GET"] } }
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "audit/consents" = { methods = ["GET", "POST"] } }
+  }
+
+  assert {
+    condition = toset(keys(aws_api_gateway_method.human)) == toset([
+      "consents GET", "consents/{proxy+} GET", "consents/{proxy+} POST",
+      "audit/consents/{proxy+} GET", "audit/consents/{proxy+} POST",
+    ])
+    error_message = "The human routes keep their methods; the sub-route adds its own."
+  }
+}
+
+run "human_subroutes_reject_a_key_that_is_not_a_partner_route" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "audit/other" = { methods = ["GET"] } }
+  }
+
+  expect_failures = [aws_api_gateway_resource.human_subproxy]
+}
+
+run "human_subroutes_reject_the_internal_routes_of_audit" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_subroutes = {
+      "audit/consent-verifications" = { methods = ["GET"] }
+      "audit/decisions"             = { methods = ["GET"] }
+    }
+  }
+
+  expect_failures = [var.human_subroutes]
+}
+
+run "human_subroutes_reject_a_human_route_key" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_routes           = { offers = { methods = ["GET", "POST"], root_methods = [] } }
+    partner_routes         = { offers = { methods = ["POST"] } }
+    human_subroutes        = { offers = { methods = ["GET"] } }
+  }
+
+  expect_failures = [aws_api_gateway_resource.human_subproxy]
+}
+
+run "human_subroutes_need_the_authorizer" {
+  command = plan
+
+  variables {
+    partner_routes  = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes = { "audit/consents" = { methods = ["GET"] } }
+  }
+
+  expect_failures = [aws_api_gateway_resource.human_subproxy]
+}
+
+run "human_subroutes_reject_repeated_or_unknown_methods" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "audit/consents" = { methods = ["GET", "GET"] } }
+  }
+
+  expect_failures = [var.human_subroutes]
+}
+
+# --- The list of the compliance portal on the exact path (HU-W4.2-01) -------------------
+
+run "human_subroutes_root_methods_publish_the_exact_get_with_cognito" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes = {
+      "audit/consent-terms/current" = { methods = ["GET"] }
+      "audit/consents"              = { methods = ["POST"] }
+    }
+    human_subroutes = { "audit/consents" = { methods = ["GET", "POST"], root_methods = ["GET"] } }
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_method.human["audit/consents GET"].resource_id == aws_api_gateway_resource.partner_l2["audit/consents"].id &&
+      aws_api_gateway_method.human["audit/consents GET"].authorization == "COGNITO_USER_POOLS" &&
+      aws_api_gateway_method.human["audit/consents GET"].authorizer_id != null &&
+      aws_api_gateway_method.human["audit/consents GET"].api_key_required == false &&
+      aws_api_gateway_method.human["audit/consents GET"].request_parameters == null
+    )
+    error_message = "GET /v1/audit/consents is on the resource of the partner route, with the Cognito authorizer and no API key."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_integration.human["audit/consents GET"].uri == "http://internal-alb.example.com/v1/audit/consents" &&
+      aws_api_gateway_integration.human["audit/consents GET"].type == "HTTP_PROXY" &&
+      aws_api_gateway_integration.human["audit/consents GET"].integration_http_method == "GET"
+    )
+    error_message = "The exact GET is proxied to /v1/audit/consents of the backend."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_method.partner["audit/consents POST"].resource_id == aws_api_gateway_resource.partner_l2["audit/consents"].id &&
+      aws_api_gateway_method.partner["audit/consents POST"].api_key_required == true &&
+      aws_api_gateway_method.partner["audit/consents POST"].authorization == "NONE" &&
+      length(aws_api_gateway_method.partner) == 2
+    )
+    error_message = "POST /v1/audit/consents stays a partner route with API key and without the authorizer."
+  }
+
+  assert {
+    condition = (
+      toset(keys(aws_api_gateway_method.human)) == toset(["audit/consents GET", "audit/consents/{proxy+} GET", "audit/consents/{proxy+} POST"]) &&
+      aws_api_gateway_integration.human["audit/consents/{proxy+} GET"].uri == "http://internal-alb.example.com/v1/audit/consents/{proxy}" &&
+      keys(aws_api_gateway_resource.human_subproxy) == ["audit/consents"]
+    )
+    error_message = "The {proxy+} of HU-W4.2-02 keeps its methods; only the exact GET is added."
+  }
+
+  assert {
+    condition = (
+      toset(keys(aws_api_gateway_method.human_options)) == toset(["audit/consents", "audit/consents/{proxy+}"]) &&
+      aws_api_gateway_method.human_options["audit/consents"].authorization == "NONE" &&
+      aws_api_gateway_integration_response.human_options["audit/consents"].response_parameters["method.response.header.Access-Control-Allow-Methods"] == "'GET,OPTIONS'" &&
+      aws_api_gateway_integration_response.human_options["audit/consents/{proxy+}"].response_parameters["method.response.header.Access-Control-Allow-Methods"] == "'GET,POST,OPTIONS'"
+    )
+    error_message = "The exact path gets a preflight for its human methods only."
+  }
+
+  assert {
+    condition = (
+      !contains(keys(aws_api_gateway_resource.human), "audit") &&
+      keys(aws_api_gateway_resource.partner_l1) == ["audit"]
+    )
+    error_message = "audit is still not a human route: audit/consent-verifications and audit/decisions do not exist."
+  }
+}
+
+run "human_subroutes_without_root_methods_add_nothing_on_the_exact_path" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "audit/consents" = { methods = ["GET", "POST"] } }
+  }
+
+  assert {
+    condition = (
+      toset(keys(aws_api_gateway_method.human)) == toset(["audit/consents/{proxy+} GET", "audit/consents/{proxy+} POST"]) &&
+      keys(aws_api_gateway_method.human_options) == ["audit/consents/{proxy+}"] &&
+      length(aws_api_gateway_method.partner) == 1
+    )
+    error_message = "Without root_methods the module plans exactly what HU-W4.2-02 planned."
+  }
+}
+
+run "human_subroutes_reject_a_root_method_of_the_partner" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "audit/consents" = { methods = ["GET"], root_methods = ["POST"] } }
+  }
+
+  expect_failures = [aws_api_gateway_method.partner]
+}
+
+run "human_subroutes_reject_repeated_root_methods" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "audit/consents" = { methods = ["GET"], root_methods = ["GET", "GET"] } }
+  }
+
+  expect_failures = [var.human_subroutes]
+}
+
+run "human_subroutes_reject_unknown_root_methods" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "audit/consents" = { methods = ["GET"], root_methods = ["HEAD"] } }
+  }
+
+  expect_failures = [var.human_subroutes]
+}
+
+# --- Standard 429 per partner (HU-W3.1-01 CA-2) -----------------------------------------
+
+run "quota_exceeded_and_throttled_answer_the_standard_429" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for t in ["QUOTA_EXCEEDED", "THROTTLED"] : (
+        aws_api_gateway_gateway_response.rate_limited[t].status_code == "429" &&
+        jsondecode(aws_api_gateway_gateway_response.rate_limited[t].response_templates["application/json"]).error == "rate_limited"
+      )
+    ])
+    error_message = "A partner over its quota or its burst gets 429 with the standard Solventa body (HU-W3.1-01 CA-2)."
+  }
 }

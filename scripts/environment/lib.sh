@@ -13,7 +13,7 @@ STATE_BUCKET="solventa-tfstate-368083581678"
 IDENTITY_STATE_KEY="bootstrap/identity/terraform.tfstate"
 FRONT_REPO="nicolasjaramillocely99/MISW4501-202614-Grupo14-Solventa-FrontWeb"
 PRODUCTION_IMAGE_TAG_PARAMETER="/solventa/production-demo/image-tag"
-IMAGES=(origination claims partners audit notifications openfinance opendata kyc email payment-gateway)
+IMAGES=(origination claims partners audit notifications openfinance opendata kyc email payment-gateway policy-core)
 ECS_SERVICES=("${IMAGES[@]}")
 PERMANENT_USERS=(asegurado@example.com asesor@example.com operaciones@example.com socio@example.com)
 
@@ -254,7 +254,8 @@ platform_vars() { # services_enabled -> one argument per line
 web_vars() { # api_enabled -> one argument per line
   printf '%s\n' "-var=api_enabled=$1"
   if [[ "$ENVIRONMENT" == staging ]]; then
-    local branches='"develop"' b
+    # develop (on demand) and main (cd-portal.yml publishes staging on every merge to main).
+    local branches='"develop","main"' b
     for b in $(tr ',' ' ' <<<"${CD_EXTRA_BRANCHES:-}"); do branches="$branches,\"$b\""; done
     printf '%s\n' "-var=ttl=$TTL" "-var=cd_branches=[$branches]"
     [[ -n "${EXTRA_TAGS:-}" ]] && printf '%s\n' "-var=extra_tags=$EXTRA_TAGS"

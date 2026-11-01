@@ -22,3 +22,8 @@ output "repository_urls" {
   description = "ECR repository URL of each image, by image name."
   value       = module.ecr.repository_urls
 }
+
+output "staging_deploy_role_arn" {
+  description = "ARN of the role the deploy job of backend-cd assumes (environment staging)."
+  value       = aws_iam_role.deploy_staging.arn
+}

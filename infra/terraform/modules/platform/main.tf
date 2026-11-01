@@ -38,6 +38,11 @@ locals {
         "/v1/customers*", "/v1/policies*", "/v1/documents*",
         # Advisor inbox (HU-W1.1-02) and issuance exceptions of operations (HA-D02).
         "/v1/review-requests*", "/v1/issuance-exceptions*",
+        # Sign-up of the insured (HU-M1.1-01). The API Gateway publishes the
+        # route without a session, but the load balancer has to send it
+        # somewhere: without this rule it answers 404 and the mobile sign-up
+        # never reaches the service.
+        "/v1/registrations*",
       ]
       buckets   = ["documents"]
       publishes = ["origination"]
@@ -51,15 +56,18 @@ locals {
       consumes  = []
     }
     partners = {
-      priority  = 3
-      paths     = ["/v1/partners*"]
-      buckets   = []
-      publishes = []
+      priority = 3
+      paths    = ["/v1/partners*"]
+      buckets  = []
+      # HU-W3.1-01: the credential events of the partners go to audit.
+      publishes = ["partners"]
       consumes  = []
     }
     audit = {
-      priority  = 4
-      paths     = ["/v1/audit*"]
+      priority = 4
+      # /v1/audit* for the banks (API key) and /v1/consents* for the people
+      # (Cognito, HU-M1.3-01): one prefix per resource (decision D-3 a).
+      paths     = ["/v1/audit*", "/v1/consents*"]
       buckets   = []
       publishes = []
       consumes  = ["audit"]
@@ -86,6 +94,9 @@ locals {
     # is enabled (decision D-16 b), so it does not start without both.
     email             = 9030
     "payment-gateway" = 9040
+    # HU-W2.1-01: the policy core that claims reads inside the VPC. The browser
+    # never calls it, so it is not in lb_stubs.
+    "policy-core" = 9060
   }
 
   # Stubs that the browser also reaches through the API Gateway, so they sit
@@ -106,10 +117,11 @@ locals {
 
   # Events of docs/events/README.md: one topic per publishing domain and one
   # queue per consumer.
-  topics = toset(["origination", "claims"])
+  topics = toset(["origination", "claims", "partners"])
   queues = {
-    origination   = { topics = ["origination"] } # contractual document (HU-W1.3-03)
-    audit         = { topics = ["origination", "claims"] }
+    origination = { topics = ["origination"] } # contractual document (HU-W1.3-03)
+    # partners: audit record of the partner credentials (HU-W3.1-01).
+    audit         = { topics = ["origination", "claims", "partners"] }
     notifications = { topics = ["origination", "claims"] }
   }
 
@@ -261,10 +273,12 @@ module "apigateway" {
   cognito_user_pool_arns = [local.cognito.user_pool_arn]
   human_routes           = var.human_routes
   partner_routes         = var.partner_routes
+  human_subroutes        = var.human_subroutes
   public_routes          = var.public_routes
   binary_media_types     = ["*/*"]
   cors_allow_origin      = var.cors_allow_origin
   payment_tokenization   = {}
+  registration_route     = {}
 }
 
 # --- Data -----------------------------------------------------------------------------------
@@ -309,6 +323,11 @@ module "buckets" {
 
   bucket        = "${var.name}-${each.key}-${local.account_id}"
   force_destroy = var.ephemeral
+
+  # HU-W2.1-01: the web portal uploads the supports of a claim straight to the
+  # evidence bucket with signed URLs, so its origin must be allowed. The mobile
+  # app is not a browser and needs no CORS.
+  cors_allowed_origins = each.key == "evidence" && var.portal_base_url != null ? [var.portal_base_url] : []
 }
 
 # Key that signs the links of the contractual document (HU-W1.3-03): only
@@ -395,6 +414,35 @@ locals {
         actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"]
         resources = [for q in s.consumes : module.messaging.queue_arns[q]]
       }],
+      # The sign-up of the insured creates the account (HU-M1.1-01). Only
+      # origination, only on this user pool, and only the three actions the
+      # sign-up performs: it cannot read, list or delete users.
+      k != "origination" ? [] : [{
+        sid       = "CreateInsuredAccounts"
+        actions   = ["cognito-idp:AdminCreateUser", "cognito-idp:AdminSetUserPassword", "cognito-idp:AdminAddUserToGroup"]
+        resources = [local.cognito.user_pool_arn]
+      }],
+      # HU-W3.1-01: partners creates the usage plan and the API keys of each
+      # partner on the stage of this API and reads their daily usage. Only
+      # the API keys, the usage plans (and their keys and usage) and a read of
+      # the stage: it cannot touch the resources, methods or deployments.
+      # One resource per statement (/apikeys* covers /apikeys and its keys,
+      # /usageplans* the plans, their keys and their usage).
+      k != "partners" ? [] : [{
+        sid       = "ManageThePartnerApiKeys"
+        actions   = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:DELETE"]
+        resources = ["arn:aws:apigateway:${data.aws_region.current.region}::/apikeys*"]
+      }],
+      k != "partners" ? [] : [{
+        sid       = "ManageThePartnerUsagePlans"
+        actions   = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:DELETE"]
+        resources = ["arn:aws:apigateway:${data.aws_region.current.region}::/usageplans*"]
+      }],
+      k != "partners" ? [] : [{
+        sid       = "ReadTheStageOfThePartnerPlans"
+        actions   = ["apigateway:GET"]
+        resources = ["arn:aws:apigateway:${data.aws_region.current.region}::/restapis/${module.apigateway.rest_api_id}/stages/${module.apigateway.stage_name}"]
+      }],
     )
   }
 
@@ -410,9 +458,11 @@ locals {
       EMAIL_URL        = "http://email.${local.namespace}:${local.stubs.email}"
       # Setting this is what enables the premium charge (HA-D02).
       PAYMENT_GATEWAY_URL = "http://payment-gateway.${local.namespace}:${local.stubs["payment-gateway"]}"
-      AUTH_ISSUER         = local.cognito.issuer
-      AUTH_JWKS_URL       = local.cognito.jwks_url
-      AUTH_CLIENT_IDS     = join(",", values(local.cognito.client_ids))
+      # Setting this is what mounts the sign-up of the insured (HU-M1.1-01).
+      COGNITO_USER_POOL_ID = local.cognito.user_pool_id
+      AUTH_ISSUER          = local.cognito.issuer
+      AUTH_JWKS_URL        = local.cognito.jwks_url
+      AUTH_CLIENT_IDS      = join(",", values(local.cognito.client_ids))
       # Consent verification of HU-W1.2-01 (and of the personalized offer of
       # HU-W1.2-03): audit through Cloud Map, never through the API Gateway,
       # where GET /v1/audit/consent-verifications is not published. If audit
@@ -427,11 +477,75 @@ locals {
       DOCUMENTS_BUCKET          = module.buckets["documents"].bucket
       DOCUMENTS_PUBLIC_BASE_URL = coalesce(var.portal_base_url, module.apigateway.invoke_url)
       AWS_REGION                = data.aws_region.current.region
+      # Domain events (HU-M1.3-01): the outbox relay publishes CustomerLinked
+      # to the topic of origination; the audit queue is subscribed to it.
+      EVENTS_TOPIC_ARN = module.messaging.topic_arns["origination"]
       },
       # Links of the offer e-mails to the screens of the portal (T5, D-11);
       # without a portal the service keeps its own default.
       var.portal_base_url != null ? { OFFER_LINK_BASE_URL = var.portal_base_url } : {}
     )
+    # HU-M1.3-01: the insured reads their consents (GET /v1/consents*, behind
+    # the Cognito authorizer and verified again in the service) and audit
+    # consumes the CustomerLinked events of its queue to recognize the holder.
+    # With AUTH_* audit also mounts the evidence lookup of HU-W1.2-01, which
+    # the gateway still does not publish (T5, decision D-23 c).
+    # HU-M1.3-02: audit notifies each entity of a revocation through the
+    # Open Finance stub, reached by Cloud Map like origination does (the
+    # security group of the tasks already allows its port between tasks),
+    # within the 5 minutes of RN-02. No topic, queue nor rule is added
+    # (decision D-2 a).
+    audit = {
+      PORT                               = tostring(local.service_port)
+      AWS_REGION                         = data.aws_region.current.region
+      AUTH_ISSUER                        = local.cognito.issuer
+      AUTH_JWKS_URL                      = local.cognito.jwks_url
+      AUTH_CLIENT_IDS                    = join(",", values(local.cognito.client_ids))
+      PARTNER_DISPLAY_NAMES              = jsonencode(var.partner_display_names)
+      EVENTS_QUEUE_URL                   = module.messaging.queue_urls["audit"]
+      OPEN_FINANCE_URL                   = "http://openfinance.${local.namespace}:${local.stubs.openfinance}"
+      REVOCATION_NOTICE_DEADLINE_SECONDS = "300"
+    }
+
+    # HU-W3.1-01: the operations portal registers and approves the partners
+    # and rotates their credentials (human routes, Cognito). The credentials
+    # are API keys in a usage plan per partner on the stage of this API, so
+    # the gateway enforces each quota and answers 429 only to that partner;
+    # the credential events go to the partners topic, which audit consumes.
+    partners = {
+      PORT                          = tostring(local.service_port)
+      AWS_REGION                    = data.aws_region.current.region
+      ENVIRONMENT                   = var.environment
+      AUTH_ISSUER                   = local.cognito.issuer
+      AUTH_JWKS_URL                 = local.cognito.jwks_url
+      AUTH_CLIENT_IDS               = join(",", values(local.cognito.client_ids))
+      GATEWAY_REST_API_ID           = module.apigateway.rest_api_id
+      GATEWAY_STAGE_NAME            = module.apigateway.stage_name
+      CREDENTIAL_GRACE_PERIOD_HOURS = "24"
+      EVENTS_TOPIC_ARN              = module.messaging.topic_arns["partners"]
+    }
+
+    # Claims serves the filing of the mobile assistant (HU-M2.2-01), which is
+    # a human route: without the user pool there is no way to tell whose claim
+    # it is and the route is not mounted. The evidence of HU-M2.1-01 goes to
+    # the evidence bucket, and the service signs the upload with the task role.
+    claims = {
+      PORT            = tostring(local.service_port)
+      AUTH_ISSUER     = local.cognito.issuer
+      AUTH_JWKS_URL   = local.cognito.jwks_url
+      AUTH_CLIENT_IDS = join(",", values(local.cognito.client_ids))
+      EVIDENCE_BUCKET = module.buckets["evidence"].bucket
+      AWS_REGION      = data.aws_region.current.region
+      # Setting this is what mounts the web filing of HU-W2.1-01 (filing
+      # options, supports and web filings). Without it claims logs that those
+      # routes are not mounted and answers 404 to the portal.
+      POLICY_CORE_URL = "http://policy-core.${local.namespace}:${local.stubs["policy-core"]}"
+      # HU-W2.2-03: setting the gateway is what mounts the decision of a
+      # claim, whose approval pays the indemnity; the e-mail provider tells
+      # the insured a rejection and its reason.
+      PAYMENT_GATEWAY_URL = "http://payment-gateway.${local.namespace}:${local.stubs["payment-gateway"]}"
+      EMAIL_URL           = "http://email.${local.namespace}:${local.stubs.email}"
+    }
   }
 
   # Secrets Manager values of each service (the ECS secrets field): its

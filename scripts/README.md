@@ -4,7 +4,11 @@ Utilidades de desarrollo y CI. Cada script debe documentarse aquí al agregarse.
 
 | Script | Uso |
 |---|---|
-| [`ci/changed-images.sh`](ci/changed-images.sh) | `changed-images.sh <sha-base> <sha-head>`: imprime como arreglo JSON las imágenes que `backend-cd` debe construir. Reconstruye la imagen cuyo directorio cambió y **todas** si cambió algo compartido (`pkg/`, `go.work`, `.dockerignore`, el CD) o si no hay base utilizable. Requiere `git` y `jq` |
+| [`ci/changed-images.sh`](ci/changed-images.sh) | `changed-images.sh <sha-base> <sha-head>`: imprime como arreglo JSON las imágenes que se deben construir: la imagen cuyo directorio cambió y **todas** si cambió algo compartido (`pkg/`, `go.work`, `.dockerignore`, el CD) o si no hay base utilizable. `backend-cd` lo llama sin base: construye siempre las 10. Requiere `git` y `jq` |
+| [`ci/environment-status.sh`](ci/environment-status.sh) | `environment-status.sh <cluster>`: imprime `up` si el cluster existe y todos sus servicios tienen tareas, o `off: <motivo>`. `backend-cd` solo despliega con `up`. Requiere `aws` |
+| [`ci/staging-vars.sh`](ci/staging-vars.sh) | `staging-vars.sh <cluster>`: imprime como archivo de variables JSON de Terraform el `ttl` y los `extra_tags` con los que `up.sh` encendió `staging`, leídos de las etiquetas del cluster. Requiere `aws` y `jq` |
+| [`ci/check-deploy-plan.sh`](ci/check-deploy-plan.sh) | `terraform show -json tfplan \| check-deploy-plan.sh`: falla si el plan cambia algo que no sea una *task definition* o un servicio de ECS, o si un servicio pasa de 0 tareas a alguna. Requiere `jq` |
+| [`ci/verify-ecs-deploy.sh`](ci/verify-ecs-deploy.sh) | `verify-ecs-deploy.sh <cluster> <etiqueta>`: espera a que los servicios estén estables y falla si alguno no corre la etiqueta nueva (por ejemplo, tras un *rollback* del *circuit breaker*). Requiere `aws` |
 | [`environment/up.sh`](environment/up.sh) | `up.sh <staging\|production-demo> [--only <fases>] [--from <fase>] [--skip <fases>] [--skip-front] [--dry-run] [--yes] [--confirm-production-demo]`: enciende un ambiente completo en orden (plataforma, base de datos, portal web, servicios, front y humo). Ver «Encender y apagar un ambiente» |
 | [`environment/down.sh`](environment/down.sh) | `down.sh <staging\|production-demo> [--dry-run] [--yes] [--confirm-production-demo]`: apaga un ambiente; staging entero, production-demo entero salvo el sitio y el pool permanente |
 | [`environment/lib.sh`](environment/lib.sh) | Funciones comunes de `up.sh` y `down.sh` (argumentos, guardas, etiquetas de imagen, Terraform); no se ejecuta solo |
@@ -12,7 +16,7 @@ Utilidades de desarrollo y CI. Cada script debe documentarse aquí al agregarse.
 ## Encender y apagar un ambiente (T5)
 
 Un comando enciende y otro apaga cada ambiente (decisiones D-16 y D-18 de T5, ajustadas con #68 y #69). Viven aquí y no en
-`scripts/ci/` porque no son del CD: `backend-cd` solo se dispara con `scripts/ci/**`, así que cambiarlos no reconstruye imágenes.
+`scripts/ci/` porque no son del CD: cambiarlos no reconstruye imágenes (solo `scripts/ci/**` cuenta como cambio compartido).
 
 ### Fases de `up.sh`
 
@@ -22,7 +26,7 @@ Un comando enciende y otro apaga cada ambiente (decisiones D-16 y D-18 de T5, aj
 | `images` | Por cada una de las 10 imágenes, la etiqueta más reciente de 12 caracteres hexadecimales cuyo commit está en `origin/develop` (nunca `prueba-*`); se pasan las 10 en `image_tag_overrides`, así ninguna queda en «la más reciente» | La etiqueta del parámetro SSM **`/solventa/production-demo/image-tag`**, que escribe el CD de `main` (pipeline de Maycol) con el SHA del *merge* tras construir todas las imágenes. T5 solo lo lee. Valor inicial `none` (SSM no admite vacío): con `none`, vacío o sin parámetro se detiene con «falta correr el CD de main»; con algo que no sea un SHA de 12 caracteres hexadecimales, error. Nunca busca «la más reciente» |
 | `platform-base` | `staging/platform` con `services_enabled=false`, `ttl` y `extra_tags`; se detiene si el plan destruye algo | `production-demo/platform` con `image_tag` y `services_enabled=false` |
 | `db-init` | Corre el comando literal de la salida `db_init_command`, espera `tasks-stopped` y exige código 0 y «database <svc> ready» ×5 en el log | Igual |
-| `site` | `staging/web` (bucket, CloudFront, `config.json`, SSM) con `ttl`, `extra_tags` y `cd_branches = develop + CD_EXTRA_BRANCHES`; imprime la URL | `production-demo/web` |
+| `site` | `staging/web` (bucket, CloudFront, `config.json`, SSM) con `ttl`, `extra_tags` y `cd_branches = develop + main + CD_EXTRA_BRANCHES`; imprime la URL | `production-demo/web` |
 | `platform` | La plataforma con `services_enabled=true` (la URL del portal llega sola por SSM), espera los 10 servicios ECS estables y comprueba que originación ya enlaza al portal | Igual, con `image_tag` |
 | `front` | `gh workflow run cd-portal.yml --ref ${FRONT_REF:-develop} -f ambiente=staging` y `gh run watch`. Solo existe después de integrar el PR del front | Con `FRONT_DIR` (*checkout* limpio del front en `origin/main`): `npm ci`, *build* de producción y `scripts/publicar-portal.sh production-demo` con las credenciales de quien corre el comando. Sin `FRONT_DIR` o con `--skip-front`, se omite y avisa |
 | `smoke` | [`tests/e2e/portal-web/smoke.sh`](../tests/e2e/portal-web/README.md) (fases de `SMOKE_PHASES`, por defecto todas) | Igual |
@@ -58,7 +62,7 @@ Un comando enciende y otro apaga cada ambiente (decisiones D-16 y D-18 de T5, aj
 | `STATE_DIR` | Planes y etiquetas entre llamadas (por defecto `${TMPDIR:-/tmp}/solventa-environment-<ambiente>`, privado) |
 | `TTL` | staging: etiqueta `TTL` (`AAAA-MM-DD`, por defecto hoy; fíjela si la ventana cruza la medianoche) |
 | `EXTRA_TAGS` | staging: etiquetas extra, p. ej. `'{Owner="nicolas",Story="T5"}'` |
-| `CD_EXTRA_BRANCHES` | staging: ramas que se suman a `develop` en el rol del CD (lista con comas; solo durante una ventana) |
+| `CD_EXTRA_BRANCHES` | staging: ramas que se suman a `develop` y `main` en el rol del CD (lista con comas; solo durante una ventana) |
 | `FRONT_REF` | staging: rama del despacho de `cd-portal.yml` (por defecto `develop`) |
 | `FRONT_DIR` | production-demo: *checkout* limpio del front en `origin/main` para construir y publicar |
 | `SEED_USER_PASSWORD` | Contraseña de los usuarios permanentes para el humo (por defecto `SOLVENTA_IDENTITY_SEED_PASSWORD`); nunca se imprime |

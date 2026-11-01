@@ -21,13 +21,30 @@ const IDPrefix = "cns-"
 
 // Service grants, reads and verifies consents.
 type Service struct {
-	store ports.ConsentStore
-	clock ports.Clock
+	store  ports.ConsentStore
+	events ports.ConsentEventReader
+	clock  ports.Clock
+}
+
+// ServiceOption configures a Service.
+type ServiceOption func(*Service)
+
+// WithEvents makes Verify read the append-only events of the consent and
+// answer with its derived status (HU-M1.3-02): a revoked or partially
+// revoked consent is not active from the instant its revocation is recorded,
+// so origination stops querying the sources at once (criterion 3). Without
+// it, Verify only looks at the validity of the record (HU-W1.2-01).
+func WithEvents(events ports.ConsentEventReader) ServiceOption {
+	return func(s *Service) { s.events = events }
 }
 
 // NewService builds the service over a consent store and the clock.
-func NewService(store ports.ConsentStore, clock ports.Clock) *Service {
-	return &Service{store: store, clock: clock}
+func NewService(store ports.ConsentStore, clock ports.Clock, opts ...ServiceOption) *Service {
+	s := &Service{store: store, clock: clock}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // CurrentTerms returns the terms the customer must see before consenting
@@ -79,7 +96,9 @@ func (s *Service) Get(ctx context.Context, id string) (domain.Consent, error) {
 }
 
 // Verify tells whether the customer has an active consent now. A customer
-// without any consent is not an error: the answer is Active=false.
+// without any consent is not an error: the answer is Active=false. With
+// WithEvents, a revoked consent is not active and lists no source; the
+// contract of the answer does not change, so origination is not touched.
 func (s *Service) Verify(ctx context.Context, customerID string) (domain.Verification, error) {
 	c, err := s.store.LatestByCustomer(ctx, customerID)
 	if errors.Is(err, ports.ErrConsentNotFound) {
@@ -96,6 +115,16 @@ func (s *Service) Verify(ctx context.Context, customerID string) (domain.Verific
 		Sources:   c.ActiveSources(now),
 	}
 	v.Active = c.Active(now)
+	if s.events == nil || !v.Active {
+		return v, nil
+	}
+	byConsent, err := s.events.ListByConsents(ctx, []string{c.ID})
+	if err != nil {
+		return domain.Verification{}, fmt.Errorf("read the events of the consent: %w", err)
+	}
+	if status, _, _ := domain.DeriveStatus(c, byConsent[c.ID], now); !status.Current() {
+		v.Active, v.Sources = false, []string{}
+	}
 	return v, nil
 }
 

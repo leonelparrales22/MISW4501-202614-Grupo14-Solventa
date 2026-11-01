@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.10.0
+  version: 0.13.0
 paths:
   /health:
     get:
@@ -318,9 +318,9 @@ paths:
         opened it (GET /v1/offers/{offer_id}); an unclaimed one answers 403.
         A provisional offer that a normal one replaced is no longer
         acceptable: it answers 422 offer_expired, with expires_at the moment it
-        was replaced. Underwriting, the advisor inbox, issuance and the
-        acceptance storage are in-memory stand-ins for now (PENDING: the
-        underwriting engine and PostgreSQL).
+        was replaced. With DATABASE_URL the acceptance and the advisor inbox
+        are stored in PostgreSQL and survive a restart; underwriting still
+        applies provisional rules (PENDING: the underwriting engine).
       security:
         - cognitoJwt: []
       parameters:
@@ -631,6 +631,167 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "503":
           $ref: "#/components/responses/ChargeUnavailable"
+  /v1/issuances:
+    get:
+      summary: List the issuances with their status (HU-W1.3-04)
+      description: >
+        The monitoring screen of operations (O1): every acceptance on its way
+        to an active policy, the latest accepted first, with the status
+        accepted (underwriting pending), charging, active, notified (the insured
+        has their document and notice) or exception (the premium charge or the
+        contractual issuance failed). Filters by status, channel and date of
+        acceptance (both ends inclusive); a filter that matches nothing returns an
+        empty list, not an error. The counts always cover every issuance,
+        whatever the filter, with "today" starting at day_from. An exception that
+        waited longer than 30 minutes for an analyst comes flagged as unattended.
+        Only operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [accepted, charging, active, notified, exception]
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [web, mobile, advisor, renewal]
+        - name: from
+          in: query
+          required: false
+          description: Earliest acceptance, an RFC 3339 date-time.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Latest acceptance, an RFC 3339 date-time, not before from.
+          schema:
+            type: string
+            format: date-time
+        - name: day_from
+          in: query
+          required: false
+          description: Start of the day of the caller, for the counts of today (midnight UTC by default).
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: The issuances and the counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuanceList"
+        "400":
+          description: Invalid status, channel, date range or limit (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
+  /v1/issuances/{acceptance_id}/actions:
+    get:
+      summary: List the actions taken on an issuance (HU-W1.3-04)
+      description: >
+        What the operations analysts did on the issuance of an acceptance (each
+        retry, with its author, note and date), the latest first. An acceptance
+        with no actions returns an empty list. Only operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      responses:
+        "200":
+          description: The actions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuanceActionList"
+        "400":
+          description: Invalid path parameter (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
+  /v1/issuances/{acceptance_id}/retry:
+    post:
+      summary: Retry the failed step of an issuance (HU-W1.3-04)
+      description: >
+        An operations analyst retries what failed, from the registered
+        acceptance: the premium charge goes back to pending with the same
+        idempotency key and a new retry window (as POST
+        /v1/acceptances/{id}/charge/resume), or, if the charge is done and the
+        contractual issuance failed after every attempt, the document and the
+        notice are tried again. The note is required (1 to 500 characters) and
+        the action is recorded with the author and the date. It is idempotent:
+        of two retries at once one wins and the other gets 409, so nothing is
+        charged or notified twice. Only operations analysts.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AcceptanceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResumeChargeRequest"
+      responses:
+        "202":
+          description: Retried
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuanceRetry"
+        "400":
+          description: Invalid path parameter, body or note (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The acceptance has no premium charge or contractual issuance to retry (issuance_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Nothing of the issuance is failed (issuance_not_retryable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ChargeUnavailable"
   /v1/assisted-quotes:
     post:
       summary: Generate an assisted quote (HU-W1.1-01)
@@ -644,8 +805,9 @@ paths:
         with the cached profile or the base actuarial profile) and says so in
         mode, source and notice. Every invalid field is reported at once and no
         quote is generated. consent_active is affirmed by the caller while the
-        audit service does not expose the consent query. Customers and quotes
-        are in-memory for now (PENDING: PostgreSQL).
+        audit service does not expose the consent query. With DATABASE_URL the
+        customers and the quotes are stored in PostgreSQL; HU-W1.1-03
+        formalizes a valid quote.
       security:
         - cognitoJwt: []
       requestBody:
@@ -744,6 +906,207 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/assisted-quotes/{quote_id}/consent:
+    post:
+      summary: Send the customer the confirmation code of a purchase (HU-W1.1-03)
+      description: >
+        Only for the confirmation_code acceptance method. Before formalizing
+        with it, the advisor asks for the code with which the
+        customer consents to the purchase made on their behalf (CA-5). The
+        service generates a code of 6 digits, keeps only its hash and e-mails
+        it to the customer; the code never travels back to the advisor, who
+        only gets the masked address it went to. The code is valid for 10
+        minutes (and never past the validity of the quote). A new code replaces
+        the previous one, up to 3 codes per quote. Only a valid quote that was
+        not formalized yet gets a code.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/QuoteId"
+      responses:
+        "200":
+          description: The code was sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentCodeSent"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The quote does not exist (quote_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another advisor already formalized the quote (already_formalized)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The quote expired (quote_expired); generate a new one
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteExpired"
+        "429":
+          description: The quote used all its codes (too_many_codes)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The code cannot be delivered (code_delivery_unavailable) or the service is down (formalization_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/assisted-quotes/{quote_id}/formalization:
+    post:
+      summary: Formalize the purchase of a quote on behalf of the customer (HU-W1.1-03)
+      description: >
+        The advisor confirms the data and conditions of a valid quote and
+        formalizes the purchase recording how and when the customer accepted
+        (CA-1, CA-5): a recorded call or a remote signature, identified by its
+        reference, or the confirmation code the customer received.
+        Formalizing records the advisor, the date and the quote (CA-4),
+        stores the offer of the quote and registers the acceptance with the
+        advisor channel, which starts the issuance with no further manual step
+        (CA-3): the charge and the policy follow the same path as an
+        acceptance of the customer. An expired quote is not formalized and the
+        answer offers to generate a new one (CA-2). Two advisors formalizing
+        the same quote at once: one completes (201), the other gets 409 (CA-6).
+        Repeating it by the advisor who formalized returns the same record
+        (200) with no new acceptance. With the code method, a code can be tried
+        5 times per quote. Every invalid field is reported at once (422
+        validation_failed).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/QuoteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FormalizePurchaseRequest"
+      responses:
+        "200":
+          description: The quote was already formalized by the caller; the same record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Formalization"
+        "201":
+          description: Purchase formalized and issuance started
+          headers:
+            Location:
+              description: Path of the formalization.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Formalization"
+        "400":
+          description: The body is not valid JSON (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The quote does not exist (quote_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another advisor formalized the quote first (already_formalized)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >
+            A field is missing or invalid (validation_failed, with the error of
+            each field), the quote expired (quote_expired, with
+            suggest_new_quote), no code was requested (consent_code_required),
+            the code is not the one sent (invalid_confirmation_code) or it
+            expired (confirmation_code_expired).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/QuoteExpired"
+                  - $ref: "#/components/schemas/Error"
+        "429":
+          description: The quote used all its attempts (too_many_attempts)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The purchase could not be formalized (formalization_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: Read the formalization of a quote (HU-W1.1-03)
+      description: >
+        Returns who formalized the quote, when, with which consent method and
+        the acceptance that started the issuance (CA-4).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/QuoteId"
+      responses:
+        "200":
+          description: The formalization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Formalization"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not an advisor (forbidden)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The quote was not formalized (formalization_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The formalization could not be read (formalization_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/customers:
     get:
       summary: Recover a customer by document id (HU-W1.1-01)
@@ -794,6 +1157,166 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/policies:
+    get:
+      summary: List every policy of the insured (HU-W1.5-02, HU-M1.2-01)
+      description: >
+        Screen A1 of the portal and M4 "Mis pólizas" of the mobile app, which
+        keeps a copy of the list to show it without a connection. Returns the
+        policies the caller owns from two sources. First the ones origination
+        issued (source origination, line life), the ones ending last first: a
+        policy appears when the premium is charged and its coverage is
+        activated; renewal_window says when the renewal opens
+        (RENEWAL_WINDOW_DAYS before the coverage ends, 30 by default) and closes
+        (when the coverage ends), can_renew is true only inside the window and
+        while the period has no renewal yet, and renewal is the outcome of the
+        current period, once there is one. Then the auto, home, travel and life
+        policies of the policy core (source policy_core, POLICY_CORE_URL), with
+        the insured value of each coverage and the holder's profile as their
+        main insured; the core keeps no premiums (premium null) and origination
+        cannot renew them (renewal_window null, can_renew false, renewal null).
+        When the policy core does not answer, the list is still 200 with
+        partial true and only origination's policies: a client keeps the copy it
+        had instead of taking the missing ones as cancelled. Mounted when at
+        least one source is configured (the premium charge with PostgreSQL, or
+        the policy core). Only the insured.
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The policies of the caller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/{policy_id}/renewal:
+    get:
+      summary: Read the renewal conditions of a policy before accepting them (HU-W1.5-02)
+      description: >
+        Screen A4. Shows the current conditions next to the renewed ones, which
+        the engine re-prices with the current profile of the insured (age today,
+        same insured amount, the renewal term). requoted is false when the
+        engine could not price the renewal (no registered customer, no profile)
+        and the renewed conditions repeat the current ones. discount_rate is the
+        good-experience discount: 8 % when the policy had no claims in its last
+        year; origination has no claims data, so today it always applies
+        (simulated, replaceable). payment_method is the card or PSE bank the
+        policy was paid with, which the renewal charges, without its token; null
+        when none was registered. Outside the renewal window it answers 409
+        renewal_not_available: the option is not available (criterion 3). Only
+        the insured who owns the policy.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The current and the renewed conditions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenewalConditions"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          $ref: "#/components/responses/RenewalNotAvailable"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+    post:
+      summary: Accept the renewal of a policy and pay it (HU-W1.5-02)
+      description: >
+        Screen A4 "Renovar y pagar". Accepting is the consent to the conditions
+        shown: the service stores the renewal and the premium charge with the
+        channel renewal (listed by the monitor of HU-W1.3-04 like any issuance),
+        attaches the payment method the policy was paid with and starts the
+        charge with the same mechanism as every issuance (HA-D02). Once the charge
+        is confirmed a new policy is active, with the coverage starting when the
+        renewed one ends (no gap, no overlap), and its contractual document is
+        issued (HU-W1.3-03). It is idempotent per policy and period: accepting
+        again returns the same renewal and the same charge (200), so a double
+        click or two tabs are one renewal and one charge. If the payment is
+        declined, the charge is an issuance exception for operations and the
+        request is kept: the insured can hand over another payment method with
+        POST /v1/acceptances/{charge_id}/charge/payment-method until retry_until
+        (RENEWAL_PAYMENT_RETRY_HOURS, 72 by default); after it the renewal is not
+        renewed. Outside the window it answers 409 renewal_not_available. Only
+        the insured who owns the policy.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: "The period was already accepted: the same renewal"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Renewal"
+        "201":
+          description: The renewal was accepted and its charge started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Renewal"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          $ref: "#/components/responses/RenewalNotAvailable"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/{policy_id}/renewal/status:
+    get:
+      summary: Read the renewal of the current period of a policy (HU-W1.5-02)
+      description: >
+        Screen A4b. Returns the renewal with its charge, and settles it first:
+        accepted while the premium is being charged or the payment can still be
+        fixed, renewed once the charge is confirmed (new_policy_id), not_renewed
+        when the payment was not through at retry_until (reason payment_failed).
+        The client polls it after accepting, as it polls the charge. Only the
+        insured who owns the policy.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The renewal in its current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Renewal"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The policy does not exist (policy_not_found) or has no renewal for its current period (renewal_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
   /v1/policies/{policy_id}/issuance-status:
     get:
       summary: Read the state of the contractual issuance of a policy (HU-W1.3-03)
@@ -1065,6 +1588,14 @@ components:
       bearerFormat: JWT
       description: ID token of the Cognito user pool (HA-S01).
   parameters:
+    QuoteId:
+      name: quote_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
     PolicyID:
       name: policy_id
       in: path
@@ -1135,6 +1666,27 @@ components:
             $ref: "#/components/schemas/Error"
     ChargeUnavailable:
       description: The premium charge could not be read (charge_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PolicyNotFound:
+      description: The policy does not exist (policy_not_found)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RenewalNotAvailable:
+      description: >
+        The policy is not inside its renewal window, or the window closed with no
+        renewal (renewal_not_available); or the period was already accepted or
+        renewed and the conditions are no longer offered (renewal_closed)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RenewalUnavailable:
+      description: The renewal could not be read or processed (renewal_unavailable); retry later
       content:
         application/json:
           schema:
@@ -1330,6 +1882,102 @@ components:
           enum: [death, total_permanent_disability]
         insured_amount:
           type: number
+    ConsentCodeSent:
+      type: object
+      required: [quote_id, sent_to, expires_at]
+      properties:
+        quote_id:
+          type: string
+        sent_to:
+          type: string
+          description: Masked e-mail address of the customer, e.g. la***@example.com.
+        expires_at:
+          type: string
+          format: date-time
+          description: Until when the code can be used.
+    FormalizePurchaseRequest:
+      type: object
+      required: [acceptance]
+      properties:
+        acceptance:
+          type: object
+          required: [method, accepted_at]
+          properties:
+            method:
+              type: string
+              enum: [recorded_call, remote_signature, confirmation_code]
+              description: How the customer accepted the offer.
+            accepted_at:
+              type: string
+              format: date-time
+              description: >
+                When the customer accepted. Not in the future and not before
+                the minute the quote was generated.
+            reference:
+              type: string
+              minLength: 1
+              maxLength: 64
+              pattern: "^[A-Za-z0-9._:/#-]+$"
+              description: >
+                Reference of the recording or the signature. Required unless
+                the method is confirmation_code.
+        confirmation_code:
+          type: string
+          pattern: "^[0-9]{6}$"
+          description: The code the customer received by e-mail. Required with the confirmation_code method.
+    QuoteExpired:
+      type: object
+      required: [error, message, expires_at, suggest_new_quote]
+      properties:
+        error:
+          type: string
+          enum: [quote_expired]
+        message:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        suggest_new_quote:
+          type: boolean
+          description: Always true; the advisor must generate a new quote (CA-2).
+    Formalization:
+      type: object
+      required: [formalization_id, quote_id, offer_id, acceptance_id, customer_id, advisor_id, advisor_email, consent_method, accepted_at, consent_reference, formalized_at, status]
+      properties:
+        formalization_id:
+          type: string
+        quote_id:
+          type: string
+          description: The quote the purchase comes from (CA-4).
+        offer_id:
+          type: string
+        acceptance_id:
+          type: string
+          description: The acceptance, with channel advisor, that started the issuance.
+        customer_id:
+          type: string
+        advisor_id:
+          type: string
+          description: The sub claim of the advisor who formalized (CA-4).
+        advisor_email:
+          type: string
+          description: E-mail of the advisor; the token carries no name.
+        consent_method:
+          type: string
+          enum: [recorded_call, remote_signature, confirmation_code]
+        accepted_at:
+          type: string
+          format: date-time
+          description: When the customer accepted the offer (CA-5).
+        consent_reference:
+          type: string
+          description: Reference of the recording or the signature; empty with the confirmation_code method.
+        formalized_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          description: Status of the acceptance (registered, issuance_pending, in_review).
     AssistedQuote:
       type: object
       required: [quote_id, customer_id, customer, insured_amount, term_months, premium, currency, coverages, rating_version,
@@ -1597,7 +2245,7 @@ components:
           description: Owner of the offer (the sub claim of their token).
         channel:
           type: string
-          enum: [web, mobile]
+          enum: [web, mobile, advisor, renewal]
         accepted_at:
           type: string
           format: date-time
@@ -1786,7 +2434,7 @@ components:
           description: Time from the start of the consultation until the source ended or was canceled.
     PaymentMethod:
       type: object
-      required: [method, brand, last4, installments, bank_code, captured_at]
+      required: [method, brand, last4, installments, bank_code, payer_type, captured_at]
       description: >
         The payment method of a charge. The card number never reaches this
         service: the browser tokenises it against the gateway and only the
@@ -1814,6 +2462,13 @@ components:
           type: string
           nullable: true
           description: Bank chosen for pse; null for card.
+        payer_type:
+          type: string
+          nullable: true
+          enum: [natural, legal, null]
+          description: >
+            Who pays, which pse asks the bank before it can take the debit:
+            required with pse, null for card.
         captured_at:
           type: string
           format: date-time
@@ -1853,7 +2508,8 @@ components:
       type: object
       required: [acceptance_id, offer_id, customer_id, accepted_at, status, idempotency_key, amount, currency, attempts,
         last_attempt_at, last_failure_at, next_attempt_at, retry_window, failure_reason, confirmed_at, policy_id,
-        coverage_activated_at, activation_published_at, resume_count, updated_at, payment_method, payment_attempt]
+        coverage_activated_at, activation_published_at, resume_count, updated_at, payment_method, payment_attempt,
+        decline_code, provider_reference, offer_expires_at]
       properties:
         acceptance_id:
           type: string
@@ -1917,6 +2573,32 @@ components:
             still failing; payment_rejected: the gateway declined the charge;
             payment_method_missing: the window ended without the customer
             handing over a payment method, so nothing was ever charged.
+        decline_code:
+          type: string
+          nullable: true
+          description: >
+            The issuer's code as the gateway reports it (51 means insufficient
+            funds); null when there was no explicit decline. The code travels
+            and not the sentence: the wording of screen E4c belongs to the
+            client, so it follows its language instead of being frozen here.
+            It is cleared when another payment method is handed over, because
+            it belonged to the previous one.
+          example: "51"
+        provider_reference:
+          type: string
+          nullable: true
+          description: >
+            The gateway's id for this charge, confirmed or declined: what the
+            customer quotes to their issuer. Cleared together with
+            decline_code when another payment method is handed over.
+        offer_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            How long the offer behind the acceptance is worth. It is
+            photographed when the charge is created, so E4c can say what the
+            customer still has time to do.
         payment_method:
           allOf:
             - $ref: "#/components/schemas/PaymentMethod"
@@ -2010,6 +2692,155 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/IssuanceException"
+    Issuance:
+      type: object
+      description: An accepted offer on its way to an active policy (HU-W1.3-04).
+      required: [acceptance_id, offer_id, customer_id, customer_name, channel, status, step, accepted_at, updated_at, amount,
+        currency, attempts, policy_id, reason, failed_at, notified_at, unattended, resume_count, last_resumed_at, last_resumed_by]
+      properties:
+        acceptance_id:
+          type: string
+        offer_id:
+          type: string
+        customer_id:
+          type: string
+        customer_name:
+          type: string
+          nullable: true
+          description: The holder, when origination knows them.
+        channel:
+          type: string
+          enum: [web, mobile, advisor, renewal]
+        status:
+          type: string
+          enum: [accepted, charging, active, notified, exception]
+        step:
+          type: string
+          enum: [underwriting, awaiting_payment_method, premium_charge, contract_document, notification, completed]
+          description: Where the issuance is, or failed when the status is exception.
+        accepted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        amount:
+          type: number
+          nullable: true
+          description: The premium; null while the status is accepted.
+        currency:
+          type: string
+          nullable: true
+        attempts:
+          type: integer
+          minimum: 0
+          description: Of the premium charge, or of the contractual issuance once the charge is confirmed.
+        policy_id:
+          type: string
+          nullable: true
+          description: Set once the charge was confirmed.
+        reason:
+          type: string
+          enum: [retry_window_expired, payment_rejected, payment_method_missing, document_generation_failed, notification_failed]
+          nullable: true
+          description: Only for an exception.
+        failed_at:
+          type: string
+          format: date-time
+          nullable: true
+        notified_at:
+          type: string
+          format: date-time
+          nullable: true
+        unattended:
+          type: boolean
+          description: An exception that waited 30 minutes or more for an analyst.
+        resume_count:
+          type: integer
+          minimum: 0
+        last_resumed_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_resumed_by:
+          type: string
+          nullable: true
+    IssuanceCounts:
+      type: object
+      description: Every issuance, whatever the filter of the list.
+      required: [accepted, charging, charging_with_retries, active_today, notified_today, exceptions, unattended]
+      properties:
+        accepted:
+          type: integer
+          minimum: 0
+        charging:
+          type: integer
+          minimum: 0
+        charging_with_retries:
+          type: integer
+          minimum: 0
+          description: Charging issuances whose gateway already failed at least once.
+        active_today:
+          type: integer
+          minimum: 0
+          description: Policies activated since day_from.
+        notified_today:
+          type: integer
+          minimum: 0
+          description: Policies whose insured was notified since day_from.
+        exceptions:
+          type: integer
+          minimum: 0
+        unattended:
+          type: integer
+          minimum: 0
+          description: Exceptions that waited 30 minutes or more.
+    IssuanceList:
+      type: object
+      required: [items, counts]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Issuance"
+        counts:
+          $ref: "#/components/schemas/IssuanceCounts"
+    IssuanceAction:
+      type: object
+      required: [id, action, actor, note, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        action:
+          type: string
+          enum: [resume, retry]
+          description: resume retried the premium charge; retry the contractual issuance.
+        actor:
+          type: string
+          description: The subject of the token of the analyst.
+        note:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    IssuanceActionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssuanceAction"
+    IssuanceRetry:
+      type: object
+      required: [acceptance_id, action]
+      properties:
+        acceptance_id:
+          type: string
+        action:
+          type: string
+          enum: [resume, retry]
     ReviewRequestList:
       type: object
       required: [items, counts]
@@ -2192,6 +3023,257 @@ components:
           type: string
           minLength: 1
           maxLength: 500
+    PolicySummary:
+      type: object
+      required: [policy_id, holder_name, premium, currency, insured_amount, coverages, coverage_start, coverage_end, renewal_of]
+      properties:
+        policy_id:
+          type: string
+        holder_name:
+          type: string
+        premium:
+          type: number
+        currency:
+          type: string
+        insured_amount:
+          type: number
+        coverages:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/Coverage"
+        coverage_start:
+          type: string
+          format: date-time
+        coverage_end:
+          type: string
+          format: date-time
+        renewal_of:
+          type: string
+          nullable: true
+          description: The policy this one renews; null for new business.
+    RenewalWindow:
+      type: object
+      required: [opens_at, closes_at]
+      properties:
+        opens_at:
+          type: string
+          format: date-time
+        closes_at:
+          type: string
+          format: date-time
+          description: When the coverage ends.
+    RenewalSummary:
+      type: object
+      required: [renewal_id, status, reason, new_policy_id, charge_id, accepted_at, retry_until, closed_at]
+      properties:
+        renewal_id:
+          type: string
+          description: '"ren-" + policy id + the day the coverage ends (yyyymmdd): one per policy and period.'
+        status:
+          type: string
+          enum: [accepted, renewed, not_renewed]
+          description: >
+            accepted: the insured accepted and the premium is being charged or
+            the payment can still be fixed; renewed: charged, the new policy is
+            active; not_renewed: the window closed with no answer or the payment
+            was not through in time.
+        reason:
+          type: string
+          nullable: true
+          enum: [no_response, payment_failed, null]
+        new_policy_id:
+          type: string
+          nullable: true
+        charge_id:
+          type: string
+          nullable: true
+          description: >
+            Id of the premium charge, usable as {acceptance_id} in
+            /v1/acceptances/{acceptance_id}/charge and in its payment-method route.
+        accepted_at:
+          type: string
+          format: date-time
+          nullable: true
+        retry_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: Deadline to get the payment through.
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+    WalletCoverage:
+      type: object
+      required: [code, insured_amount]
+      properties:
+        code:
+          type: string
+          description: >
+            What the coverage pays for. Origination's are death and
+            total_permanent_disability; the policy core's are its incidents
+            (collision, theft, third_party_damage, glass, other, water_damage,
+            flight_delay, death).
+        insured_amount:
+          type: number
+          description: The insured value of the coverage, in units of the policy currency.
+    PolicyHolder:
+      type: object
+      required: [full_name, document_type, document_id]
+      description: The main insured of the policy, without their contact.
+      properties:
+        full_name:
+          type: string
+        document_type:
+          type: string
+          nullable: true
+          description: CC, CE…; null when the source does not keep it.
+        document_id:
+          type: string
+          nullable: true
+    PolicyListItem:
+      type: object
+      required: [policy_id, source, line, product, insured_object, status, holder_name, holder, premium, currency,
+        insured_amount, coverages, coverage_start, coverage_end, renewal_of, renewal_window, can_renew, renewal]
+      properties:
+        policy_id:
+          type: string
+        source:
+          type: string
+          enum: [origination, policy_core]
+          description: Who keeps the policy. Only origination's can be renewed here.
+        line:
+          type: string
+          enum: [life, auto, home, travel]
+          description: The kind of insurance. A client names it in its own language.
+        product:
+          type: string
+          nullable: true
+          description: The product name the policy core gives (Autos, Hogar…); null for origination's.
+        insured_object:
+          type: string
+          nullable: true
+          description: What is insured (a plate, an address, a trip); null when the source does not say.
+        status:
+          type: string
+          enum: [active, expired, cancelled]
+          description: Origination's are active until their coverage ends and expired afterwards.
+        holder_name:
+          type: string
+          description: The main insured's name. Kept from 0.12.0; holder carries it too.
+        holder:
+          $ref: "#/components/schemas/PolicyHolder"
+        premium:
+          type: number
+          nullable: true
+          description: The monthly premium; null for a policy of the core, which keeps no premiums.
+        currency:
+          type: string
+        insured_amount:
+          type: number
+          description: The insured value of the policy; for the core's, the largest of its coverages.
+        coverages:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/WalletCoverage"
+        coverage_start:
+          type: string
+          format: date-time
+        coverage_end:
+          type: string
+          format: date-time
+        renewal_of:
+          type: string
+          nullable: true
+          description: The policy this one renews; null for new business and for the core's.
+        renewal_window:
+          nullable: true
+          description: Null for a policy of the core.
+          allOf:
+            - $ref: "#/components/schemas/RenewalWindow"
+        can_renew:
+          type: boolean
+        renewal:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/RenewalSummary"
+    PolicyList:
+      type: object
+      required: [items, partial]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/PolicyListItem"
+        partial:
+          type: boolean
+          description: True when the policy core did not answer and its policies are missing from items.
+    RenewalTerms:
+      type: object
+      required: [premium, currency, insured_amount, coverages, coverage_start, coverage_end]
+      properties:
+        premium:
+          type: number
+        currency:
+          type: string
+        insured_amount:
+          type: number
+        coverages:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/Coverage"
+        coverage_start:
+          type: string
+          format: date-time
+        coverage_end:
+          type: string
+          format: date-time
+    RenewalConditions:
+      type: object
+      required: [policy, current, renewal, renewal_window, requoted, discount_rate, payment_method]
+      properties:
+        policy:
+          $ref: "#/components/schemas/PolicySummary"
+        current:
+          $ref: "#/components/schemas/RenewalTerms"
+        renewal:
+          $ref: "#/components/schemas/RenewalTerms"
+        renewal_window:
+          $ref: "#/components/schemas/RenewalWindow"
+        requoted:
+          type: boolean
+          description: False when the engine could not price the renewal and the renewed conditions repeat the current ones.
+        discount_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Good-experience discount applied to the renewed premium (0.08), 0 when none.
+        payment_method:
+          nullable: true
+          description: The method the renewal charges, without its token; null when the policy has none registered.
+          allOf:
+            - $ref: "#/components/schemas/PaymentMethod"
+    Renewal:
+      type: object
+      required: [renewal, terms, discount_rate, charge]
+      properties:
+        renewal:
+          $ref: "#/components/schemas/RenewalSummary"
+        terms:
+          $ref: "#/components/schemas/RenewalTerms"
+        discount_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+        charge:
+          nullable: true
+          description: The premium charge of the renewal, as GET /v1/acceptances/{charge_id}/charge returns it.
+          allOf:
+            - $ref: "#/components/schemas/Charge"
     Error:
       type: object
       required: [error, message]
@@ -2214,6 +3296,8 @@ components:
             - charge_not_found
             - charge_not_resumable
             - charge_unavailable
+            - issuance_not_found
+            - issuance_not_retryable
             - observations_required
             - premium_adjustment_invalid
             - review_request_not_found
@@ -2221,5 +3305,11 @@ components:
             - decision_not_registered
             - decision_continuation_pending
             - review_unavailable
+            - policy_not_found
+            - renewal_not_found
+            - renewal_not_available
+            - renewal_closed
+            - renewal_unavailable
+            - charge_not_payable
         message:
           type: string

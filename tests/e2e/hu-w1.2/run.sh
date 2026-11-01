@@ -21,6 +21,10 @@
 #     12.            origination restarts: the offers and their owners persist
 #     13.            security: no score/rules/document, consent_mismatch, no consent = no source
 #
+#   HU-W4.1-01 (audit record of the underwriting decisions)
+#     14. CA-1..4    every offer priced is recorded in audit (rules in order, sources, engine version,
+#                    accepted/deferred), read by operations only, unknown id = generic 404, append-only
+#
 # "No source is queried" is checked on Toxiproxy: every call to a stub opens a
 # connection through its proxy, and the proxy logs each one ("Accepted client"),
 # so zero new lines means zero requests reached the stubs. (The reverse is a
@@ -310,7 +314,8 @@ call GET "$ORIGINATION/v1/offers/$OFFER1" "" "$ADVISOR_TOKEN"
 check "an advisor reads it without claiming: 200" 200 "$STATUS"
 OWNER="$(psql_orig "SELECT owner_id FROM offer_owner WHERE offer_id = '$OFFER1'")"
 check "the owner was persisted" 1 "$([[ -n "$OWNER" ]] && echo 1 || echo 0)"
-check "the row keeps the profile copy" standard "$(psql_orig "SELECT profile->>'category' FROM offer WHERE offer_id = '$OFFER1'")"
+# The category depends on the hash the Open Finance stub makes of the customer id, which changes with each run.
+check "the row keeps the profile copy (a known category)" true "$(psql_orig "SELECT profile->>'category' IN ('preferred', 'standard', 'high_risk') FROM offer WHERE offer_id = '$OFFER1'" | sed 's/^t$/true/; s/^f$/false/')"
 check "the row keeps the rules" 5 "$(psql_orig "SELECT jsonb_array_length(rules) FROM offer WHERE offer_id = '$OFFER1'")"
 check "the row keeps the engine version" v1 "$(psql_orig "SELECT rater_version FROM offer WHERE offer_id = '$OFFER1'")"
 for stmt in "UPDATE offer SET premium_minor = 1" "DELETE FROM offer" "TRUNCATE offer, offer_owner"; do
@@ -461,6 +466,51 @@ check "consent_unverifiable" consent_unverifiable "$(field .error)"
 check "no request reached the stubs" "$BEFORE" "$(source_connections)"
 $COMPOSE start audit >/dev/null
 wait_healthy "$AUDIT"
+
+echo "== [$(stamp)] 14. HU-W4.1-01: every offer priced is in the audit record, read-only"
+call GET "$AUDIT/v1/audit/decisions/$OFFER1" "" "$OPERATIONS_TOKEN"
+check "operations reads the audit record of a normal offer (200)" 200 "$STATUS"
+check "the record is the offer" "$OFFER1" "$(field .offer_id)"
+check "a normal offer is an accepted risk" accepted "$(field .decision)"
+check "the engine version is recorded" v1 "$(field .rater_version)"
+check "the request time is recorded in UTC" true "$([[ "$(field .requested_at)" == *Z ]] && echo true || echo false)"
+check "the consent the sources were consulted under is recorded" true "$([[ "$(field .consent_id)" == cns-* ]] && echo true || echo false)"
+check "Open Finance: the value it returned (a score)" number "$(field '.sources[] | select(.source == "open_finance") | .score | type')"
+check "Open Finance: the category it returned" true "$([[ "$(field '.sources[] | select(.source == "open_finance") | .category')" != "" ]] && echo true || echo false)"
+check "every source says when it was asked" 0 "$(field '[.sources[] | select(.consulted_at == null)] | length')"
+check "the profile category is the one the offer kept" "$(psql_orig "SELECT profile->>'category' FROM offer WHERE offer_id = '$OFFER1'")" "$(field .profile.category)"
+check "the five rules are recorded in execution order" "1,2,3,4,5" "$(field '[.rules[].order] | join(",")')"
+check "starting with the base rate" base_monthly_rate "$(field '.rules[0].code')"
+check "the sources consulted are recorded" "kyc,open_data,open_finance" "$(field '[.sources[].source] | sort | join(",")')"
+check "the premium is the one of the offer (minor units)" "$(psql_orig "SELECT premium_minor FROM offer WHERE offer_id = '$OFFER1'")" "$(field '(.premium * 100) | round')"
+call GET "$AUDIT/v1/audit/decisions/$BASE_OFFER" "" "$OPERATIONS_TOKEN"
+check "a provisional offer is deferred" deferred "$(field .decision)"
+check "with its reason" base_actuarial_profile "$(field .decision_reason)"
+call GET "$AUDIT/v1/audit/decisions/$CACHED_OFFER" "" "$OPERATIONS_TOKEN"
+check "the cached-profile offer is deferred too" cached_profile "$(field .decision_reason)"
+call GET "$AUDIT/v1/audit/decisions/$NEW" "" "$OPERATIONS_TOKEN"
+check "the offer that replaced a provisional one is recorded (accepted)" accepted "$(field .decision)"
+call GET "$AUDIT/v1/audit/decisions/$RENEWAL" "" "$OPERATIONS_TOKEN"
+check "the renewal is recorded" 200 "$STATUS"
+call GET "$AUDIT/v1/audit/decisions/app-$C1" "" "$OPERATIONS_TOKEN"
+check "the record is also found by the partner's application number (200)" 200 "$STATUS"
+check "and it is the most recent offer of that application" "$(psql_orig "SELECT offer_id FROM offer WHERE application_id = 'app-$C1' ORDER BY created_at DESC, offer_id LIMIT 1")" "$(field .offer_id)"
+call GET "$AUDIT/v1/audit/decisions/off-does-not-exist" "" "$OPERATIONS_TOKEN"
+check "an unknown identifier: 404" 404 "$STATUS"
+check "with a generic error that exposes nothing internal" decision_not_found "$(field .error)"
+call GET "$AUDIT/v1/audit/decisions/$OFFER1"
+check "without token: 401" 401 "$STATUS"
+call GET "$AUDIT/v1/audit/decisions/$OFFER1" "" "$INSURED_TOKEN"
+check "as insured: 403" 403 "$STATUS"
+call GET "$AUDIT/v1/audit/decisions/$OFFER1" "" "$ADVISOR_TOKEN"
+check "as advisor: 403 (only operations)" 403 "$STATUS"
+call PUT "$AUDIT/v1/audit/decisions/$OFFER1" '{"premium":1}' "$OPERATIONS_TOKEN"
+check "the record cannot be changed through the API (405)" 405 "$STATUS"
+for stmt in "UPDATE underwriting_decision SET premium = 1" "DELETE FROM underwriting_decision" "TRUNCATE underwriting_decision"; do
+  OUT="$(psql_audit "$stmt")"
+  check "'$stmt' fails in the database" true "$([[ "$OUT" == *"append-only"* ]] && echo true || echo false)"
+done
+check "one record per offer (recording again changes nothing)" 1 "$(psql_audit "SELECT count(*) FROM underwriting_decision WHERE offer_id = '$OFFER1'" | grep -Eo '^ *[0-9]+$' | tr -d ' ')"
 
 if [[ "$FAILS" -gt 0 ]]; then
   echo "== HU-W1.2 end-to-end scenarios FAILED: $FAILS check(s) (run $RUN_ID)." >&2

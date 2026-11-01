@@ -62,7 +62,11 @@ func storedOffer(id string, mode domain.OfferMode, created time.Time) domain.Per
 		Mode: mode, ProfileSource: domain.SourceExternal,
 		Profile: domain.ProfileSnapshot{
 			Score: 0.4, Category: "standard", CalculatedAt: created.Add(-time.Minute), Partial: true,
-			Sources: []domain.SourceOutcome{{Source: "open_finance", Status: domain.SourceStatusOK, Latency: 80 * time.Millisecond}},
+			Sources: []domain.SourceOutcome{
+				{Source: "open_finance", Status: domain.SourceStatusOK, Latency: 80 * time.Millisecond,
+					ConsultedAt: time.Date(2026, 10, 17, 12, 0, 0, 120_000_000, time.UTC), Value: &domain.SourceValue{Score: 0.82, Category: "preferred"}},
+				{Source: "kyc", Status: domain.SourceStatusTimeout, Latency: 700 * time.Millisecond},
+			},
 		},
 		Rules:        []domain.AppliedRule{{Code: "base_monthly_rate", Value: 0.0003}, {Code: "rounding_step", Value: 100}},
 		RaterVersion: "v1", CreatedAt: created, ExpiresAt: created.Add(domain.OfferValidity),

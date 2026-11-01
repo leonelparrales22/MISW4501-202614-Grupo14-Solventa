@@ -119,9 +119,46 @@ var ErrCustomerNotFound = errors.New("customer not found")
 type CustomerRepository interface {
 	// GetByDocument returns ErrCustomerNotFound when the document is unknown.
 	GetByDocument(ctx context.Context, documentID string) (domain.Customer, error)
+	// GetByEmail returns ErrCustomerNotFound when the email is unknown. The
+	// comparison ignores case: the email is the username in the user pool.
+	GetByEmail(ctx context.Context, email string) (domain.Customer, error)
 	// Save creates the customer, or updates the one with the same document id
 	// keeping its ID, and returns the stored customer.
 	Save(ctx context.Context, c domain.Customer) (domain.Customer, error)
+	// Link saves the customer with its account subject, as Save does, and
+	// writes the CustomerLinked event to the outbox in the same transaction
+	// (HU-M1.3-01): the subject is never stored without its event, nor the
+	// event without the subject. It is idempotent by the event id: linking
+	// the same customer again writes no second event.
+	Link(ctx context.Context, c domain.Customer, e domain.CustomerLinked) (domain.Customer, error)
+}
+
+// ErrAccountExists is returned by an IdentityProvider when the email already
+// has an account in the user pool.
+var ErrAccountExists = errors.New("the email already has an account")
+
+// IdentityProvider creates the accounts the insured signs in with
+// (HU-M1.1-01). The user pool only accepts accounts created from the server,
+// so this service decides who gets one.
+type IdentityProvider interface {
+	// CreateAccount creates the account with the password the person chose,
+	// leaves it usable right away and returns its subject. It returns
+	// ErrAccountExists when the email is taken.
+	CreateAccount(ctx context.Context, email, password, fullName string) (subject string, err error)
+}
+
+// ErrIdentityCheckUnavailable is returned by an IdentityVerifier whose provider
+// gave no usable answer: timeout, connection error, unexpected status or open
+// circuit. It is not a rejection, and retrying is safe.
+var ErrIdentityCheckUnavailable = errors.New("the identity check is unavailable")
+
+// IdentityVerifier is the identity provider of the sign-up (HU-M1.1-01): it
+// reads the document so the person confirms the data printed on it, and it
+// verifies the person before the account exists. A rejection is an answer
+// (a verdict that is not Approved), not an error.
+type IdentityVerifier interface {
+	ReadDocument(ctx context.Context, front, back domain.IdentityDocument) (domain.DocumentData, error)
+	Verify(ctx context.Context, check domain.IdentityCheck) (domain.IdentityVerdict, error)
 }
 
 // QuoteRepository persists the assisted quotes (HU-W1.1-01).

@@ -114,6 +114,9 @@ type payGateway struct {
 	charged  map[string]int
 	keys     []string
 	srv      *httptest.Server
+	// declineFirst declines the first payment attempt of every charge and
+	// takes the retry (the key of the second payment ends in -2).
+	declineFirst bool
 }
 
 func newPayGateway(t *testing.T) *payGateway {
@@ -142,7 +145,7 @@ func (g *payGateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	g.requests[key]++
 	g.keys = append(g.keys, key)
-	declined := strings.Contains(in.Reference, "declined")
+	declined := strings.Contains(in.Reference, "declined") || (g.declineFirst && !strings.HasSuffix(key, "-2"))
 	if !declined && g.charged[key] == 0 {
 		g.charged[key]++ // processed before answering
 	}
@@ -163,6 +166,12 @@ func (g *payGateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusCreated)
 	_, _ = fmt.Fprintf(w, `{"charge_id":"ch-%s","status":"succeeded"}`, key)
+}
+
+func (g *payGateway) setDeclineFirst(on bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.declineFirst = on
 }
 
 func (g *payGateway) set(m gatewayMode) {
@@ -222,6 +231,9 @@ type chargeEnvOptions struct {
 	window        time.Duration
 	consumerFails int
 	workers       int
+	// contractAttempts bounds the notification attempts before the contractual
+	// issuance fails (the service default is 12); 0 keeps the default.
+	contractAttempts int
 	// personalized are personalized offers (HU-W1.2-03) stored and claimed by
 	// their owner before the test, next to the demo offers.
 	personalized []ownedOffer
@@ -240,7 +252,9 @@ type chargeEnv struct {
 	acc       *acceptanceEnv
 	contract  *contractEnvIT
 	consumer  *flakyConsumer
-	contracts *memory.ContractStore
+	contracts *postgres.ContractStore
+	// service is the contractual issuance, to wake its worker.
+	service *issuance.ContractService
 }
 
 func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
@@ -256,14 +270,15 @@ func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
 	require.NoError(t, err)
 	signer, err := links.NewSigner("0123456789abcdef0123456789abcdef")
 	require.NoError(t, err)
-	repo, audit := memory.NewContractStore(), memory.NewIssuanceAuditLog()
+	repo, audit := postgres.NewContractStore(db), memory.NewIssuanceAuditLog()
 	e.contracts = repo
 	contracts := issuance.NewContractService(issuance.ContractDeps{
 		Repo: repo, Generator: pdf.New(), Store: store, Signer: signer, Audit: audit, Clock: clock,
 		Notifier: emailadapter.NewNotifier(email.NewClient(email.Config{BaseURL: e.mail.server.URL, Timeout: time.Second,
 			Breaker: resilience.Config{ConsecutiveFailures: 100, OpenTimeout: time.Second, HalfOpenSuccesses: 1}})),
 	}, issuance.ContractConfig{PollInterval: 10 * time.Millisecond, RetryBase: 20 * time.Millisecond, RetryMax: 50 * time.Millisecond,
-		PublicBaseURL: "https://api.solventa.example"})
+		MaxAttempts: o.contractAttempts, PublicBaseURL: "https://api.solventa.example"})
+	e.service = contracts
 	go contracts.Run(ctx)
 	e.consumer = &flakyConsumer{fail: o.consumerFails, next: contracts}
 
@@ -310,7 +325,7 @@ func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
 		httpadapter.WithObservability("origination"),
 		httpadapter.WithAcceptances(issuance.NewAcceptanceService(offers, acceptances, clock, processor.Notify), subjectVerifier{}),
 		httpadapter.WithContractDocuments(issuance.NewContractReader(repo, store, audit, signer, clock), subjectVerifier{}),
-		httpadapter.WithCharges(billing.NewService(charges, clock, policy, notify), subjectVerifier{})))
+		httpadapter.WithCharges(billing.NewService(charges, clock, policy, notify).WithContractRetry(repo, contracts.Notify), subjectVerifier{})))
 	t.Cleanup(e.srv.Close)
 	e.acc = &acceptanceEnv{srv: e.srv}
 	e.contract = &contractEnvIT{srv: e.srv, mail: e.mail, acc: e.acc}
@@ -483,6 +498,30 @@ func TestChargeCA3AnExpiredWindowIsAVisibleExceptionThatCanBeResumed(t *testing.
 	assert.Equal(t, http.StatusForbidden, code)
 	assert.Equal(t, http.StatusNotFound, e.issuanceStatus(t, id, "insured:cust-1"), "no payment, no activation")
 
+	// The monitor (HU-W1.3-04) shows the same failure as an exception, and
+	// no action has been taken on it yet.
+	issuances := func(query string) []map[string]any {
+		code, body, _ := e.contract.get(t, "/v1/issuances"+query, "operations:ops-1")
+		require.Equal(t, http.StatusOK, code, query)
+		var out struct {
+			Items []map[string]any `json:"items"`
+		}
+		require.NoError(t, json.Unmarshal(body, &out))
+		return out.Items
+	}
+	exceptions := issuances("?status=exception")
+	require.Len(t, exceptions, 1)
+	assert.Equal(t, id, exceptions[0]["acceptance_id"])
+	assert.Equal(t, "exception", exceptions[0]["status"])
+	assert.Equal(t, "premium_charge", exceptions[0]["step"])
+	assert.Equal(t, "retry_window_expired", exceptions[0]["reason"])
+	assert.Empty(t, issuances("?status=active"), "an empty filter is not an error")
+	code, _, _ = e.contract.get(t, "/v1/issuances", "advisor:adv-1")
+	assert.Equal(t, http.StatusForbidden, code)
+	code, body, _ = e.contract.get(t, "/v1/issuances/"+id+"/actions", "operations:ops-1")
+	require.Equal(t, http.StatusOK, code)
+	assert.JSONEq(t, `{"items":[]}`, string(body))
+
 	status400, _ := e.acc.do(t, http.MethodPost, "/v1/acceptances/"+id+"/charge/resume", "operations:ops-1", `{"note":""}`)
 	assert.Equal(t, http.StatusBadRequest, status400, "the note is required")
 	e.gw.set(gatewayUp)
@@ -492,10 +531,23 @@ func TestChargeCA3AnExpiredWindowIsAVisibleExceptionThatCanBeResumed(t *testing.
 	assert.Equal(t, "cobro-"+id, resumed["idempotency_key"], "the same key")
 	assert.EqualValues(t, 1, resumed["resume_count"])
 
+	// The resumption left its action, with author and note (CA-3).
+	_, body, _ = e.contract.get(t, "/v1/issuances/"+id+"/actions", "operations:ops-1")
+	var actions struct {
+		Items []map[string]any `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(body, &actions))
+	require.Len(t, actions.Items, 1)
+	assert.Equal(t, "resume", actions.Items[0]["action"])
+	assert.Equal(t, "ops-1", actions.Items[0]["actor"])
+	assert.Equal(t, "Pasarela restablecida, se reanuda desde la aceptacion", actions.Items[0]["note"])
+
 	e.waitCharge(t, id, "insured:cust-1", status("confirmed"))
 	_, charged := e.gw.chargesOf("cobro-" + id)
 	assert.Equal(t, 1, charged)
 	e.contract.waitFor(t, "pol-"+id, "insured:cust-1", func(m map[string]any) bool { return m["status"] == "completed" })
+	e.waitIssuance(t, id, "notified") // charged, its document ready and the insured notified
+	assert.Empty(t, issuances("?status=exception"))
 	code409, _ := e.acc.do(t, http.MethodPost, "/v1/acceptances/"+id+"/charge/resume", "operations:ops-1", `{"note":"otra"}`)
 	assert.Equal(t, http.StatusConflict, code409, "a confirmed charge is not resumable")
 }
@@ -733,4 +785,97 @@ func TestAConfirmedChargeTakesNoPaymentMethod(t *testing.T) {
 
 	assert.Equal(t, http.StatusConflict, status)
 	assert.Equal(t, "charge_not_payable", body["error"])
+}
+
+// --- Monitoring of the issuances (HU-W1.3-04) -----------------------------------
+
+// monitor reads /v1/issuances as operations: the items and the counts.
+func (e *chargeEnv) monitor(t *testing.T, query string) (items []map[string]any, counts map[string]float64) {
+	t.Helper()
+	code, body, _ := e.contract.get(t, "/v1/issuances"+query, "operations:ops-1")
+	require.Equal(t, http.StatusOK, code, query)
+	var out struct {
+		Items  []map[string]any   `json:"items"`
+		Counts map[string]float64 `json:"counts"`
+	}
+	require.NoError(t, json.Unmarshal(body, &out))
+	return out.Items, out.Counts
+}
+
+func (e *chargeEnv) waitIssuance(t *testing.T, id string, status string) map[string]any {
+	t.Helper()
+	var found map[string]any
+	require.Eventually(t, func() bool {
+		items, _ := e.monitor(t, "?status="+status)
+		for _, i := range items {
+			if i["acceptance_id"] == id {
+				found = i
+				return true
+			}
+		}
+		return false
+	}, 15*time.Second, 20*time.Millisecond, "issuance %s never became %s", id, status)
+	return found
+}
+
+func TestMonitorAChargedPolicyEndsNotifiedAndTheCountsSayToday(t *testing.T) {
+	e := newChargeEnv(t, chargeEnvOptions{})
+	id := e.accept(t, "cust-1", "demo-active-monitor1")
+
+	notified := e.waitIssuance(t, id, "notified")
+
+	assert.Equal(t, "completed", notified["step"])
+	assert.Equal(t, "pol-"+id, notified["policy_id"])
+	assert.NotNil(t, notified["notified_at"])
+	assert.Equal(t, "web", notified["channel"])
+	assert.False(t, notified["unattended"].(bool))
+	_, counts := e.monitor(t, "?status=exception")
+	assert.EqualValues(t, 1, counts["active_today"], "the counts do not depend on the filter")
+	assert.EqualValues(t, 1, counts["notified_today"])
+	assert.Zero(t, counts["exceptions"])
+}
+
+func TestMonitorAMailThatKeepsFailingIsAnExceptionAnalystsCanRetry(t *testing.T) {
+	e := newChargeEnv(t, chargeEnvOptions{contractAttempts: 3})
+	e.mail.setDown(true)
+	id := e.accept(t, "cust-1", "demo-active-monitor2")
+
+	exception := e.waitIssuance(t, id, "exception")
+
+	assert.Equal(t, "notification", exception["step"], "the document exists; the notification failed")
+	assert.Equal(t, "notification_failed", exception["reason"])
+	assert.EqualValues(t, 3, exception["attempts"], "the attempts of the contractual issuance")
+	assert.NotNil(t, exception["failed_at"])
+	_, counts := e.monitor(t, "")
+	assert.EqualValues(t, 1, counts["exceptions"])
+	assert.EqualValues(t, 1, counts["active_today"], "the coverage is active even though the notice failed")
+
+	// The retry is one route for any failed step, with a note (CA-3).
+	status400, _ := e.acc.do(t, http.MethodPost, "/v1/issuances/"+id+"/retry", "operations:ops-1", `{"note":""}`)
+	assert.Equal(t, http.StatusBadRequest, status400)
+	status403, _ := e.acc.do(t, http.MethodPost, "/v1/issuances/"+id+"/retry", "advisor:adv-1", `{"note":"x"}`)
+	assert.Equal(t, http.StatusForbidden, status403)
+	e.mail.setDown(false)
+	status202, retried := e.acc.do(t, http.MethodPost, "/v1/issuances/"+id+"/retry", "operations:ops-1", `{"note":"El correo volvió"}`)
+	require.Equal(t, http.StatusAccepted, status202)
+	assert.Equal(t, "retry", retried["action"], "what failed was the contractual issuance, not the charge")
+
+	notified := e.waitIssuance(t, id, "notified")
+	assert.Equal(t, "completed", notified["step"])
+	assert.Len(t, e.mail.messages(), 1, "one notice reached the insured, not one per attempt")
+
+	_, body, _ := e.contract.get(t, "/v1/issuances/"+id+"/actions", "operations:ops-1")
+	var actions struct {
+		Items []map[string]any `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(body, &actions))
+	require.Len(t, actions.Items, 1)
+	assert.Equal(t, "retry", actions.Items[0]["action"])
+	assert.Equal(t, "ops-1", actions.Items[0]["actor"])
+	assert.Equal(t, "El correo volvió", actions.Items[0]["note"])
+
+	status409, _ := e.acc.do(t, http.MethodPost, "/v1/issuances/"+id+"/retry", "operations:ops-1", `{"note":"otra vez"}`)
+	assert.Equal(t, http.StatusConflict, status409, "nothing is failed any more (CA-7: no double notice)")
+	status404, _ := e.acc.do(t, http.MethodPost, "/v1/issuances/acc-none/retry", "operations:ops-1", `{"note":"x"}`)
+	assert.Equal(t, http.StatusNotFound, status404)
 }

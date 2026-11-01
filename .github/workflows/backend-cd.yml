@@ -1,19 +1,24 @@
 name: backend-cd
-# Continuous delivery.
-#   develop and main: build the Docker image of every changed service/stub and
-#   push it to ECR tagged with the commit SHA (main rebuilds every image, so the
-#   release commit has all its tags).
-#   main only: record that tag in SSM (/solventa/production-demo/image-tag, read
-#   by scripts/environment/up.sh) and, if production-demo is up, deploy it with
-#   terraform apply after a manual approval (GitHub environment production-demo).
+# Continuous delivery to staging.
+#   push to develop: nothing runs.
+#   Run workflow on develop (manual): build every image of the last commit of
+#   develop, push them to ECR tagged with the commit SHA and deploy it to staging.
+#   scripts/environment/up.sh staging takes these images, so run it before
+#   turning staging on to start it with the last commit of develop.
+#   merge to main (automatic): build every image of the merge commit, record its
+#   tag in SSM (/solventa/production-demo/image-tag, read by
+#   scripts/environment/up.sh production-demo) and deploy it to staging.
+# The deploy is terraform apply of staging/platform with image_tag=<sha>. When
+# staging is off it only warns: scripts/environment/up.sh staging turns it on.
 on:
+  # No path filter: every merge to main deploys.
   push:
-    branches: [develop, main]
-    paths: ["services/**", "pkg/**", "stubs/**", "go.work", "go.work.sum", ".dockerignore", "scripts/ci/**", ".github/workflows/backend-cd.yml"]
+    branches: [main]
+  # develop (or main) on demand; any other branch is skipped.
   workflow_dispatch:
 
-# Concurrency is set per job: a deploy waiting for its approval must not hold
-# back the publishing of the next commits.
+# Concurrency is set per job: deploys are serialized without holding back the
+# publishing of the next commits.
 
 permissions:
   contents: read
@@ -28,15 +33,17 @@ env:
   AWS_REGION: us-east-2
   # Created by infra/terraform/bootstrap/cd-ecr.
   AWS_ROLE_ARN: arn:aws:iam::368083581678:role/solventa-github-actions-ecr
-  AWS_DEPLOY_ROLE_ARN: arn:aws:iam::368083581678:role/solventa-github-actions-deploy
+  AWS_DEPLOY_ROLE_ARN: arn:aws:iam::368083581678:role/solventa-github-actions-deploy-staging
   ECR_REGISTRY: 368083581678.dkr.ecr.us-east-2.amazonaws.com
   IMAGE_TAG_PARAMETER: /solventa/production-demo/image-tag
-  # Name of production-demo/platform (main.tf).
-  DEMO_CLUSTER: solventa-demo
-  DEMO_DIR: infra/terraform/environments/production-demo/platform
+  # Name of staging/platform (main.tf).
+  STAGING_CLUSTER: solventa-stg
+  STAGING_DIR: infra/terraform/environments/staging/platform
 
 jobs:
   plan:
+    # Only develop and main may publish (the trust policy of the publish role).
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     outputs:
       images: ${{ steps.changed.outputs.images }}
@@ -44,12 +51,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # An empty base builds every image: always on main, so production-demo can
-      # be deployed with a single image_tag.
+      # An empty base builds every image (every run deploys), so the deployed
+      # commit has all its tags and staging takes a single image_tag. Images
+      # that already exist are not rebuilt (publish).
       - id: changed
-        env:
-          BASE_SHA: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && github.event.before || '' }}
-        run: echo "images=$(scripts/ci/changed-images.sh "$BASE_SHA" "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+        run: echo "images=$(scripts/ci/changed-images.sh "" "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: plan
@@ -110,7 +116,8 @@ jobs:
         run: |
           echo "- \`solventa/${{ matrix.image }}:${{ steps.meta.outputs.tag }}\` (already existed: ${{ steps.exists.outputs.found }})" >> "$GITHUB_STEP_SUMMARY"
 
-  # main only, once every image of the commit is in ECR.
+  # main only, once every image of the commit is in ECR: up.sh production-demo
+  # turns the demo on with this tag.
   release:
     needs: publish
     if: github.ref == 'refs/heads/main'
@@ -122,54 +129,31 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-      demo_up: ${{ steps.cluster.outputs.up }}
     steps:
-      - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - name: Record the release tag
-        id: tag
         run: |
           tag="${GITHUB_SHA::12}"
           aws ssm put-parameter --name "$IMAGE_TAG_PARAMETER" --value "$tag" --overwrite >/dev/null
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Release tag \`$tag\` recorded in \`$IMAGE_TAG_PARAMETER\`." >> "$GITHUB_STEP_SUMMARY"
-      # production-demo is off most of the time (cost). Off (no cluster, or its
-      # services at 0 tasks while up.sh prepares the database), nothing is
-      # applied: up.sh deploys this tag later.
-      - name: Check whether production-demo is up
-        id: cluster
-        run: |
-          state=$(scripts/ci/demo-status.sh "$DEMO_CLUSTER")
-          if [ "$state" = "up" ]; then
-            echo "up=true" >> "$GITHUB_OUTPUT"
-            echo "production-demo is up: the deploy waits for approval in the production-demo environment." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "up=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::production-demo is ${state}. Images published, nothing deployed; scripts/environment/up.sh production-demo deploys this tag."
-            echo "production-demo is ${state}. Images published, nothing deployed; \`scripts/environment/up.sh production-demo\` deploys this tag." >> "$GITHUB_STEP_SUMMARY"
-          fi
 
+  # Automatic on a merge to main; manual (Run workflow) on develop or main.
   deploy:
-    needs: release
-    if: needs.release.outputs.demo_up == 'true'
+    needs: publish
     runs-on: ubuntu-latest
-    # Manual approval: reviewers of the production-demo environment. Do not
-    # approve while someone runs scripts/environment/up.sh or down.sh.
-    environment: production-demo
+    # No reviewers: the environment records the deployments and is the only
+    # identity the deploy role trusts.
+    environment: staging
     # One deploy at a time; a newer pending deploy replaces an older pending one.
     concurrency:
-      group: backend-cd-deploy-production-demo
+      group: backend-cd-deploy-staging
       cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
-    env:
-      IMAGE_TAG: ${{ needs.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
@@ -180,33 +164,42 @@ jobs:
         with:
           terraform_version: "1.11.4"
           terraform_wrapper: false
-      # The environment may have been turned off while the deploy waited.
-      - name: Check that production-demo is still up
-        id: cluster
+      # staging is off most of the time (cost). Off (no cluster, or a service at
+      # 0 tasks while up.sh prepares the database or a window takes a stub down),
+      # nothing is applied: an apply would create or change the whole environment.
+      - name: Check whether staging is up
+        id: status
         run: |
-          state=$(scripts/ci/demo-status.sh "$DEMO_CLUSTER")
+          echo "IMAGE_TAG=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+          state=$(scripts/ci/environment-status.sh "$STAGING_CLUSTER")
           echo "up=$([ "$state" = "up" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [ "$state" != "up" ]; then
-            echo "::notice::production-demo is ${state} (changed while the deploy waited): nothing applied."
+            echo "::notice::staging is ${state}. Images published, nothing deployed; scripts/environment/up.sh staging turns it on."
+            echo "staging is ${state}. Images published, nothing deployed; \`scripts/environment/up.sh staging\` turns it on." >> "$GITHUB_STEP_SUMMARY"
           fi
+      # ttl and extra_tags become tags of every resource: reuse the ones up.sh
+      # applied, so the plan only changes the images.
+      - name: Read the variables of the running environment
+        if: steps.status.outputs.up == 'true'
+        run: scripts/ci/staging-vars.sh "$STAGING_CLUSTER" > "$RUNNER_TEMP/staging.tfvars.json"
       - name: Terraform plan
-        if: steps.cluster.outputs.up == 'true'
-        working-directory: ${{ env.DEMO_DIR }}
+        if: steps.status.outputs.up == 'true'
+        working-directory: ${{ env.STAGING_DIR }}
         run: |
           terraform init -input=false
-          terraform plan -input=false -lock-timeout=5m -var "image_tag=$IMAGE_TAG" -out=tfplan
+          terraform plan -input=false -lock-timeout=5m -var-file="$RUNNER_TEMP/staging.tfvars.json" -var "image_tag=$IMAGE_TAG" -out=tfplan
       - name: Check that the plan only changes ECS
-        if: steps.cluster.outputs.up == 'true'
-        working-directory: ${{ env.DEMO_DIR }}
+        if: steps.status.outputs.up == 'true'
+        working-directory: ${{ env.STAGING_DIR }}
         run: |
           terraform show -json tfplan | "$GITHUB_WORKSPACE/scripts/ci/check-deploy-plan.sh" | tee plan-check.txt
-          { echo "### Plan of \`$IMAGE_TAG\`"; echo '```'; cat plan-check.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### Plan of \`$IMAGE_TAG\` ($GITHUB_REF_NAME)"; echo '```'; cat plan-check.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Terraform apply
-        if: steps.cluster.outputs.up == 'true'
-        working-directory: ${{ env.DEMO_DIR }}
+        if: steps.status.outputs.up == 'true'
+        working-directory: ${{ env.STAGING_DIR }}
         run: terraform apply -input=false -lock-timeout=5m tfplan
       - name: Verify the services
-        if: steps.cluster.outputs.up == 'true'
+        if: steps.status.outputs.up == 'true'
         run: |
-          scripts/ci/verify-ecs-deploy.sh "$DEMO_CLUSTER" "$IMAGE_TAG" | tee verify.txt
+          scripts/ci/verify-ecs-deploy.sh "$STAGING_CLUSTER" "$IMAGE_TAG" | tee verify.txt
           { echo "### Services"; echo '```'; cat verify.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

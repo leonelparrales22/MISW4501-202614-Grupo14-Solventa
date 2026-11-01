@@ -2,6 +2,8 @@ package openfinance_test
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -12,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/openfinance"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/idempotency"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/resilience"
 )
 
@@ -206,4 +209,170 @@ func TestCallerBudgetCountsAsAFailure(t *testing.T) {
 	_, err := c.FetchProfile(context.Background(), "c1")
 	assert.ErrorIs(t, err, resilience.ErrOpen)
 	assert.Equal(t, int32(3), hits.Load(), "an open circuit does not call Open Finance")
+}
+
+// The notice of a revoked consent to the ecosystem (HU-M1.3-02).
+
+var effectiveAt = time.Date(2026, 10, 24, 20, 0, 1, 0, time.UTC)
+
+func notice() openfinance.RevocationNotice {
+	return openfinance.RevocationNotice{ConsentID: "cns-1", EntityCode: "aliado-banco-1", CustomerID: "cust-1", EffectiveAt: effectiveAt}
+}
+
+const revocationKey = "revocation-cns-1-aliado-banco-1"
+
+func TestRevokeConsentSendsTheKeyAndOnlyTheMinimumData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/consent-revocations", r.URL.Path)
+		assert.Equal(t, revocationKey, r.Header.Get("Idempotency-Key"))
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, map[string]any{
+			"consent_id": "cns-1", "entity_code": "aliado-banco-1", "customer_id": "cust-1", "effective_at": "2026-10-24T20:00:01Z",
+		}, body, "no document nor name of the holder")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"revocation_reference":"of-rev-1","status":"confirmed","confirmed_at":"2026-10-24T20:00:02Z"}`))
+	}))
+	defer srv.Close()
+
+	conf, err := openfinance.NewClient(testConfig(srv.URL, time.Second)).RevokeConsent(context.Background(), notice(), revocationKey)
+
+	require.NoError(t, err)
+	assert.Equal(t, "of-rev-1", conf.Reference)
+	assert.Equal(t, "confirmed", conf.Status)
+	assert.Equal(t, 2, conf.ConfirmedAt.Second())
+}
+
+func TestRevokeConsentTheSameKeyAnsweredWith200IsASuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"revocation_reference":"of-rev-1","status":"confirmed","confirmed_at":"2026-10-24T20:00:02Z"}`))
+	}))
+	defer srv.Close()
+
+	conf, err := openfinance.NewClient(testConfig(srv.URL, time.Second)).RevokeConsent(context.Background(), notice(), revocationKey)
+
+	require.NoError(t, err)
+	assert.Equal(t, "of-rev-1", conf.Reference)
+}
+
+func TestRevokeConsentClientErrorsAreFinalAndNeverOpenTheCircuit(t *testing.T) {
+	for _, code := range []int{http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity} {
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.WriteHeader(code)
+		}))
+		c := openfinance.NewClient(testConfig(srv.URL, time.Second))
+		for i := 0; i < 5; i++ {
+			_, err := c.RevokeConsent(context.Background(), notice(), revocationKey)
+			assert.ErrorIs(t, err, openfinance.ErrRevocationRejected, code)
+			assert.ErrorIs(t, err, idempotency.ErrRejected, code)
+			assert.Equal(t, idempotency.OutcomeRejected, idempotency.Classify(err))
+		}
+		assert.EqualValues(t, 5, hits.Load(), "every call reached the provider")
+		assert.Equal(t, "closed", c.RevocationsBreakerState(), "a rejection is a healthy answer")
+		srv.Close()
+	}
+}
+
+func TestRevokeConsentServerErrorsAndNotNowAnswersAreAmbiguous(t *testing.T) {
+	for _, code := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable, http.StatusRequestTimeout,
+		http.StatusConflict, http.StatusTooEarly, http.StatusTooManyRequests, http.StatusAccepted + 100} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
+		_, err := openfinance.NewClient(testConfig(srv.URL, time.Second)).RevokeConsent(context.Background(), notice(), revocationKey)
+		assert.ErrorIs(t, err, openfinance.ErrRevocationAmbiguous, code)
+		assert.Equal(t, idempotency.OutcomeAmbiguous, idempotency.Classify(err), code)
+		srv.Close()
+	}
+}
+
+func TestRevokeConsentTimeoutIsAmbiguous(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	defer srv.Close()
+	defer close(release)
+
+	start := time.Now()
+	_, err := openfinance.NewClient(testConfig(srv.URL, 50*time.Millisecond)).RevokeConsent(context.Background(), notice(), revocationKey)
+
+	assert.ErrorIs(t, err, idempotency.ErrAmbiguous)
+	assert.Less(t, time.Since(start), time.Second, "the hard timeout cut the call")
+}
+
+func TestRevokeConsentRefusedConnectionIsAmbiguous(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	_, err = openfinance.NewClient(testConfig("http://"+addr, time.Second)).RevokeConsent(context.Background(), notice(), revocationKey)
+
+	assert.ErrorIs(t, err, openfinance.ErrRevocationAmbiguous)
+}
+
+func TestRevokeConsentUnreadableSuccessIsAmbiguous(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"revocation_reference":`))
+	}))
+	defer srv.Close()
+
+	_, err := openfinance.NewClient(testConfig(srv.URL, time.Second)).RevokeConsent(context.Background(), notice(), revocationKey)
+
+	assert.ErrorIs(t, err, openfinance.ErrRevocationAmbiguous)
+}
+
+func TestRevokeConsentOpenCircuitDoesNotSendAndDoesNotTouchTheProfiles(t *testing.T) {
+	var revocations, profiles atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/consent-revocations" {
+			revocations.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		profiles.Add(1)
+		_, _ = w.Write([]byte(`{"customer_id":"c1","score":0.5,"category":"standard","updated_at":"2026-10-01T10:00:00Z"}`))
+	}))
+	defer srv.Close()
+	c := openfinance.NewClient(testConfig(srv.URL, time.Second))
+
+	for i := 0; i < 3; i++ {
+		_, err := c.RevokeConsent(context.Background(), notice(), revocationKey)
+		require.ErrorIs(t, err, openfinance.ErrRevocationAmbiguous)
+	}
+	_, err := c.RevokeConsent(context.Background(), notice(), revocationKey)
+
+	assert.ErrorIs(t, err, openfinance.ErrRevocationNotSent)
+	assert.ErrorIs(t, err, idempotency.ErrNotSent)
+	assert.Equal(t, idempotency.OutcomeNotSent, idempotency.Classify(err))
+	assert.EqualValues(t, 3, revocations.Load(), "the open circuit did not send the fourth notice")
+	assert.Equal(t, "open", c.RevocationsBreakerState())
+	_, err = c.FetchProfile(context.Background(), "c1")
+	assert.NoError(t, err, "the profiles have their own circuit")
+	assert.Equal(t, "closed", c.BreakerState())
+}
+
+func TestRevokeConsentInvalidNoticeNeverReachesTheProvider(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+	c := openfinance.NewClient(testConfig(srv.URL, time.Second))
+
+	cases := map[string]func(*openfinance.RevocationNotice, *string){
+		"no key":            func(_ *openfinance.RevocationNotice, k *string) { *k = "" },
+		"no consent":        func(n *openfinance.RevocationNotice, _ *string) { n.ConsentID = "" },
+		"no entity":         func(n *openfinance.RevocationNotice, _ *string) { n.EntityCode = "" },
+		"no customer":       func(n *openfinance.RevocationNotice, _ *string) { n.CustomerID = "" },
+		"no effective time": func(n *openfinance.RevocationNotice, _ *string) { n.EffectiveAt = time.Time{} },
+	}
+	for name, mutate := range cases {
+		n, key := notice(), revocationKey
+		mutate(&n, &key)
+		_, err := c.RevokeConsent(context.Background(), n, key)
+		assert.ErrorIs(t, err, openfinance.ErrInvalidRevocation, name)
+	}
+	assert.Zero(t, hits.Load())
+	assert.Equal(t, "closed", c.RevocationsBreakerState())
 }

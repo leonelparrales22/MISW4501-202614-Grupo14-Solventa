@@ -71,7 +71,8 @@ func TestARepeatedKeyAnsweredWith200IsASuccess(t *testing.T) {
 func TestADeclineIsAFinalRejectionWithItsCode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusPaymentRequired)
-		_, _ = w.Write([]byte(`{"error":"payment_declined","message":"declined by the issuer","decline_code":"51"}`))
+		_, _ = w.Write([]byte(
+			`{"error":"payment_declined","message":"declined by the issuer","decline_code":"51","charge_id":"ch-7"}`))
 	}))
 	defer srv.Close()
 
@@ -86,6 +87,7 @@ func TestADeclineIsAFinalRejectionWithItsCode(t *testing.T) {
 	assert.Equal(t, http.StatusPaymentRequired, rej.StatusCode)
 	assert.Equal(t, "payment_declined", rej.Code)
 	assert.Equal(t, "51", rej.DeclineCode)
+	assert.Equal(t, "ch-7", rej.Reference, "the reference the customer quotes to the issuer")
 	assert.Contains(t, err.Error(), "decline code 51")
 }
 

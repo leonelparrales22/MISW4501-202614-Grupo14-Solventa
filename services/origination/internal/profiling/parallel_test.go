@@ -116,6 +116,25 @@ func TestParallelSourceCompleteProfileWhenEverySourceArrives(t *testing.T) {
 	}
 }
 
+func TestParallelSourceReportsWhatEachSourceReturnedAndWhenItWasAsked(t *testing.T) {
+	before := time.Now()
+	src := profiling.NewParallelSource(named(fast(0.2, "preferred"), slowSource(), fast(0.6, "standard")), equivalent())
+
+	got, err := src.FetchProfile(context.Background(), "c1")
+
+	require.NoError(t, err)
+	require.Len(t, got.Sources, 3)
+	of, od, kyc := got.Sources[0], got.Sources[1], got.Sources[2]
+	require.NotNil(t, of.Value)
+	assert.Equal(t, domain.SourceValue{Score: 0.2, Category: "preferred"}, *of.Value, "the value Open Finance returned")
+	assert.Equal(t, domain.SourceValue{Score: 0.6, Category: "standard"}, *kyc.Value)
+	assert.Nil(t, od.Value, "a source that timed out returned nothing")
+	for _, o := range got.Sources {
+		assert.False(t, o.ConsultedAt.Before(before.UTC().Add(-time.Second)), "%s: the call time is recorded", o.Source)
+		assert.Equal(t, time.UTC, o.ConsultedAt.Location())
+	}
+}
+
 func TestParallelSourcePartialProfileWithArrivedSignals(t *testing.T) {
 	src := profiling.NewParallelSource(named(fast(0.2, "preferred"), slowSource(), fast(0.6, "standard")), equivalent())
 

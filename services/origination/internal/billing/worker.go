@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/adapters/payments"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/idempotency"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/observability"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/resilience"
@@ -221,11 +222,30 @@ func (w *Worker) charge(ctx context.Context, acceptanceID string) {
 		w.failed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", string(c.FailureReason))))
 		slog.WarnContext(ctx, "premium charge failed: issuance exception", "acceptance_id", c.AcceptanceID,
 			"reason", c.FailureReason, "attempts", c.Attempts, "error", rep.CallErr)
+		w.recordDecline(ctx, c.AcceptanceID, rep.CallErr)
 	default:
 		span.RecordError(rep.CallErr)
 		slog.WarnContext(ctx, "premium charge attempt failed, it will be retried with the same key",
 			"acceptance_id", c.AcceptanceID, "outcome", rep.Outcome, "attempts", c.Attempts,
 			"next_attempt_at", c.NextAttemptAt, "error", rep.CallErr)
+	}
+}
+
+// recordDecline keeps what the issuer said, when the gateway declined the
+// charge, so screen E4c can show it (HU-W1.3-02). The failure itself is
+// already recorded by the shared runner, which carries only a diagnostic
+// message; this reads the code and the reference off the typed error.
+//
+// A failure here is logged and nothing else: the charge is already failed
+// and in the operations tray, and what is missing is only what to show.
+func (w *Worker) recordDecline(ctx context.Context, acceptanceID string, callErr error) {
+	var rejected *payments.RejectedError
+	if !errors.As(callErr, &rejected) {
+		return // the window ran out; there is no issuer answer to keep
+	}
+	if err := w.repo.RecordDecline(ctx, acceptanceID, rejected.DeclineCode, rejected.Reference); err != nil {
+		slog.WarnContext(ctx, "could not keep the issuer's decline detail; the charge is failed all the same",
+			"acceptance_id", acceptanceID, "error", err)
 	}
 }
 

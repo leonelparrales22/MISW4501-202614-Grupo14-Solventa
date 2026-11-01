@@ -251,6 +251,49 @@ func TestOfferRouterDelegatesDemoAndAdjustedOffersToTheStub(t *testing.T) {
 	assert.Equal(t, 120_000.0, adjusted.Premium)
 }
 
+// recordingAdjusted is a store of adjusted offers that records the ids it serves.
+type recordingAdjusted struct {
+	*memory.OfferStub
+	gets, creates []string
+}
+
+func (r *recordingAdjusted) Get(ctx context.Context, id string) (domain.Offer, error) {
+	r.gets = append(r.gets, id)
+	return r.OfferStub.Get(ctx, id)
+}
+
+func (r *recordingAdjusted) Create(ctx context.Context, o domain.Offer) error {
+	r.creates = append(r.creates, o.ID)
+	return r.OfferStub.Create(ctx, o)
+}
+
+// D-1 a (fix C5): with a store of adjusted offers, the adj-* ids go there,
+// read and write; the demo-* ids stay in the stub and the rest are personalized.
+func TestOfferRouterSendsTheAdjustedOffersToTheirStore(t *testing.T) {
+	stub := memory.NewOfferStub(offerFixedClock{offerT0})
+	adjusted := &recordingAdjusted{OfferStub: memory.NewOfferStub(offerFixedClock{offerT0})}
+	store := memory.NewPersonalizedOfferStore()
+	router := memory.NewOfferRouterWithAdjusted(stub, store, adjusted)
+	ctx := security.WithClaims(context.Background(), security.Claims{Subject: "sub-a", Roles: []security.Role{security.RoleInsured}})
+
+	require.NoError(t, router.Create(ctx, domain.Offer{ID: "adj-acc-1", CustomerID: "sub-a", Premium: 120_000, ExpiresAt: offerT0.Add(time.Hour)}))
+	got, err := router.Get(ctx, "adj-acc-1")
+	require.NoError(t, err)
+	assert.Equal(t, 120_000.0, got.Premium)
+	assert.Equal(t, []string{"adj-acc-1"}, adjusted.creates)
+	assert.Equal(t, []string{"adj-acc-1"}, adjusted.gets)
+	_, err = stub.Get(context.Background(), "adj-acc-1")
+	assert.ErrorIs(t, err, ports.ErrOfferNotFound, "the stub never sees the adjusted offer")
+
+	demo, err := router.Get(ctx, "demo-active-001")
+	require.NoError(t, err)
+	assert.Equal(t, "sub-a", demo.CustomerID)
+	_, _, _ = store.Create(ctx, personalized("off-1", domain.ModeNormal, offerT0))
+	_, err = router.Get(ctx, "off-1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"adj-acc-1"}, adjusted.gets, "demo and personalized offers never reach the adjusted store")
+}
+
 func TestIsStubOffer(t *testing.T) {
 	assert.True(t, memory.IsStubOffer("demo-active-1"))
 	assert.True(t, memory.IsStubOffer("adj-1"))

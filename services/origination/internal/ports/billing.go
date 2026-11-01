@@ -28,6 +28,7 @@ var ErrChargeNotPayable = errors.New("charge does not take a payment method")
 // result is conditional on the claim (idempotency.ErrClaimLost otherwise).
 type ChargeRepository interface {
 	idempotency.Store[domain.Charge]
+	IssuanceMonitor
 
 	// CreatePending stores the charge unless its acceptance already has one;
 	// then it returns the existing charge and created=false.
@@ -55,6 +56,13 @@ type ChargeRepository interface {
 	// replays the answer it stored for the old one. It returns
 	// ErrChargeNotFound or ErrChargeNotPayable.
 	AttachPaymentMethod(ctx context.Context, acceptanceID string, m domain.PaymentMethod, now time.Time) (domain.Charge, error)
+
+	// RecordDecline keeps the issuer's code and the gateway's reference of a
+	// charge the gateway declined, so screen E4c can tell the customer why
+	// (HU-W1.3-02). It is written after the failure, which the shared
+	// idempotency runner records with only a diagnostic message, and it is
+	// display detail: losing it leaves the charge correctly failed.
+	RecordDecline(ctx context.Context, acceptanceID, code, reference string) error
 
 	// ExpireWithoutPaymentMethod fails the charges whose retry window ended
 	// while they were still waiting for a payment method, with the reason

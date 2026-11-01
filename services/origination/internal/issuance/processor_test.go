@@ -92,6 +92,9 @@ func TestHumanReviewGoesToTheAdvisorInboxWithTheRequestData(t *testing.T) {
 	provisional := validOffer("o-1", "cust-1")
 	provisional.Mode = domain.ModeProvisional
 	provisional.Applicant = domain.Applicant{FullName: "Ana", DocumentID: "CC 1", Email: "ana@example.com"}
+	provisional.Terms = domain.CoverageTerms{InsuredAmount: 180_000_000, TermMonths: 60, Coverages: []domain.Coverage{
+		{Code: domain.CoverageDeath, InsuredAmount: 180_000_000},
+	}}
 	highRisk := validOffer("o-2", "cust-1")
 	highRisk.ProfileScore = 0.9
 	lowRisk := validOffer("o-3", "cust-1")
@@ -111,11 +114,24 @@ func TestHumanReviewGoesToTheAdvisorInboxWithTheRequestData(t *testing.T) {
 	pending := f.reviews.Pending()
 	require.Len(t, pending, 2)
 	byOffer := map[string]domain.ReviewRequest{pending[0].OfferID: pending[0], pending[1].OfferID: pending[1]}
+	// The request keeps the snapshot of the routed offer: mode, score, validity
+	// and terms (decision D-7 a of the fix C5).
 	assert.Equal(t, domain.ReviewRequest{
 		AcceptanceID: a1.ID, OfferID: "o-1", CustomerID: "cust-1", Applicant: provisional.Applicant,
 		Premium: 1000, Currency: "COP", Reason: domain.ReviewReasonProvisionalOffer, ReceivedAt: t0,
+		OfferMode: domain.ModeProvisional, ProfileScore: 0.7, OfferExpiresAt: t0.Add(time.Hour), Terms: provisional.Terms,
 	}, byOffer["o-1"])
 	assert.Equal(t, domain.ReviewReasonHighRiskScore, byOffer["o-2"].Reason)
+	assert.Equal(t, domain.ModeNormal, byOffer["o-2"].OfferMode)
+	assert.InDelta(t, 0.9, byOffer["o-2"].ProfileScore, 1e-9)
+	assert.Empty(t, byOffer["o-2"].Terms.Coverages, "an offer without terms gives a snapshot without terms")
+	provisional.Terms.Coverages[0].InsuredAmount = 1
+	again := f.reviews.Pending()
+	for _, r := range again {
+		if r.OfferID == "o-1" {
+			assert.InDelta(t, 180_000_000, r.Terms.Coverages[0].InsuredAmount, 0.001, "the snapshot never shares the offer coverages")
+		}
+	}
 
 	// A low score is a low risk: it is approved and issuance starts without
 	// going through the inbox.

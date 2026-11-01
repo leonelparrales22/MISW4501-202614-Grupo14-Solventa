@@ -3,6 +3,9 @@ module github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg
 go 1.23
 
 require (
+	github.com/aws/aws-sdk-go-v2 v1.41.2
+	github.com/aws/aws-sdk-go-v2/service/sns v1.39.12
+	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.22
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/sony/gobreaker v1.0.0
 	github.com/stretchr/testify v1.10.0
@@ -16,6 +19,9 @@ require (
 )
 
 require (
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.18 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.18 // indirect
+	github.com/aws/smithy-go v1.24.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect

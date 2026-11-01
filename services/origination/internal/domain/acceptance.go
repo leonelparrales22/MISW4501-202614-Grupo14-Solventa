@@ -14,10 +14,13 @@ type Offer struct {
 	Mode         OfferMode
 	ProfileScore float64
 	ExpiresAt    time.Time
-	// Terms are the coverage terms the offer activates once it is paid. Only
-	// a personalized offer carries them (HU-W1.2-03, priced by the rating
-	// engine); the demo and adjusted offers leave them empty and their charge
-	// activates the demonstration terms (HA-D02, decision D-16).
+	// Terms are the coverage terms the offer activates once it is paid. A
+	// personalized offer carries them (HU-W1.2-03, priced by the rating
+	// engine) and so does the adjusted offer of a personalized offer, which
+	// keeps the terms of the offer it adjusts (decision D-5 a of the fix C5);
+	// the demo offers, and the adjusted offers of a demo offer, leave them
+	// empty and their charge activates the demonstration terms (HA-D02,
+	// decision D-16).
 	Terms CoverageTerms
 }
 
@@ -41,9 +44,18 @@ type Channel string
 const (
 	ChannelWeb    Channel = "web"
 	ChannelMobile Channel = "mobile"
+	// ChannelAdvisor is an acceptance an advisor registers on behalf of the
+	// customer (HU-W1.1-03). A customer cannot choose it: ParseChannel does
+	// not name it.
+	ChannelAdvisor Channel = "advisor"
+	// ChannelRenewal is the renewal of a policy the insured accepts in the
+	// portal (HU-W1.5-02). It has no offer or acceptance behind it: the
+	// charge of the renewal is its own record.
+	ChannelRenewal Channel = "renewal"
 )
 
-// ParseChannel returns the channel named by s, or false if s names none.
+// ParseChannel returns the channel a customer accepts through, named by s, or
+// false if s names none.
 func ParseChannel(s string) (Channel, bool) {
 	switch c := Channel(s); c {
 	case ChannelWeb, ChannelMobile:
@@ -116,6 +128,15 @@ type Acceptance struct {
 
 // ReviewRequest is what the advisor inbox (HU-W1.1-02) receives when
 // underwriting routes an acceptance to a human decision (CA-3).
+//
+// It keeps a snapshot of the routed offer (decision D-7 a of the fix C5): its
+// premium and currency, its mode, profile score, validity and coverage terms,
+// taken by the acceptance processor from the offer it already read. The inbox
+// opens and decides a case from the snapshot and never reads the routed offer
+// again, so a case is complete by itself: it is opened and decided the same
+// way after a restart, whatever kind of offer was routed. The snapshot is
+// exact, because an offer with an acceptance is never replaced and offers are
+// immutable.
 type ReviewRequest struct {
 	AcceptanceID string
 	OfferID      string
@@ -125,4 +146,11 @@ type ReviewRequest struct {
 	Currency     string
 	Reason       string
 	ReceivedAt   time.Time
+
+	// OfferMode, ProfileScore, OfferExpiresAt and Terms are the snapshot of
+	// the routed offer. Terms are empty when the routed offer carries none.
+	OfferMode      OfferMode
+	ProfileScore   float64
+	OfferExpiresAt time.Time
+	Terms          CoverageTerms
 }

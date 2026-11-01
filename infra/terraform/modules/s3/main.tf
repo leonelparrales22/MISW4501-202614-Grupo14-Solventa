@@ -97,3 +97,20 @@ resource "aws_s3_bucket_policy" "this" {
 
   depends_on = [aws_s3_bucket_public_access_block.this]
 }
+
+# The browser of the web portal uploads the supports of a claim (PUT) and reads
+# them (GET) with signed URLs (HU-W2.1-01). The signature is what authorizes
+# each request; CORS only lets the portal's origin make them. Without origins
+# there is no configuration.
+resource "aws_s3_bucket_cors_configuration" "this" {
+  count  = length(var.cors_allowed_origins) > 0 ? 1 : 0
+  bucket = aws_s3_bucket.this.id
+
+  cors_rule {
+    allowed_origins = var.cors_allowed_origins
+    allowed_methods = ["GET", "PUT"]
+    allowed_headers = ["*"]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3000
+  }
+}

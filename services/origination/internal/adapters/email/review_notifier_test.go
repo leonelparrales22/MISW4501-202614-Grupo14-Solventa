@@ -99,3 +99,20 @@ func TestReviewNotifierPropagatesTheProviderFailure(t *testing.T) {
 	err := emailadapter.NewReviewNotifier(s).NotifyReviewOutcome(context.Background(), reviewNotice(domain.DecisionReject))
 	assert.ErrorIs(t, err, email.ErrUnavailable, "the worker retries with the same key")
 }
+
+func TestConsentNotifierSendsTheCodeToTheCustomer(t *testing.T) {
+	s := &recordingSender{}
+
+	err := emailadapter.NewConsentNotifier(s).SendConsentCode(context.Background(), domain.ConsentCodeNotice{
+		To: "laura@example.com", CustomerName: "Laura Gómez", Code: "482913", ExpiresAt: decidedAt.Add(10 * time.Minute),
+		IdempotencyKey: "consent-code-q-1-1",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "laura@example.com", s.got.To)
+	assert.Equal(t, "consent-code-q-1-1", s.got.IdempotencyKey)
+	assert.Equal(t, "Código para confirmar tu seguro de Solventa", s.got.Subject)
+	for _, want := range []string{"Laura Gómez", "482913", "16/10/2026 a las 15:30 (UTC)", "dale este código al asesor"} {
+		assert.Contains(t, s.got.Body, want)
+	}
+}

@@ -156,7 +156,7 @@ run "without_tag_the_latest_image_is_pinned_by_digest" {
   }
 
   assert {
-    condition     = length(data.aws_ecr_image.latest) == 10 && strcontains(local.image_uris["audit"], "@sha256:")
+    condition     = length(data.aws_ecr_image.latest) == 11 && strcontains(local.image_uris["audit"], "@sha256:")
     error_message = "Without image_tag every image is the most recent one, pinned by digest."
   }
 }
@@ -169,8 +169,8 @@ run "services_can_be_switched_off" {
   }
 
   assert {
-    condition     = length(module.ecs.desired_counts) == 10 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
-    error_message = "The five services and the five stubs keep their ECS services, at 0 tasks."
+    condition     = length(module.ecs.desired_counts) == 11 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
+    error_message = "The five services and the six stubs keep their ECS services, at 0 tasks."
   }
 }
 
@@ -308,6 +308,114 @@ run "inbox_and_exceptions_are_routed" {
       contains(var.human_routes["acceptances"].methods, "POST")
     )
     error_message = "The inbox (GET and POST), the exceptions (GET) and the charge actions (POST under acceptances) are human routes."
+  }
+}
+
+# HU-M2.2-01: the mobile app files the claim through the gateway.
+run "the_claim_filing_is_a_human_route" {
+  command = plan
+
+  assert {
+    condition = (
+      toset(var.human_routes["claims"].methods) == toset(["GET", "POST"]) &&
+      var.human_routes["claims"].root_methods == null
+    )
+    error_message = "GET and POST /v1/claims are human routes: the insured files and reads on their own behalf (HU-M2.2-01, HU-W2.1-01)."
+  }
+
+  assert {
+    condition     = !contains(keys(var.public_routes), "claims")
+    error_message = "The filing needs a session: it is never a public route."
+  }
+
+  assert {
+    condition     = contains(local.services.claims.paths, "/v1/claims*")
+    error_message = "The ALB sends /v1/claims* to the claims service."
+  }
+
+  # Without the user pool the service does not mount the filing, so the
+  # published route would answer 404 to everybody. The values come from the
+  # pool and are only known after it exists, so what is checked here is that
+  # the three of them reach the service.
+  assert {
+    condition = alltrue([
+      for v in ["AUTH_ISSUER", "AUTH_JWKS_URL", "AUTH_CLIENT_IDS"] :
+      contains(keys(local.service_environment.claims), v)
+    ])
+    error_message = "Claims verifies the token of the insured: it needs the user pool of the environment."
+  }
+}
+
+# HU-W2.1-01: the web filing asks the policy core for the policies of the
+# insured. The core is a stub that only claims calls inside the VPC.
+run "the_policy_core_runs_behind_cloud_map_for_claims" {
+  command = plan
+
+  variables {
+    image_tag_overrides = { policy-core = "prueba-hu-w2-1" }
+  }
+
+  assert {
+    condition     = local.stubs["policy-core"] == 9060 && module.ecs.desired_counts["policy-core"] == 1
+    error_message = "The policy core stub runs one task on port 9060."
+  }
+
+  assert {
+    condition     = local.service_environment.claims.POLICY_CORE_URL == "http://policy-core.solventa-test.local:9060"
+    error_message = "Claims reaches the policy core by its Cloud Map name; without it the web filing is not mounted."
+  }
+
+  assert {
+    condition = (local.service_environment.claims.PAYMENT_GATEWAY_URL == "http://payment-gateway.solventa-test.local:9040"
+    && local.service_environment.claims.EMAIL_URL == "http://email.solventa-test.local:9030")
+    error_message = "Claims pays the indemnities through the payment gateway and notifies the rejections by e-mail (HU-W2.2-03)."
+  }
+
+  assert {
+    condition     = !contains(keys(local.lb_stubs), "policy-core") && !contains(keys(module.alb.target_group_arns), "policy-core")
+    error_message = "The browser never calls the policy core: it has no rule in the ALB."
+  }
+
+  assert {
+    condition     = endswith(local.image_uris["policy-core"], ":prueba-hu-w2-1")
+    error_message = "The policy core image accepts a tag override like the others."
+  }
+}
+
+# HU-M1.1-01: the public route of the sign-up also needs its rule in the load
+# balancer; the API Gateway alone does not know where to send it.
+run "the_sign_up_reaches_origination" {
+  command = plan
+
+  assert {
+    condition     = contains(local.services.origination.paths, "/v1/registrations*")
+    error_message = "The ALB sends /v1/registrations* to origination: without the rule it answers 404."
+  }
+
+  assert {
+    condition     = module.apigateway.registration_path == "/v1/registrations"
+    error_message = "The gateway publishes the sign-up on the same path the balancer routes."
+  }
+}
+
+# HU-M2.1-01: the evidence of the claim goes to the evidence bucket, and the
+# service signs the upload with its own task role.
+run "the_claim_evidence_has_its_bucket" {
+  command = plan
+
+  assert {
+    condition     = local.service_environment.claims.EVIDENCE_BUCKET == module.buckets["evidence"].bucket
+    error_message = "Claims keeps the evidence in the evidence bucket of the environment."
+  }
+
+  assert {
+    condition     = local.services.claims.buckets == ["evidence"]
+    error_message = "Claims reaches its own bucket and no other."
+  }
+
+  assert {
+    condition     = local.service_environment.claims.AWS_REGION == data.aws_region.current.region
+    error_message = "The AWS SDK of claims takes the region of the environment."
   }
 }
 
@@ -572,6 +680,34 @@ run "without_portal_the_links_stay_as_before" {
   }
 }
 
+# HU-W2.1-01: the browser of the portal uploads the supports of a claim to the
+# evidence bucket, so only that bucket accepts the origin of the portal.
+run "the_portal_may_upload_to_the_evidence_bucket_only" {
+  command = plan
+
+  variables {
+    portal_base_url = "https://d1234abcd.cloudfront.net"
+  }
+
+  assert {
+    condition = (
+      length(module.buckets["evidence"].cors_allowed_origins) == 1 &&
+      module.buckets["evidence"].cors_allowed_origins[0] == "https://d1234abcd.cloudfront.net" &&
+      length(module.buckets["documents"].cors_allowed_origins) == 0
+    )
+    error_message = "The evidence bucket allows the origin of the portal; the documents bucket allows none."
+  }
+}
+
+run "without_a_portal_the_evidence_bucket_has_no_cors" {
+  command = plan
+
+  assert {
+    condition     = length(module.buckets["evidence"].cors_allowed_origins) == 0
+    error_message = "Without portal_base_url there is no origin to allow."
+  }
+}
+
 run "portal_base_url_is_an_https_origin" {
   command = plan
 
@@ -610,8 +746,9 @@ run "offers_root_is_partner_and_sub_paths_are_human" {
     error_message = "The root /v1/offers belongs to the partner; /v1/offers/{offer_id}, renewal and acceptance keep Cognito."
   }
 
+  # consents sets its root to GET only (HU-M1.3-02); it has its own test.
   assert {
-    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if k != "offers"])
+    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents"], k)])
     error_message = "Every other human route keeps its root as before."
   }
 }
@@ -666,9 +803,99 @@ run "audit_is_discoverable_by_origination" {
   }
 
   assert {
-    condition     = !contains(keys(local.service_environment), "audit")
-    error_message = "D-23 (c): audit gets only PORT, without AUTH_* (that is HU-W4.2-02)."
+    condition     = !contains(keys(var.human_routes), "audit")
+    error_message = "D-23 (c): audit is never a human route as a whole; the evidence lookup and the revocation of the compliance portal (HU-W4.2-02) are published only through human_subroutes."
   }
+}
+
+# --- HU-W4.2-02: the compliance portal reaches the evidence and the revocation of audit ---
+
+run "the_compliance_portal_reaches_only_the_consent_paths_of_audit" {
+  command = plan
+
+  assert {
+    condition = (
+      length(var.human_subroutes) == 1 &&
+      var.human_subroutes["audit/consents"].methods == tolist(["GET", "POST"]) &&
+      var.human_subroutes["audit/consents"].root_methods == tolist(["GET"]) &&
+      contains(keys(var.partner_routes), "audit/consents") &&
+      !contains(var.partner_routes["audit/consents"].methods, "GET")
+    )
+    error_message = "GET /v1/audit/consents (the list, HU-W4.2-01), GET /v1/audit/consents/{consent_id}, GET .../revocation and POST .../revocations and .../revocation-retries are published with Cognito; the partner keeps only its POST."
+  }
+
+  assert {
+    condition = (
+      length(module.apigateway.partner_paths) == 3 &&
+      !contains(keys(var.human_routes), "audit") &&
+      !contains(keys(var.public_routes), "audit") &&
+      !contains(module.apigateway.partner_paths, "/v1/audit/consent-verifications") &&
+      !contains(module.apigateway.partner_paths, "/v1/audit/decisions")
+    )
+    error_message = "The consent verification and the decision record of audit (no token) are in no route of the gateway."
+  }
+}
+
+run "the_internal_routes_of_audit_cannot_become_human_subroutes" {
+  command = plan
+
+  variables {
+    human_subroutes = { "audit/decisions" = { methods = ["POST"] } }
+  }
+
+  expect_failures = [var.human_subroutes]
+}
+
+run "only_origination_creates_accounts_in_the_user_pool" {
+  command = plan
+
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+
+  assert {
+    condition = anytrue([
+      for st in local.task_role_statements.origination : (
+        st.sid == "CreateInsuredAccounts" &&
+        length(st.actions) == 3 &&
+        contains(st.actions, "cognito-idp:AdminCreateUser") &&
+        contains(st.actions, "cognito-idp:AdminSetUserPassword") &&
+        contains(st.actions, "cognito-idp:AdminAddUserToGroup") &&
+        st.resources == ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"]
+      )
+    ])
+    error_message = "Origination can only create the account, set its password and add it to its group, on that user pool (HU-M1.1-01)."
+  }
+
+  assert {
+    condition = alltrue([
+      for k, sts in local.task_role_statements : k == "origination" || alltrue([
+        for st in sts : st.sid != "CreateInsuredAccounts"
+      ])
+    ])
+    error_message = "No other service touches the user pool."
+  }
+
+  assert {
+    condition     = local.service_environment.origination.COGNITO_USER_POOL_ID == "us-east-2_PermTest1"
+    error_message = "Origination receives the user pool it creates the accounts in."
+  }
+}
+
+run "origination_environment_cannot_override_the_user_pool" {
+  command = plan
+
+  variables {
+    origination_environment = { COGNITO_USER_POOL_ID = "us-east-2_Otro" }
+  }
+
+  expect_failures = [var.origination_environment]
 }
 
 run "origination_environment_cannot_override_audit_url" {
@@ -679,4 +906,201 @@ run "origination_environment_cannot_override_audit_url" {
   }
 
   expect_failures = [var.origination_environment]
+}
+
+# --- HU-M1.3-01: the insured reads their consents; origination and audit talk by events ---
+
+run "consents_are_a_human_route_of_audit" {
+  command = plan
+
+  # HU-M1.3-01 made it read-only; HU-M1.3-02 adds POST under the consent for
+  # the revocation, and the root /v1/consents stays read-only.
+  assert {
+    condition = (
+      toset(var.human_routes["consents"].methods) == toset(["GET", "POST"]) &&
+      toset(var.human_routes["consents"].root_methods) == toset(["GET"]) &&
+      !contains(keys(var.partner_routes), "consents") &&
+      !contains(keys(var.public_routes), "consents")
+    )
+    error_message = "GET /v1/consents* and POST /v1/consents/{consent_id}/revocations are human routes behind the Cognito authorizer; the root /v1/consents is GET only."
+  }
+
+  assert {
+    condition = (
+      contains(local.services.audit.paths, "/v1/consents*") &&
+      contains(local.services.audit.paths, "/v1/audit*") &&
+      !contains(local.services.origination.paths, "/v1/consents*")
+    )
+    error_message = "The ALB sends /v1/consents* to audit, next to /v1/audit* (decision D-3 a)."
+  }
+}
+
+run "audit_gets_the_queue_the_user_pool_and_the_catalog" {
+  command = plan
+
+  # The permanent user pool, so its values are known at plan time.
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+
+  override_resource {
+    target          = module.messaging.aws_sqs_queue.this
+    override_during = plan
+    values = {
+      url = "https://sqs.us-east-2.amazonaws.com/123456789012/solventa-test-audit"
+      arn = "arn:aws:sqs:us-east-2:123456789012:solventa-test-audit"
+    }
+  }
+
+  assert {
+    condition = (
+      local.service_environment.audit.PORT == "8080" &&
+      local.service_environment.audit.AWS_REGION == "us-east-2" &&
+      local.service_environment.audit.AUTH_ISSUER == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1" &&
+      local.service_environment.audit.AUTH_JWKS_URL == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json" &&
+      local.service_environment.audit.AUTH_CLIENT_IDS == "mobile-client-test,web-client-test" &&
+      local.service_environment.audit.AUTH_CLIENT_IDS == local.service_environment.origination.AUTH_CLIENT_IDS
+    )
+    error_message = "audit verifies the Cognito token of the insured with the same user pool and clients as origination."
+  }
+
+  assert {
+    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES) == { "aliado-banco-1" = "Banco Aliado" }
+    error_message = "audit gets the catalog of entity names as JSON (decision D-2 a)."
+  }
+
+  assert {
+    condition     = local.service_environment.audit.EVENTS_QUEUE_URL == module.messaging.queue_urls["audit"]
+    error_message = "audit consumes CustomerLinked from its own queue."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_environment.audit), "DATABASE_URL")
+    error_message = "The database URL of audit stays in Secrets Manager."
+  }
+}
+
+run "origination_publishes_to_its_topic" {
+  command = plan
+
+  override_resource {
+    target          = module.messaging.aws_sns_topic.this
+    override_during = plan
+    values = {
+      arn = "arn:aws:sns:us-east-2:123456789012:solventa-test-origination"
+    }
+  }
+
+  assert {
+    condition     = local.service_environment.origination.EVENTS_TOPIC_ARN == module.messaging.topic_arns["origination"]
+    error_message = "The outbox relay of origination publishes to the origination topic (HU-M1.3-01)."
+  }
+}
+
+run "partner_display_names_can_be_replaced" {
+  command = plan
+
+  variables {
+    partner_display_names = { "aliado-banco-1" = "Banco Aliado", "socio-a" = "Socio A" }
+  }
+
+  assert {
+    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A"
+    error_message = "The catalog follows partner_display_names."
+  }
+}
+
+run "partner_display_names_rejects_invalid_codes" {
+  command = plan
+
+  variables {
+    partner_display_names = { "aliado banco" = "Banco" }
+  }
+
+  expect_failures = [var.partner_display_names]
+}
+
+run "origination_environment_cannot_replace_the_events_topic" {
+  command = plan
+
+  variables {
+    origination_environment = { EVENTS_TOPIC_ARN = "arn:aws:sns:us-east-2:123456789012:elsewhere" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
+
+# --- HU-M1.3-02: the insured revokes a consent; audit notifies the entities ---
+
+run "audit_notifies_the_entities_through_the_open_finance_stub" {
+  command = plan
+
+  assert {
+    condition = (
+      local.service_environment.audit.OPEN_FINANCE_URL == "http://openfinance.${local.namespace}:9000" &&
+      local.service_environment.audit.OPEN_FINANCE_URL == local.service_environment.origination.OPEN_FINANCE_URL
+    )
+    error_message = "audit reaches the Open Finance stub by Cloud Map, at the same address as origination (decision D-2 a)."
+  }
+
+  assert {
+    condition     = local.service_environment.audit.REVOCATION_NOTICE_DEADLINE_SECONDS == "300"
+    error_message = "Every entity has 5 minutes to confirm a revocation (RN-02)."
+  }
+
+  assert {
+    condition     = contains(keys(local.stubs), "openfinance")
+    error_message = "The Open Finance stub keeps running behind Cloud Map."
+  }
+}
+
+# --- HU-W3.1-01: credentials of the commercial partners ---------------------------------
+
+run "partners_manages_the_credentials_and_publishes_to_audit" {
+  command = plan
+
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+
+  assert {
+    condition     = contains(local.topics, "partners") && contains(local.queues.audit.topics, "partners")
+    error_message = "The credential events of partners reach the audit queue (CA-3)."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.partners.AUTH_ISSUER == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1" &&
+      local.service_environment.partners.CREDENTIAL_GRACE_PERIOD_HOURS == "24" &&
+      contains(keys(local.service_environment.partners), "GATEWAY_REST_API_ID") &&
+      contains(keys(local.service_environment.partners), "EVENTS_TOPIC_ARN")
+    )
+    error_message = "partners receives the user pool, the gateway where it creates the usage plans and its topic."
+  }
+
+  assert {
+    condition = alltrue([
+      for k, sts in local.task_role_statements : k == "partners" || alltrue([
+        for st in sts : !contains(["ManageThePartnerApiKeys", "ManageThePartnerUsagePlans", "ReadTheStageOfThePartnerPlans"], st.sid)
+      ])
+    ])
+    error_message = "Only partners manages API keys and usage plans."
+  }
+
+  assert {
+    condition     = contains(keys(var.human_routes), "partners")
+    error_message = "The operations portal reaches /v1/partners with Cognito."
+  }
 }

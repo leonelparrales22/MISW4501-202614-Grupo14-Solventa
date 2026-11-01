@@ -14,8 +14,9 @@ import (
 // ReviewQueueStub is an in-memory ports.ReviewRepository: the advisor inbox
 // of HU-W1.1-02 with the requests routed to a human decision, the
 // append-only record of the advisor decisions and the state of the customer
-// notices. PENDING: the PostgreSQL inbox of origination; until then the
-// inbox and its decisions survive dependency failures but not a restart.
+// notices. The service uses it without DATABASE_URL: the inbox and its
+// decisions survive dependency failures but not a restart. With DATABASE_URL
+// it uses postgres.ReviewStore instead (fix C5).
 type ReviewQueueStub struct {
 	mu    sync.Mutex
 	cases map[string]domain.ReviewCase
@@ -37,7 +38,7 @@ func (q *ReviewQueueStub) Enqueue(ctx context.Context, req domain.ReviewRequest)
 	if _, ok := q.cases[req.AcceptanceID]; ok {
 		return nil
 	}
-	q.cases[req.AcceptanceID] = domain.ReviewCase{Request: req, Status: domain.ReviewPending}
+	q.cases[req.AcceptanceID] = cloneCase(domain.ReviewCase{Request: req, Status: domain.ReviewPending})
 	slog.InfoContext(ctx, "request routed to human decision", "acceptance_id", req.AcceptanceID, "offer_id", req.OfferID, "reason", req.Reason)
 	return nil
 }
@@ -168,8 +169,10 @@ func (q *ReviewQueueStub) UpdateNotification(_ context.Context, acceptanceID str
 	return nil
 }
 
-// cloneCase copies the case so callers never share its decision or notice.
+// cloneCase copies the case so callers never share its decision, its notice
+// or the coverages of its offer snapshot.
 func cloneCase(c domain.ReviewCase) domain.ReviewCase {
+	c.Request.Terms.Coverages = append([]domain.Coverage(nil), c.Request.Terms.Coverages...)
 	c.Decision = cloneDecision(c.Decision)
 	if c.Notification != nil {
 		n := *c.Notification

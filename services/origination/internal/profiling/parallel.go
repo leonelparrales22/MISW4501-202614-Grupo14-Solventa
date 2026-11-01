@@ -121,11 +121,11 @@ func (p *ParallelSource) FetchProfile(ctx context.Context, customerID string) (d
 			sourceCtx, cancelSource := context.WithTimeout(fanCtx, p.cfg.Budget)
 			defer cancelSource()
 			profile, err := s.Source.FetchProfile(sourceCtx, customerID)
-			results <- sourceResult{
-				index:   i,
-				profile: profile,
-				outcome: domain.SourceOutcome{Source: s.Name, Status: classify(sourceCtx, err), Latency: time.Since(start)},
+			outcome := domain.SourceOutcome{Source: s.Name, Status: classify(sourceCtx, err), Latency: time.Since(start), ConsultedAt: start.UTC()}
+			if outcome.Status == domain.SourceStatusOK {
+				outcome.Value = &domain.SourceValue{Score: profile.Score, Category: profile.Category}
 			}
+			results <- sourceResult{index: i, profile: profile, outcome: outcome}
 		}(i, s)
 	}
 
@@ -141,7 +141,7 @@ func (p *ParallelSource) FetchProfile(ctx context.Context, customerID string) (d
 	requiredArrived := p.cfg.Required == ""
 	for i, s := range p.sources {
 		if !answered[i] {
-			outcomes[i] = domain.SourceOutcome{Source: s.Name, Status: domain.SourceStatusTimeout, Latency: elapsed}
+			outcomes[i] = domain.SourceOutcome{Source: s.Name, Status: domain.SourceStatusTimeout, Latency: elapsed, ConsultedAt: start.UTC()}
 			continue
 		}
 		if outcomes[i].Status == domain.SourceStatusOK {

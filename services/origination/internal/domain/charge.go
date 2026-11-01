@@ -38,9 +38,24 @@ type PaymentMethod struct {
 	Last4        string
 	Installments int
 	// BankCode is the bank chosen for PSE. Empty for a card.
-	BankCode   string
+	BankCode string
+	// PayerType is whether the payer is a natural or a legal person, which
+	// PSE asks for before sending the customer to their bank. Empty for a
+	// card.
+	PayerType  PayerType
 	CapturedAt time.Time
 }
+
+// PayerType is what PSE needs to know about who pays (HU-W1.3-02).
+type PayerType string
+
+const (
+	PayerNatural PayerType = "natural"
+	PayerLegal   PayerType = "legal"
+)
+
+// ValidPayerType tells whether a payer type is one of the two PSE accepts.
+func ValidPayerType(t PayerType) bool { return t == PayerNatural || t == PayerLegal }
 
 // Captured tells whether the customer has handed over a payment method.
 func (p PaymentMethod) Captured() bool { return p.Kind != "" }
@@ -104,6 +119,12 @@ type Charge struct {
 	Channel        Channel
 	AcceptedAt     time.Time
 
+	// OfferExpiresAt is the validity of the offer behind the acceptance,
+	// snapshotted here because the offers live in memory (decision D-2).
+	// Screen E4c shows it so the customer knows how long the retry with
+	// another payment method is worth.
+	OfferExpiresAt time.Time
+
 	// Snapshot used to charge and to build the activation event.
 	Holder Applicant
 	// AmountMinor is the premium in minor units of Currency (cents).
@@ -118,23 +139,36 @@ type Charge struct {
 	NextAttemptAt time.Time
 	// ClaimedUntil is when the lease of the worker that holds the charge (or
 	// the publication of its activation) expires.
-	ClaimedUntil      time.Time
-	WindowStartedAt   time.Time
-	WindowEndsAt      time.Time
-	LastAttemptAt     time.Time
-	LastFailureAt     time.Time
-	FailureReason     ChargeFailureReason
-	LastError         string
+	ClaimedUntil    time.Time
+	WindowStartedAt time.Time
+	WindowEndsAt    time.Time
+	LastAttemptAt   time.Time
+	LastFailureAt   time.Time
+	FailureReason   ChargeFailureReason
+	LastError       string
+	// DeclineCode is the issuer's code when the gateway declined the charge
+	// (51 for insufficient funds, for instance). Unlike LastError, which is
+	// a diagnostic message for operations, this one is shown to the customer
+	// in screen E4c, so it stays a stable code the client translates.
+	DeclineCode string
+	// ProviderReference is the gateway's id for this charge, set whether it
+	// was confirmed or declined: it is what the customer quotes to the
+	// issuer.
 	ProviderReference string
 	ConfirmedAt       time.Time
 
 	// The coverage activation, set in the same write that confirms the
 	// charge (CA-4) and published afterwards.
-	PolicyID                string
-	ActivationEventID       string
-	ActivatedAt             time.Time
-	CoverageStart           time.Time
-	CoverageEnd             time.Time
+	PolicyID          string
+	ActivationEventID string
+	ActivatedAt       time.Time
+	CoverageStart     time.Time
+	CoverageEnd       time.Time
+	// RenewalOf and CoverageNotBefore are set on the charge of a policy
+	// renewal (HU-W1.5-02): the policy it renews and the earliest start of
+	// its coverage, which is when that policy ends.
+	RenewalOf               string
+	CoverageNotBefore       time.Time
 	ActivationPublishedAt   time.Time
 	ActivationAttempts      int
 	ActivationNextAttemptAt time.Time
@@ -199,6 +233,7 @@ func NewCharge(a Acceptance, offer Offer, terms CoverageTerms, now, windowEndsAt
 		AcceptanceID:    a.ID,
 		IdempotencyKey:  key,
 		OfferID:         offer.ID,
+		OfferExpiresAt:  offer.ExpiresAt,
 		CustomerID:      offer.CustomerID,
 		Channel:         a.Channel,
 		AcceptedAt:      a.AcceptedAt,
@@ -228,7 +263,12 @@ func (c Charge) Confirmed(at time.Time, providerReference string) Charge {
 	c.ActivationEventID = ActivationEventIDFor(c.AcceptanceID)
 	c.ActivatedAt = at
 	c.CoverageStart = at
-	c.CoverageEnd = at.AddDate(0, c.Terms.TermMonths, 0)
+	if c.CoverageNotBefore.After(at) {
+		// A renewal paid before the policy ends starts when it ends: no
+		// gap and no overlap (HU-W1.5-02).
+		c.CoverageStart = c.CoverageNotBefore
+	}
+	c.CoverageEnd = c.CoverageStart.AddDate(0, c.Terms.TermMonths, 0)
 	c.ActivationNextAttemptAt = at
 	c.UpdatedAt = at
 	return c
@@ -251,6 +291,7 @@ func (c Charge) ActivationEvent() CoverageActivated {
 		ActivatedAt:   c.ActivatedAt,
 		CoverageStart: c.CoverageStart,
 		CoverageEnd:   c.CoverageEnd,
+		RenewalOf:     c.RenewalOf,
 	}
 }
 

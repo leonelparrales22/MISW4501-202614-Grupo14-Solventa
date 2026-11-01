@@ -157,7 +157,7 @@ func TestContractConfigDefaults(t *testing.T) {
 	c := cfg.contracts
 	assert.True(t, c.enabled)
 	assert.Equal(t, "http://email:9030", c.emailURL)
-	assert.Equal(t, "/var/solventa/documents", c.documentsDir)
+	assert.Equal(t, "/var/solventa/documents", cfg.documents.dir)
 	assert.Equal(t, 2*time.Second, c.emailTimeout)
 	assert.Equal(t, 500*time.Millisecond, c.service.PollInterval)
 	assert.Equal(t, 10*time.Second, c.service.AttemptTimeout)
@@ -207,15 +207,15 @@ func TestContractConfigTakesExactlyOneDocumentStore(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.True(t, cfg.contracts.enabled)
-		assert.Equal(t, "solventa-stg-documents-368083581678", cfg.contracts.documentsBucket)
-		assert.Empty(t, cfg.contracts.documentsDir)
+		assert.Equal(t, "solventa-stg-documents-368083581678", cfg.documents.bucket)
+		assert.Empty(t, cfg.documents.dir)
 	})
 	t.Run("only the directory", func(t *testing.T) {
 		cfg, err := loadConfig(env(contractEnv()))
 
 		require.NoError(t, err)
-		assert.Empty(t, cfg.contracts.documentsBucket)
-		assert.Equal(t, "/var/solventa/documents", cfg.contracts.documentsDir)
+		assert.Empty(t, cfg.documents.bucket)
+		assert.Equal(t, "/var/solventa/documents", cfg.documents.dir)
 	})
 	t.Run("both", func(t *testing.T) {
 		m := contractEnv()
@@ -236,15 +236,29 @@ func TestContractConfigTakesExactlyOneDocumentStore(t *testing.T) {
 		assert.Contains(t, err.Error(), "DOCUMENTS_BUCKET")
 		assert.Contains(t, err.Error(), "DOCUMENTS_DIR")
 	})
-	t.Run("without EMAIL_URL nothing is required", func(t *testing.T) {
+	// Sin EMAIL_URL y sin registro, el repositorio no es obligatorio: se lee
+	// igual, porque el documento de identidad del registro (HU-M1.1-01) va al
+	// mismo sitio, pero nadie lo exige.
+	t.Run("without EMAIL_URL it is not required", func(t *testing.T) {
 		m := requiredEnv()
 		m["DOCUMENTS_BUCKET"] = "solventa-stg-documents-368083581678"
-		m["DOCUMENTS_DIR"] = "/var/solventa/documents"
 
 		cfg, err := loadConfig(env(m))
 
 		require.NoError(t, err)
 		assert.False(t, cfg.contracts.enabled)
+		assert.Equal(t, "solventa-stg-documents-368083581678", cfg.documents.bucket)
+	})
+	// Nombrar dos repositorios es una contradicción, con EMAIL_URL o sin ella.
+	t.Run("both without EMAIL_URL", func(t *testing.T) {
+		m := requiredEnv()
+		m["DOCUMENTS_BUCKET"] = "solventa-stg-documents-368083581678"
+		m["DOCUMENTS_DIR"] = "/var/solventa/documents"
+
+		_, err := loadConfig(env(m))
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "DOCUMENTS_BUCKET and DOCUMENTS_DIR are both set")
 	})
 }
 
@@ -269,7 +283,7 @@ func TestNewDocumentStoreRefusesAnUnreachableBucket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, _, err := newDocumentStore(ctx, contractConfig{documentsBucket: "solventa-stg-documents"})
+	_, _, err := newDocumentStore(ctx, documentsConfig{bucket: "solventa-stg-documents"})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"solventa-stg-documents" is not reachable`)
@@ -298,7 +312,7 @@ func TestNewDocumentStoreUsesTheBucketOfTheEnvironment(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	store, where, err := newDocumentStore(ctx, contractConfig{documentsBucket: "solventa-test-documents"})
+	store, where, err := newDocumentStore(ctx, documentsConfig{bucket: "solventa-test-documents"})
 
 	require.NoError(t, err)
 	assert.Equal(t, "s3://solventa-test-documents", where)
@@ -311,11 +325,14 @@ func TestNewDocumentStoreUsesTheBucketOfTheEnvironment(t *testing.T) {
 func TestNewDocumentStoreFallsBackToTheDirectory(t *testing.T) {
 	dir := t.TempDir()
 
-	_, where, err := newDocumentStore(context.Background(), contractConfig{documentsDir: dir})
+	_, where, err := newDocumentStore(context.Background(), documentsConfig{dir: dir})
 
 	require.NoError(t, err)
 	abs, _ := filepath.Abs(dir)
 	assert.Equal(t, abs, where)
+
+	_, _, err = newDocumentStore(context.Background(), documentsConfig{})
+	assert.Error(t, err, "sin bucket y sin directorio no hay repositorio")
 }
 
 func TestContractConfigRejectsInvalidValues(t *testing.T) {
@@ -355,7 +372,9 @@ func TestNewContractWiringStartsTheWorkerAndServesTheDocument(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	wiring, err := newContractWiring(ctx, cfg.contracts)
+	store, where, err := newDocumentStore(ctx, cfg.documents)
+	require.NoError(t, err)
+	wiring, err := newContractWiring(ctx, cfg.contracts, store, where, nil)
 	require.NoError(t, err)
 
 	now := time.Now().UTC()
@@ -384,9 +403,9 @@ func TestNewContractWiringStartsTheWorkerAndServesTheDocument(t *testing.T) {
 }
 
 func TestNewContractWiringRejectsABadSetup(t *testing.T) {
-	_, err := newContractWiring(context.Background(), contractConfig{documentsDir: "", linkSecret: "0123456789abcdef0123456789abcdef"})
-	assert.Error(t, err, "no directory")
+	store, where, err := newDocumentStore(context.Background(), documentsConfig{dir: t.TempDir()})
+	require.NoError(t, err)
 
-	_, err = newContractWiring(context.Background(), contractConfig{documentsDir: t.TempDir(), linkSecret: "short"})
+	_, err = newContractWiring(context.Background(), contractConfig{linkSecret: "short"}, store, where, nil)
 	assert.Error(t, err, "short secret")
 }
