@@ -16,4 +16,5 @@ use (
 	./stubs/iot
 	./stubs/embedded-partner
 	./stubs/policy-core
+	./stubs/push
 )

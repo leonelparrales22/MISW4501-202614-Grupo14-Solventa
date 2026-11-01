@@ -1,0 +1,99 @@
+# HU-M3.1-01 local backend for the mobile app: the real notifications service
+# with its PostgreSQL, LocalStack with the claims topic and the notifications
+# queue (localstack/init-messaging.sh), and the push provider stub. The human
+# routes verify the tokens of the permanent user pool (written by
+# app-local.sh), so the insured signs in on the emulator. Build context is
+# the repository root.
+#
+# run.sh uses Moto as the Cognito of the human routes instead (it seeds the
+# insured asegurado.local@example.com with tests/security/ha-s01/local/seed.sh).
+#
+# Published ports (127.0.0.1 only, configurable, chosen not to collide with
+# tests/e2e/hu-m1.2 and hu-m1.3): notifications 8393, LocalStack 4577, Moto
+# 5131 and the push stub 9393 (its GET /messages shows what the device would
+# have got).
+name: hu-m3-1-local
+
+x-aws-local: &aws-local
+  AWS_REGION: us-east-2
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_EC2_METADATA_DISABLED: "true"
+
+services:
+  postgres-notifications:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=notifications
+      - POSTGRES_USER=notifications
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notifications -d notifications"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # LocalStack 4.14.0: the last image that starts without an auth token
+  # (decision D-10 a of HA-D02).
+  localstack:
+    image: localstack/localstack:4.14.0
+    ports:
+      - "127.0.0.1:${LOCALSTACK_PORT:-4577}:4566"
+    environment:
+      - SERVICES=sns,sqs
+      - AWS_DEFAULT_REGION=us-east-2
+    volumes:
+      - ./localstack/init-messaging.sh:/etc/localstack/init/ready.d/init-messaging.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal --region us-east-2 sns list-subscriptions-by-topic --topic-arn arn:aws:sns:us-east-2:000000000000:solventa-local-claims --query 'length(Subscriptions)' --output text | grep -q '^1$'"]
+      interval: 3s
+      timeout: 10s
+      retries: 60
+
+  moto:
+    image: motoserver/moto:5.2.3
+    ports:
+      - "127.0.0.1:${MOTO_PORT:-5131}:5000"
+    environment:
+      - MOTO_COGNITO_IDP_USER_POOL_ID_STRATEGY=HASH
+      - MOTO_COGNITO_IDP_USER_POOL_CLIENT_ID_STRATEGY=HASH
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/moto-api/')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  push:
+    build:
+      context: ../../..
+      dockerfile: stubs/push/Dockerfile
+    ports:
+      - "127.0.0.1:${PUSH_PORT:-9393}:9070"
+    environment:
+      PORT: "9070"
+      # The first N pushes answer 503: the retries of criterion 7.
+      FAIL_FIRST: ${PUSH_FAIL_FIRST:-0}
+
+  notifications:
+    build:
+      context: ../../..
+      dockerfile: services/notifications/Dockerfile
+    ports:
+      - "127.0.0.1:${NOTIFICATIONS_PORT:-8393}:8080"
+    environment:
+      <<: *aws-local
+      PORT: "8080"
+      DATABASE_URL: postgres://notifications:${PG_PASSWORD:-}@postgres-notifications:5432/notifications?sslmode=disable
+      AUTH_ISSUER: ${AUTH_ISSUER:-}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
+      AUTH_CLIENT_IDS: ${AUTH_CLIENT_IDS:-}
+      EVENTS_QUEUE_URL: http://localstack:4566/000000000000/solventa-local-notifications
+      AWS_ENDPOINT_URL_SQS: http://localstack:4566
+      PUSH_PROVIDER_URL: http://push:9070
+    depends_on:
+      postgres-notifications:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      push:
+        condition: service_started
