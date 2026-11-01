@@ -56,10 +56,11 @@ locals {
       consumes  = []
     }
     partners = {
-      priority  = 3
-      paths     = ["/v1/partners*"]
-      buckets   = []
-      publishes = []
+      priority = 3
+      paths    = ["/v1/partners*"]
+      buckets  = []
+      # HU-W3.1-01: the credential events of the partners go to audit.
+      publishes = ["partners"]
       consumes  = []
     }
     audit = {
@@ -116,10 +117,11 @@ locals {
 
   # Events of docs/events/README.md: one topic per publishing domain and one
   # queue per consumer.
-  topics = toset(["origination", "claims"])
+  topics = toset(["origination", "claims", "partners"])
   queues = {
-    origination   = { topics = ["origination"] } # contractual document (HU-W1.3-03)
-    audit         = { topics = ["origination", "claims"] }
+    origination = { topics = ["origination"] } # contractual document (HU-W1.3-03)
+    # partners: audit record of the partner credentials (HU-W3.1-01).
+    audit         = { topics = ["origination", "claims", "partners"] }
     notifications = { topics = ["origination", "claims"] }
   }
 
@@ -420,6 +422,27 @@ locals {
         actions   = ["cognito-idp:AdminCreateUser", "cognito-idp:AdminSetUserPassword", "cognito-idp:AdminAddUserToGroup"]
         resources = [local.cognito.user_pool_arn]
       }],
+      # HU-W3.1-01: partners creates the usage plan and the API keys of each
+      # partner on the stage of this API and reads their daily usage. Only
+      # the API keys, the usage plans (and their keys and usage) and a read of
+      # the stage: it cannot touch the resources, methods or deployments.
+      # One resource per statement (/apikeys* covers /apikeys and its keys,
+      # /usageplans* the plans, their keys and their usage).
+      k != "partners" ? [] : [{
+        sid       = "ManageThePartnerApiKeys"
+        actions   = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:DELETE"]
+        resources = ["arn:aws:apigateway:${data.aws_region.current.region}::/apikeys*"]
+      }],
+      k != "partners" ? [] : [{
+        sid       = "ManageThePartnerUsagePlans"
+        actions   = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:DELETE"]
+        resources = ["arn:aws:apigateway:${data.aws_region.current.region}::/usageplans*"]
+      }],
+      k != "partners" ? [] : [{
+        sid       = "ReadTheStageOfThePartnerPlans"
+        actions   = ["apigateway:GET"]
+        resources = ["arn:aws:apigateway:${data.aws_region.current.region}::/restapis/${module.apigateway.rest_api_id}/stages/${module.apigateway.stage_name}"]
+      }],
     )
   }
 
@@ -482,6 +505,24 @@ locals {
       EVENTS_QUEUE_URL                   = module.messaging.queue_urls["audit"]
       OPEN_FINANCE_URL                   = "http://openfinance.${local.namespace}:${local.stubs.openfinance}"
       REVOCATION_NOTICE_DEADLINE_SECONDS = "300"
+    }
+
+    # HU-W3.1-01: the operations portal registers and approves the partners
+    # and rotates their credentials (human routes, Cognito). The credentials
+    # are API keys in a usage plan per partner on the stage of this API, so
+    # the gateway enforces each quota and answers 429 only to that partner;
+    # the credential events go to the partners topic, which audit consumes.
+    partners = {
+      PORT                          = tostring(local.service_port)
+      AWS_REGION                    = data.aws_region.current.region
+      ENVIRONMENT                   = var.environment
+      AUTH_ISSUER                   = local.cognito.issuer
+      AUTH_JWKS_URL                 = local.cognito.jwks_url
+      AUTH_CLIENT_IDS               = join(",", values(local.cognito.client_ids))
+      GATEWAY_REST_API_ID           = module.apigateway.rest_api_id
+      GATEWAY_STAGE_NAME            = module.apigateway.stage_name
+      CREDENTIAL_GRACE_PERIOD_HOURS = "24"
+      EVENTS_TOPIC_ARN              = module.messaging.topic_arns["partners"]
     }
 
     # Claims serves the filing of the mobile assistant (HU-M2.2-01), which is

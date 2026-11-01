@@ -11,7 +11,9 @@ API REST regional delante del servicio `origination` para el recorrido de cotiza
   encabezado `x-api-key`. Dos socios que piden el mismo cliente nunca comparten la entrada.
 - **Rate limiting (CA-5):** cada socio de `partners` tiene su API key y su *usage plan* con `rate_limit` / `burst_limit`
   (decisión D-7: 100 req/s, ráfaga 200). Todas las rutas de cotización exigen API key; un socio por encima de su límite recibe `429` sin
-  afectar a los demás.
+  afectar a los demás. **HU-W3.1-01:** los socios aprobados desde el portal tienen además un usage plan con cuota diaria que crea el
+  servicio `partners` (fuera de este estado de Terraform), y las respuestas `QUOTA_EXCEEDED` y `THROTTLED` responden `429` con el
+  cuerpo estándar `{"error":"rate_limited","message":"…"}` (y los encabezados CORS si hay canal humano).
 - **Integración:** `HTTP_PROXY` con timeout de 5 s (ADR-02 / EXP-D03). Con `vpc_link_v2_id` e `integration_target_arn` es una
   integración privada a un ALB interno por **VPC Link V2** (soportado en REST desde el proveedor `hashicorp/aws` 6.x, atributo
   `integration_target`); `backend_base_url` fija el encabezado `Host` y la ruta. Sin VPC link, la integración es pública

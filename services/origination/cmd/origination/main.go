@@ -45,6 +45,7 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/rating"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/renewal"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/underwriting"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/wallet"
 )
 
 const serviceName = "origination"
@@ -146,6 +147,9 @@ func main() {
 		// The customers (HU-M1.1-01) are in origination's stores: PostgreSQL
 		// with DATABASE_URL, with or without the payment gateway.
 		customers := st.customers
+		// HU-M1.2-01: the wallet lists the policies origination issued (with
+		// the premium charge) next to the ones of the policy core.
+		var issued wallet.RenewalLister
 		if cfg.billing.enabled {
 			// HU-W1.5-02: every activation is also projected into the
 			// policies the insured sees and renews.
@@ -161,9 +165,11 @@ func main() {
 				log.Fatalf("could not set up the policy renewal: %v", err)
 			}
 			opts = append(opts, httpadapter.WithPolicies(renewals, verifier))
+			issued = renewals
 		} else {
 			logWithoutBilling(cfg.contracts.enabled)
 		}
+		opts = append(opts, walletOptions(issued, newPolicyPortfolio(cfg.policyCore), verifier)...)
 		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
 			httpadapter.WithAcceptances(acceptances, verifier),
@@ -265,6 +271,9 @@ type config struct {
 
 	// Personalized offer (HU-W1.2-03).
 	offers offerConfig
+
+	// Policy core read by the wallet (HU-M1.2-01).
+	policyCore policyCoreConfig
 }
 
 // acceptanceConfig configures the offer acceptance (HU-W1.3-01). Its routes
@@ -585,6 +594,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadEventsConfig(getenv, &cfg.events); err != nil {
+		return config{}, err
+	}
+	if err := loadPolicyCoreConfig(getenv, &cfg.policyCore); err != nil {
 		return config{}, err
 	}
 	return cfg, nil

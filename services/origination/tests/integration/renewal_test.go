@@ -28,6 +28,7 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/profiling"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/rating"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/renewal"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/wallet"
 )
 
 // shiftClock is the wall clock moved forward by the test, shared by the
@@ -106,10 +107,15 @@ func newRenewalEnv(t *testing.T) *renewalEnv {
 		Notifier: e.notices, Rules: domain.DefaultRenewalPolicy, Clock: e.clock, Wake: worker.Notify,
 	})
 	require.NoError(t, err)
+	// HU-M1.2-01: the list of the policies is the wallet's GET /v1/policies,
+	// here with origination's policies as its only source.
+	policyWallet, err := wallet.NewService(e.svc, nil, e.clock)
+	require.NoError(t, err)
 
 	e.srv = httptest.NewServer(httpadapter.NewRouter(profiling.NewResolver(nil, nil, e.clock),
 		httpadapter.WithObservability("origination"),
 		httpadapter.WithPolicies(e.svc, subjectVerifier{}),
+		httpadapter.WithPolicyWallet(policyWallet, subjectVerifier{}),
 		httpadapter.WithCharges(billing.NewService(e.charges, e.clock, policy, worker.Notify), subjectVerifier{})))
 	t.Cleanup(e.srv.Close)
 	e.acc = &acceptanceEnv{srv: e.srv}

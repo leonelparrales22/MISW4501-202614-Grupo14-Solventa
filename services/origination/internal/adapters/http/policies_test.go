@@ -2,7 +2,6 @@ package httpadapter_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -21,17 +20,12 @@ import (
 )
 
 type fakeRenewals struct {
-	views      []renewal.PolicyView
 	conditions renewal.Conditions
 	accepted   renewal.Accepted
 	renewal    domain.Renewal
 	charge     domain.Charge
 	err        error
 	gotID      string
-}
-
-func (f *fakeRenewals) ListPolicies(context.Context) ([]renewal.PolicyView, error) {
-	return f.views, f.err
 }
 
 func (f *fakeRenewals) Conditions(_ context.Context, id string) (renewal.Conditions, error) {
@@ -69,27 +63,6 @@ func callPolicies(t *testing.T, svc *fakeRenewals, method, path, token string) *
 	httpadapter.NewRouter(&fakeResolver{}, httpadapter.WithObservability("origination"),
 		httpadapter.WithPolicies(svc, tokenVerifier{})).ServeHTTP(rec, req)
 	return rec
-}
-
-func TestListPoliciesShowsTheWindowAndTheRenewalOfEachOne(t *testing.T) {
-	p := renewalPolicy()
-	svc := &fakeRenewals{views: []renewal.PolicyView{{
-		Policy: p, CanRenew: true, WindowOpensAt: policyEndsAt.AddDate(0, 0, -30), WindowClosesAt: policyEndsAt,
-	}}}
-
-	rec := callPolicies(t, svc, http.MethodGet, "/v1/policies", "insured:sub-1")
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
-	var body struct {
-		Items []map[string]any `json:"items"`
-	}
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	require.Len(t, body.Items, 1)
-	assert.Equal(t, "pol-1", body.Items[0]["policy_id"])
-	assert.Equal(t, true, body.Items[0]["can_renew"])
-	assert.Nil(t, body.Items[0]["renewal"])
-	assert.NotContains(t, rec.Body.String(), "email", "the list carries no contact data")
 }
 
 func TestRenewalConditionsShowBothSidesAndNeverTheToken(t *testing.T) {
@@ -160,7 +133,7 @@ func TestRenewalErrorsHaveStableCodes(t *testing.T) {
 func TestPolicyRoutesAreOnlyForTheInsured(t *testing.T) {
 	svc := &fakeRenewals{}
 	for _, route := range [][2]string{
-		{http.MethodGet, "/v1/policies"}, {http.MethodGet, "/v1/policies/pol-1/renewal"},
+		{http.MethodGet, "/v1/policies/pol-1/renewal"},
 		{http.MethodPost, "/v1/policies/pol-1/renewal"}, {http.MethodGet, "/v1/policies/pol-1/renewal/status"},
 	} {
 		assert.Equal(t, http.StatusUnauthorized, callPolicies(t, svc, route[0], route[1], "").Code, "no token: "+route[1])
