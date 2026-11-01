@@ -11,11 +11,12 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/consents"
 )
 
-// The 401/403/2xx matrix of the three routes of the compliance portal
-// (HU-W4.2-02, criterion 6), template of catalog_test.go (HA-S01). Only the
-// operations role reaches them; every other caller is refused before the use
-// case is called. The routes are mounted next to the other human routes of
-// audit, as cmd/audit does, so a clash of paths would show here.
+// The 401/403/2xx matrix of the routes of the compliance portal (HU-W4.2-02,
+// criterion 6, and the list of HU-W4.2-01, criterion 6), template of
+// catalog_test.go (HA-S01). Only the operations role reaches them; every
+// other caller is refused before the use case is called. The routes are
+// mounted next to the other human routes of audit, as cmd/audit does, so a
+// clash of paths would show here.
 
 func TestEveryComplianceRouteNeedsOperations(t *testing.T) {
 	svc := consents.NewService(&memStore{}, &fixedClock{now: granted})
@@ -33,29 +34,31 @@ func TestEveryComplianceRouteNeedsOperations(t *testing.T) {
 			path: "/v1/audit/consents/cns-c-active/revocations", success: http.StatusCreated, body: portalBody, key: validKey},
 		{method: http.MethodPost, pattern: "POST /v1/audit/consents/{consent_id}/revocation-retries",
 			path: "/v1/audit/consents/cns-c-partial/revocation-retries", success: http.StatusAccepted},
+		{method: http.MethodGet, pattern: "GET /v1/audit/consents", path: "/v1/audit/consents?status=revoked", success: http.StatusOK},
 	}
 	callers := []string{"", "forged", "insured-a", "operations", "advisor", "partner"}
 
 	for _, rt := range routes {
 		for _, caller := range callers {
 			t.Run(fmt.Sprintf("%s/%q", rt.pattern, caller), func(t *testing.T) {
-				fake := newComplianceFake()
+				fake, lister := newComplianceFake(), &listFake{}
 				router := httpadapter.NewRouter(httpadapter.WithConsents(svc), httpadapter.WithConsentReads(svc, verifier),
 					httpadapter.WithHolderConsents(holder, verifier), httpadapter.WithHolderRevocations(holder, newRevocationFake(), verifier),
-					httpadapter.WithComplianceRevocations(fake, verifier))
+					httpadapter.WithComplianceRevocations(fake, verifier), httpadapter.WithComplianceConsents(lister, verifier))
 
 				rec := complianceDo(router, rt.method, rt.path, caller, rt.body, withKey(rt.key))
+				calls := fake.calls() + lister.count()
 
 				switch caller {
 				case "", "forged":
 					assert.Equal(t, http.StatusUnauthorized, rec.Code)
-					assert.Zero(t, fake.calls(), "nothing is executed")
+					assert.Zero(t, calls, "nothing is executed")
 				case "operations":
 					assert.Equal(t, rt.success, rec.Code, rec.Body.String())
-					assert.Equal(t, 1, fake.calls())
+					assert.Equal(t, 1, calls)
 				default:
 					assert.Equal(t, http.StatusForbidden, rec.Code)
-					assert.Zero(t, fake.calls(), "criterion 6: the operation is not executed")
+					assert.Zero(t, calls, "criterion 6: the operation is not executed")
 				}
 			})
 		}
@@ -76,4 +79,28 @@ func TestTheEvidenceAndTheComplianceRoutesDoNotClash(t *testing.T) {
 
 	state := complianceDo(router, http.MethodGet, "/v1/audit/consents/cns-c-active/revocation", "advisor", "", nil)
 	assert.Equal(t, http.StatusForbidden, state.Code, "the advisor reads the evidence but not the revocation")
+}
+
+// The list of HU-W4.2-01 and the grant of the partner channel share the path
+// /v1/audit/consents (decision D-1 a): the GET needs the token of operations
+// and the POST keeps entering without one (the API key is checked at the API
+// Gateway).
+func TestTheListAndThePartnerGrantShareThePathWithTheirOwnGuards(t *testing.T) {
+	svc := consents.NewService(&memStore{}, &fixedClock{now: granted})
+	verifier := complianceVerifier()
+	lister := &listFake{}
+	router := httpadapter.NewRouter(httpadapter.WithConsents(svc), httpadapter.WithConsentReads(svc, verifier),
+		httpadapter.WithComplianceRevocations(newComplianceFake(), verifier), httpadapter.WithComplianceConsents(lister, verifier))
+	grant := `{"customer_id":"cust-1","document_id":"1020304050","full_name":"Ana María Pérez","terms_version":"v1",
+		"accepted_sources":["open_finance","open_data","kyc"],"accepted_data_policy":true,"channel":"embedded",
+		"partner_id":"aliado-banco-1","application_id":"app-1"}`
+
+	post := complianceDo(router, http.MethodPost, "/v1/audit/consents", "", grant, nil)
+	assert.Equal(t, http.StatusCreated, post.Code, "the partner grants without a Cognito token: %s", post.Body.String())
+
+	assert.Equal(t, http.StatusUnauthorized, complianceDo(router, http.MethodGet, "/v1/audit/consents", "", "", nil).Code)
+	assert.Equal(t, http.StatusForbidden, complianceDo(router, http.MethodGet, "/v1/audit/consents", "partner", "", nil).Code)
+	assert.Equal(t, http.StatusOK, complianceDo(router, http.MethodGet, "/v1/audit/consents", "operations", "", nil).Code)
+	assert.Equal(t, 1, lister.count())
+	assert.Equal(t, http.StatusMethodNotAllowed, complianceDo(router, http.MethodPut, "/v1/audit/consents", "operations", "", nil).Code)
 }

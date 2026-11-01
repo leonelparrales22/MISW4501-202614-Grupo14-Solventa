@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - audit service
-  version: 0.5.0
+  version: 0.6.0
   description: >
     Audit and consents. HU-W1.2-01: the explicit, immutable consent of the
     customer to be profiled. HU-M1.3-01: the insured reads their own consents
@@ -17,6 +17,11 @@ info:
     mounted only when the service has its DATABASE_URL; the evidence lookup,
     the holder's routes and the compliance routes also need AUTH_*. 0.5.0 is
     also the first version that declares the decision routes of HU-W4.1-01.
+    0.6.0, HU-W4.2-01: the compliance portal lists every consent
+    (GET /v1/audit/consents, operations role) with filters by status, grant
+    days, entity and a search, pages that keep the filter, the total and four
+    indicators; the state of the portal gains the grant, the validity, the
+    purpose and the channels (additive).
 paths:
   /health:
     get:
@@ -62,6 +67,119 @@ paths:
                     data_categories: [identity_verification]
                     validity: single_use
   /v1/audit/consents:
+    get:
+      operationId: listComplianceConsents
+      summary: List of consents for the compliance portal (HU-W4.2-01 CA-1, CA-2, CA-3, CA-5, CA-6)
+      description: >
+        Every consent of Open Finance, most recently granted first, with its
+        status derived at the time of the query (active, revoked, partially
+        revoked or expired: any revocation from the app or the portal shows
+        in the next query). The filters combine with AND and the pages keep
+        them; a page after the last one answers 200 with no items and the
+        real totals. The indicators count every consent, whatever the
+        filter. The holder is shown with the masked document; the search
+        compares the full document exactly. Human route: only the operations
+        role. The same path keeps its POST, the grant of the partner channel,
+        which enters with the API key and no token: the authorization is per
+        method.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, revoked, partially_revoked, expired]
+        - name: granted_from
+          in: query
+          required: false
+          description: First day of grant, a civil day of Colombia (UTC-5), inclusive.
+          schema:
+            type: string
+            format: date
+        - name: granted_to
+          in: query
+          required: false
+          description: >
+            Last day of grant, a civil day of Colombia (UTC-5), inclusive. A
+            day before granted_from answers 400 (out_of_range).
+          schema:
+            type: string
+            format: date
+        - name: entity
+          in: query
+          required: false
+          description: Code of the entity (the partner the consent was granted through).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: "^[A-Za-z0-9_-]+$"
+        - name: q
+          in: query
+          required: false
+          description: >
+            A consent id (exact), a holder document (exact, only its letters
+            and digits are compared, never a prefix) or a part of the holder
+            name (without capitals or accents). Surrounding spaces are
+            ignored.
+          schema:
+            type: string
+            maxLength: 100
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 2147483647
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: The page of the list
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceConsentPage"
+        "400":
+          description: Invalid parameters (every invalid parameter is listed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "401":
+          description: Missing, invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The role is not operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The consents could not be listed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     post:
       summary: Record the explicit consent of the customer (HU-W1.2-01 CA-2)
       description: >
@@ -1376,7 +1494,7 @@ components:
             $ref: "#/components/schemas/ComplianceRevocationEntity"
     ComplianceHistoryEntry:
       type: object
-      required: [status, occurred_at, entity_code, actor_type, reason, reference]
+      required: [status, occurred_at, entity_code, actor_type, channel, reason, reference]
       properties:
         status:
           type: string
@@ -1396,6 +1514,14 @@ components:
           type: string
           nullable: true
           description: holder, operations or system; null for the synthetic entries.
+        channel:
+          type: string
+          nullable: true
+          description: >
+            HU-W4.2-01: the channel of the grant (embedded) or of the
+            revocation (mobile_app, compliance_portal); null for the events of
+            an entity and for the expiry.
+          example: embedded
         reason:
           type: string
           nullable: true
@@ -1404,7 +1530,21 @@ components:
           nullable: true
     ComplianceRevocationState:
       type: object
-      required: [consent_id, status, revocable, holder, scope, entities, revocation, history]
+      required:
+        - consent_id
+        - status
+        - revocable
+        - holder
+        - granted_at
+        - expires_at
+        - ended_at
+        - purpose
+        - grant_channel
+        - terms_version
+        - scope
+        - entities
+        - revocation
+        - history
       properties:
         consent_id:
           type: string
@@ -1424,6 +1564,31 @@ components:
               type: string
               description: Only the last 4 characters are visible; the full document is only in the evidence.
               example: "******4050"
+        granted_at:
+          type: string
+          format: date-time
+          description: HU-W4.2-01. When the customer granted it (server time).
+        expires_at:
+          type: string
+          format: date-time
+          description: HU-W4.2-01. 12 months after granted_at; the end of its validity.
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: HU-W4.2-01. When it stopped being current (revoked or expired); null while it is.
+        purpose:
+          type: string
+          description: HU-W4.2-01. The purpose of the terms consented to.
+          example: risk_profiling_mortgage_life_offer
+        grant_channel:
+          type: string
+          description: HU-W4.2-01. The channel the customer granted it through.
+          example: embedded
+        terms_version:
+          type: string
+          description: HU-W4.2-01. The version of the terms shown and recorded.
+          example: v1
         scope:
           type: array
           items:
@@ -1441,6 +1606,135 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ComplianceHistoryEntry"
+    ComplianceConsentSummary:
+      type: object
+      description: One row of the list of the compliance portal (HU-W4.2-01 CA-1).
+      required: [consent_id, holder, granted_at, expires_at, ended_at, status, revocation, grant_channel, scope, entities]
+      properties:
+        consent_id:
+          type: string
+        holder:
+          type: object
+          required: [full_name, document_masked]
+          properties:
+            full_name:
+              type: string
+            document_masked:
+              type: string
+              description: Only the last 4 characters are visible (decision D-4 a).
+              example: "******4050"
+        granted_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When it stopped being current (revoked or expired); null while it is.
+        status:
+          type: string
+          enum: [active, expired, revoked, partially_revoked]
+          description: Derived at the time of the query.
+        revocation:
+          type: object
+          nullable: true
+          description: The revocation that ended the consent; null when it was not revoked.
+          required: [effective_at, channel, notice_status]
+          properties:
+            effective_at:
+              type: string
+              format: date-time
+            channel:
+              type: string
+              description: mobile_app when the holder revoked it, compliance_portal when the portal did.
+              example: mobile_app
+            notice_status:
+              type: string
+              enum: [in_progress, completed, partial]
+        grant_channel:
+          type: string
+          example: embedded
+        scope:
+          type: array
+          description: The authorized scope, a copy of the terms consented to.
+          items:
+            $ref: "#/components/schemas/SourceTerm"
+        entities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Entity"
+    ComplianceConsentIndicators:
+      type: object
+      description: >
+        The four cards of the list over every consent, whatever the filter:
+        active and expired consents now; revoked and partially revoked ones
+        whose revocation took effect in the last 30 days, by channel; and
+        every revocation in which some entity did not confirm within its first
+        window of 5 minutes (RN-02), even if a retry later succeeded.
+      required: [active, expired, revoked_last_30_days, revocations_out_of_deadline, as_of]
+      properties:
+        active:
+          type: integer
+          minimum: 0
+        expired:
+          type: integer
+          minimum: 0
+        revoked_last_30_days:
+          type: object
+          required: [total, mobile_app, compliance_portal]
+          properties:
+            total:
+              type: integer
+              minimum: 0
+              description: Every channel.
+            mobile_app:
+              type: integer
+              minimum: 0
+            compliance_portal:
+              type: integer
+              minimum: 0
+        revocations_out_of_deadline:
+          type: integer
+          minimum: 0
+        as_of:
+          type: string
+          format: date-time
+          description: The instant the list and the indicators were computed at.
+    ComplianceConsentPage:
+      type: object
+      required: [items, page, page_size, total_items, total_pages, indicators, entities]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ComplianceConsentSummary"
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 50
+        total_items:
+          type: integer
+          minimum: 0
+          description: The consents that meet the filters.
+        total_pages:
+          type: integer
+          minimum: 1
+          description: At least 1, so an empty list is page 1 of 1.
+        indicators:
+          $ref: "#/components/schemas/ComplianceConsentIndicators"
+        entities:
+          type: array
+          description: >
+            The options of the filter by entity: the entities with a display
+            name and the ones that have a consent, by name.
+          items:
+            $ref: "#/components/schemas/Entity"
     ComplianceRetryResult:
       type: object
       required: [retried_entities, state]

@@ -221,6 +221,7 @@ func revocationView(c Consent, revoked ConsentEvent, own, sorted []ConsentEvent,
 		RequestedAt: requestedAt.UTC(), EffectiveAt: revoked.OccurredAt.UTC(),
 		Channel: revoked.Channel, Device: revoked.Device,
 		Summary: summarize(notices, partial), Entities: notices,
+		OutOfDeadline: revocationOutOfDeadline(revoked, entityEvents, now),
 	}
 }
 

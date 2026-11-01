@@ -78,22 +78,36 @@ type complianceHistoryBody struct {
 	OccurredAt time.Time `json:"occurred_at"`
 	EntityCode *string   `json:"entity_code"`
 	ActorType  *string   `json:"actor_type"`
-	Reason     *string   `json:"reason"`
-	Reference  *string   `json:"reference"`
+	// Channel is the channel of the grant or of the revocation (HU-W4.2-01);
+	// null for an event without one (an entity, the expiry).
+	Channel   *string `json:"channel"`
+	Reason    *string `json:"reason"`
+	Reference *string `json:"reference"`
 }
 
 // complianceStateBody is the consent as the compliance portal sees it. The
 // document is masked (the full one is only in the evidence) and the
-// idempotency key of the revocation is never shown.
+// idempotency key of the revocation is never shown. HU-W4.2-01 (decision D-3
+// a) adds, without changing any field of HU-W4.2-02, what the detail needs
+// for its criterion 4: the grant, the expiry, the end of the validity, the
+// purpose, the channel and the version of the terms.
 type complianceStateBody struct {
-	ConsentID  string                    `json:"consent_id"`
-	Status     string                    `json:"status"`
-	Revocable  bool                      `json:"revocable"`
-	Holder     complianceHolderBody      `json:"holder"`
-	Scope      []sourceTermBody          `json:"scope"`
-	Entities   []entityBody              `json:"entities"`
-	Revocation *complianceRevocationBody `json:"revocation"`
-	History    []complianceHistoryBody   `json:"history"`
+	ConsentID string               `json:"consent_id"`
+	Status    string               `json:"status"`
+	Revocable bool                 `json:"revocable"`
+	Holder    complianceHolderBody `json:"holder"`
+	GrantedAt time.Time            `json:"granted_at"`
+	ExpiresAt time.Time            `json:"expires_at"`
+	// EndedAt is when it stopped being current (revoked or expired); null
+	// while it is.
+	EndedAt      *time.Time                `json:"ended_at"`
+	Purpose      string                    `json:"purpose"`
+	GrantChannel string                    `json:"grant_channel"`
+	TermsVersion string                    `json:"terms_version"`
+	Scope        []sourceTermBody          `json:"scope"`
+	Entities     []entityBody              `json:"entities"`
+	Revocation   *complianceRevocationBody `json:"revocation"`
+	History      []complianceHistoryBody   `json:"history"`
 }
 
 type complianceRetryBody struct {
@@ -103,10 +117,13 @@ type complianceRetryBody struct {
 
 func complianceStateFrom(s domain.ComplianceState) complianceStateBody {
 	v := s.View
+	c := v.Consent
 	out := complianceStateBody{
-		ConsentID: v.Consent.ID, Status: string(v.Status), Revocable: v.Revocable,
-		Holder:   complianceHolderBody{FullName: v.Consent.Holder.FullName, DocumentMasked: domain.MaskDocument(v.Consent.Holder.DocumentID)},
-		Scope:    sourceBodies(v.Consent.Scope),
+		ConsentID: c.ID, Status: string(v.Status), Revocable: v.Revocable,
+		Holder:    complianceHolderBody{FullName: c.Holder.FullName, DocumentMasked: domain.MaskDocument(c.Holder.DocumentID)},
+		GrantedAt: c.GrantedAt.UTC(), ExpiresAt: c.ExpiresAt().UTC(), EndedAt: optionalTime(v.EndedAt),
+		Purpose: c.Purpose, GrantChannel: string(c.Channel), TermsVersion: string(c.TermsVersion),
+		Scope:    sourceBodies(c.Scope),
 		Entities: make([]entityBody, 0, len(v.Entities)),
 		History:  make([]complianceHistoryBody, 0, len(s.History)),
 	}
@@ -133,7 +150,7 @@ func complianceStateFrom(s domain.ComplianceState) complianceStateBody {
 	for _, e := range s.History {
 		out.History = append(out.History, complianceHistoryBody{
 			Status: e.Status, OccurredAt: e.OccurredAt.UTC(), EntityCode: optional(e.EntityCode), ActorType: optional(e.ActorType),
-			Reason: optional(e.Reason), Reference: optional(e.Reference),
+			Channel: optional(e.Channel), Reason: optional(e.Reason), Reference: optional(e.Reference),
 		})
 	}
 	return out

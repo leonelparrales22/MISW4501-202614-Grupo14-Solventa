@@ -245,12 +245,15 @@ variable "partner_routes" {
 }
 
 variable "human_subroutes" {
-  description = "Human-channel sub-paths under a partner route, behind the Cognito authorizer (HU-W4.2-02). Key: the key of a partner route. Default: /v1/audit/consents/{proxy+} with GET and POST, which publishes the evidence of the consent (GET /v1/audit/consents/{consent_id}, HU-W1.2-01, decision D-23 c) and the revocation of the compliance portal (GET .../revocation, POST .../revocations and .../revocation-retries). Only that {proxy+} is created: audit is never a human route, because GET /v1/audit/consent-verifications and POST /v1/audit/decisions are internal to the VPC and carry no token."
+  description = "Human-channel sub-paths under a partner route, behind the Cognito authorizer (HU-W4.2-02). Key: the key of a partner route. Default: /v1/audit/consents/{proxy+} with GET and POST, which publishes the evidence of the consent (GET /v1/audit/consents/{consent_id}, HU-W1.2-01, decision D-23 c) and the revocation of the compliance portal (GET .../revocation, POST .../revocations and .../revocation-retries), plus root_methods GET on the exact path for the list of the portal (HU-W4.2-01). Only that {proxy+} and that GET are created: audit is never a human route, because GET /v1/audit/consent-verifications and POST /v1/audit/decisions are internal to the VPC and carry no token."
   type = map(object({
-    methods = list(string)
+    methods      = list(string)
+    root_methods = optional(list(string), [])
   }))
   default = {
-    "audit/consents" = { methods = ["GET", "POST"] }
+    # HU-W4.2-01: root_methods publishes also the list of the compliance portal
+    # (GET /v1/audit/consents) with Cognito, next to the POST of the partner.
+    "audit/consents" = { methods = ["GET", "POST"], root_methods = ["GET"] }
   }
 
   validation {

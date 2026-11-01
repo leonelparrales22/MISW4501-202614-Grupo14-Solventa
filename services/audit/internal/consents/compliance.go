@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -22,14 +23,16 @@ func (cmd RevokeCommand) validate(c domain.Consent, now time.Time) error {
 	return cmd.Request.Validate(c, now)
 }
 
-// ComplianceService is what the compliance portal does with a consent
-// (HU-W4.2-02): read its revocation state, revoke it and retry the entities
-// that did not confirm. The process is the one of the RevocationService.
+// ComplianceService is what the compliance portal does with the consents:
+// list them with filters, pages and indicators (HU-W4.2-01), read the state
+// of one, revoke it and retry the entities that did not confirm (HU-W4.2-02).
+// The revocation process is the one of the RevocationService.
 type ComplianceService struct {
 	revocations *RevocationService
 	consents    ports.ConsentStore
 	events      ports.ConsentEventReader
 	records     ports.RevocationStore
+	list        ports.ComplianceListStore
 	clock       ports.Clock
 	names       domain.EntityNames
 }
@@ -40,7 +43,9 @@ type ComplianceDeps struct {
 	Consents    ports.ConsentStore
 	Events      ports.ConsentEventReader
 	Records     ports.RevocationStore
-	Clock       ports.Clock
+	// List reads the list of consents (HU-W4.2-01).
+	List  ports.ComplianceListStore
+	Clock ports.Clock
 	// Names is the catalog of display names of the entities.
 	Names domain.EntityNames
 }
@@ -48,8 +53,50 @@ type ComplianceDeps struct {
 // NewComplianceService builds the service.
 func NewComplianceService(d ComplianceDeps) *ComplianceService {
 	return &ComplianceService{
-		revocations: d.Revocations, consents: d.Consents, events: d.Events, records: d.Records, clock: d.Clock, names: d.Names,
+		revocations: d.Revocations, consents: d.Consents, events: d.Events, records: d.Records, list: d.List, clock: d.Clock,
+		names: d.Names,
 	}
+}
+
+// List returns the page of the list of consents of the compliance portal at
+// the time of the server (HU-W4.2-01). The database filters, counts and pages
+// the consents and computes the indicators over every one of them and the
+// entities of the filter (decision D-2 b′), with one instant; then only the
+// records of the page are read with their events and shown with domain.View
+// at the same instant, so the status of each row is the one the detail and the
+// holder's app derive (criterion 5). If the status of a row differs from the
+// one of the query, the view wins and the difference is logged with the
+// consent id and both statuses, never personal data.
+func (s *ComplianceService) List(ctx context.Context, q domain.ComplianceQuery) (domain.CompliancePage, error) {
+	now := s.clock.Now().UTC().Truncate(time.Microsecond)
+	res, err := s.list.ListForCompliance(ctx, q, now)
+	if err != nil {
+		return domain.CompliancePage{}, fmt.Errorf("list the consents: %w", err)
+	}
+	ids := make([]string, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		ids = append(ids, r.Consent.ID)
+	}
+	byConsent, err := s.events.ListByConsents(ctx, ids)
+	if err != nil {
+		return domain.CompliancePage{}, fmt.Errorf("read the history of the listed consents: %w", err)
+	}
+	items := make([]domain.ConsentView, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		v := domain.View(r.Consent, byConsent[r.Consent.ID], now, s.names)
+		if v.Status != r.Status {
+			slog.WarnContext(ctx, "the status of the compliance list differs from the derived one; the derived one is shown",
+				"consent_id", r.Consent.ID, "list_status", string(r.Status), "derived_status", string(v.Status))
+		}
+		items = append(items, v)
+	}
+	indicators := res.Indicators
+	indicators.AsOf = now
+	return domain.CompliancePage{
+		Items: items, Page: q.Page, PageSize: q.PageSize, TotalItems: res.TotalItems,
+		TotalPages: domain.TotalPages(res.TotalItems, q.PageSize), Indicators: indicators,
+		Entities: domain.EntityCatalog(s.names, res.EntityCodes),
+	}, nil
 }
 
 // State returns the consent as the portal sees it now: the derived view, the

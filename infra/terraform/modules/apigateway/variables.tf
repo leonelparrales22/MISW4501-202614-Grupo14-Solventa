@@ -151,9 +151,10 @@ variable "partner_routes" {
 }
 
 variable "human_subroutes" {
-  description = "Human-channel sub-paths under a partner route (HU-W4.2-02). Key: the key of a partner route (for example audit/consents); only its {proxy+} resource is created, with the Cognito authorizer, the listed methods and a CORS preflight, proxied to /v1/<key>/{proxy} of the backend. The partner route itself keeps its API key on the exact path. Unlike human_routes, this never publishes the first segment as a whole: siblings such as audit/consent-verifications stay unpublished. Empty: nothing is created and nothing changes."
+  description = "Human-channel sub-paths under a partner route (HU-W4.2-02). Key: the key of a partner route (for example audit/consents); its {proxy+} resource is created, with the Cognito authorizer, the listed methods and a CORS preflight, proxied to /v1/<key>/{proxy} of the backend. The partner route itself keeps its API key on the exact path. root_methods (HU-W4.2-01, optional, empty by default) adds human methods on that exact path too, with the authorizer, no API key and a preflight, proxied to /v1/<key>; a method cannot be both in root_methods and in the partner route of the same key. Unlike human_routes, this never publishes the first segment as a whole: siblings such as audit/consent-verifications stay unpublished. Empty: nothing is created and nothing changes."
   type = map(object({
-    methods = list(string)
+    methods      = list(string)
+    root_methods = optional(list(string), [])
   }))
   default = {}
 
@@ -167,6 +168,13 @@ variable "human_subroutes" {
       for r in values(var.human_subroutes) : length(r.methods) > 0 && length(distinct(r.methods)) == length(r.methods) && alltrue([for m in r.methods : contains(["GET", "POST", "PUT", "PATCH", "DELETE"], m)])
     ])
     error_message = "Each human sub-route needs at least one method among GET, POST, PUT, PATCH and DELETE, without repetitions (OPTIONS is added automatically, without authorization)."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in values(var.human_subroutes) : length(distinct(r.root_methods)) == length(r.root_methods) && alltrue([for m in r.root_methods : contains(["GET", "POST", "PUT", "PATCH", "DELETE"], m)])
+    ])
+    error_message = "root_methods of a human sub-route must be among GET, POST, PUT, PATCH and DELETE, without repetitions (it can be empty)."
   }
 
   validation {
