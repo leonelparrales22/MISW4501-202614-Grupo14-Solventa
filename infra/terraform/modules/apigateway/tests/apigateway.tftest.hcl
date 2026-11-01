@@ -345,6 +345,7 @@ run "defaults_change_nothing" {
         aws_api_gateway_integration.resolve_post,
         aws_api_gateway_integration.customer_get,
       ]),
+      jsonencode(aws_api_gateway_gateway_response.rate_limited),
       jsonencode([
         aws_api_gateway_authorizer.cognito,
         aws_api_gateway_method.human,
@@ -355,7 +356,7 @@ run "defaults_change_nothing" {
         aws_api_gateway_gateway_response.cors,
       ]),
     ]))
-    error_message = "Without public routes or binary types the redeployment hash is the one of HA-L01 and HA-S01."
+    error_message = "Without public routes or binary types the redeployment hash is the one of HA-L01, HA-S01 and the 429 of HU-W3.1-01."
   }
 }
 
@@ -1063,4 +1064,20 @@ run "human_subroutes_reject_unknown_root_methods" {
   }
 
   expect_failures = [var.human_subroutes]
+}
+
+# --- Standard 429 per partner (HU-W3.1-01 CA-2) -----------------------------------------
+
+run "quota_exceeded_and_throttled_answer_the_standard_429" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for t in ["QUOTA_EXCEEDED", "THROTTLED"] : (
+        aws_api_gateway_gateway_response.rate_limited[t].status_code == "429" &&
+        jsondecode(aws_api_gateway_gateway_response.rate_limited[t].response_templates["application/json"]).error == "rate_limited"
+      )
+    ])
+    error_message = "A partner over its quota or its burst gets 429 with the standard Solventa body (HU-W3.1-01 CA-2)."
+  }
 }

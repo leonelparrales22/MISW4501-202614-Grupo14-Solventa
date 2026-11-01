@@ -1059,3 +1059,48 @@ run "audit_notifies_the_entities_through_the_open_finance_stub" {
     error_message = "The Open Finance stub keeps running behind Cloud Map."
   }
 }
+
+# --- HU-W3.1-01: credentials of the commercial partners ---------------------------------
+
+run "partners_manages_the_credentials_and_publishes_to_audit" {
+  command = plan
+
+  variables {
+    existing_cognito = {
+      user_pool_id  = "us-east-2_PermTest1"
+      user_pool_arn = "arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_PermTest1"
+      issuer        = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1"
+      jwks_url      = "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1/.well-known/jwks.json"
+      client_ids    = { web = "web-client-test", mobile = "mobile-client-test" }
+    }
+  }
+
+  assert {
+    condition     = contains(local.topics, "partners") && contains(local.queues.audit.topics, "partners")
+    error_message = "The credential events of partners reach the audit queue (CA-3)."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.partners.AUTH_ISSUER == "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_PermTest1" &&
+      local.service_environment.partners.CREDENTIAL_GRACE_PERIOD_HOURS == "24" &&
+      contains(keys(local.service_environment.partners), "GATEWAY_REST_API_ID") &&
+      contains(keys(local.service_environment.partners), "EVENTS_TOPIC_ARN")
+    )
+    error_message = "partners receives the user pool, the gateway where it creates the usage plans and its topic."
+  }
+
+  assert {
+    condition = alltrue([
+      for k, sts in local.task_role_statements : k == "partners" || alltrue([
+        for st in sts : !contains(["ManageThePartnerApiKeys", "ManageThePartnerUsagePlans", "ReadTheStageOfThePartnerPlans"], st.sid)
+      ])
+    ])
+    error_message = "Only partners manages API keys and usage plans."
+  }
+
+  assert {
+    condition     = contains(keys(var.human_routes), "partners")
+    error_message = "The operations portal reaches /v1/partners with Cognito."
+  }
+}

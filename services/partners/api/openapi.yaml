@@ -1,11 +1,510 @@
 openapi: 3.0.3
 info:
   title: Solventa - partners service
-  version: 0.1.0
+  version: 0.2.0
+  description: >
+    Commercial partners (B2B). HU-W3.1-01: the operations portal registers a
+    partner (pending approval) and approves it; the approval creates, in the
+    Amazon API Gateway, a usage plan of its own (daily quota and rate limit)
+    and an API key, so the credentials are unique, carry their quota and are
+    isolated from the other partners. The secret (the API key value, sent by
+    the partner in the x-api-key header) is shown once, in the answer of the
+    approval or of a rotation; no route reads it again. A rotation issues a
+    new key in the same usage plan and keeps the previous one valid during a
+    configurable transition period before revoking it. Every issuance,
+    rotation and revocation goes to audit (PartnerCredentials* events). The
+    quota itself is enforced by the gateway, which answers 429 with the
+    standard Solventa body only to the partner that exceeds it. The routes are
+    mounted only with DATABASE_URL and AUTH_*. Contract:
+    docs/contratos/HU-W3.1-01-api.md.
+security:
+  - cognitoJwt: []
 paths:
   /health:
     get:
       summary: Shallow health check (ALB, ADR-02)
+      security: []
       responses:
         "200":
           description: OK
+  /v1/partners:
+    get:
+      summary: List the partners with today's consumption and the indicators (HU-W3.1-01)
+      description: >
+        Active partners first, then pending ones, by name. Usage is read from
+        the API Gateway (daily, UTC); when it cannot be read usage is null and
+        usage_status unknown, the rest of the answer is unaffected.
+      responses:
+        "200":
+          description: The partners
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartnerList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+    post:
+      summary: Register a partner, pending approval and without credentials (HU-W3.1-01)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterPartner"
+            example:
+              name: Banco Aliado
+              code: ten_bancoaliado
+              type: bank
+              products: [vida hipotecario, hogar]
+              technical_contact_email: api@bancoaliado.co
+              quota: { daily_limit: 5000, rate_limit: 100, burst_limit: 200 }
+      responses:
+        "201":
+          description: The registered partner
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartnerDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: partner_code_taken
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/partners/{partner_id}:
+    parameters:
+      - $ref: "#/components/parameters/PartnerID"
+    get:
+      summary: A partner with its credentials (never the secret), quota, usage and history
+      responses:
+        "200":
+          description: The partner
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartnerDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/partners/{partner_id}/approval:
+    parameters:
+      - $ref: "#/components/parameters/PartnerID"
+    post:
+      summary: Approve a pending partner and issue its credentials; the secret is shown once (CA-1, CA-4)
+      responses:
+        "201":
+          description: The approved partner and its secret
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedCredentials"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: partner_not_pending (the secret is never shown again)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/partners/{partner_id}/credential-rotations:
+    parameters:
+      - $ref: "#/components/parameters/PartnerID"
+    post:
+      summary: Rotate the credentials keeping the previous ones valid during a transition period (CA-5)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                grace_period_hours:
+                  type: integer
+                  minimum: 1
+                  maximum: 168
+                  description: Transition period; the service default (24) when missing.
+      responses:
+        "201":
+          description: The partner and the new secret
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedCredentials"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: partner_not_active or rotation_in_progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+components:
+  securitySchemes:
+    cognitoJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: ID token of the Cognito user pool (HA-S01); operations role.
+  headers:
+    NoStore:
+      schema:
+        type: string
+        enum: [no-store]
+  parameters:
+    PartnerID:
+      name: partner_id
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 64
+  responses:
+    BadRequest:
+      description: invalid_request or validation_failed (every invalid field at once)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: The caller is not an operations analyst
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: partner_not_found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: gateway_unavailable (nothing changed) or service_unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        fields:
+          type: array
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+              code:
+                type: string
+                enum: [required, invalid_format, out_of_range]
+    Quota:
+      type: object
+      required: [period, daily_limit, rate_limit, burst_limit]
+      properties:
+        period:
+          type: string
+          enum: [day]
+        daily_limit:
+          type: integer
+        rate_limit:
+          type: integer
+          description: Requests per second
+        burst_limit:
+          type: integer
+    Usage:
+      type: object
+      nullable: true
+      required: [date, used, remaining, percent]
+      properties:
+        date:
+          type: string
+          format: date
+        used:
+          type: integer
+        remaining:
+          type: integer
+        percent:
+          type: number
+    Actor:
+      type: object
+      required: [type, id, label]
+      properties:
+        type:
+          type: string
+          enum: [operations, system]
+        id:
+          type: string
+        label:
+          type: string
+    PartnerSummary:
+      type: object
+      required: [partner_id, code, name, type, status, credentials_status, usage_status, registered_at, approved_at, quota, usage]
+      properties:
+        partner_id:
+          type: string
+        code:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [bank, airline, ecommerce, fintech, cooperative, retail, other]
+        status:
+          type: string
+          enum: [pending_approval, active, offboarded]
+        credentials_status:
+          type: string
+          enum: [none, active, rotation_in_progress, disabled]
+        usage_status:
+          type: string
+          enum: [normal, near_limit, exceeded, unknown, none]
+        registered_at:
+          type: string
+          format: date-time
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+        quota:
+          $ref: "#/components/schemas/Quota"
+        usage:
+          $ref: "#/components/schemas/Usage"
+    PartnerList:
+      type: object
+      required: [items, indicators]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PartnerSummary"
+        indicators:
+          type: object
+          required: [active_partners, average_quota_used_percent, near_limit_partners, near_limit_names]
+          properties:
+            active_partners:
+              type: integer
+            average_quota_used_percent:
+              type: number
+              nullable: true
+            near_limit_partners:
+              type: integer
+            near_limit_names:
+              type: array
+              items:
+                type: string
+    PartnerDetail:
+      allOf:
+        - $ref: "#/components/schemas/PartnerSummary"
+        - type: object
+          required: [products, technical_contact_email, environment, registered_by, credentials, history]
+          properties:
+            products:
+              type: array
+              items:
+                type: string
+            technical_contact_email:
+              type: string
+            environment:
+              type: string
+            registered_by:
+              $ref: "#/components/schemas/Actor"
+            credentials:
+              type: object
+              nullable: true
+              description: null while the partner is pending approval. Never carries the secret.
+              properties:
+                authentication:
+                  type: string
+                  enum: [api_key]
+                header:
+                  type: string
+                  enum: [x-api-key]
+                default_grace_period_hours:
+                  type: integer
+                active:
+                  type: object
+                  nullable: true
+                  properties:
+                    credential_id:
+                      type: string
+                    client_id:
+                      type: string
+                    secret_hint:
+                      type: string
+                    issued_at:
+                      type: string
+                      format: date-time
+                    issued_by:
+                      $ref: "#/components/schemas/Actor"
+                previous:
+                  type: object
+                  nullable: true
+                  properties:
+                    credential_id:
+                      type: string
+                    client_id:
+                      type: string
+                    secret_hint:
+                      type: string
+                    issued_at:
+                      type: string
+                      format: date-time
+                    expires_at:
+                      type: string
+                      format: date-time
+                first_issued_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+                first_issued_by:
+                  nullable: true
+                  allOf:
+                    - $ref: "#/components/schemas/Actor"
+                last_rotated_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+                last_rotated_by:
+                  nullable: true
+                  allOf:
+                    - $ref: "#/components/schemas/Actor"
+            history:
+              type: array
+              items:
+                type: object
+                required: [event_id, type, occurred_at, actor, status, details]
+                properties:
+                  event_id:
+                    type: string
+                  type:
+                    type: string
+                    enum: [registered, credentials_issued, credentials_rotated, credentials_revoked]
+                  occurred_at:
+                    type: string
+                    format: date-time
+                  actor:
+                    $ref: "#/components/schemas/Actor"
+                  status:
+                    type: string
+                    enum: [applied, in_progress]
+                  details:
+                    type: object
+                    additionalProperties: true
+    IssuedCredentials:
+      type: object
+      required: [partner, secret]
+      properties:
+        partner:
+          $ref: "#/components/schemas/PartnerDetail"
+        secret:
+          type: object
+          required: [client_id, client_secret, header]
+          properties:
+            client_id:
+              type: string
+            client_secret:
+              type: string
+              description: The API key value; shown only in this answer.
+            header:
+              type: string
+              enum: [x-api-key]
+    RegisterPartner:
+      type: object
+      required: [name, code, type, products, technical_contact_email, quota]
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 80
+        code:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{2,39}$"
+        type:
+          type: string
+          enum: [bank, airline, ecommerce, fintech, cooperative, retail, other]
+        products:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items:
+            type: string
+            minLength: 2
+            maxLength: 60
+        technical_contact_email:
+          type: string
+          format: email
+          maxLength: 254
+        quota:
+          type: object
+          required: [daily_limit, rate_limit, burst_limit]
+          properties:
+            daily_limit:
+              type: integer
+              minimum: 1
+              maximum: 10000000
+            rate_limit:
+              type: integer
+              minimum: 1
+              maximum: 10000
+            burst_limit:
+              type: integer
+              minimum: 1
+              maximum: 20000

@@ -21,6 +21,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -40,6 +41,7 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/consents"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/decisions"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/partnercredentials"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/ports"
 )
 
@@ -79,7 +81,8 @@ const (
 )
 
 // noQueueNotice is logged when EVENTS_QUEUE_URL is empty.
-const noQueueNotice = envEventsQueueURL + " is not set: account links (CustomerLinked) are not consumed; insured users get 403 holder_not_linked"
+const noQueueNotice = envEventsQueueURL + " is not set: account links (CustomerLinked) are not consumed; insured users get 403 holder_not_linked. " +
+	"The partner credential changes (HU-W3.1-01) are not recorded either"
 
 // noOpenFinanceNotice is logged when OPEN_FINANCE_URL is empty.
 const noOpenFinanceNotice = envOpenFinanceURL + " is not set: revocations are recorded and block the queries, but no entity is " +
@@ -149,7 +152,10 @@ func main() {
 		})
 		opts = append(opts, complianceOptions(compliance, verifier)...)
 		opts = append(opts, decisionOptions(decisions.NewService(postgres.NewDecisionStore(db), systemClock{}), verifier)...)
-		consumer, err := newEventConsumer(ctx, cfg, holders)
+		// HU-W3.1-01: the audit record of the partner credentials, fed by the
+		// events of partners from the same queue.
+		credentials := partnercredentials.NewService(postgres.NewPartnerCredentialStore(db))
+		consumer, err := newEventConsumer(ctx, cfg, holders, credentials)
 		if err != nil {
 			log.Fatalf("could not set up the consumer of the audit queue: %v", err)
 		}
@@ -256,8 +262,11 @@ func decisionOptions(svc *decisions.Service, verifier security.Verifier) []httpa
 // newEventConsumer builds the consumer of the audit queue with the
 // credentials and the region of the environment (the task role and
 // AWS_REGION in ECS; AWS_ENDPOINT_URL_SQS points to LocalStack in local runs).
-// It returns nil, and logs a notice, without EVENTS_QUEUE_URL.
-func newEventConsumer(ctx context.Context, cfg config, holders *consents.HolderService) (*sqsconsumer.Consumer, error) {
+// It returns nil, and logs a notice, without EVENTS_QUEUE_URL. Besides
+// CustomerLinked (HU-M1.3-01) it records the partner credential changes of
+// partners (HU-W3.1-01).
+func newEventConsumer(ctx context.Context, cfg config, holders *consents.HolderService,
+	credentials messaging.PartnerCredentialRecorder) (*sqsconsumer.Consumer, error) {
 	if cfg.eventsQueueURL == "" {
 		log.Print(noQueueNotice)
 		return nil, nil
@@ -270,11 +279,19 @@ func newEventConsumer(ctx context.Context, cfg config, holders *consents.HolderS
 	if err := router.Register(messaging.EventTypeCustomerLinked, messaging.NewCustomerLinkedHandler(holders)); err != nil {
 		return nil, err
 	}
+	consumed := []string{messaging.EventTypeCustomerLinked}
+	credentialHandler := messaging.NewPartnerCredentialsHandler(credentials)
+	for _, t := range messaging.PartnerCredentialEventTypes {
+		if err := router.Register(t, credentialHandler); err != nil {
+			return nil, err
+		}
+		consumed = append(consumed, t)
+	}
 	consumer, err := sqsconsumer.New(sqs.NewFromConfig(awsCfg), cfg.eventsQueueURL, router, sqsconsumer.Options{})
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("domain events: consuming %s from %s", messaging.EventTypeCustomerLinked, cfg.eventsQueueURL)
+	log.Printf("domain events: consuming %s from %s", strings.Join(consumed, ", "), cfg.eventsQueueURL)
 	return consumer, nil
 }
 

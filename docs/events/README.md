@@ -10,6 +10,7 @@ Los servicios publican hechos de negocio en Amazon SNS (un tópico por dominio) 
 | `OfferRequoted` | `OfertaRecotizada` | origination | audit, notifications | **Publicación pendiente (HU-W4.1-01).** Una oferta provisional se reemplazó por una normal al volver la fuente (HU-W1.2-03); hoy el aviso al cliente es el correo `offer-requoted:<id>` |
 | `ClaimApproved` | `SiniestroAprobado` | claims | notifications, audit | Dispara notificación y pago paramétrico |
 | `CustomerLinked` | `ClienteVinculado` | origination | audit | La cuenta del asegurado (`sub` de Cognito) quedó vinculada a su documento al terminar el registro (HU-M1.1-01); `audit` lo usa para reconocer al titular de sus consentimientos (HU-M1.3-01). **Primer evento publicado con *outbox*** |
+| `PartnerCredentialsIssued`, `PartnerCredentialsRotated`, `PartnerCredentialsRevoked` | `CredencialesSocioEmitidas`, `CredencialesSocioRotadas`, `CredencialesSocioRevocadas` | partners | audit | Se generaron las credenciales de un socio al aprobarlo, se rotaron o se revocó la anterior al vencer la transición (HU-W3.1-01); `audit` las guarda en el registro de auditoría de suscripción con la fecha y el emisor. **Primer evento del tópico `partners`** |
 
 **HU-W1.3-01 (aceptación de la oferta) no publica ni consume eventos:** la aceptación se persiste en origination (PostgreSQL con `DATABASE_URL`, fix C5) y la suscripción, el envío a la bandeja del asesor (HU-W1.1-02) y el inicio de la emisión ocurren en proceso. `PolicyIssued` y `ChargeCompleted` en SNS siguen pendientes de HU-W1.3-02 (con `pkg/outbox` y `pkg/events`). Si la bandeja o la auditoría de la decisión de suscripción pasan a otro servicio, el evento correspondiente se registrará aquí.
 
@@ -86,5 +87,35 @@ evento otra vez no cambia nada; un documento distinto para el mismo `subject` co
 sin el documento. Los tipos de evento que `audit` aún no consume se borran sin efecto. Un mensaje que no se puede procesar (sobre o
 *payload* inválido, base caída) no se borra: reaparece al vencer la visibilidad y, tras `maxReceiveCount` (5), pasa a la DLQ de la cola.
 Mientras el vínculo no llega, `GET /v1/consents` responde `403 holder_not_linked`.
+
+## `PartnerCredentialsIssued`, `PartnerCredentialsRotated` y `PartnerCredentialsRevoked` (HU-W3.1-01)
+
+Los escribe `partners` **en la misma transacción** que el cambio de la credencial: la aprobación del socio (`Issued`), la rotación
+(`Rotated`) y la revocación de la credencial anterior cuando vence su periodo de transición (`Revoked`, la hace el trabajador de
+`partners`). Contrato de las rutas: [`docs/contratos/HU-W3.1-01-api.md`](../contratos/HU-W3.1-01-api.md).
+
+**Sobre:** el común de `pkg/events.Envelope`, con `source` = `partners`, `event_version` = `1` y `event_id` determinista por hecho:
+`partner-credentials-issued-<credential_id>`, `partner-credentials-rotated-<credential_id>` (la credencial nueva) y
+`partner-credentials-revoked-<credential_id>` (la revocada). `occurred_at` es el instante del cambio.
+
+**Payload** (los tres tipos; minimización: nunca el secreto ni su pista):
+
+| Campo | Descripción |
+|---|---|
+| `partner_id`, `partner_code`, `partner_name` | Socio (`ptn-…`), su código de *tenant* y su nombre |
+| `credential_id`, `client_id` | Credencial a la que se refiere el hecho (la emitida, la nueva o la revocada) |
+| `previous_credential_id`, `previous_client_id`, `previous_expires_at` | Solo en `Rotated`: la credencial anterior y el fin de su transición |
+| `grace_period_hours` | Solo en `Rotated` |
+| `reason` | `approval` (`Issued`), `rotation` (`Rotated`), `grace_period_ended` (`Revoked`) |
+| `quota` | `{daily_limit, rate_limit, burst_limit}` vigente del socio |
+| `actor` | `{type, id, label}`: `operations` con el `sub` y el correo o usuario del token del analista, o `system` / `partners` / `Sistema` |
+| `occurred_at` | Instante del cambio (UTC) |
+
+**Cómo se publica:** igual que `CustomerLinked`: tabla `outbox_event` de la base de `partners`, relevo con *lease* y tópico `partners`
+(`EVENTS_TOPIC_ARN`). Sin `EVENTS_TOPIC_ARN` los eventos quedan en el *outbox*.
+
+**Cómo se consume:** la cola de `audit` también se suscribe al tópico `partners`. El manejador es **idempotente por `event_id`** (tabla
+`partner_credential_record`, *append-only*, `UNIQUE (event_id)`): el mismo evento otra vez no cambia nada. Un *payload* inválido es error
+y el mensaje termina en la DLQ tras los reintentos.
 
 Los esquemas de los demás eventos se agregarán aquí al implementarlos. Los consumidores exactos pueden cambiar; confirmar en la Wiki ([Arquitectura final](https://github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/wiki/Arquitectura_final)).

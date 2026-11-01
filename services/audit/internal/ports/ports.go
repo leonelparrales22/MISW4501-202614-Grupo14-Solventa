@@ -197,3 +197,14 @@ type DecisionStore interface {
 	// (the request number of the partner) or domain.ErrDecisionNotFound.
 	GetByApplication(ctx context.Context, applicationID string) (domain.DecisionRecord, error)
 }
+
+// PartnerCredentialStore keeps the audit record of the partner credentials
+// (HU-W3.1-01). It is append-only: it has no operation to update or delete a
+// record, and the PostgreSQL adapter also rejects them in the database.
+type PartnerCredentialStore interface {
+	// Append stores the record. It is idempotent by event id: when the event
+	// is already recorded it writes nothing and reports created=false.
+	Append(ctx context.Context, r domain.PartnerCredentialRecord) (created bool, err error)
+	// ListByPartner returns the records of a partner, newest first.
+	ListByPartner(ctx context.Context, partnerID string) ([]domain.PartnerCredentialRecord, error)
+}

@@ -166,6 +166,7 @@ resource "aws_api_gateway_deployment" "this" {
         aws_api_gateway_integration.resolve_post,
         aws_api_gateway_integration.customer_get,
       ])],
+      [jsonencode(aws_api_gateway_gateway_response.rate_limited)],
       local.auth_enabled ? [jsonencode([
         aws_api_gateway_authorizer.cognito,
         aws_api_gateway_method.human,
@@ -501,6 +502,32 @@ resource "aws_api_gateway_gateway_response" "cors" {
 
   response_templates = {
     "application/json" = "{\"message\":$context.error.messageString}"
+  }
+}
+
+# --- Partner quota exceeded: standard 429 (HU-W3.1-01 CA-2) ----------------------
+#
+# Each partner has its own usage plan (created here for the static partners and
+# by the partners service for the approved ones), so the gateway answers 429
+# only to the partner that exhausted its daily quota (QUOTA_EXCEEDED) or its
+# burst (THROTTLED); the others keep their own plans. Both carry the standard
+# Solventa error body instead of the AWS default message. With the human
+# channels they also carry the CORS headers, like the other 4XX responses.
+
+resource "aws_api_gateway_gateway_response" "rate_limited" {
+  for_each = toset(["QUOTA_EXCEEDED", "THROTTLED"])
+
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  response_type = each.key
+  status_code   = "429"
+
+  response_parameters = local.auth_enabled ? {
+    "gatewayresponse.header.Access-Control-Allow-Origin"  = "'${var.cors_allow_origin}'"
+    "gatewayresponse.header.Access-Control-Allow-Headers" = "'${local.cors_allow_headers}'"
+  } : {}
+
+  response_templates = {
+    "application/json" = "{\"error\":\"rate_limited\",\"message\":\"The request quota of this credential was exceeded; try again later.\"}"
   }
 }
 

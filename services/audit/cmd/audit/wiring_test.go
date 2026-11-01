@@ -16,6 +16,7 @@ import (
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/adapters/http"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/consents"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/audit/internal/partnercredentials"
 )
 
 // HU-M1.3-01: the catalog of names, the human routes and the consumer.
@@ -120,7 +121,7 @@ func TestTheHumanRoutesAreMountedOnlyWithAVerifier(t *testing.T) {
 func TestWithoutAQueueNoEventIsConsumed(t *testing.T) {
 	buf := captureLog(t)
 
-	consumer, err := newEventConsumer(context.Background(), config{}, nil)
+	consumer, err := newEventConsumer(context.Background(), config{}, nil, nil)
 
 	require.NoError(t, err)
 	assert.Nil(t, consumer)
@@ -135,9 +136,11 @@ func TestWithAQueueTheConsumerIsBuilt(t *testing.T) {
 	holders := consents.NewHolderService(nil, nil, nil, clockAt{}, nil)
 
 	consumer, err := newEventConsumer(context.Background(),
-		config{eventsQueueURL: "http://localhost:4566/000000000000/solventa-staging-audit"}, holders)
+		config{eventsQueueURL: "http://localhost:4566/000000000000/solventa-staging-audit"}, holders,
+		partnercredentials.NewService(nil))
 
 	require.NoError(t, err)
 	assert.NotNil(t, consumer)
-	assert.Contains(t, buf.String(), "domain events: consuming CustomerLinked from http://localhost:4566/000000000000/solventa-staging-audit")
+	assert.Contains(t, buf.String(), "domain events: consuming CustomerLinked, PartnerCredentialsIssued, PartnerCredentialsRotated, "+
+		"PartnerCredentialsRevoked from http://localhost:4566/000000000000/solventa-staging-audit")
 }
