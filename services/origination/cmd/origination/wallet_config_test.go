@@ -46,7 +46,9 @@ func (noRenewals) ListPolicies(context.Context) ([]renewal.PolicyView, error) { 
 
 type noVerifier struct{}
 
-func (noVerifier) Verify(context.Context, string) (security.Claims, error) { return security.Claims{}, nil }
+func (noVerifier) Verify(context.Context, string) (security.Claims, error) {
+	return security.Claims{}, nil
+}
 
 func TestWalletIsMountedOnlyWithASourceOfPolicies(t *testing.T) {
 	assert.Empty(t, walletOptions(nil, nil, noVerifier{}), "without the charge and the core there is nothing to list")

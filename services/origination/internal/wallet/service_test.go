@@ -27,7 +27,9 @@ type fakeRenewals struct {
 	err   error
 }
 
-func (f *fakeRenewals) ListPolicies(context.Context) ([]renewal.PolicyView, error) { return f.views, f.err }
+func (f *fakeRenewals) ListPolicies(context.Context) ([]renewal.PolicyView, error) {
+	return f.views, f.err
+}
 
 type fakePortfolio struct {
 	policies    []domain.WalletPolicy
