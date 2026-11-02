@@ -151,7 +151,7 @@ variable "partner_routes" {
 }
 
 variable "human_subroutes" {
-  description = "Human-channel sub-paths under a partner route (HU-W4.2-02). Key: the key of a partner route (for example audit/consents); its {proxy+} resource is created, with the Cognito authorizer, the listed methods and a CORS preflight, proxied to /v1/<key>/{proxy} of the backend. The partner route itself keeps its API key on the exact path. root_methods (HU-W4.2-01, optional, empty by default) adds human methods on that exact path too, with the authorizer, no API key and a preflight, proxied to /v1/<key>; a method cannot be both in root_methods and in the partner route of the same key. Unlike human_routes, this never publishes the first segment as a whole: siblings such as audit/consent-verifications stay unpublished. Empty: nothing is created and nothing changes."
+  description = "Human-channel sub-paths under a partner route (HU-W4.2-02). Key: the key of a partner route (for example audit/consents); its {proxy+} resource is created, with the Cognito authorizer, the listed methods and a CORS preflight, proxied to /v1/<key>/{proxy} of the backend. The partner route itself keeps its API key on the exact path. root_methods (HU-W4.2-01, optional, empty by default) adds human methods on that exact path too, with the authorizer, no API key and a preflight, proxied to /v1/<key>; a method cannot be both in root_methods and in the partner route of the same key. Since HU-W4.1-01 the key can also be a child of a partner route or of one of its prefixes (for example audit/decisions under audit): that resource is created without methods, only its {proxy+} is published, and it takes no root_methods. Unlike human_routes, this never publishes the first segment as a whole: siblings such as audit/consent-verifications stay unpublished. Empty: nothing is created and nothing changes."
   type = map(object({
     methods      = list(string)
     root_methods = optional(list(string), [])
@@ -178,8 +178,19 @@ variable "human_subroutes" {
   }
 
   validation {
-    condition     = alltrue([for k in keys(var.human_subroutes) : !contains(["audit/consent-verifications", "audit/decisions"], k)])
-    error_message = "audit/consent-verifications and audit/decisions are internal to the VPC (no token): they can never be published, not even behind the authorizer."
+    condition     = !contains(keys(var.human_subroutes), "audit/consent-verifications")
+    error_message = "audit/consent-verifications is internal to the VPC (no token): it can never be published, not even behind the authorizer."
+  }
+
+  # HU-W4.1-01: POST /v1/audit/decisions is internal to the VPC (no token), but
+  # GET /v1/audit/decisions/{offer_id} is the lookup of the operations analyst.
+  # Only that GET under the {proxy+} can be published, never the exact path.
+  validation {
+    condition = !contains(keys(var.human_subroutes), "audit/decisions") || (
+      try(var.human_subroutes["audit/decisions"].methods, []) == tolist(["GET"]) &&
+      length(try(var.human_subroutes["audit/decisions"].root_methods, [])) == 0
+    )
+    error_message = "audit/decisions only publishes GET /v1/audit/decisions/{offer_id} (HU-W4.1-01): methods = [\"GET\"] and no root_methods, since POST /v1/audit/decisions is internal to the VPC."
   }
 }
 

@@ -852,6 +852,7 @@ run "human_subroutes_publish_only_the_proxy_under_a_partner_route" {
     condition = (
       length(aws_api_gateway_resource.partner_l1) == 1 && keys(aws_api_gateway_resource.partner_l1) == ["audit"] &&
       length(aws_api_gateway_method.partner) == 2 &&
+      length(aws_api_gateway_resource.human_subroute_parent) == 0 &&
       !contains(keys(aws_api_gateway_resource.human), "audit")
     )
     error_message = "audit is not a human route: no resource exists for audit/consent-verifications or audit/decisions."
@@ -883,24 +884,103 @@ run "human_subroutes_reject_a_key_that_is_not_a_partner_route" {
   variables {
     cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
     partner_routes         = { "audit/consents" = { methods = ["POST"] } }
-    human_subroutes        = { "audit/other" = { methods = ["GET"] } }
+    # audit is only the prefix of a partner route: its {proxy+} would publish
+    # every path of audit, the internal ones included.
+    human_subroutes = { audit = { methods = ["GET"] } }
   }
 
   expect_failures = [aws_api_gateway_resource.human_subproxy]
 }
 
-run "human_subroutes_reject_the_internal_routes_of_audit" {
+run "human_subroutes_reject_a_child_of_a_path_that_is_not_a_partner_route" {
   command = plan
 
   variables {
     cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
-    human_subroutes = {
-      "audit/consent-verifications" = { methods = ["GET"] }
-      "audit/decisions"             = { methods = ["GET"] }
-    }
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes        = { "billing/other" = { methods = ["GET"] } }
+  }
+
+  expect_failures = [aws_api_gateway_resource.human_subroute_parent]
+}
+
+run "human_subroutes_reject_the_consent_verification" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_subroutes        = { "audit/consent-verifications" = { methods = ["GET"] } }
   }
 
   expect_failures = [var.human_subroutes]
+}
+
+run "human_subroutes_reject_the_internal_post_of_the_decisions" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_subroutes        = { "audit/decisions" = { methods = ["GET", "POST"] } }
+  }
+
+  expect_failures = [var.human_subroutes]
+}
+
+run "human_subroutes_reject_the_exact_path_of_the_decisions" {
+  command = plan
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    human_subroutes        = { "audit/decisions" = { methods = ["GET"], root_methods = ["GET"] } }
+  }
+
+  expect_failures = [var.human_subroutes]
+}
+
+# --- The decision lookup of operations (HU-W4.1-01) -------------------------------------
+
+run "human_subroutes_publish_only_the_get_of_the_decision_lookup" {
+  command = apply
+
+  variables {
+    cognito_user_pool_arns = ["arn:aws:cognito-idp:us-east-2:123456789012:userpool/us-east-2_Example"]
+    partner_routes         = { "audit/consents" = { methods = ["POST"] } }
+    human_subroutes = {
+      "audit/consents"  = { methods = ["GET", "POST"] }
+      "audit/decisions" = { methods = ["GET"] }
+    }
+  }
+
+  assert {
+    condition = (
+      keys(aws_api_gateway_resource.human_subroute_parent) == ["audit/decisions"] &&
+      aws_api_gateway_resource.human_subroute_parent["audit/decisions"].path_part == "decisions" &&
+      aws_api_gateway_resource.human_subroute_parent["audit/decisions"].parent_id == aws_api_gateway_resource.partner_l1["audit"].id &&
+      aws_api_gateway_resource.human_subproxy["audit/decisions"].parent_id == aws_api_gateway_resource.human_subroute_parent["audit/decisions"].id &&
+      aws_api_gateway_resource.human_subproxy["audit/decisions"].path_part == "{proxy+}"
+    )
+    error_message = "/v1/audit/decisions is created under /v1/audit, and its {proxy+} hangs from it."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_method.human["audit/decisions/{proxy+} GET"].authorization == "COGNITO_USER_POOLS" &&
+      aws_api_gateway_method.human["audit/decisions/{proxy+} GET"].authorizer_id != null &&
+      aws_api_gateway_method.human["audit/decisions/{proxy+} GET"].api_key_required == false &&
+      aws_api_gateway_integration.human["audit/decisions/{proxy+} GET"].uri == "http://internal-alb.example.com/v1/audit/decisions/{proxy}" &&
+      aws_api_gateway_integration_response.human_options["audit/decisions/{proxy+}"].response_parameters["method.response.header.Access-Control-Allow-Methods"] == "'GET,OPTIONS'"
+    )
+    error_message = "GET /v1/audit/decisions/{offer_id} goes through the Cognito authorizer to the same path of the backend, with its preflight."
+  }
+
+  assert {
+    condition = (
+      length([for k in keys(aws_api_gateway_method.human) : k if startswith(k, "audit/decisions")]) == 1 &&
+      !contains(keys(aws_api_gateway_method.human_options), "audit/decisions") &&
+      length([for m in aws_api_gateway_method.partner : m if m.resource_id == aws_api_gateway_resource.human_subroute_parent["audit/decisions"].id]) == 0
+    )
+    error_message = "The exact path /v1/audit/decisions has no method: the internal POST of origination is never published."
+  }
 }
 
 run "human_subroutes_reject_a_human_route_key" {
