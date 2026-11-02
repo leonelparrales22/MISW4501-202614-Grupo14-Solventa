@@ -55,7 +55,6 @@ cree el proyecto de Firebase, y entra cambiando solo el adaptador. Contrato para
   ([`tests/e2e/hu-m3.1`](../../tests/e2e/hu-m3.1/README.md)) en lugar de `claims`.
 - **Firebase Cloud Messaging:** sin proyecto de Firebase, el *push* llega al simulador y no al teléfono; la app consulta el centro (ver la
   guía del contrato).
-- **Infraestructura:** la cola `notifications` en `infra/terraform` y la tarea de ECS del servicio.
 
 ## Historias asociadas
 

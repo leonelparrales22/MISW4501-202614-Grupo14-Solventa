@@ -156,7 +156,7 @@ run "without_tag_the_latest_image_is_pinned_by_digest" {
   }
 
   assert {
-    condition     = length(data.aws_ecr_image.latest) == 11 && strcontains(local.image_uris["audit"], "@sha256:")
+    condition     = length(data.aws_ecr_image.latest) == 12 && strcontains(local.image_uris["audit"], "@sha256:")
     error_message = "Without image_tag every image is the most recent one, pinned by digest."
   }
 }
@@ -169,8 +169,8 @@ run "services_can_be_switched_off" {
   }
 
   assert {
-    condition     = length(module.ecs.desired_counts) == 11 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
-    error_message = "The five services and the six stubs keep their ECS services, at 0 tasks."
+    condition     = length(module.ecs.desired_counts) == 12 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
+    error_message = "The five services and the seven stubs keep their ECS services, at 0 tasks."
   }
 }
 
@@ -296,9 +296,10 @@ run "inbox_and_exceptions_are_routed" {
     condition = (
       contains(local.services.origination.paths, "/v1/review-requests*") &&
       contains(local.services.origination.paths, "/v1/issuance-exceptions*") &&
-      length(chunklist(local.services.origination.paths, 5)) == 2
+      contains(local.services.origination.paths, "/v1/issuances*") &&
+      length(chunklist(local.services.origination.paths, 5)) == 3
     )
-    error_message = "Origination owns the inbox and the exceptions in the ALB (9 prefixes, 2 listener rules)."
+    error_message = "Origination owns the inbox, the exceptions and the issuance monitor in the ALB (11 prefixes, 3 listener rules)."
   }
 
   assert {
@@ -308,6 +309,23 @@ run "inbox_and_exceptions_are_routed" {
       contains(var.human_routes["acceptances"].methods, "POST")
     )
     error_message = "The inbox (GET and POST), the exceptions (GET) and the charge actions (POST under acceptances) are human routes."
+  }
+}
+
+# HU-W1.3-04 and HU-W1.5-02: the issuance monitor of operations and the online
+# renewal of the insured write through the gateway, so their routes take POST
+# under the root while the root stays read-only.
+run "the_issuance_monitor_and_the_renewal_are_human_routes" {
+  command = plan
+
+  assert {
+    condition = (
+      toset(var.human_routes["issuances"].methods) == toset(["GET", "POST"]) &&
+      var.human_routes["issuances"].root_methods == tolist(["GET"]) &&
+      toset(var.human_routes["policies"].methods) == toset(["GET", "POST"]) &&
+      var.human_routes["policies"].root_methods == tolist(["GET"])
+    )
+    error_message = "GET /v1/issuances, .../actions and POST .../retry (HU-W1.3-04), and POST /v1/policies/{policy_id}/renewal (HU-W1.5-02) are human routes; both roots stay GET only."
   }
 }
 
@@ -366,6 +384,11 @@ run "the_policy_core_runs_behind_cloud_map_for_claims" {
   }
 
   assert {
+    condition     = local.service_environment.origination.POLICY_CORE_URL == "http://policy-core.solventa-test.local:9060"
+    error_message = "Origination reaches the policy core for the wallet (HU-M1.2-01); without it the wallet only lists the issued policies and the mobile filing has no policy that claims can cover."
+  }
+
+  assert {
     condition = (local.service_environment.claims.PAYMENT_GATEWAY_URL == "http://payment-gateway.solventa-test.local:9040"
     && local.service_environment.claims.EMAIL_URL == "http://email.solventa-test.local:9030")
     error_message = "Claims pays the indemnities through the payment gateway and notifies the rejections by e-mail (HU-W2.2-03)."
@@ -379,6 +402,59 @@ run "the_policy_core_runs_behind_cloud_map_for_claims" {
   assert {
     condition     = endswith(local.image_uris["policy-core"], ":prueba-hu-w2-1")
     error_message = "The policy core image accepts a tag override like the others."
+  }
+}
+
+# HU-M3.1-01: the notification center works in AWS only if the service gets
+# the user pool, its queue and the push provider, and the gateway and the load
+# balancer send it the center and the device registration.
+run "the_notification_center_is_wired" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for v in ["AUTH_ISSUER", "AUTH_JWKS_URL", "AUTH_CLIENT_IDS", "EVENTS_QUEUE_URL", "AWS_REGION"] :
+      contains(keys(local.service_environment.notifications), v)
+    ])
+    error_message = "Notifications needs the user pool (center routes), its queue (automatic payments) and the region of the SDK."
+  }
+
+  assert {
+    condition     = local.service_environment.notifications.PUSH_PROVIDER_URL == "http://push.solventa-test.local:9070"
+    error_message = "Notifications reaches the push provider by its Cloud Map name; without it no push is sent."
+  }
+
+  assert {
+    condition     = local.stubs["push"] == 9070 && module.ecs.desired_counts["push"] == 1
+    error_message = "The push provider stub runs one task on port 9070."
+  }
+
+  assert {
+    condition     = !contains(keys(local.lb_stubs), "push") && !contains(keys(module.alb.target_group_arns), "push")
+    error_message = "The browser never calls the push provider: it has no rule in the ALB."
+  }
+
+  assert {
+    condition = (
+      contains(local.services.notifications.paths, "/v1/notifications*") &&
+      contains(local.services.notifications.paths, "/v1/devices*")
+    )
+    error_message = "The ALB sends the center and the device registration to notifications."
+  }
+
+  assert {
+    condition = (
+      toset(var.human_routes["notifications"].methods) == toset(["GET", "POST"]) &&
+      toset(var.human_routes["notifications"].root_methods) == toset(["GET"]) &&
+      toset(var.human_routes["devices"].methods) == toset(["PUT"]) &&
+      length(var.human_routes["devices"].root_methods) == 0
+    )
+    error_message = "The center (GET, and POST to read) and PUT /v1/devices/{installation_id} are human routes behind the authorizer."
+  }
+
+  assert {
+    condition     = !contains(keys(var.public_routes), "notifications") && !contains(keys(var.public_routes), "devices")
+    error_message = "The center and the devices need a session: they are never public routes."
   }
 }
 
@@ -746,9 +822,11 @@ run "offers_root_is_partner_and_sub_paths_are_human" {
     error_message = "The root /v1/offers belongs to the partner; /v1/offers/{offer_id}, renewal and acceptance keep Cognito."
   }
 
-  # consents sets its root to GET only (HU-M1.3-02); it has its own test.
+  # consents (HU-M1.3-02), issuances (HU-W1.3-04) and policies (HU-W1.5-02)
+  # set their root to GET only, and notifications and devices (HU-M3.1-01)
+  # set theirs too; they have their own tests.
   assert {
-    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents"], k)])
+    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents", "issuances", "policies", "notifications", "devices"], k)])
     error_message = "Every other human route keeps its root as before."
   }
 }
@@ -815,7 +893,7 @@ run "the_compliance_portal_reaches_only_the_consent_paths_of_audit" {
 
   assert {
     condition = (
-      length(var.human_subroutes) == 1 &&
+      length(var.human_subroutes) == 2 &&
       var.human_subroutes["audit/consents"].methods == tolist(["GET", "POST"]) &&
       var.human_subroutes["audit/consents"].root_methods == tolist(["GET"]) &&
       contains(keys(var.partner_routes), "audit/consents") &&
@@ -836,11 +914,36 @@ run "the_compliance_portal_reaches_only_the_consent_paths_of_audit" {
   }
 }
 
+# --- HU-W4.1-01: operations reads the decision record of an offer ---------------------
+
+run "the_decision_lookup_is_the_only_published_path_of_the_decisions" {
+  command = plan
+
+  assert {
+    condition = (
+      var.human_subroutes["audit/decisions"].methods == tolist(["GET"]) &&
+      length(var.human_subroutes["audit/decisions"].root_methods) == 0 &&
+      !contains(keys(var.partner_routes), "audit/decisions")
+    )
+    error_message = "Only GET /v1/audit/decisions/{offer_id} is published, with Cognito; POST /v1/audit/decisions stays internal to the VPC."
+  }
+}
+
 run "the_internal_routes_of_audit_cannot_become_human_subroutes" {
   command = plan
 
   variables {
     human_subroutes = { "audit/decisions" = { methods = ["POST"] } }
+  }
+
+  expect_failures = [var.human_subroutes]
+}
+
+run "the_consent_verification_cannot_become_a_human_subroute" {
+  command = plan
+
+  variables {
+    human_subroutes = { "audit/consent-verifications" = { methods = ["GET"] } }
   }
 
   expect_failures = [var.human_subroutes]

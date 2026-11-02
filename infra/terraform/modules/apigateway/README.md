@@ -52,7 +52,7 @@ module "apigateway" {
 | `payment_tokenization` | `null` | Ruta pública `POST /pasarela/tokens` de la pasarela simulada, con `backend_path` (`/tokens`), `rate_limit` (5) y `burst_limit` (10) (T5) |
 | `registration_route` | `null` | Ruta pública `POST /v1/registrations` del registro del asegurado, con `backend_path` (`/v1/registrations`), `rate_limit` (2) y `burst_limit` (5) (HU-M1.1-01) |
 | `partner_routes` | `{}` | Rutas de socio en rutas exactas bajo `/v1` (1 a 3 segmentos), con API key y sin authorizer (T5) |
-| `human_subroutes` | `{}` | Subrutas humanas bajo una ruta de socio: la llave es la de una `partner_routes` (p. ej. `audit/consents`) y solo se crea su `{proxy+}`, con Cognito y *preflight* (HU-W4.2-02). `root_methods` (opcional, `[]` por defecto, HU-W4.2-01) agrega métodos humanos en la ruta exacta de esa ruta de socio, junto a sus métodos con API key |
+| `human_subroutes` | `{}` | Subrutas humanas bajo una ruta de socio: la llave es la de una `partner_routes` (p. ej. `audit/consents`) y solo se crea su `{proxy+}`, con Cognito y *preflight* (HU-W4.2-02). Desde HU-W4.1-01 la llave también puede ser hija de una ruta de socio o de uno de sus prefijos (p. ej. `audit/decisions`): se crea ese recurso sin métodos y su `{proxy+}`. `root_methods` (opcional, `[]` por defecto, HU-W4.2-01) agrega métodos humanos en la ruta exacta de esa ruta de socio, junto a sus métodos con API key |
 
 Salidas: `rest_api_id`, `stage_name`, `invoke_url`, `usage_plan_ids`, `api_key_ids`, `api_key_values` (sensible; claves de
 prueba para los guiones k6 de la ventana), `public_paths` (HA-D02), `cognito_authorizer_id` (HA-S01; `null` sin user pool) y
@@ -200,8 +200,15 @@ Por eso `human_subroutes` crea **solo** el recurso `{proxy+}` de una ruta de soc
 /v1/audit/consents                GET        → Cognito             human_subroutes."audit/consents".root_methods (HU-W4.2-01)
 /v1/audit/consents/{proxy+}       GET, POST  → Cognito             human_subroutes."audit/consents"
 /v1/audit/consent-verifications   —          → no existe (403)
-/v1/audit/decisions               —          → no existe (403)
+/v1/audit/decisions               —          → sin métodos (403): POST interno de originación
+/v1/audit/decisions/{proxy+}      GET        → Cognito             human_subroutes."audit/decisions" (HU-W4.1-01)
 ```
+
+**Subruta hija (HU-W4.1-01).** El analista de operaciones consulta el registro de una decisión con
+`GET /v1/audit/decisions/{offer_id}`, pero en la ruta exacta `/v1/audit/decisions` originación registra la decisión sin token desde
+la VPC. `audit/decisions` no es una ruta de socio: es hija de `audit`, el prefijo de `audit/consents`. Para una llave así el módulo
+crea el recurso hijo **sin métodos** (`human_subroute_parent`) y le cuelga el `{proxy+}`; la ruta exacta nunca se publica. Una subruta
+hija no admite `root_methods`, y `audit/decisions` solo se acepta con `methods = ["GET"]`.
 
 **`root_methods` (HU-W4.2-01).** El listado del portal es `GET /v1/audit/consents`, la ruta **exacta** del `POST` del socio. En API
 Gateway la autorización se configura por método, así que `root_methods = ["GET"]` crea en el mismo recurso de la ruta de socio un `GET`
@@ -215,8 +222,9 @@ La subruta usa los mismos recursos que las rutas humanas (autorizador de Cognito
 | Regla | Cómo se aplica |
 |---|---|
 | Formato y métodos | Validación de la variable: 1 a 3 segmentos; métodos `GET`, `POST`, `PUT`, `PATCH`, `DELETE` sin repetir |
-| Rutas internas | `audit/consent-verifications` y `audit/decisions` se rechazan en la variable, ni siquiera detrás del autorizador |
-| Ruta de socio | La llave debe existir en `partner_routes` (*precondition*): la raíz sigue siendo del socio |
+| Rutas internas | `audit/consent-verifications` se rechaza en la variable, ni siquiera detrás del autorizador; `audit/decisions` solo con `methods = ["GET"]` y sin `root_methods` (HU-W4.1-01) |
+| Ruta de socio | La llave debe existir en `partner_routes`, o ser hija de una ruta de socio o de uno de sus prefijos (*precondition*): la raíz sigue siendo del socio |
+| Subruta hija | Su padre no puede ser una ruta humana (su `{proxy+}` ya cubre la ruta) y no lleva `root_methods` (*precondition*) |
 | Ruta humana | La llave no puede ser también una clave de `human_routes` (el `{proxy+}` se crearía dos veces) |
 | Autorizador | Exige `cognito_user_pool_arns` (*precondition*): nunca se publica sin Cognito |
 | `root_methods` | Métodos válidos sin repetir (validación de la variable); un método no puede estar a la vez en `root_methods` y en la ruta de socio de la misma llave (*precondition* del método de socio) |
@@ -249,4 +257,6 @@ no es ruta de socio, una ruta interna, una llave que también es ruta humana y u
 `root_methods` crea el `GET` exacto de `/v1/audit/consents` con Cognito y sin API key (y su *preflight*) en el recurso de la ruta de
 socio, que el `POST` del socio sigue con API key y sin autorizador, que el `{proxy+}` no cambia, que sin `root_methods` no aparece
 ningún método nuevo y que se rechazan un método repetido entre el socio y `root_methods` y un `root_methods` con métodos repetidos o
-desconocidos.
+desconocidos. Desde HU-W4.1-01 afirma que `audit/decisions` crea `/v1/audit/decisions` sin métodos bajo `/v1/audit` y su
+`{proxy+}` solo con `GET` (Cognito y *preflight*), y que se rechazan `audit/decisions` con `POST` o con `root_methods`, una llave que
+es solo prefijo de una ruta de socio (`audit`) y una subruta hija de una ruta que no es de socio.

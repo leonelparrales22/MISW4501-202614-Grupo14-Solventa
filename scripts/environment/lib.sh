@@ -13,7 +13,7 @@ STATE_BUCKET="solventa-tfstate-368083581678"
 IDENTITY_STATE_KEY="bootstrap/identity/terraform.tfstate"
 FRONT_REPO="nicolasjaramillocely99/MISW4501-202614-Grupo14-Solventa-FrontWeb"
 PRODUCTION_IMAGE_TAG_PARAMETER="/solventa/production-demo/image-tag"
-IMAGES=(origination claims partners audit notifications openfinance opendata kyc email payment-gateway policy-core)
+IMAGES=(origination claims partners audit notifications openfinance opendata kyc email payment-gateway policy-core push)
 ECS_SERVICES=("${IMAGES[@]}")
 PERMANENT_USERS=(asegurado@example.com asesor@example.com operaciones@example.com socio@example.com)
 

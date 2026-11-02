@@ -17,8 +17,8 @@ run "one_repository_per_image" {
   command = plan
 
   assert {
-    condition     = length(module.ecr.repository_names) == 11
-    error_message = "There must be one repository for each of the 5 services and 6 stubs with a Dockerfile."
+    condition     = length(module.ecr.repository_names) == 12
+    error_message = "There must be one repository for each of the 5 services and 7 stubs with a Dockerfile."
   }
 
   assert {
@@ -30,6 +30,12 @@ run "one_repository_per_image" {
   assert {
     condition     = module.ecr.repository_names["policy-core"] == "solventa/policy-core"
     error_message = "The policy core stub needs the repository solventa/policy-core."
+  }
+
+  # HU-M3.1-01: the push provider stub of notifications.
+  assert {
+    condition     = module.ecr.repository_names["push"] == "solventa/push"
+    error_message = "The push provider stub needs the repository solventa/push."
   }
 }
 

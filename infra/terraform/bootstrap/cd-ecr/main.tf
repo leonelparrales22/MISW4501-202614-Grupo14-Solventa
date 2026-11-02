@@ -31,6 +31,8 @@ locals {
     # HU-W2.1-01: the policy core that claims asks for the policies of the
     # insured before accepting a web filing.
     "policy-core",
+    # HU-M3.1-01: the push provider of notifications.
+    "push",
   ])
 
   github_owner = split("/", var.github_repository)[0]
