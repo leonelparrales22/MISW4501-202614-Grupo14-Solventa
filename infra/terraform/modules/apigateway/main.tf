@@ -956,11 +956,60 @@ resource "aws_api_gateway_integration" "partner" {
 # HU-W4.2-01, root_methods publishes the list of the portal
 # (GET /v1/audit/consents) on the resource of the partner route itself, next to
 # its POST with the API key: the authorization is per method.
+#
+# Since HU-W4.1-01 a sub-route can also be a child of a partner route or of one
+# of its prefixes (audit/decisions, under the resource audit of
+# audit/consents): the module creates that child resource without methods and
+# hangs the {proxy+} from it. So the analyst reads
+# GET /v1/audit/decisions/{offer_id} with the token while the exact path, the
+# internal POST /v1/audit/decisions, stays unpublished.
+
+locals {
+  partner_resource_keys = setunion(local.partner_l1, local.partner_shared_human, local.partner_l2, local.partner_l3)
+
+  # Child sub-routes and the key of their parent resource.
+  human_subroute_parents = {
+    for r in keys(var.human_subroutes) : r => join("/", slice(split("/", r), 0, length(split("/", r)) - 1))
+    if !contains(local.partner_resource_keys, r)
+  }
+
+  human_subroute_parent_ids = merge(
+    local.partner_resource_ids,
+    { for k, r in aws_api_gateway_resource.human_subroute_parent : k => r.id },
+  )
+}
+
+# No method is ever created on this resource: its exact path is not published.
+resource "aws_api_gateway_resource" "human_subroute_parent" {
+  for_each = local.human_subroute_parents
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = lookup(local.partner_resource_ids, each.value, null)
+  path_part   = element(split("/", each.key), length(split("/", each.key)) - 1)
+
+  lifecycle {
+    precondition {
+      condition     = contains(local.partner_resource_keys, each.value)
+      error_message = "A human sub-route hangs from a partner route: its key, or the key without its last segment, must be a partner route or one of its prefixes (HU-W4.2-02, HU-W4.1-01)."
+    }
+
+    precondition {
+      condition     = !contains(keys(var.human_routes), split("/", each.key)[0])
+      error_message = "A human sub-route cannot hang from a human route: the {proxy+} of that human route already covers the path."
+    }
+
+    precondition {
+      condition     = length(var.human_subroutes[each.key].root_methods) == 0
+      error_message = "A human sub-route that is not a partner route has no root_methods: its exact path is never published (HU-W4.1-01)."
+    }
+  }
+}
+
 resource "aws_api_gateway_resource" "human_subproxy" {
   for_each = var.human_subroutes
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  parent_id   = lookup(local.partner_resource_ids, each.key, null)
+  parent_id   = lookup(local.human_subroute_parent_ids, each.key, null)
   path_part   = "{proxy+}"
 
   lifecycle {
@@ -970,8 +1019,8 @@ resource "aws_api_gateway_resource" "human_subproxy" {
     }
 
     precondition {
-      condition     = contains(keys(var.partner_routes), each.key)
-      error_message = "A human sub-route hangs from a partner route: its key must also be in partner_routes (HU-W4.2-02)."
+      condition     = contains(keys(var.partner_routes), each.key) || contains(keys(local.human_subroute_parents), each.key)
+      error_message = "A human sub-route hangs from a partner route: its key must also be in partner_routes, or be a child of one of its resources (HU-W4.2-02, HU-W4.1-01)."
     }
 
     precondition {
