@@ -153,13 +153,16 @@ phase_site() {
 phase_platform() {
   step "platform: $ENVIRONMENT/platform with the tasks (portal URL from SSM)"
   ensure_images
-  local vars cluster url td offer
+  local vars cluster url td offer i
   mapfile -t vars < <(platform_vars true)
   tf_phase platform "$PLATFORM_DIR" noguard "${vars[@]}"
   [[ "$DRY_RUN" == 1 ]] && return 0
   cluster="$(tf_output_raw "$PLATFORM_DIR" ecs_cluster)"
   say "Waiting for the ECS services to be stable"
-  aws_ro ecs wait services-stable --cluster "$cluster" --services "${ECS_SERVICES[@]}"
+  # The waiter takes at most 10 services per call.
+  for ((i = 0; i < ${#ECS_SERVICES[@]}; i += 10)); do
+    aws_ro ecs wait services-stable --cluster "$cluster" --services "${ECS_SERVICES[@]:i:10}"
+  done
   tf_init "$WEB_DIR"
   url="$(tf_output_raw "$WEB_DIR" url)"
   td="$(aws_ro ecs describe-services --cluster "$cluster" --services origination --query 'services[0].taskDefinition' --output text | tr -d '\r')"
