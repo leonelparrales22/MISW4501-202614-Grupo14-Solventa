@@ -26,6 +26,7 @@ de cero si algo falla. Puertos (solo `127.0.0.1`): `notifications` 8393, LocalSt
 
 | Archivo | Para qué |
 |---|---|
+| `nube.sh` | Publica un pago automático en el tópico `claims` de un ambiente en AWS (`PLATFORM_NAME`, por omisión `solventa-stg`), con las credenciales de quien lo corre, para el `SUBJECT` del asegurado. Mientras el motor paramétrico de `claims` no exista, es la forma de que un pago llegue al centro de la app en la nube: `notifications` lo consume de su cola, lo registra y envía el *push* al stub `push`, que lo deja en su log de CloudWatch como `message accepted` |
 | `app-local.sh` | *Backend* local para el ensayo en el emulador con el pool permanente (los valores públicos de `app/build.gradle.kts` del móvil): levanta el entorno e imprime cómo construir el APK con `URL_API_LOCAL`. `--payout [VUELO] [MINUTOS]` publica un pago automático para el `SUBJECT` de `asegurado@example.com` (por omisión el del prototipo, AV-8421 con 215 min, $ 180.000 COP). Se detiene con `docker compose -f tests/e2e/hu-m3.1/docker-compose.yml down -v` |
 
 Las pruebas por componente están en `services/notifications/internal/...` y `services/notifications/tests/integration` (PostgreSQL con

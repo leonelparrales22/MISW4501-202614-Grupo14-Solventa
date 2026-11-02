@@ -43,8 +43,8 @@ variable "image_tag_overrides" {
   default     = {}
 
   validation {
-    condition     = alltrue([for k in keys(var.image_tag_overrides) : contains(["origination", "claims", "partners", "audit", "notifications", "openfinance", "opendata", "kyc", "email", "payment-gateway", "policy-core"], k)])
-    error_message = "image_tag_overrides keys must be image names: origination, claims, partners, audit, notifications, openfinance, opendata, kyc, email, payment-gateway or policy-core."
+    condition     = alltrue([for k in keys(var.image_tag_overrides) : contains(["origination", "claims", "partners", "audit", "notifications", "openfinance", "opendata", "kyc", "email", "payment-gateway", "policy-core", "push"], k)])
+    error_message = "image_tag_overrides keys must be image names: origination, claims, partners, audit, notifications, openfinance, opendata, kyc, email, payment-gateway, policy-core or push."
   }
 }
 
@@ -83,8 +83,8 @@ variable "stub_desired_count_overrides" {
   default     = {}
 
   validation {
-    condition     = alltrue([for k in keys(var.stub_desired_count_overrides) : contains(["openfinance", "opendata", "kyc", "email", "payment-gateway", "policy-core"], k)])
-    error_message = "stub_desired_count_overrides keys must be stub names: openfinance, opendata, kyc, email, payment-gateway or policy-core."
+    condition     = alltrue([for k in keys(var.stub_desired_count_overrides) : contains(["openfinance", "opendata", "kyc", "email", "payment-gateway", "policy-core", "push"], k)])
+    error_message = "stub_desired_count_overrides keys must be stub names: openfinance, opendata, kyc, email, payment-gateway, policy-core or push."
   }
 
   validation {
@@ -230,6 +230,15 @@ variable "human_routes" {
     # .../credential-rotations. partners has no internal route, so the whole
     # prefix is human.
     partners = { methods = ["GET", "POST"] }
+    # The notification center of the mobile app (HU-M3.1-01): GET
+    # /v1/notifications and GET /v1/notifications/{notification_id}, POST
+    # .../{notification_id}/read and POST /v1/notifications/read-all; the root
+    # stays read-only.
+    notifications = { methods = ["GET", "POST"], root_methods = ["GET"] }
+    # PUT /v1/devices/{installation_id}: the app registers its push token,
+    # its language and whether the user granted the notification permission
+    # (HU-M3.1-01). The root /v1/devices has no method.
+    devices = { methods = ["PUT"], root_methods = [] }
   }
 }
 

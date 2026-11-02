@@ -156,7 +156,7 @@ run "without_tag_the_latest_image_is_pinned_by_digest" {
   }
 
   assert {
-    condition     = length(data.aws_ecr_image.latest) == 11 && strcontains(local.image_uris["audit"], "@sha256:")
+    condition     = length(data.aws_ecr_image.latest) == 12 && strcontains(local.image_uris["audit"], "@sha256:")
     error_message = "Without image_tag every image is the most recent one, pinned by digest."
   }
 }
@@ -169,8 +169,8 @@ run "services_can_be_switched_off" {
   }
 
   assert {
-    condition     = length(module.ecs.desired_counts) == 11 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
-    error_message = "The five services and the six stubs keep their ECS services, at 0 tasks."
+    condition     = length(module.ecs.desired_counts) == 12 && alltrue([for c in values(module.ecs.desired_counts) : c == 0])
+    error_message = "The five services and the seven stubs keep their ECS services, at 0 tasks."
   }
 }
 
@@ -379,6 +379,59 @@ run "the_policy_core_runs_behind_cloud_map_for_claims" {
   assert {
     condition     = endswith(local.image_uris["policy-core"], ":prueba-hu-w2-1")
     error_message = "The policy core image accepts a tag override like the others."
+  }
+}
+
+# HU-M3.1-01: the notification center works in AWS only if the service gets
+# the user pool, its queue and the push provider, and the gateway and the load
+# balancer send it the center and the device registration.
+run "the_notification_center_is_wired" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for v in ["AUTH_ISSUER", "AUTH_JWKS_URL", "AUTH_CLIENT_IDS", "EVENTS_QUEUE_URL", "AWS_REGION"] :
+      contains(keys(local.service_environment.notifications), v)
+    ])
+    error_message = "Notifications needs the user pool (center routes), its queue (automatic payments) and the region of the SDK."
+  }
+
+  assert {
+    condition     = local.service_environment.notifications.PUSH_PROVIDER_URL == "http://push.solventa-test.local:9070"
+    error_message = "Notifications reaches the push provider by its Cloud Map name; without it no push is sent."
+  }
+
+  assert {
+    condition     = local.stubs["push"] == 9070 && module.ecs.desired_counts["push"] == 1
+    error_message = "The push provider stub runs one task on port 9070."
+  }
+
+  assert {
+    condition     = !contains(keys(local.lb_stubs), "push") && !contains(keys(module.alb.target_group_arns), "push")
+    error_message = "The browser never calls the push provider: it has no rule in the ALB."
+  }
+
+  assert {
+    condition = (
+      contains(local.services.notifications.paths, "/v1/notifications*") &&
+      contains(local.services.notifications.paths, "/v1/devices*")
+    )
+    error_message = "The ALB sends the center and the device registration to notifications."
+  }
+
+  assert {
+    condition = (
+      toset(var.human_routes["notifications"].methods) == toset(["GET", "POST"]) &&
+      toset(var.human_routes["notifications"].root_methods) == toset(["GET"]) &&
+      toset(var.human_routes["devices"].methods) == toset(["PUT"]) &&
+      length(var.human_routes["devices"].root_methods) == 0
+    )
+    error_message = "The center (GET, and POST to read) and PUT /v1/devices/{installation_id} are human routes behind the authorizer."
+  }
+
+  assert {
+    condition     = !contains(keys(var.public_routes), "notifications") && !contains(keys(var.public_routes), "devices")
+    error_message = "The center and the devices need a session: they are never public routes."
   }
 }
 
@@ -746,9 +799,10 @@ run "offers_root_is_partner_and_sub_paths_are_human" {
     error_message = "The root /v1/offers belongs to the partner; /v1/offers/{offer_id}, renewal and acceptance keep Cognito."
   }
 
-  # consents sets its root to GET only (HU-M1.3-02); it has its own test.
+  # consents sets its root to GET only (HU-M1.3-02), and notifications and
+  # devices (HU-M3.1-01) set theirs too; each has its own test.
   assert {
-    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents"], k)])
+    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents", "notifications", "devices"], k)])
     error_message = "Every other human route keeps its root as before."
   }
 }

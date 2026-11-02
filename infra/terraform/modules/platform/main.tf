@@ -10,7 +10,7 @@
 #     --> ECS Fargate services --> RDS PostgreSQL (one database per service),
 #         ElastiCache Redis, SNS/SQS with DLQs, S3
 #     --Cloud Map--> stubs of the external providers (Open Finance, Open Data, KYC,
-#                    e-mail and payment gateway)
+#                    e-mail, payment gateway, policy core and push)
 #   browser --POST /pasarela/tokens (public, T5)--> API Gateway --> internal ALB
 #     /tokens --> payment gateway stub (card tokenization of screen E4)
 #
@@ -73,8 +73,10 @@ locals {
       consumes  = ["audit"]
     }
     notifications = {
-      priority  = 5
-      paths     = ["/v1/notifications*"]
+      priority = 5
+      # HU-M3.1-01: the notification center of the insured and the
+      # registration of their devices, both human routes of the mobile app.
+      paths     = ["/v1/notifications*", "/v1/devices*"]
       buckets   = []
       publishes = []
       consumes  = ["notifications"]
@@ -97,6 +99,10 @@ locals {
     # HU-W2.1-01: the policy core that claims reads inside the VPC. The browser
     # never calls it, so it is not in lb_stubs.
     "policy-core" = 9060
+    # HU-M3.1-01: the push provider that notifications sends to inside the VPC
+    # (Firebase Cloud Messaging in the architecture; a stub by decision of the
+    # team). The browser never calls it, so it is not in lb_stubs.
+    push = 9070
   }
 
   # Stubs that the browser also reaches through the API Gateway, so they sit
@@ -545,6 +551,22 @@ locals {
       # the insured a rejection and its reason.
       PAYMENT_GATEWAY_URL = "http://payment-gateway.${local.namespace}:${local.stubs["payment-gateway"]}"
       EMAIL_URL           = "http://email.${local.namespace}:${local.stubs.email}"
+    }
+
+    # HU-M3.1-01: the notification center of the insured and the push of the
+    # automatic parametric payments. Without AUTH_* the center routes are not
+    # mounted, without EVENTS_QUEUE_URL no payment is consumed and without
+    # PUSH_PROVIDER_URL no push is sent (the notifications wait in the
+    # center). The role already had ConsumeItsQueue on the notifications
+    # queue, which is subscribed to the claims topic (T4).
+    notifications = {
+      PORT              = tostring(local.service_port)
+      AWS_REGION        = data.aws_region.current.region
+      AUTH_ISSUER       = local.cognito.issuer
+      AUTH_JWKS_URL     = local.cognito.jwks_url
+      AUTH_CLIENT_IDS   = join(",", values(local.cognito.client_ids))
+      EVENTS_QUEUE_URL  = module.messaging.queue_urls["notifications"]
+      PUSH_PROVIDER_URL = "http://push.${local.namespace}:${local.stubs.push}"
     }
   }
 

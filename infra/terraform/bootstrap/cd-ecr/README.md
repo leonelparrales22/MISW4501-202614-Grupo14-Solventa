@@ -19,14 +19,14 @@ desde el CD: lo enciende `scripts/environment/up.sh production-demo` con la etiq
 
 | Elemento | Configuración | Por qué |
 |---|---|---|
-| Repositorios | `solventa/<imagen>` para `audit`, `claims`, `notifications`, `origination`, `partners`, `kyc`, `opendata`, `openfinance`, `email`, `payment-gateway` (estos dos desde HU-W1.3-02, aplicados el 2026-10-18) y `policy-core` (HU-W2.1-01: el core de pólizas que consulta `claims`; **pendiente de aplicar**) | Uno por Dockerfile existente en `services/` y `stubs/`: 11 |
+| Repositorios | `solventa/<imagen>` para `audit`, `claims`, `notifications`, `origination`, `partners`, `kyc`, `opendata`, `openfinance`, `email`, `payment-gateway` (estos dos desde HU-W1.3-02, aplicados el 2026-10-18) `policy-core` (HU-W2.1-01: el core de pólizas que consulta `claims`; **pendiente de aplicar**) y `push` (HU-M3.1-01: el proveedor de *push* de `notifications`; **pendiente de aplicar**) | Uno por Dockerfile existente en `services/` y `stubs/`: 12 |
 | Etiquetas de imagen | `IMMUTABLE` | La etiqueta es el SHA del commit y nunca se sobrescribe: un SHA siempre es la misma imagen y el rollback es redesplegar una etiqueta anterior |
 | Escaneo | `scan_on_push = true` | Vulnerabilidades visibles en cada publicación, sin costo adicional del escaneo básico |
 | Ciclo de vida | Imágenes sin etiqueta a los 7 días; se conservan las 30 más recientes | Evita acumular almacenamiento (créditos gratuitos) |
 | Proveedor OIDC | `token.actions.githubusercontent.com`, audiencia `sts.amazonaws.com` | GitHub Actions obtiene credenciales temporales; **no hay llaves de AWS guardadas en GitHub** |
 | Rol | `solventa-github-actions-ecr` | Lo asume `backend-cd` |
 | Confianza del rol | Igualdad exacta del claim `sub` con `repo:leonelparrales22@52500190/MISW4501-202614-Grupo14-Solventa@1325296709:ref:refs/heads/{develop,main}` | Solo ejecuciones sobre esas ramas; **nunca un PR**, ni un fork, ni otra rama. El repositorio usa *subject claims* inmutables, así que el `sub` lleva los IDs numéricos del dueño y del repo (sobreviven a un cambio de nombre y un repo nuevo con el mismo nombre no hereda el acceso) |
-| Permisos del rol | `ecr:GetAuthorizationToken` (no admite recurso) y las acciones de *push* + `DescribeImages` + `BatchGetImage` (buildx lee manifiestos al publicar) solo sobre los 11 repositorios | Mínimo privilegio: no puede descargar capas, borrar imágenes ni tocar otros servicios |
+| Permisos del rol | `ecr:GetAuthorizationToken` (no admite recurso) y las acciones de *push* + `DescribeImages` + `BatchGetImage` (buildx lee manifiestos al publicar) solo sobre los 12 repositorios | Mínimo privilegio: no puede descargar capas, borrar imágenes ni tocar otros servicios |
 | Etiqueta de `main` | Parámetro SSM `/solventa/production-demo/image-tag` (`String`, valor inicial `none`, `ignore_changes` sobre el valor) | Terraform lo crea y el CD solo actualiza el valor; `scripts/environment/up.sh` lo lee para encender `production-demo` con la última versión de `main` |
 | Permisos extra del rol de publicación | `ssm:PutParameter` sobre ese parámetro; `ecs:DescribeClusters`, `ecs:ListServices` y `ecs:DescribeServices` (servicios de `solventa-demo`) | Registrar la etiqueta; la consulta del cluster `solventa-demo` queda sin uso mientras el CD no despliegue en `production-demo` |
 | Rol de despliegue en `staging` | `solventa-github-actions-deploy-staging`; confianza solo para `repo:…@1325296709:environment:staging` | Lo asume el job `deploy` actual, que corre en el *Environment* `staging` de GitHub; ninguna ejecución de rama ni PR |
@@ -182,5 +182,5 @@ Usan un proveedor simulado: no necesitan credenciales y no crean nada.
 
 ## Costos
 
-Los repositorios vacíos no cuestan. El almacenamiento de ECR cuesta ≈ US$ 0,10 por GB al mes; once imágenes distroless de pocos
+Los repositorios vacíos no cuestan. El almacenamiento de ECR cuesta ≈ US$ 0,10 por GB al mes; doce imágenes distroless de pocos
 MB y la política de ciclo de vida lo mantienen muy por debajo de US$ 1 al mes.
