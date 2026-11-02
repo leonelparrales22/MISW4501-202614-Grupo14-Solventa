@@ -20,7 +20,7 @@ cliente ──HTTPS──▶ API Gateway REST (stage = ambiente; todos los tipos
                           ├─▶ SNS (un tópico por dominio) ─▶ SQS por consumidor + DLQ
                           ├─▶ S3 (documents, evidence)
                           ├─Cloud Map─▶ audit (origination verifica el consentimiento, HU-W1.2-01, T5)
-                          └─Cloud Map─▶ stubs openfinance · opendata · kyc · email · payment-gateway · policy-core
+                          └─Cloud Map─▶ stubs openfinance · opendata · kyc · email · payment-gateway · policy-core · push
 ```
 
 | Pieza | Módulo | Configuración |
@@ -95,7 +95,8 @@ cuando esos datos estén en PostgreSQL. Un reinicio de la tarea borra lo que est
 | `audit` | `/v1/audit*` (bancos, API key) y `/v1/consents*` (personas, Cognito; HU-M1.3-01, D-3 a: un prefijo por recurso) | Consentimiento de HU-W1.2-01, consulta del asegurado de HU-M1.3-01 y su revocación de HU-M1.3-02 |
 | `claims` | `/v1/claims*` | Radicación móvil (HU-M2.2-01) y web con soportes, listado, detalle y comprobante (HU-W2.1-01) |
 | `partners` | `/v1/partners*` (Cognito, ruta humana `partners`) | Socios comerciales y sus credenciales (HU-W3.1-01): administra API keys y usage plans del *stage* (sentencias IAM `ManageThePartnerApiKeys`, `ManageThePartnerUsagePlans` y `ReadTheStageOfThePartnerPlans`, solo para `partners`) y publica en el tópico `partners`, al que se suscribe la cola de `audit` |
-| `notifications` | `/v1/notifications*` | Reservado (solo `GET /health`); un target group necesita al menos una regla |
+| `notifications` | `/v1/notifications*`, `/v1/devices*` (Cognito, rutas humanas `notifications` y `devices`) | Centro de notificaciones del asegurado y registro del dispositivo (HU-M3.1-01): `GET /v1/notifications` y `GET /v1/notifications/{notification_id}` (raíz de solo lectura), `POST .../{notification_id}/read` y `POST /v1/notifications/read-all`, y `PUT /v1/devices/{installation_id}` (sin método en la raíz `/v1/devices`) |
+| stub `push` | — (solo Cloud Map, puerto 9070) | Proveedor de *push* al que envía `notifications` (HU-M3.1-01; FCM en la arquitectura, un stub por decisión del equipo); el navegador nunca lo llama |
 | stub `policy-core` | — (solo Cloud Map, puerto 9060) | Core de pólizas que consulta `claims` dentro de la VPC (HU-W2.1-01); el navegador nunca lo llama, por eso no está en `local.lb_stubs` |
 | stub `payment-gateway` | `/tokens` (prioridad 6) | Tokenización de la tarjeta desde el navegador (T5, `local.lb_stubs`); el resto del simulador no se alcanza por el ALB |
 
@@ -151,6 +152,20 @@ El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/
 | `DATABASE_URL` (secreto) | `<nombre>/audit/database` | Base propia *append-only* |
 
 El rol de la tarea ya tenía `ConsumeItsQueue` sobre la cola `audit` (T4).
+
+## Variables de entorno de `notifications` (HU-M3.1-01)
+
+| Variable | Valor | Para qué |
+|---|---|---|
+| `PORT` | `8080` | Puerto del contenedor |
+| `AWS_REGION` | Región del proveedor (`us-east-2`) | Región del SDK de AWS (SQS) |
+| `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_CLIENT_IDS` | El user pool del ambiente | Sin ellas no se montan el centro ni el registro del dispositivo |
+| `EVENTS_QUEUE_URL` | Cola `notifications` de `modules/messaging` (suscrita a los tópicos `origination` y `claims`) | Consumo de `ParametricPayoutCompleted`; sin ella ningún pago llega al centro |
+| `PUSH_PROVIDER_URL` | Stub `push` por Cloud Map: `http://push.<nombre>.local:9070` | Envío del *push* con reintentos; sin ella las notificaciones esperan en el centro |
+| `DATABASE_URL` (secreto) | `<nombre>/notifications/database` | Base propia: notificaciones, dispositivos y entregas |
+
+El rol de la tarea ya tenía `ConsumeItsQueue` sobre la cola `notifications` (T4); el grupo de seguridad de las tareas ya abre el 9070
+entre tareas, como los demás stubs.
 
 ## Imágenes
 

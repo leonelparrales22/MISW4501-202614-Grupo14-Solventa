@@ -24,6 +24,7 @@ images=(
   "email:stubs/email"
   "payment-gateway:stubs/payment-gateway"
   "policy-core:stubs/policy-core"
+  "push:stubs/push"
 )
 
 shared='^(pkg/|go\.work$|go\.work\.sum$|\.dockerignore$|scripts/ci/|\.github/workflows/backend-cd\.yml$)'
