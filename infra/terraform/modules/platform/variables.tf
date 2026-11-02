@@ -206,12 +206,20 @@ variable "human_routes" {
     acceptances     = { methods = ["GET", "POST"] }
     assisted-quotes = { methods = ["GET", "POST"] }
     customers       = { methods = ["GET"] }
-    policies        = { methods = ["GET"] }
+    # The insured lists their policies and renews one online (HU-W1.5-02):
+    # GET /v1/policies/{policy_id}/renewal and .../renewal/status, and
+    # POST .../renewal to accept and pay it. The root /v1/policies stays
+    # read-only.
+    policies = { methods = ["GET", "POST"], root_methods = ["GET"] }
     # Advisor inbox (HU-W1.1-02): list and read the requests, POST the
     # decision. Issuance exceptions of the premium charge (HA-D02): read by
     # operations; their resumption is POST /v1/acceptances/{id}/charge/resume.
     review-requests     = { methods = ["GET", "POST"] }
     issuance-exceptions = { methods = ["GET"] }
+    # Issuance monitor of operations (HU-W1.3-04): GET /v1/issuances and
+    # .../{acceptance_id}/actions, and POST .../{acceptance_id}/retry. The root
+    # /v1/issuances stays read-only.
+    issuances = { methods = ["GET", "POST"], root_methods = ["GET"] }
     # Filing of the claim from the guided assistant of the mobile app
     # (HU-M2.2-01) and from the web portal (HU-W2.1-01). GET reads the list of
     # claims (/v1/claims), the filing options, the detail and the filing
@@ -260,7 +268,7 @@ variable "partner_routes" {
 }
 
 variable "human_subroutes" {
-  description = "Human-channel sub-paths under a partner route, behind the Cognito authorizer (HU-W4.2-02). Key: the key of a partner route. Default: /v1/audit/consents/{proxy+} with GET and POST, which publishes the evidence of the consent (GET /v1/audit/consents/{consent_id}, HU-W1.2-01, decision D-23 c) and the revocation of the compliance portal (GET .../revocation, POST .../revocations and .../revocation-retries), plus root_methods GET on the exact path for the list of the portal (HU-W4.2-01). Only that {proxy+} and that GET are created: audit is never a human route, because GET /v1/audit/consent-verifications and POST /v1/audit/decisions are internal to the VPC and carry no token."
+  description = "Human-channel sub-paths under a partner route, behind the Cognito authorizer (HU-W4.2-02). Key: the key of a partner route. Default: /v1/audit/consents/{proxy+} with GET and POST, which publishes the evidence of the consent (GET /v1/audit/consents/{consent_id}, HU-W1.2-01, decision D-23 c) and the revocation of the compliance portal (GET .../revocation, POST .../revocations and .../revocation-retries), plus root_methods GET on the exact path for the list of the portal (HU-W4.2-01); and /v1/audit/decisions/{proxy+} with GET alone, the lookup of the operations analyst (GET /v1/audit/decisions/{offer_id}, HU-W4.1-01). Only those resources are created: audit is never a human route, because GET /v1/audit/consent-verifications and POST /v1/audit/decisions are internal to the VPC and carry no token."
   type = map(object({
     methods      = list(string)
     root_methods = optional(list(string), [])
@@ -269,11 +277,23 @@ variable "human_subroutes" {
     # HU-W4.2-01: root_methods publishes also the list of the compliance portal
     # (GET /v1/audit/consents) with Cognito, next to the POST of the partner.
     "audit/consents" = { methods = ["GET", "POST"], root_methods = ["GET"] }
+    # HU-W4.1-01: the decision record of an offer, for operations. Only its
+    # {proxy+} with GET: the exact path, where origination records the
+    # decision, stays internal.
+    "audit/decisions" = { methods = ["GET"] }
   }
 
   validation {
-    condition     = alltrue([for k in keys(var.human_subroutes) : !contains(["audit/consent-verifications", "audit/decisions"], k)])
-    error_message = "The consent verification and the decision record of audit are internal to the VPC (HU-W1.2-01, HU-W4.1-01): they can never be published, not even behind the authorizer."
+    condition     = !contains(keys(var.human_subroutes), "audit/consent-verifications")
+    error_message = "The consent verification of audit is internal to the VPC (HU-W1.2-01): it can never be published, not even behind the authorizer."
+  }
+
+  validation {
+    condition = !contains(keys(var.human_subroutes), "audit/decisions") || (
+      try(var.human_subroutes["audit/decisions"].methods, []) == tolist(["GET"]) &&
+      length(try(var.human_subroutes["audit/decisions"].root_methods, [])) == 0
+    )
+    error_message = "audit/decisions only publishes GET /v1/audit/decisions/{offer_id} (HU-W4.1-01): POST /v1/audit/decisions records the decision inside the VPC without a token and can never be published."
   }
 }
 

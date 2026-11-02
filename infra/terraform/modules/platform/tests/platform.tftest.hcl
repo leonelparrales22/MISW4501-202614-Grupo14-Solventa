@@ -296,9 +296,10 @@ run "inbox_and_exceptions_are_routed" {
     condition = (
       contains(local.services.origination.paths, "/v1/review-requests*") &&
       contains(local.services.origination.paths, "/v1/issuance-exceptions*") &&
-      length(chunklist(local.services.origination.paths, 5)) == 2
+      contains(local.services.origination.paths, "/v1/issuances*") &&
+      length(chunklist(local.services.origination.paths, 5)) == 3
     )
-    error_message = "Origination owns the inbox and the exceptions in the ALB (9 prefixes, 2 listener rules)."
+    error_message = "Origination owns the inbox, the exceptions and the issuance monitor in the ALB (11 prefixes, 3 listener rules)."
   }
 
   assert {
@@ -308,6 +309,23 @@ run "inbox_and_exceptions_are_routed" {
       contains(var.human_routes["acceptances"].methods, "POST")
     )
     error_message = "The inbox (GET and POST), the exceptions (GET) and the charge actions (POST under acceptances) are human routes."
+  }
+}
+
+# HU-W1.3-04 and HU-W1.5-02: the issuance monitor of operations and the online
+# renewal of the insured write through the gateway, so their routes take POST
+# under the root while the root stays read-only.
+run "the_issuance_monitor_and_the_renewal_are_human_routes" {
+  command = plan
+
+  assert {
+    condition = (
+      toset(var.human_routes["issuances"].methods) == toset(["GET", "POST"]) &&
+      var.human_routes["issuances"].root_methods == tolist(["GET"]) &&
+      toset(var.human_routes["policies"].methods) == toset(["GET", "POST"]) &&
+      var.human_routes["policies"].root_methods == tolist(["GET"])
+    )
+    error_message = "GET /v1/issuances, .../actions and POST .../retry (HU-W1.3-04), and POST /v1/policies/{policy_id}/renewal (HU-W1.5-02) are human routes; both roots stay GET only."
   }
 }
 
@@ -799,10 +817,11 @@ run "offers_root_is_partner_and_sub_paths_are_human" {
     error_message = "The root /v1/offers belongs to the partner; /v1/offers/{offer_id}, renewal and acceptance keep Cognito."
   }
 
-  # consents sets its root to GET only (HU-M1.3-02), and notifications and
-  # devices (HU-M3.1-01) set theirs too; each has its own test.
+  # consents (HU-M1.3-02), issuances (HU-W1.3-04) and policies (HU-W1.5-02)
+  # set their root to GET only, and notifications and devices (HU-M3.1-01)
+  # set theirs too; they have their own tests.
   assert {
-    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents", "notifications", "devices"], k)])
+    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents", "issuances", "policies", "notifications", "devices"], k)])
     error_message = "Every other human route keeps its root as before."
   }
 }
@@ -869,7 +888,7 @@ run "the_compliance_portal_reaches_only_the_consent_paths_of_audit" {
 
   assert {
     condition = (
-      length(var.human_subroutes) == 1 &&
+      length(var.human_subroutes) == 2 &&
       var.human_subroutes["audit/consents"].methods == tolist(["GET", "POST"]) &&
       var.human_subroutes["audit/consents"].root_methods == tolist(["GET"]) &&
       contains(keys(var.partner_routes), "audit/consents") &&
@@ -890,11 +909,36 @@ run "the_compliance_portal_reaches_only_the_consent_paths_of_audit" {
   }
 }
 
+# --- HU-W4.1-01: operations reads the decision record of an offer ---------------------
+
+run "the_decision_lookup_is_the_only_published_path_of_the_decisions" {
+  command = plan
+
+  assert {
+    condition = (
+      var.human_subroutes["audit/decisions"].methods == tolist(["GET"]) &&
+      length(var.human_subroutes["audit/decisions"].root_methods) == 0 &&
+      !contains(keys(var.partner_routes), "audit/decisions")
+    )
+    error_message = "Only GET /v1/audit/decisions/{offer_id} is published, with Cognito; POST /v1/audit/decisions stays internal to the VPC."
+  }
+}
+
 run "the_internal_routes_of_audit_cannot_become_human_subroutes" {
   command = plan
 
   variables {
     human_subroutes = { "audit/decisions" = { methods = ["POST"] } }
+  }
+
+  expect_failures = [var.human_subroutes]
+}
+
+run "the_consent_verification_cannot_become_a_human_subroute" {
+  command = plan
+
+  variables {
+    human_subroutes = { "audit/consent-verifications" = { methods = ["GET"] } }
   }
 
   expect_failures = [var.human_subroutes]

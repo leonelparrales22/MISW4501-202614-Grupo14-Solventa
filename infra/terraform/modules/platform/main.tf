@@ -38,6 +38,8 @@ locals {
         "/v1/customers*", "/v1/policies*", "/v1/documents*",
         # Advisor inbox (HU-W1.1-02) and issuance exceptions of operations (HA-D02).
         "/v1/review-requests*", "/v1/issuance-exceptions*",
+        # Issuance monitor of operations (HU-W1.3-04).
+        "/v1/issuances*",
         # Sign-up of the insured (HU-M1.1-01). The API Gateway publishes the
         # route without a session, but the load balancer has to send it
         # somewhere: without this rule it answers 404 and the mobile sign-up
