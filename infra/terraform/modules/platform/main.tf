@@ -464,6 +464,11 @@ locals {
       OPEN_DATA_URL    = "http://opendata.${local.namespace}:${local.stubs.opendata}"
       KYC_URL          = "http://kyc.${local.namespace}:${local.stubs.kyc}"
       EMAIL_URL        = "http://email.${local.namespace}:${local.stubs.email}"
+      # The wallet of the insured (HU-M1.2-01) lists the auto, home and travel
+      # policies of the policy core next to the ones origination issued.
+      # Without it the wallet only shows the issued ones, and the mobile
+      # filing has no policy whose coverage claims can read.
+      POLICY_CORE_URL = "http://policy-core.${local.namespace}:${local.stubs["policy-core"]}"
       # Setting this is what enables the premium charge (HA-D02).
       PAYMENT_GATEWAY_URL = "http://payment-gateway.${local.namespace}:${local.stubs["payment-gateway"]}"
       # Setting this is what mounts the sign-up of the insured (HU-M1.1-01).

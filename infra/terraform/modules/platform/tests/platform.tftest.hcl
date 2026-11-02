@@ -384,6 +384,11 @@ run "the_policy_core_runs_behind_cloud_map_for_claims" {
   }
 
   assert {
+    condition     = local.service_environment.origination.POLICY_CORE_URL == "http://policy-core.solventa-test.local:9060"
+    error_message = "Origination reaches the policy core for the wallet (HU-M1.2-01); without it the wallet only lists the issued policies and the mobile filing has no policy that claims can cover."
+  }
+
+  assert {
     condition = (local.service_environment.claims.PAYMENT_GATEWAY_URL == "http://payment-gateway.solventa-test.local:9040"
     && local.service_environment.claims.EMAIL_URL == "http://email.solventa-test.local:9030")
     error_message = "Claims pays the indemnities through the payment gateway and notifies the rejections by e-mail (HU-W2.2-03)."
