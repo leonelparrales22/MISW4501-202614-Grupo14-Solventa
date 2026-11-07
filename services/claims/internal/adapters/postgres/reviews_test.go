@@ -43,20 +43,30 @@ func (s reviewStores) status(t *testing.T) domain.Status {
 	return c.Status
 }
 
+var advisor = domain.Reviewer{ID: "juan@solventa.example", Name: "Juan Ríos"}
+
+// filingOfThePhone is a collision filed from the phone, with its evidence.
+func filingOfThePhone() domain.ClaimRecord {
+	return domain.ClaimRecord{Claim: domain.Claim{ID: reviewedClaim, IncidentType: domain.IncidentCollision,
+		Status: domain.StatusActive, Evidence: make([]domain.Evidence, 4)}, Channel: domain.ChannelMobile}
+}
+
 func returnOf(t *testing.T) domain.Review {
 	t.Helper()
-	c := domain.ClaimRecord{Claim: domain.Claim{ID: reviewedClaim, IncidentType: domain.IncidentCollision,
-		Status: domain.StatusActive}}
-	r, err := domain.ReturnFiling(c, "asesor@solventa.example", domain.ReturnRequest{Reason: "Falta el croquis.",
-		MissingSupports: []string{domain.SupportTrafficReport}, FactsToCorrect: []domain.Fact{domain.FactPlace}}, reviewedAt)
+	r, err := domain.ReturnFiling(filingOfThePhone(), advisor, domain.ReturnRequest{
+		ReasonCode: domain.ReasonIllegibleOrIncompleteSupports, Message: "Falta el croquis.",
+		Supports: []domain.SupportVerdict{
+			{RequirementCode: domain.SupportVehiclePhotos, Verdict: domain.VerdictIllegible, Note: "borrosas"},
+			{RequirementCode: domain.SupportTrafficReport, Verdict: domain.VerdictMissing},
+		},
+		FactsToCorrect: []domain.Fact{domain.FactPlace}}, reviewedAt)
 	require.NoError(t, err)
 	return r
 }
 
 func approvalOf(t *testing.T) domain.Review {
 	t.Helper()
-	r, err := domain.ApproveFiling(domain.ClaimRecord{Claim: domain.Claim{ID: reviewedClaim, Status: domain.StatusActive}},
-		"asesor@solventa.example", reviewedAt.Add(time.Hour))
+	r, err := domain.ApproveFiling(filingOfThePhone(), advisor, reviewedAt.Add(time.Hour))
 	require.NoError(t, err)
 	return r
 }
@@ -76,10 +86,15 @@ func TestAReturnIsRecordedAndMovesTheClaim(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, domain.ReviewReturned, got[0].Outcome)
 	assert.NotEmpty(t, got[0].FilingNumber)
-	assert.Equal(t, "asesor@solventa.example", got[0].ReviewedBy)
+	assert.Equal(t, "juan@solventa.example", got[0].ReviewedBy)
+	assert.Equal(t, "Juan Ríos", got[0].ReviewerName)
 	assert.True(t, got[0].ReviewedAt.Equal(reviewedAt))
-	assert.Equal(t, "Falta el croquis.", got[0].Reason)
-	assert.Equal(t, []string{domain.SupportTrafficReport}, got[0].MissingSupports)
+	assert.Equal(t, domain.ReasonIllegibleOrIncompleteSupports, got[0].ReasonCode)
+	assert.Equal(t, "Falta el croquis.", got[0].Message)
+	assert.Equal(t, []domain.SupportAssessment{
+		{RequirementCode: domain.SupportVehiclePhotos, Label: "Fotos del vehículo", Verdict: domain.VerdictIllegible, Note: "borrosas"},
+		{RequirementCode: domain.SupportTrafficReport, Label: "Informe de tránsito o croquis", Verdict: domain.VerdictMissing},
+	}, got[0].Supports)
 	assert.Equal(t, []domain.Fact{domain.FactPlace}, got[0].FactsToCorrect)
 
 	_, err = s.reviews.Review(ctx, approvalOf(t))
@@ -104,8 +119,10 @@ func TestAFilingSentAgainIsReviewedInANewRound(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Equal(t, domain.ReviewApproved, got[1].Outcome)
-	assert.Empty(t, got[1].Reason)
-	assert.Empty(t, got[1].MissingSupports)
+	assert.Empty(t, got[1].ReasonCode)
+	assert.Empty(t, got[1].Message)
+	assert.Equal(t, []domain.SupportAssessment{{RequirementCode: domain.SupportVehiclePhotos, Label: "Fotos del vehículo",
+		Verdict: domain.VerdictValid}}, got[1].Supports)
 }
 
 func TestTwoAdvisorsReviewingAtOnceRecordOneReview(t *testing.T) {
@@ -194,7 +211,7 @@ func TestTheReviewsAndTheHistoryCannotBeChanged(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, stmt := range []string{
-		`UPDATE claim_review SET reason = 'otra'`, `DELETE FROM claim_review`, `TRUNCATE claim_review`,
+		`UPDATE claim_review SET message = 'otra'`, `DELETE FROM claim_review`, `TRUNCATE claim_review`,
 		`UPDATE claim_status_change SET status = 'paid'`, `DELETE FROM claim_status_change`, `TRUNCATE claim_status_change`,
 	} {
 		_, err := s.db.Exec(stmt)
@@ -205,10 +222,16 @@ func TestTheReviewsAndTheHistoryCannotBeChanged(t *testing.T) {
 func TestTheShapeOfAReviewIsCheckedByTheDatabase(t *testing.T) {
 	s := newReviewStores(t)
 	for name, stmt := range map[string]string{
-		"approval with a reason":  `INSERT INTO claim_review VALUES ($1, 1, 'approved', 'a', now(), 'x', '[]', '[]')`,
-		"return without reason":   `INSERT INTO claim_review VALUES ($1, 1, 'returned', 'a', now(), NULL, '["traffic_report"]', '[]')`,
-		"return asking nothing":   `INSERT INTO claim_review VALUES ($1, 1, 'returned', 'a', now(), 'x', '[]', '[]')`,
-		"an outcome of no review": `INSERT INTO claim_review VALUES ($1, 1, 'rejected', 'a', now(), NULL, '[]', '[]')`,
+		"approval with a reason": `INSERT INTO claim_review (claim_id, seq, outcome, reviewed_by, reviewed_at, reason_code, message)
+			VALUES ($1, 1, 'approved', 'a', now(), 'other', 'x')`,
+		"return without reason": `INSERT INTO claim_review (claim_id, seq, outcome, reviewed_by, reviewed_at, message)
+			VALUES ($1, 1, 'returned', 'a', now(), 'x')`,
+		"return without message": `INSERT INTO claim_review (claim_id, seq, outcome, reviewed_by, reviewed_at, reason_code)
+			VALUES ($1, 1, 'returned', 'a', now(), 'other')`,
+		"a reason of no list": `INSERT INTO claim_review (claim_id, seq, outcome, reviewed_by, reviewed_at, reason_code, message)
+			VALUES ($1, 1, 'returned', 'a', now(), 'porque', 'x')`,
+		"an outcome of no review": `INSERT INTO claim_review (claim_id, seq, outcome, reviewed_by, reviewed_at)
+			VALUES ($1, 1, 'rejected', 'a', now())`,
 	} {
 		_, err := s.db.Exec(stmt, reviewedClaim)
 		assert.Error(t, err, name)

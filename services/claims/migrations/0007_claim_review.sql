@@ -5,24 +5,29 @@
 -- claim table only.
 
 -- Every review of a filing: the advisor approves it, and it enters
--- evaluation, or returns it to the insured with the reason and what is
--- missing. A returned filing that the insured sends again (HU-W2.1-04) is
--- reviewed again, so a claim can have several; seq orders them. It is
--- insert-only, like the rest of the case.
+-- evaluation, or returns it to the insured with the reason, the message the
+-- insured reads and the verdict on each support. A returned filing that the
+-- insured sends again (HU-W2.1-04) is reviewed again, so a claim can have
+-- several; seq orders them. It is insert-only, like the rest of the case.
 CREATE TABLE IF NOT EXISTS claim_review (
     claim_id          TEXT        NOT NULL REFERENCES claim (id),
     seq               INTEGER     NOT NULL CHECK (seq >= 1),
     outcome           TEXT        NOT NULL CHECK (outcome IN ('approved', 'returned')),
     reviewed_by       TEXT        NOT NULL,
+    reviewer_name     TEXT        NOT NULL DEFAULT '',
     reviewed_at       TIMESTAMPTZ NOT NULL,
-    reason            TEXT        CHECK (char_length(reason) BETWEEN 1 AND 1000),
-    missing_supports  JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    -- The verdict on each support (screen S8): [{requirement_code, label,
+    -- verdict, note}], valid, illegible or missing.
+    supports          JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    reason_code       TEXT        CHECK (reason_code IN ('illegible_or_incomplete_supports', 'inconsistent_facts',
+                                                         'missing_information', 'other')),
+    message           TEXT        CHECK (char_length(message) BETWEEN 1 AND 1000),
     facts_to_correct  JSONB       NOT NULL DEFAULT '[]'::jsonb,
     PRIMARY KEY (claim_id, seq),
     CONSTRAINT claim_review_shape CHECK (
-        (outcome = 'approved' AND reason IS NULL)
-        OR (outcome = 'returned' AND reason IS NOT NULL
-            AND (jsonb_array_length(missing_supports) > 0 OR jsonb_array_length(facts_to_correct) > 0)))
+        (outcome = 'approved' AND reason_code IS NULL AND message IS NULL
+            AND jsonb_array_length(facts_to_correct) = 0)
+        OR (outcome = 'returned' AND reason_code IS NOT NULL AND message IS NOT NULL))
 );
 
 -- A review and a change of status are evidence of how the case went: they are

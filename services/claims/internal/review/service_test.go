@@ -25,15 +25,21 @@ type reloj struct{ now time.Time }
 
 func (r reloj) Now() time.Time { return r.now }
 
-// lectorFalso es la lectura de la evaluación: solo cuenta lo que se pidió.
+// lectorFalso es la lectura de la evaluación: el caso tal como está en el
+// almacén, y cuenta lo que se pidió.
 type lectorFalso struct {
+	casos   *memory.CaseStore
 	err     error
 	pedidos []string
 }
 
-func (l *lectorFalso) ReviewDetail(_ context.Context, id string) (evaluation.Evaluation, error) {
+func (l *lectorFalso) ReviewDetail(ctx context.Context, id string) (evaluation.Evaluation, error) {
 	l.pedidos = append(l.pedidos, id)
-	return evaluation.Evaluation{Claim: domain.ClaimRecord{Claim: domain.Claim{ID: id}}}, l.err
+	if l.err != nil {
+		return evaluation.Evaluation{}, l.err
+	}
+	c, err := l.casos.Get(ctx, id)
+	return evaluation.Evaluation{Claim: c}, err
 }
 
 func (l *lectorFalso) ReviewQueue(context.Context, int, string) (evaluation.QueuePage, error) {
@@ -51,14 +57,14 @@ type escenario struct {
 func nuevo(t *testing.T) *escenario {
 	t.Helper()
 	casos := memory.NewCaseStore()
-	stored, _, err := casos.CreateWeb(context.Background(), domain.ClaimRecord{
-		Claim: domain.Claim{ID: "cl-1", Subject: "sub-carolina", FilingKey: "k1", PolicyID: "HG-2025-880231",
-			IncidentType: domain.IncidentWaterDamage, OccurredAt: radicadoEn.Add(-time.Hour), Place: "Calle 1",
-			Description: "Filtración en la cocina.", Status: domain.StatusActive, FiledAt: radicadoEn},
-		Channel: domain.ChannelWeb, CatalogVersion: "claim-catalog-v1",
-	})
+	// Una radicación del móvil: su evidencia son las fotos del vehículo.
+	stored, _, err := casos.Create(context.Background(), domain.Claim{ID: "cl-1", Subject: "sub-carolina",
+		FilingKey: "k1", PolicyID: "AU-2025-118204", IncidentType: domain.IncidentCollision,
+		OccurredAt: radicadoEn.Add(-time.Hour), Place: "Calle 80", Description: "Choque por alcance.",
+		Details: map[string]string{}, Evidence: make([]domain.Evidence, 4), Status: domain.StatusActive,
+		FiledAt: radicadoEn})
 	require.NoError(t, err)
-	e := &escenario{casos: casos, lector: &lectorFalso{}, claimID: stored.ID}
+	e := &escenario{casos: casos, lector: &lectorFalso{casos: casos}, claimID: stored.ID}
 	store := memory.NewReviewStore(casos)
 	e.svc = review.NewService(casos, store, store, e.lector, reloj{radicadoEn.Add(time.Hour)}, func() { e.avisos++ })
 	return e
@@ -71,14 +77,21 @@ func (e *escenario) estado(t *testing.T) domain.Status {
 	return c.Status
 }
 
+var asesor = domain.Reviewer{ID: "juan@solventa.example", Name: "Juan Ríos"}
+
 func devolucion() domain.ReturnRequest {
-	return domain.ReturnRequest{Reason: "La factura no es legible.", MissingSupports: []string{domain.SupportRepairQuote}}
+	return domain.ReturnRequest{ReasonCode: domain.ReasonIllegibleOrIncompleteSupports,
+		Message: "Las fotos están borrosas y falta el informe de tránsito.",
+		Supports: []domain.SupportVerdict{
+			{RequirementCode: domain.SupportVehiclePhotos, Verdict: domain.VerdictIllegible, Note: "borrosas"},
+			{RequirementCode: domain.SupportTrafficReport, Verdict: domain.VerdictMissing},
+		}}
 }
 
 func TestAprobarLaRadicacionLaPasaAEvaluacionYDespiertaAlTriage(t *testing.T) {
 	e := nuevo(t)
 
-	r, err := e.svc.Approve(context.Background(), e.claimID, "asesor@solventa.example")
+	r, err := e.svc.Approve(context.Background(), e.claimID, asesor)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, r.Seq)
@@ -87,7 +100,7 @@ func TestAprobarLaRadicacionLaPasaAEvaluacionYDespiertaAlTriage(t *testing.T) {
 	assert.Equal(t, domain.StatusInEvaluation, e.estado(t))
 	assert.Equal(t, 1, e.avisos)
 
-	_, err = e.svc.Approve(context.Background(), e.claimID, "otro")
+	_, err = e.svc.Approve(context.Background(), e.claimID, domain.Reviewer{ID: "otro"})
 	assert.ErrorIs(t, err, domain.ErrNotReviewable, "una radicación se revisa una vez")
 	assert.Equal(t, 1, e.avisos)
 }
@@ -95,7 +108,7 @@ func TestAprobarLaRadicacionLaPasaAEvaluacionYDespiertaAlTriage(t *testing.T) {
 func TestDevolverLaRadicacionGuardaElMotivoYNoLaEvalua(t *testing.T) {
 	e := nuevo(t)
 
-	r, err := e.svc.Return(context.Background(), e.claimID, "asesor", devolucion())
+	r, err := e.svc.Return(context.Background(), e.claimID, asesor, devolucion())
 
 	require.NoError(t, err)
 	assert.Equal(t, domain.ReviewReturned, r.Outcome)
@@ -110,7 +123,8 @@ func TestDevolverLaRadicacionGuardaElMotivoYNoLaEvalua(t *testing.T) {
 func TestUnaDevolucionInvalidaNoCambiaNada(t *testing.T) {
 	e := nuevo(t)
 
-	_, err := e.svc.Return(context.Background(), e.claimID, "asesor", domain.ReturnRequest{Reason: "Falta algo"})
+	_, err := e.svc.Return(context.Background(), e.claimID, asesor,
+		domain.ReturnRequest{ReasonCode: domain.ReasonOther, Message: "Falta algo"})
 
 	assert.ErrorIs(t, err, domain.ErrNothingRequested)
 	assert.Equal(t, domain.StatusActive, e.estado(t))
@@ -122,9 +136,9 @@ func TestUnaDevolucionInvalidaNoCambiaNada(t *testing.T) {
 func TestUnSiniestroQueNoExisteNoSeRevisa(t *testing.T) {
 	e := nuevo(t)
 
-	_, err := e.svc.Approve(context.Background(), "no-existe", "asesor")
+	_, err := e.svc.Approve(context.Background(), "no-existe", asesor)
 	assert.ErrorIs(t, err, ports.ErrClaimNotFound)
-	_, err = e.svc.Return(context.Background(), "no-existe", "asesor", devolucion())
+	_, err = e.svc.Return(context.Background(), "no-existe", asesor, devolucion())
 	assert.ErrorIs(t, err, ports.ErrClaimNotFound)
 	_, err = e.svc.History(context.Background(), "no-existe", "")
 	assert.ErrorIs(t, err, ports.ErrClaimNotFound)
@@ -132,7 +146,7 @@ func TestUnSiniestroQueNoExisteNoSeRevisa(t *testing.T) {
 
 func TestElDetalleTraeLaRadicacionYSusRevisiones(t *testing.T) {
 	e := nuevo(t)
-	_, err := e.svc.Return(context.Background(), e.claimID, "asesor", devolucion())
+	_, err := e.svc.Return(context.Background(), e.claimID, asesor, devolucion())
 	require.NoError(t, err)
 
 	d, err := e.svc.Detail(context.Background(), e.claimID)
@@ -140,7 +154,10 @@ func TestElDetalleTraeLaRadicacionYSusRevisiones(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{e.claimID}, e.lector.pedidos)
 	require.Len(t, d.Reviews, 1)
-	assert.Equal(t, "La factura no es legible.", d.Reviews[0].Reason)
+	assert.Equal(t, "Las fotos están borrosas y falta el informe de tránsito.", d.Reviews[0].Message)
+	require.NotEmpty(t, d.Checklist)
+	assert.Equal(t, domain.ChecklistItem{RequirementCode: domain.SupportVehiclePhotos, Label: "Fotos del vehículo",
+		Required: true, Files: 4}, d.Checklist[0])
 
 	e.lector.err = errors.New("se cayó")
 	_, err = e.svc.Detail(context.Background(), e.claimID)
@@ -151,7 +168,7 @@ func TestElDetalleTraeLaRadicacionYSusRevisiones(t *testing.T) {
 
 func TestElHistorialTraeCadaCambioYLaUltimaDevolucion(t *testing.T) {
 	e := nuevo(t)
-	_, err := e.svc.Return(context.Background(), e.claimID, "asesor", devolucion())
+	_, err := e.svc.Return(context.Background(), e.claimID, asesor, devolucion())
 	require.NoError(t, err)
 
 	h, err := e.svc.History(context.Background(), e.claimID, "sub-carolina")
@@ -165,18 +182,22 @@ func TestElHistorialTraeCadaCambioYLaUltimaDevolucion(t *testing.T) {
 	assert.Equal(t, domain.StatusActive, h.Changes[1].PreviousStatus)
 	assert.True(t, h.Changes[1].ChangedAt.Equal(radicadoEn.Add(time.Hour)))
 	require.NotNil(t, h.LastReturn)
-	assert.Equal(t, []string{domain.SupportRepairQuote}, h.LastReturn.MissingSupports)
+	require.Len(t, h.Reviews, 1)
+	assert.Equal(t, "Juan Ríos", h.LastReturn.ReviewerName)
+	assert.Equal(t, domain.VerdictIllegible, h.LastReturn.Supports[0].Verdict)
 }
 
 func TestElHistorialDeUnCasoAprobadoNoTraeDevolucion(t *testing.T) {
 	e := nuevo(t)
-	_, err := e.svc.Approve(context.Background(), e.claimID, "asesor")
+	_, err := e.svc.Approve(context.Background(), e.claimID, asesor)
 	require.NoError(t, err)
 
 	h, err := e.svc.History(context.Background(), e.claimID, "")
 
 	require.NoError(t, err)
 	assert.Nil(t, h.LastReturn)
+	require.Len(t, h.Reviews, 1, "who approved it is in the history (screen A8)")
+	assert.Equal(t, domain.ReviewApproved, h.Reviews[0].Outcome)
 	assert.Equal(t, domain.StatusInEvaluation, h.Changes[len(h.Changes)-1].Status)
 }
 
@@ -186,4 +207,40 @@ func TestUnAseguradoSoloLeeElHistorialDeSusSiniestros(t *testing.T) {
 	_, err := e.svc.History(context.Background(), e.claimID, "sub-otro")
 
 	assert.ErrorIs(t, err, review.ErrNotOwner)
+}
+
+func TestElDetalleTraeLosOtrosSiniestrosDeLaMismaPoliza(t *testing.T) {
+	e := nuevo(t)
+	for i, poliza := range []string{"AU-2025-118204", "AU-2025-118204", "HG-2025-880231"} {
+		_, _, err := e.casos.Create(context.Background(), domain.Claim{ID: "previo-" + string(rune('a'+i)),
+			Subject: "sub-carolina", FilingKey: "p" + string(rune('a'+i)), PolicyID: poliza,
+			IncidentType: domain.IncidentGlass, Details: map[string]string{}, Status: domain.StatusRejected,
+			FiledAt: radicadoEn.Add(-time.Duration(i+1) * 24 * time.Hour)})
+		require.NoError(t, err)
+	}
+	_, _, err := e.casos.Create(context.Background(), domain.Claim{ID: "ajeno", Subject: "sub-otro", FilingKey: "x",
+		PolicyID: "AU-2025-118204", Details: map[string]string{}, Status: domain.StatusPaid, FiledAt: radicadoEn})
+	require.NoError(t, err)
+
+	d, err := e.svc.Detail(context.Background(), e.claimID)
+
+	require.NoError(t, err)
+	var ids []string
+	for _, c := range d.PriorClaims {
+		ids = append(ids, c.ID)
+	}
+	assert.Equal(t, []string{"previo-a", "previo-b"}, ids, "los de la misma póliza y el mismo asegurado, sin el actual")
+}
+
+func TestUnaRadicacionSinSuEvidenciaNoSeAprueba(t *testing.T) {
+	casos := memory.NewCaseStore()
+	stored, _, err := casos.Create(context.Background(), domain.Claim{ID: "cl-2", Subject: "sub-carolina", FilingKey: "k",
+		IncidentType: domain.IncidentCollision, Details: map[string]string{}, Status: domain.StatusActive, FiledAt: radicadoEn})
+	require.NoError(t, err)
+	store := memory.NewReviewStore(casos)
+	svc := review.NewService(casos, store, store, &lectorFalso{casos: casos}, reloj{radicadoEn}, nil)
+
+	_, err = svc.Approve(context.Background(), stored.ID, asesor)
+
+	assert.ErrorIs(t, err, domain.ErrSupportsIncomplete)
 }

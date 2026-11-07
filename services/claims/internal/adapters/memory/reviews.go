@@ -66,7 +66,7 @@ func (s *ReviewStore) History(ctx context.Context, claimID string) ([]domain.Sta
 }
 
 func copyReview(r domain.Review) domain.Review {
-	r.MissingSupports = append([]string{}, r.MissingSupports...)
-	r.FactsToCorrect = append([]domain.Fact{}, r.FactsToCorrect...)
+	r.Supports = append([]domain.SupportAssessment(nil), r.Supports...)
+	r.FactsToCorrect = append([]domain.Fact(nil), r.FactsToCorrect...)
 	return r
 }

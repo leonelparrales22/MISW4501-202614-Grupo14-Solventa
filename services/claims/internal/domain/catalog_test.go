@@ -39,6 +39,8 @@ func TestTheRequirementsOfEachType(t *testing.T) {
 	want := map[domain.IncidentType]map[string]req{
 		domain.IncidentCollision: {
 			"vehicle_photos": {true, 4, 10, 2}, "driver_document": {true, 1, 2, 3}, "traffic_report": {true, 1, 3, 3},
+			// Optional: the advisor may ask for it (HU-W2.1-03, screen S8).
+			"plate_photo": {false, 0, 2, 2},
 		},
 		domain.IncidentTheft: {
 			"police_report": {true, 1, 3, 3}, "driver_document": {true, 1, 2, 3}, "vehicle_photos": {false, 0, 10, 2},

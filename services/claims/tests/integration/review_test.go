@@ -83,6 +83,18 @@ func TestAdvisorReviewAcceptanceCriteria(t *testing.T) {
 		assert.Len(t, detail["support_files"], 3)
 		assert.NotNil(t, detail["coverage"])
 		assert.Empty(t, detail["reviews"])
+
+		// S8: one row per support of the claim type, with the files attached.
+		checklist := map[string]float64{}
+		for _, it := range detail["checklist"].([]any) {
+			item := it.(map[string]any)
+			assert.Equal(t, true, item["required"], item["requirement_code"])
+			checklist[item["requirement_code"].(string)] = item["files"].(float64)
+		}
+		assert.Equal(t, map[string]float64{"damage_photos": 2, "repair_quote": 1}, checklist)
+		// The other claim of Carolina on the same policy.
+		require.Len(t, detail["prior_claims"], 1)
+		assert.Equal(t, returned, detail["prior_claims"].([]any)[0].(map[string]any)["claim_id"])
 	})
 
 	t.Run("only the advisor reviews", func(t *testing.T) {
@@ -92,7 +104,7 @@ func TestAdvisorReviewAcceptanceCriteria(t *testing.T) {
 			rec, _ = call(t, svc, http.MethodPost, "/v1/claims/"+approved+"/review-approval", token, nil, nil)
 			assert.Equal(t, http.StatusForbidden, rec.Code, token)
 			rec, _ = postJSON(t, svc, "/v1/claims/"+approved+"/review-return", token,
-				map[string]any{"reason": "x", "facts_to_correct": []string{"place"}})
+				map[string]any{"reason_code": "other", "message": "x", "facts_to_correct": []string{"place"}})
 			assert.Equal(t, http.StatusForbidden, rec.Code, token)
 		}
 		assert.Equal(t, "active", statusFor(t, svc, "carolina", approved))
@@ -105,7 +117,12 @@ func TestAdvisorReviewAcceptanceCriteria(t *testing.T) {
 		r := body["review"].(map[string]any)
 		assert.Equal(t, "approved", r["outcome"])
 		assert.EqualValues(t, 1, r["seq"])
-		assert.Nil(t, r["reason"])
+		assert.Nil(t, r["reason_code"])
+		assert.Nil(t, r["message"])
+		assert.Equal(t, "sub-advisor", r["reviewer_name"], "the advisor of the test has no name: their id")
+		for _, a := range r["supports"].([]any) {
+			assert.Equal(t, "valid", a.(map[string]any)["verdict"], "an approval has every support valid")
+		}
 		assert.Equal(t, "in_evaluation", statusFor(t, svc, "carolina", approved))
 
 		rec, page := call(t, svc, http.MethodGet, "/v1/claims/evaluations", "analista", nil, nil)
@@ -120,19 +137,30 @@ func TestAdvisorReviewAcceptanceCriteria(t *testing.T) {
 		assert.Equal(t, http.StatusConflict, rec.Code, "a reviewed filing is not reviewed again")
 	})
 
-	t.Run("CA-3 a return needs the reason and what is missing", func(t *testing.T) {
+	t.Run("CA-3 a return needs the reason, the message and what is missing", func(t *testing.T) {
+		illegible := []map[string]any{{"requirement_code": "repair_quote", "verdict": "illegible"}}
 		for name, tc := range map[string]struct {
 			body   map[string]any
 			status int
 			code   string
 		}{
-			"no reason":          {map[string]any{"facts_to_correct": []string{"place"}}, http.StatusBadRequest, "invalid_request"},
-			"blank reason":       {map[string]any{"reason": "  ", "facts_to_correct": []string{"place"}}, http.StatusUnprocessableEntity, "reason_required"},
-			"nothing requested":  {map[string]any{"reason": "Falta información"}, http.StatusUnprocessableEntity, "nothing_requested"},
-			"support of no type": {map[string]any{"reason": "x", "missing_supports": []string{"police_report"}}, http.StatusUnprocessableEntity, "support_not_applicable"},
-			"unknown fact":       {map[string]any{"reason": "x", "facts_to_correct": []string{"policy_id"}}, http.StatusBadRequest, "invalid_request"},
-			"repeated support":   {map[string]any{"reason": "x", "missing_supports": []string{"repair_quote", "repair_quote"}}, http.StatusBadRequest, "invalid_request"},
-			"unknown field":      {map[string]any{"reason": "x", "facts_to_correct": []string{"place"}, "extra": true}, http.StatusBadRequest, "invalid_request"},
+			"no reason": {map[string]any{"message": "x", "supports": illegible}, http.StatusBadRequest, "invalid_request"},
+			"reason of no list": {map[string]any{"reason_code": "porque", "message": "x", "supports": illegible},
+				http.StatusBadRequest, "invalid_request"},
+			"blank message": {map[string]any{"reason_code": "other", "message": "  ", "supports": illegible},
+				http.StatusUnprocessableEntity, "message_required"},
+			"nothing requested": {map[string]any{"reason_code": "other", "message": "Falta información"},
+				http.StatusUnprocessableEntity, "nothing_requested"},
+			"support of no type": {map[string]any{"reason_code": "other", "message": "x",
+				"supports": []map[string]any{{"requirement_code": "police_report", "verdict": "missing"}}},
+				http.StatusUnprocessableEntity, "support_not_applicable"},
+			"attached marked missing": {map[string]any{"reason_code": "other", "message": "x",
+				"supports": []map[string]any{{"requirement_code": "repair_quote", "verdict": "missing"}}},
+				http.StatusUnprocessableEntity, "verdict_not_applicable"},
+			"unknown fact": {map[string]any{"reason_code": "other", "message": "x", "facts_to_correct": []string{"policy_id"}},
+				http.StatusBadRequest, "invalid_request"},
+			"unknown field": {map[string]any{"reason_code": "other", "message": "x", "supports": illegible, "extra": true},
+				http.StatusBadRequest, "invalid_request"},
 		} {
 			rec, body := postJSON(t, svc, "/v1/claims/"+returned+"/review-return", "advisor", tc.body)
 			assert.Equal(t, tc.status, rec.Code, name)
@@ -141,18 +169,25 @@ func TestAdvisorReviewAcceptanceCriteria(t *testing.T) {
 		assert.Equal(t, "active", statusFor(t, svc, "carolina", returned), "nothing was returned")
 	})
 
-	t.Run("CA-3 a returned filing records the reason and the missing supports", func(t *testing.T) {
+	t.Run("CA-3 a returned filing records the reason and the verdict of each support", func(t *testing.T) {
 		rec, body := postJSON(t, svc, "/v1/claims/"+returned+"/review-return", "advisor", map[string]any{
-			"reason":           "La factura de la reparación no es legible.",
-			"missing_supports": []string{"repair_quote"},
+			"reason_code": "illegible_or_incomplete_supports",
+			"message":     "La factura de la reparación no es legible.",
+			"supports": []map[string]any{{"requirement_code": "repair_quote", "verdict": "illegible",
+				"note": "borrosa, no se lee el valor"}},
 			"facts_to_correct": []string{"estimated_amount"},
 		})
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 		assert.Equal(t, "returned", body["status"])
 		r := body["review"].(map[string]any)
 		assert.Equal(t, "returned", r["outcome"])
-		assert.Equal(t, "La factura de la reparación no es legible.", r["reason"])
-		assert.Equal(t, []any{"repair_quote"}, r["missing_supports"])
+		assert.Equal(t, "illegible_or_incomplete_supports", r["reason_code"])
+		assert.Equal(t, "La factura de la reparación no es legible.", r["message"])
+		assert.Equal(t, []any{
+			map[string]any{"requirement_code": "damage_photos", "label": "Fotos del daño", "verdict": "valid", "note": nil},
+			map[string]any{"requirement_code": "repair_quote", "label": "Factura o cotización de la reparación",
+				"verdict": "illegible", "note": "borrosa, no se lee el valor"},
+		}, r["supports"], "what the advisor does not mention is valid")
 		assert.Equal(t, []any{"estimated_amount"}, r["facts_to_correct"])
 
 		assert.Equal(t, "returned", statusFor(t, svc, "carolina", returned), "the insured sees it returned")
@@ -173,11 +208,14 @@ func TestAdvisorReviewAcceptanceCriteria(t *testing.T) {
 		assert.Equal(t, last["changed_at"], body["last_changed_at"])
 		assert.Equal(t, "active", last["previous_status"])
 		require.NotNil(t, body["last_return"])
-		assert.Equal(t, []any{"repair_quote"}, body["last_return"].(map[string]any)["missing_supports"])
+		assert.Equal(t, "La factura de la reparación no es legible.", body["last_return"].(map[string]any)["message"])
+		assert.Len(t, body["reviews"], 1)
 
 		_, body = historyOf(t, svc, "analista", approved)
 		assert.Equal(t, []string{"active", "in_evaluation"}, statusesOf(body))
 		assert.Nil(t, body["last_return"])
+		require.Len(t, body["reviews"], 1, "who approved it (screen A8)")
+		assert.Equal(t, "approved", body["reviews"].([]any)[0].(map[string]any)["outcome"])
 		code, _ = historyOf(t, svc, "advisor", approved)
 		assert.Equal(t, http.StatusOK, *code)
 
@@ -197,7 +235,7 @@ func TestAdvisorReviewAcceptanceCriteria(t *testing.T) {
 	})
 
 	t.Run("the reviews and the history are append-only", func(t *testing.T) {
-		for _, stmt := range []string{`UPDATE claim_review SET reason = 'x'`, `DELETE FROM claim_review`,
+		for _, stmt := range []string{`UPDATE claim_review SET message = 'x'`, `DELETE FROM claim_review`,
 			`TRUNCATE claim_review`, `UPDATE claim_status_change SET status = 'paid'`,
 			`DELETE FROM claim_status_change`, `TRUNCATE claim_status_change`} {
 			_, err := svc.db.Exec(stmt)

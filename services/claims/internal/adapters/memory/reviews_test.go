@@ -30,7 +30,8 @@ func TestTheMemoryStoreRecordsAReviewAndMovesTheClaim(t *testing.T) {
 	store := memory.NewReviewStore(cases)
 	at := filedAt.Add(time.Hour)
 	r := domain.Review{ClaimID: id, Outcome: domain.ReviewReturned, ReviewedBy: "asesor", ReviewedAt: at,
-		Reason: "Falta la denuncia.", MissingSupports: []string{domain.SupportPoliceReport}}
+		ReasonCode: domain.ReasonMissingInformation, Message: "Falta la denuncia.",
+		Supports: []domain.SupportAssessment{{RequirementCode: domain.SupportPoliceReport, Verdict: domain.VerdictMissing}}}
 
 	got, err := store.Review(context.Background(), r)
 
@@ -41,11 +42,11 @@ func TestTheMemoryStoreRecordsAReviewAndMovesTheClaim(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, domain.StatusReturned, c.Status)
 
-	got.MissingSupports[0] = "otro"
+	got.Supports[0].Verdict = domain.VerdictValid
 	reviews, err := store.Reviews(context.Background(), id)
 	require.NoError(t, err)
 	require.Len(t, reviews, 1)
-	assert.Equal(t, []string{domain.SupportPoliceReport}, reviews[0].MissingSupports, "nothing is shared with the caller")
+	assert.Equal(t, domain.VerdictMissing, reviews[0].Supports[0].Verdict, "nothing is shared with the caller")
 
 	_, err = store.Review(context.Background(), r)
 	assert.ErrorIs(t, err, domain.ErrNotReviewable)

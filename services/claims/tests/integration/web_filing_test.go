@@ -400,7 +400,8 @@ func TestWebFilingAcceptanceCriteria(t *testing.T) {
 			req := r.(map[string]any)
 			required[req["code"].(string)] = req["required"].(bool)
 		}
-		assert.Equal(t, map[string]bool{"vehicle_photos": true, "driver_document": true, "traffic_report": true}, required)
+		assert.Equal(t, map[string]bool{"vehicle_photos": true, "driver_document": true, "traffic_report": true,
+			"plate_photo": false}, required)
 		assert.Equal(t, "HG-2025-880231", policies[1].(map[string]any)["policy_id"])
 	})
 

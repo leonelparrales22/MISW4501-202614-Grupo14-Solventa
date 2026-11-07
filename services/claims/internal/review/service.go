@@ -48,12 +48,20 @@ func (s *Service) Queue(ctx context.Context, pageSize int, pageToken string) (ev
 	return s.reader.ReviewQueue(ctx, pageSize, pageToken)
 }
 
-// Detail is a filing with everything the advisor reviews it with, and the
-// reviews it already had.
+// Detail is a filing with everything the advisor reviews it with (screen
+// S8): the supports to give a verdict on, the other claims of the same policy
+// and the reviews it already had.
 type Detail struct {
 	evaluation.Evaluation
-	Reviews []domain.Review
+	Checklist []domain.ChecklistItem
+	// PriorClaims are the other claims the insured filed on the same policy,
+	// newest first.
+	PriorClaims []domain.ClaimRecord
+	Reviews     []domain.Review
 }
+
+// MaxPriorClaims bounds the other claims of the policy the detail lists.
+const MaxPriorClaims = 20
 
 // Detail returns the filing to review, or ports.ErrClaimNotFound.
 func (s *Service) Detail(ctx context.Context, claimID string) (Detail, error) {
@@ -65,11 +73,24 @@ func (s *Service) Detail(ctx context.Context, claimID string) (Detail, error) {
 	if err != nil {
 		return Detail{}, err
 	}
-	return Detail{Evaluation: e, Reviews: reviews}, nil
+	same, err := s.claims.ListByOwner(ctx, e.Claim.Subject, ports.ClaimFilter{PolicyID: e.Claim.PolicyID}, nil,
+		MaxPriorClaims+1)
+	if err != nil {
+		return Detail{}, fmt.Errorf("read the other claims of the policy: %w", err)
+	}
+	d := Detail{Evaluation: e, Checklist: domain.Checklist(e.Claim), Reviews: reviews}
+	for _, c := range same {
+		if c.ID != claimID && len(d.PriorClaims) < MaxPriorClaims {
+			d.PriorClaims = append(d.PriorClaims, c)
+		}
+	}
+	return d, nil
 }
 
 // Approve approves a filing waiting for review: the claim enters evaluation.
-func (s *Service) Approve(ctx context.Context, claimID, advisor string) (domain.Review, error) {
+// A filing with a required support missing is not approved
+// (domain.ErrSupportsIncomplete).
+func (s *Service) Approve(ctx context.Context, claimID string, advisor domain.Reviewer) (domain.Review, error) {
 	c, err := s.claims.Get(ctx, claimID)
 	if err != nil {
 		return domain.Review{}, err
@@ -86,9 +107,9 @@ func (s *Service) Approve(ctx context.Context, claimID, advisor string) (domain.
 	return stored, nil
 }
 
-// Return returns a filing waiting for review to the insured with the reason
-// and what is missing.
-func (s *Service) Return(ctx context.Context, claimID, advisor string, in domain.ReturnRequest) (domain.Review, error) {
+// Return returns a filing waiting for review to the insured with the reason,
+// the message and the verdict on the supports that do not serve.
+func (s *Service) Return(ctx context.Context, claimID string, advisor domain.Reviewer, in domain.ReturnRequest) (domain.Review, error) {
 	c, err := s.claims.Get(ctx, claimID)
 	if err != nil {
 		return domain.Review{}, err
@@ -104,6 +125,9 @@ func (s *Service) Return(ctx context.Context, claimID, advisor string, in domain
 type History struct {
 	Claim   domain.ClaimRecord
 	Changes []domain.StatusChange
+	// Reviews are the reviews of the advisor, oldest first: who approved or
+	// returned the filing and why (screens A8 and A9).
+	Reviews []domain.Review
 	// LastReturn is the review that returned the claim, while it is
 	// returned; nil otherwise.
 	LastReturn *domain.Review
@@ -128,11 +152,12 @@ func (s *Service) History(ctx context.Context, claimID, owner string) (History, 
 		return History{}, err
 	}
 	out := History{Claim: c, Changes: changes}
+	reviews, err := s.store.Reviews(ctx, claimID)
+	if err != nil {
+		return History{}, fmt.Errorf("read the reviews of the claim: %w", err)
+	}
+	out.Reviews = reviews
 	if c.Status == domain.StatusReturned {
-		reviews, err := s.store.Reviews(ctx, claimID)
-		if err != nil {
-			return History{}, fmt.Errorf("read the reviews of the claim: %w", err)
-		}
 		for i := len(reviews) - 1; i >= 0; i-- {
 			if reviews[i].Outcome == domain.ReviewReturned {
 				r := reviews[i]

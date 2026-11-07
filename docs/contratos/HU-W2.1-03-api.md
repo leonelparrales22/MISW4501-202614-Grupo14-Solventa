@@ -43,61 +43,114 @@ No hay cambios de Terraform.
 | Método y ruta | Rol | Para qué |
 |---|---|---|
 | `GET /v1/claims/reviews` | `advisor` | Radicaciones por revisar (`active`), de la más antigua a la más nueva, paginadas como `/evaluations` |
-| `GET /v1/claims/{claim_id}/review` | `advisor` | Lo mismo que ve operaciones en `/evaluation` (caso, soportes, evidencia, póliza, cobertura, asegurado) + `reviews` |
-| `POST /v1/claims/{claim_id}/review-approval` | `advisor` | Aprueba: `active` → `in_evaluation` |
-| `POST /v1/claims/{claim_id}/review-return` | `advisor` | Devuelve con motivo y lo que falta: `active` → `returned` |
+| `GET /v1/claims/{claim_id}/review` | `advisor` | Pantalla S8: lo mismo que ve operaciones en `/evaluation` (caso, soportes, evidencia, póliza, cobertura, asegurado) + `checklist`, `prior_claims` y `reviews` |
+| `POST /v1/claims/{claim_id}/review-approval` | `advisor` | Aprueba (todos los soportes adjuntos quedan válidos): `active` → `in_evaluation` |
+| `POST /v1/claims/{claim_id}/review-return` | `advisor` | Devuelve con motivo, mensaje y veredicto por soporte: `active` → `returned` |
 | `GET /v1/claims/{claim_id}/history` | `insured` (solo sus casos), `advisor`, `operations` | Cada cambio de estado del caso |
 
 Otro rol recibe `403`. Un asegurado que pide el historial de un caso ajeno recibe `404` (no se revela que existe).
 
 ---
 
-## 3. Devolver una radicación
+## 3. Revisar una radicación (pantalla S8)
+
+### 3.1 Lo que lee el asesor
+
+`GET /v1/claims/{claim_id}/review` trae, además de la lectura de la evaluación:
+
+```json
+{
+  "checklist": [
+    { "requirement_code": "vehicle_photos", "label": "Fotos del vehículo", "required": true, "files": 6 },
+    { "requirement_code": "driver_document", "label": "Documento del conductor", "required": true, "files": 1 },
+    { "requirement_code": "traffic_report", "label": "Informe de tránsito o croquis", "required": true, "files": 1 },
+    { "requirement_code": "plate_photo", "label": "Fotografía de la placa", "required": false, "files": 0 }
+  ],
+  "prior_claims": [ { "claim_id": "…", "filing_number": "SIN-2026-01500", "incident_type": "glass", "status": "rejected", "…": "…" } ],
+  "reviews": []
+}
+```
+
+- `checklist`: una fila por soporte del tipo de siniestro, en el orden del catálogo, con cuántos archivos tiene. Cada fila de
+  "Soportes adjuntos" de S8 sale de aquí. Si `required` es verdadero y `files` es 0, el soporte **falta**.
+- **Radicación del móvil:** su evidencia (4 a 6 fotos) cuenta como `vehicle_photos`, el único soporte que exige. El resto de
+  los soportes del tipo aparecen con `required: false`, para que el asesor pueda pedirlos.
+- **Fotografía de la placa** (`plate_photo`) es un soporte **opcional** nuevo de colisión, para que el asesor pueda pedirlo,
+  como en S8. La radicación web no lo exige.
+- `prior_claims`: los otros siniestros del mismo asegurado sobre la misma póliza, del más nuevo al más viejo (máx. 20). Es el
+  "Siniestros previos" del panel de la póliza.
+
+### 3.2 Aprobar
+
+`POST /v1/claims/{claim_id}/review-approval`, sin cuerpo. Aprobar quiere decir que **todos los soportes adjuntos son
+válidos**. Si falta un soporte requerido, responde `422 supports_incomplete`: hay que devolver la radicación.
+
+### 3.3 Devolver
 
 ```http
 POST /v1/claims/{claim_id}/review-return
 {
-  "reason": "La factura de la reparación no es legible.",
-  "missing_supports": ["repair_quote"],
-  "facts_to_correct": ["estimated_amount"]
+  "reason_code": "illegible_or_incomplete_supports",
+  "message": "El informe de tránsito no se puede leer y falta la foto de la placa. Adjúntalos y reenvía la radicación.",
+  "supports": [
+    { "requirement_code": "traffic_report", "verdict": "illegible", "note": "borroso, no se lee el número de croquis" },
+    { "requirement_code": "plate_photo", "verdict": "missing" }
+  ],
+  "facts_to_correct": []
 }
 ```
 
 | Campo | Reglas |
 |---|---|
-| `reason` | Obligatorio, 1 a 1000 caracteres; lo lee el asegurado |
-| `missing_supports` | Códigos de soporte **del tipo de siniestro** (`GET /v1/claims/filing-options`), sin repetir, máx. 10 |
+| `reason_code` | Obligatorio: `illegible_or_incomplete_supports`, `inconsistent_facts`, `missing_information` u `other` |
+| `message` | Obligatorio, 1 a 1000 caracteres: lo que lee el asegurado (A9) |
+| `supports[]` | El veredicto sobre los soportes que **no sirven**. Un soporte adjunto puede ser `valid` o `illegible`, y uno sin adjuntar solo `missing` (así se pide uno opcional). `note` es opcional (máx. 300). Sin repetir el código, máx. 12 |
 | `facts_to_correct` | `occurred_at`, `place`, `description`, `estimated_amount`; sin repetir |
 
-Debe venir al menos uno de `missing_supports` o `facts_to_correct`.
+- Un soporte adjunto que no se menciona queda `valid`. Uno **requerido** sin adjuntar queda `missing` aunque no se mencione.
+- Debe haber al menos un soporte `illegible` o `missing`, o un dato a corregir.
 
-Respuesta `200` (igual para la aprobación, con `status: in_evaluation`, `outcome: approved` y `reason: null`):
+Respuesta `200`. La aprobación responde igual, con `status: in_evaluation`, `outcome: approved`, `reason_code` y
+`message` en `null`, y todos los soportes `valid`:
 
 ```json
 {
   "claim_id": "8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90",
-  "filing_number": "SIN-2026-00007",
+  "filing_number": "SIN-2026-01877",
   "status": "returned",
   "review": {
     "seq": 1,
     "outcome": "returned",
-    "reviewed_by": "asesor@solventa.example",
-    "reviewed_at": "2026-11-09T20:00:00Z",
-    "reason": "La factura de la reparación no es legible.",
-    "missing_supports": ["repair_quote"],
-    "facts_to_correct": ["estimated_amount"]
+    "reviewed_by": "juan.rios@solventa.example",
+    "reviewer_name": "Juan Ríos",
+    "reviewed_at": "2026-09-15T14:12:00Z",
+    "reason_code": "illegible_or_incomplete_supports",
+    "message": "El informe de tránsito no se puede leer y falta la foto de la placa. Adjúntalos y reenvía la radicación.",
+    "supports": [
+      { "requirement_code": "vehicle_photos", "label": "Fotos del vehículo", "verdict": "valid", "note": null },
+      { "requirement_code": "driver_document", "label": "Documento del conductor", "verdict": "valid", "note": null },
+      { "requirement_code": "traffic_report", "label": "Informe de tránsito o croquis", "verdict": "illegible",
+        "note": "borroso, no se lee el número de croquis" },
+      { "requirement_code": "plate_photo", "label": "Fotografía de la placa", "verdict": "missing", "note": null }
+    ],
+    "facts_to_correct": []
   }
 }
 ```
 
+`review.supports` es lo que pinta A9 (HU-W2.1-04): `illegible` es **Reemplazar**, `missing` es **Falta** y `valid` es
+**Adjunto**. `reviewer_name` sale del atributo `name` de Cognito; si el usuario no tiene nombre, se usa su correo.
+
 | Código | Cuándo |
 |---|---|
-| `400 invalid_request` | El cuerpo no cumple el esquema (campo desconocido, código repetido, hecho no válido) |
+| `400 invalid_request` | El cuerpo no cumple el esquema: campo desconocido, motivo fuera de la lista, veredicto desconocido, código o dato repetido |
 | `404 claim_not_found` | No existe el caso |
-| `409 claim_not_reviewable` | El caso no está `active` (ya se revisó, está devuelto o en otra etapa) |
-| `422 reason_required` / `reason_too_long` | Motivo vacío o de más de 1000 caracteres |
-| `422 nothing_requested` | No pide ningún soporte ni ningún dato |
+| `409 claim_not_reviewable` | El caso no está `active`: ya se revisó, está devuelto o está en otra etapa |
+| `422 supports_incomplete` | (aprobar) Falta un soporte requerido |
+| `422 message_required` / `message_too_long` / `note_too_long` | Mensaje vacío o largo, nota larga |
+| `422 nothing_requested` | Ningún soporte `illegible` ni `missing` y ningún dato a corregir |
 | `422 support_not_applicable` | Un soporte que no es del tipo de siniestro |
+| `422 verdict_not_applicable` | Un soporte adjunto marcado `missing`, o uno sin adjuntar marcado `valid` o `illegible` |
 
 Dos asesores revisando a la vez: gana uno y el otro recibe `409`.
 
@@ -119,11 +172,8 @@ GET /v1/claims/{claim_id}/history
     { "id": 41, "status": "active", "previous_status": null, "changed_at": "2026-11-09T14:00:00Z" },
     { "id": 57, "status": "returned", "previous_status": "active", "changed_at": "2026-11-09T20:00:00Z" }
   ],
-  "last_return": {
-    "seq": 1, "outcome": "returned", "reviewed_by": "asesor@solventa.example", "reviewed_at": "2026-11-09T20:00:00Z",
-    "reason": "La factura de la reparación no es legible.", "missing_supports": ["repair_quote"],
-    "facts_to_correct": ["estimated_amount"]
-  }
+  "reviews": [ { "seq": 1, "outcome": "returned", "reviewer_name": "Juan Ríos", "…": "igual que en la sección 3.3" } ],
+  "last_return": { "seq": 1, "outcome": "returned", "…": "la misma revisión, mientras el caso está devuelto" }
 }
 ```
 
@@ -134,6 +184,8 @@ GET /v1/claims/{claim_id}/history
 - `id` crece con cada cambio de **todos** los casos: sirve como cursor si la notificación por cambio de etapa (HU-M3.3-01)
   necesita seguir los cambios. Si hace falta un *feed* (`GET /v1/claims/status-changes?after=<id>`), se agrega sobre la
   misma tabla sin migración.
+- `reviews` son todas las revisiones del asesor: de ahí salen "Revisión del asesor: aprobada · Juan Ríos" (A8) y
+  "Devuelto por Juan Ríos" (A9).
 - `last_return` solo viene mientras el caso está `returned`: es lo que el asegurado tiene que corregir (HU-W2.1-04).
 - Los casos radicados antes de esta historia reciben un historial reconstruido: la radicación y, si ya estaban decididos,
   su estado actual a la hora de la decisión.

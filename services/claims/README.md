@@ -190,18 +190,23 @@ POST /v1/claims/{id}/payout-retry ───▶ destino corregido o el mismo, mis
 
 ## Revisión del asesor e historial de estados (HU-W2.1-03)
 
-El asesor revisa cada radicación antes de que entre a evaluación: la aprueba o la devuelve al asegurado con el motivo y lo
-que falta. Contrato: [`docs/contratos/HU-W2.1-03-api.md`](../../docs/contratos/HU-W2.1-03-api.md).
+El asesor revisa cada radicación antes de que entre a evaluación (pantalla S8): da un veredicto sobre cada soporte
+(válido, ilegible o falta) y la aprueba o la devuelve al asegurado con el motivo, el mensaje y lo que debe corregir. Contrato: [`docs/contratos/HU-W2.1-03-api.md`](../../docs/contratos/HU-W2.1-03-api.md).
 
 ```
 GET  /v1/claims/reviews ─────────────▶ radicaciones en active, de la más antigua a la más nueva (advisor)
-GET  /v1/claims/{id}/review ─────────▶ lo mismo que lee operaciones en /evaluation, sin el triage, + las revisiones   [CA-1]
-POST /v1/claims/{id}/review-approval ▶ active ──▶ in_evaluation; el triage lo prioriza en el siguiente barrido       [CA-2]
-POST /v1/claims/{id}/review-return ──▶ motivo + soportes del tipo de siniestro y/o datos a corregir ──▶ returned     [CA-3]
+GET  /v1/claims/{id}/review ─────────▶ lo de /evaluation sin el triage + checklist de soportes, siniestros previos
+                                       de la póliza y revisiones                                                    [CA-1]
+POST /v1/claims/{id}/review-approval ▶ todos los soportes válidos (sin un requerido faltante) ──▶ in_evaluation     [CA-2]
+POST /v1/claims/{id}/review-return ──▶ motivo (lista) + mensaje + veredicto por soporte y/o datos ──▶ returned       [CA-3]
 GET  /v1/claims/{id}/history ────────▶ cada cambio de estado (insured: solo los suyos; advisor y operations: todos)
 ```
 
-- **Solo `advisor`** revisa (HA-S01). Cada revisión guarda quién, cuándo y qué pidió en `claim_review` (`seq` por ronda: un
+- **Veredicto por soporte:** el *checklist* son los soportes del tipo de siniestro con sus archivos. En una radicación del
+  móvil la evidencia cuenta como `vehicle_photos`, el único requerido. Lo adjunto que el asesor no marca queda `valid`, y un
+  requerido sin adjuntar queda `missing`. Con un requerido faltante no se aprueba (`422 supports_incomplete`). Colisión gana
+  `plate_photo` (fotografía de la placa), opcional, para que el asesor pueda pedirla.
+- **Solo `advisor`** revisa (HA-S01). Cada revisión guarda quién (correo y nombre del token), cuándo, el veredicto de cada soporte y lo que pidió en `claim_review` (`seq` por ronda: un
   caso reenviado por HU-W2.1-04 se revisa otra vez). La escritura mueve el estado en la misma sentencia y solo si el caso
   sigue `active`, así que de dos asesores a la vez gana uno y el otro recibe `409`.
 - **El historial lo escribe la base:** un *trigger* de `claim` agrega una fila a `claim_status_change` en cada cambio de
