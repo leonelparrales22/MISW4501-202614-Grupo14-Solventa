@@ -1,0 +1,145 @@
+// Package review is the review of the advisor before a claim enters
+// evaluation (HU-W2.1-03): the advisor approves a complete filing, which then
+// gets its priority and goes to operations, or returns it to the insured with
+// the reason and what is missing. It also reads the history of the status of
+// a claim, which the database records as it changes.
+package review
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/evaluation"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
+)
+
+// Reader is what the advisor reviews a filing with: the same detail
+// operations evaluates with.
+type Reader interface {
+	ReviewDetail(ctx context.Context, claimID string) (evaluation.Evaluation, error)
+	ReviewQueue(ctx context.Context, pageSize int, pageToken string) (evaluation.QueuePage, error)
+}
+
+// Service reviews filings and reads the history of a claim.
+type Service struct {
+	claims  ports.ClaimRecords
+	store   ports.ReviewStore
+	history ports.StatusHistory
+	reader  Reader
+	clock   ports.Clock
+	// wake, when set, is called after an approval so the triage assesses the
+	// claim at once instead of on its next sweep.
+	wake func()
+}
+
+// NewService builds the service. wake may be nil.
+func NewService(claims ports.ClaimRecords, store ports.ReviewStore, history ports.StatusHistory,
+	reader Reader, clock ports.Clock, wake func()) *Service {
+	if wake == nil {
+		wake = func() {}
+	}
+	return &Service{claims: claims, store: store, history: history, reader: reader, clock: clock, wake: wake}
+}
+
+// Queue returns the filings waiting for review, oldest filed first.
+func (s *Service) Queue(ctx context.Context, pageSize int, pageToken string) (evaluation.QueuePage, error) {
+	return s.reader.ReviewQueue(ctx, pageSize, pageToken)
+}
+
+// Detail is a filing with everything the advisor reviews it with, and the
+// reviews it already had.
+type Detail struct {
+	evaluation.Evaluation
+	Reviews []domain.Review
+}
+
+// Detail returns the filing to review, or ports.ErrClaimNotFound.
+func (s *Service) Detail(ctx context.Context, claimID string) (Detail, error) {
+	e, err := s.reader.ReviewDetail(ctx, claimID)
+	if err != nil {
+		return Detail{}, err
+	}
+	reviews, err := s.store.Reviews(ctx, claimID)
+	if err != nil {
+		return Detail{}, err
+	}
+	return Detail{Evaluation: e, Reviews: reviews}, nil
+}
+
+// Approve approves a filing waiting for review: the claim enters evaluation.
+func (s *Service) Approve(ctx context.Context, claimID, advisor string) (domain.Review, error) {
+	c, err := s.claims.Get(ctx, claimID)
+	if err != nil {
+		return domain.Review{}, err
+	}
+	r, err := domain.ApproveFiling(c, advisor, s.clock.Now())
+	if err != nil {
+		return domain.Review{}, err
+	}
+	stored, err := s.store.Review(ctx, r)
+	if err != nil {
+		return domain.Review{}, err
+	}
+	s.wake()
+	return stored, nil
+}
+
+// Return returns a filing waiting for review to the insured with the reason
+// and what is missing.
+func (s *Service) Return(ctx context.Context, claimID, advisor string, in domain.ReturnRequest) (domain.Review, error) {
+	c, err := s.claims.Get(ctx, claimID)
+	if err != nil {
+		return domain.Review{}, err
+	}
+	r, err := domain.ReturnFiling(c, advisor, in, s.clock.Now())
+	if err != nil {
+		return domain.Review{}, err
+	}
+	return s.store.Review(ctx, r)
+}
+
+// History is every status a claim went through.
+type History struct {
+	Claim   domain.ClaimRecord
+	Changes []domain.StatusChange
+	// LastReturn is the review that returned the claim, while it is
+	// returned; nil otherwise.
+	LastReturn *domain.Review
+}
+
+// ErrNotOwner means an insured asked for the history of a claim that is not
+// theirs. It reads as not found, so nobody learns the claim exists.
+var ErrNotOwner = errors.New("claims: the claim is not of the insured")
+
+// History returns the history of a claim. When owner is not empty only the
+// claim of that subject is read: an insured reads only their own claims.
+func (s *Service) History(ctx context.Context, claimID, owner string) (History, error) {
+	c, err := s.claims.Get(ctx, claimID)
+	if err != nil {
+		return History{}, err
+	}
+	if owner != "" && c.Subject != owner {
+		return History{}, ErrNotOwner
+	}
+	changes, err := s.history.History(ctx, claimID)
+	if err != nil {
+		return History{}, err
+	}
+	out := History{Claim: c, Changes: changes}
+	if c.Status == domain.StatusReturned {
+		reviews, err := s.store.Reviews(ctx, claimID)
+		if err != nil {
+			return History{}, fmt.Errorf("read the reviews of the claim: %w", err)
+		}
+		for i := len(reviews) - 1; i >= 0; i-- {
+			if reviews[i].Outcome == domain.ReviewReturned {
+				r := reviews[i]
+				out.LastReturn = &r
+				break
+			}
+		}
+	}
+	return out, nil
+}

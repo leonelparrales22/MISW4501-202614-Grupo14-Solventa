@@ -51,10 +51,23 @@ func TestTheCalculationsLiveWhereTheClaimsLive(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestTheReviewsLiveWhereTheClaimsLive(t *testing.T) {
+	store, err := reviewStoreOf(postgres.NewClaimRecordStore(nil))
+	require.NoError(t, err)
+	assert.IsType(t, &postgres.ReviewStore{}, store)
+
+	store, err = reviewStoreOf(memory.NewCaseStore())
+	require.NoError(t, err)
+	assert.IsType(t, &memory.ReviewStore{}, store)
+
+	_, err = reviewStoreOf(fakeRecords{})
+	assert.Error(t, err)
+}
+
 func TestTheTriageStartsItsSweep(t *testing.T) {
 	cases := memory.NewCaseStore()
 	_, _, err := cases.Create(context.Background(), domain.Claim{ID: "cl-1", Subject: "sub-carolina", FilingKey: "k",
-		IncidentType: domain.IncidentTheft, Status: domain.StatusActive, FiledAt: time.Now().UTC(), Details: map[string]string{}})
+		IncidentType: domain.IncidentTheft, Status: domain.StatusInEvaluation, FiledAt: time.Now().UTC(), Details: map[string]string{}})
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

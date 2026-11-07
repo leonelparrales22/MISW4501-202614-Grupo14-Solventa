@@ -118,8 +118,11 @@ func TestTheStatusOfTheClaimFollowsItsPayout(t *testing.T) {
 }
 
 func TestOnlyAClaimInEvaluationIsDecidable(t *testing.T) {
-	assert.True(t, domain.Decidable(domain.StatusActive))
 	assert.True(t, domain.Decidable(domain.StatusInEvaluation))
+	// HU-W2.1-03: a filing waits for the review of the advisor, and a
+	// returned one for the insured; neither is decided.
+	assert.False(t, domain.Decidable(domain.StatusActive))
+	assert.False(t, domain.Decidable(domain.StatusReturned))
 	for _, s := range []domain.Status{domain.StatusApproved, domain.StatusPaid, domain.StatusRejected,
 		domain.StatusPaymentException} {
 		assert.False(t, domain.Decidable(s), s)
@@ -143,8 +146,8 @@ func TestThePayoutIsAnAttemptOfTheSharedRunner(t *testing.T) {
 }
 
 func TestTheKnownStatusesAreTheOnesOfTheJourney(t *testing.T) {
-	for _, s := range []domain.Status{domain.StatusActive, domain.StatusInEvaluation, domain.StatusApproved,
-		domain.StatusPaid, domain.StatusRejected, domain.StatusPaymentException} {
+	for _, s := range []domain.Status{domain.StatusActive, domain.StatusReturned, domain.StatusInEvaluation,
+		domain.StatusApproved, domain.StatusPaid, domain.StatusRejected, domain.StatusPaymentException} {
 		assert.True(t, domain.Known(s), s)
 	}
 	assert.False(t, domain.Known("closed"))

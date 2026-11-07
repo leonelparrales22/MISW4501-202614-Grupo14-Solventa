@@ -21,6 +21,7 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/evidence"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/filing"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/review"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
@@ -100,8 +101,16 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid configuration: %v", err)
 		}
-		opts = append(opts, httpadapter.WithEvaluation(
-			evaluationService(records, priorities, evidences, terms).WithDecisions(decisions), verifier))
+		evaluations := evaluationService(records, priorities, evidences, terms).WithDecisions(decisions)
+		opts = append(opts, httpadapter.WithEvaluation(evaluations, verifier))
+		// HU-W2.1-03: the advisor reviews every filing before it enters
+		// evaluation, and the history of the status of a claim is read here.
+		reviews, err := reviewStoreOf(records)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		opts = append(opts, httpadapter.WithReviews(
+			review.NewService(records, reviews, reviews, evaluations, systemClock{}, nil), verifier))
 		opts = append(opts, decisionRoutes(context.Background(), records, decisions, terms, verifier, os.Getenv)...)
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)

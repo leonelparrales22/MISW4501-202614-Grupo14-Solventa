@@ -33,9 +33,7 @@ var _ ports.DecisionStore = (*DecisionStore)(nil)
 func (s *DecisionStore) setStatus(claimID string, st domain.Status) {
 	s.cases.mu.Lock()
 	defer s.cases.mu.Unlock()
-	c := s.cases.byID[claimID]
-	c.Status = st
-	s.cases.byID[claimID] = c
+	s.cases.moveTo(claimID, st, time.Now())
 }
 
 // Decide records the decision of a claim in evaluation.

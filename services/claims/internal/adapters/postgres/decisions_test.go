@@ -31,6 +31,9 @@ func newDecisionStores(t *testing.T) decisionStores {
 	s := newWebStores(t)
 	_, _, err := s.claims.CreateWeb(context.Background(), webClaim(decidedClaim, "sub-carolina", "form-1"))
 	require.NoError(t, err)
+	// The advisor approved the filing (HU-W2.1-03): only then is it decided.
+	_, err = s.db.Exec(`UPDATE claim SET status = 'in_evaluation' WHERE id = $1`, decidedClaim)
+	require.NoError(t, err)
 	return decisionStores{webStores: s, decisions: postgres.DecisionStoreOf(s.claims)}
 }
 
@@ -43,7 +46,7 @@ func (s decisionStores) status(t *testing.T) domain.Status {
 
 func approval(t *testing.T) domain.Decision {
 	t.Helper()
-	c := domain.ClaimRecord{Claim: domain.Claim{ID: decidedClaim, Subject: "sub-carolina", Status: domain.StatusActive}}
+	c := domain.ClaimRecord{Claim: domain.Claim{ID: decidedClaim, Subject: "sub-carolina", Status: domain.StatusInEvaluation}}
 	cov := domain.Coverage{Incident: domain.IncidentCollision, InsuredValueMinor: 32_000_000_000, Currency: "COP",
 		DeductibleBasisPoints: 500}
 	holder := domain.Holder{Email: "carolina@correo.example", PayoutAccount: domain.PayoutAccount{BankCode: "1007",
