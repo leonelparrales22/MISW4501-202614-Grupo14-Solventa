@@ -1,8 +1,24 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.10.0
+  version: 0.11.0
   description: >-
+    0.11.0 (HU-W2.3-01): the assignment of the nearest provider (assessor or
+    workshop) to a claim in evaluation that needs an on-site visit. The
+    claim's location comes from the most precise trusted evidence of the
+    phone; without it, operations records the address and the coordinates of
+    the pin (POST /v1/claims/{claim_id}/incident-location). POST
+    /v1/claims/{claim_id}/provider-searches looks for available providers
+    with the specialty of the claim type, widening the radius 5, 10 and 20 km
+    and recording every attempt, and suggests the nearest; with none within
+    the maximum radius the claim is pending assignment, with its reason, and
+    the search is repeated on its own. POST /v1/claims/{claim_id}/assignment
+    confirms a provider, which receives the location by e-mail. GET
+    /v1/claims/{claim_id}/assignment reads it all, GET /v1/claims/assignments
+    the state of a page of claims and GET /v1/claims/assignment-policy the
+    radii and the specialty of each claim type. The registry of providers is
+    administered by operations under /v1/claims/providers. The status of the
+    claim does not change. Only operations.
     0.10.0 (HU-W2.1-03): the advisor reviews every filing before it enters
     evaluation, with a verdict on each support (valid, illegible or missing). A filed claim is active (waiting for review) and is not
     triaged nor listed for operations until the advisor approves it (POST
@@ -657,6 +673,391 @@ paths:
                 $ref: "#/components/schemas/Error"
         "403":
           description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assignments:
+    get:
+      summary: Provider assignment of a page of claims at once (HU-W2.3-01)
+      description: >-
+        The state of the assignment of each claim asked for, in the order
+        asked, so a list of claims shows which ones are pending assignment or
+        already assigned with one call. A claim that does not exist comes back
+        with state not_found instead of failing the call. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: claim_id
+          in: query
+          required: true
+          description: Ids of the claims, repeated (claim_id=a&claim_id=b), 1 to 50, without repeats.
+          style: form
+          explode: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 50
+            uniqueItems: true
+            items:
+              type: string
+              pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      responses:
+        "200":
+          description: The assignment of each claim, in the order asked
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssignmentList"
+        "400":
+          description: >-
+            invalid_request - no claim_id, more than 50, a repeated one or one
+            that is not a claim id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assignment-policy:
+    get:
+      summary: The assignment policy in force (HU-W2.3-01)
+      description: >-
+        The search radii, the specialty each claim type needs and how often a
+        claim pending assignment is searched again. The policy is provisional
+        until the business validates it; its version changes when it does.
+        Only operations.
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The policy in force
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssignmentPolicy"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/providers:
+    get:
+      summary: The registry of providers (HU-W2.3-01)
+      description: >-
+        The providers (assessors and workshops) the assignment chooses from,
+        by name, up to 200. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: specialty
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/Specialty"
+        - name: availability
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ProviderAvailability"
+      responses:
+        "200":
+          description: The providers, by name
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderList"
+        "400":
+          description: invalid_request - an unknown specialty or availability
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Register a provider (HU-W2.3-01)
+      description: >-
+        Adds a provider to the registry, available from now on. The service
+        gives it its id. Only operations; the provider keeps who registered it
+        and when.
+      security:
+        - cognitoJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderProfile"
+      responses:
+        "201":
+          description: Registered
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Provider"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every invalid field at once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/providers/{provider_id}:
+    get:
+      summary: One provider of the registry (HU-W2.3-01)
+      description: Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      responses:
+        "200":
+          description: The provider
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Provider"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: provider_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/providers/{provider_id}/profile:
+    post:
+      summary: Change the data of a provider (HU-W2.3-01)
+      description: >-
+        Replaces the name, specialties, location and contact of a provider.
+        The availability changes with its own route. An assignment already made
+        keeps the data the provider had then. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderProfile"
+      responses:
+        "200":
+          description: Changed
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Provider"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: provider_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every invalid field at once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/providers/{provider_id}/availability:
+    post:
+      summary: Change the availability of a provider (HU-W2.3-01)
+      description: >-
+        available or unavailable, the latter optionally until a date. A
+        provider becomes busy only when it is assigned to a claim; setting it
+        available releases it (until the closing of the intervention does it,
+        HU-W2.3-02). Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderAvailabilityRequest"
+      responses:
+        "200":
+          description: Changed
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Provider"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: provider_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            validation_failed - an unknown availability, unavailable_until
+            with available, or a date before today
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
           content:
             application/json:
               schema:
@@ -1522,6 +1923,300 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/assignment:
+    get:
+      summary: Provider assignment of one claim (HU-W2.3-01)
+      description: >-
+        Everything the screen "Asignar prestador" shows: the state of the
+        assignment, the specialty the claim type needs, the location of the
+        incident, the last search with every attempt and its candidates, and
+        the assignment once confirmed. A claim pending assignment shows the
+        reason; the search is repeated on its own every retry_interval_seconds
+        of the policy. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The assignment of the claim
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimAssignment"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Confirm the provider of a claim (HU-W2.3-01)
+      description: >-
+        Assigns one of the eligible providers of the last search (the
+        suggested one or another eligible). The claim records the provider,
+        the date and time, the distance and the location shared; the provider
+        becomes busy and receives the location by e-mail (notice.status tells
+        whether it left). A provider out of the radius of the last attempt is
+        not eligible: widen the radius first. Once per claim. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignmentRequest"
+      responses:
+        "201":
+          description: Assigned
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimAssignment"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            assignment_exists - the claim already has its provider;
+            provider_unavailable - the provider stopped being available after
+            the search (search again); search_outdated - search_seq is not the
+            last search of the claim, or the location changed after it;
+            claim_not_assignable - the claim is not in evaluation or its type
+            needs no on-site visit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            provider_not_eligible - the provider is not among the eligible of
+            the search (unavailable, without the specialty, out of the radius or
+            unknown); validation_failed - a field is missing or malformed
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/incident-location:
+    post:
+      summary: Record the location of the incident (HU-W2.3-01)
+      description: >-
+        The alternative when the claim has no coordinates from the app: the
+        address of the incident and the coordinates of the pin the analyst
+        placed on the map. It can be corrected until the claim is assigned
+        (the last one counts); every record keeps who made it and when. Only
+        operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IncidentLocationRequest"
+      responses:
+        "201":
+          description: Recorded; the claim is ready to search
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimAssignment"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            location_from_app - the claim has trusted coordinates from the app;
+            assignment_exists - the claim already has its provider;
+            claim_not_assignable - the claim is not in evaluation or its type
+            needs no on-site visit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every invalid field at once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/provider-searches:
+    post:
+      summary: Search the nearest provider (HU-W2.3-01)
+      description: >-
+        Looks for available providers with the specialty of the claim type,
+        from from_radius_km (the initial radius when absent) widening through
+        the radii of the policy until one has eligible providers, and records
+        every attempt. found suggests the nearest eligible; exhausted leaves
+        the claim pending assignment with its reason, and the search is
+        repeated on its own. "Ampliar radio" is a search from the next radius;
+        "Reintentar búsqueda", one without body. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderSearchRequest"
+      responses:
+        "201":
+          description: Searched (last_search holds the result, found or exhausted)
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimAssignment"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            assignment_exists - the claim already has its provider;
+            claim_not_assignable - the claim is not in evaluation or its type
+            needs no on-site visit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            location_missing - the claim has no coordinates from the app and the
+            analyst has not recorded the location; validation_failed -
+            from_radius_km is not a radius of the policy
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     ClaimID:
@@ -1532,6 +2227,14 @@ components:
         type: string
         pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
         example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
+    ProviderID:
+      name: provider_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^prv-[a-z0-9-]{3,40}$'
+        example: prv-servicios-hogar-norte
   securitySchemes:
     cognitoJwt:
       type: http
@@ -2997,3 +3700,547 @@ components:
             - $ref: "#/components/schemas/Review"
           nullable: true
           description: The review that returned the claim, while it is returned; null otherwise.
+    Specialty:
+      type: string
+      description: >-
+        The trade of a provider (HU-W2.3-01). vehicle_assessment: vehicle
+        assessor; auto_glass: vehicle glass; plumbing: plumbing and damp;
+        damp_proofing, painting and bodywork: trades a provider may add.
+      enum: [vehicle_assessment, auto_glass, plumbing, damp_proofing, painting, bodywork]
+    ProviderAvailability:
+      type: string
+      description: >-
+        available: can take a claim today. unavailable: set by operations,
+        optionally until a date. busy: assigned to a claim (busy_claim_id),
+        set only by the assignment.
+      enum: [available, unavailable, busy]
+    Actor:
+      type: object
+      required: [email, name]
+      description: The analyst of operations, from the token.
+      properties:
+        email:
+          type: string
+          example: andres.ruiz@solventa.example
+        name:
+          type: string
+          nullable: true
+          example: Andrés Ruiz
+    FieldValidationError:
+      type: object
+      required: [error, message, fields]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed]
+        message:
+          type: string
+        fields:
+          type: array
+          description: Every invalid field at once.
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                example: latitude
+              code:
+                type: string
+                enum: [required, invalid_format, out_of_range]
+    IncidentLocationRequest:
+      type: object
+      additionalProperties: false
+      required: [address, latitude, longitude]
+      properties:
+        address:
+          type: string
+          minLength: 5
+          maxLength: 200
+          example: "Carrera 15 # 93-40, apto 402, Bogotá"
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+          example: 4.6771
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          example: -74.0483
+    IncidentLocation:
+      type: object
+      required: [source, latitude, longitude, accuracy_m, address, recorded_by, recorded_at]
+      properties:
+        source:
+          type: string
+          description: >-
+            app: the most precise trusted evidence of the phone (precision of 50
+            m or better). analyst: recorded by operations.
+          enum: [app, analyst]
+        latitude:
+          type: number
+          format: double
+          example: 4.6771
+        longitude:
+          type: number
+          format: double
+          example: -74.0483
+        accuracy_m:
+          type: number
+          format: double
+          nullable: true
+          description: Precision of the capture in meters; null when the analyst recorded it.
+          example: 8
+        address:
+          type: string
+          nullable: true
+          description: The address the analyst recorded; null for the app.
+        recorded_by:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: null for the app.
+        recorded_at:
+          type: string
+          format: date-time
+          description: When the analyst recorded it, or when the phone captured the evidence.
+    ProviderSearchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        from_radius_km:
+          type: number
+          description: >-
+            The radius the search starts from; one of radii_km of the policy.
+            Absent: the initial radius.
+          enum: [5, 10, 20]
+    SearchAttempt:
+      type: object
+      required: [radius_km, eligible_count, attempted_at]
+      properties:
+        radius_km:
+          type: number
+          example: 5
+        eligible_count:
+          type: integer
+          minimum: 0
+        attempted_at:
+          type: string
+          format: date-time
+    ProviderCandidate:
+      type: object
+      required: [provider_id, name, specialties, distance_km, availability, unavailable_until, eligibility, suggested]
+      properties:
+        provider_id:
+          type: string
+        name:
+          type: string
+        specialties:
+          type: array
+          items:
+            $ref: "#/components/schemas/Specialty"
+        distance_km:
+          type: number
+          description: Straight-line distance to the incident, rounded to 0.1 km.
+          example: 2.3
+        availability:
+          $ref: "#/components/schemas/ProviderAvailability"
+        unavailable_until:
+          type: string
+          format: date
+          nullable: true
+        eligibility:
+          type: string
+          description: >-
+            eligible: available and within the radius of the last attempt; only
+            these can be assigned. unavailable: unavailable or busy.
+            out_of_radius: available but farther than the radius of the last
+            attempt.
+          enum: [eligible, unavailable, out_of_radius]
+        suggested:
+          type: boolean
+          description: The nearest eligible; ties go to the lowest provider_id.
+    ProviderSearch:
+      type: object
+      required: [seq, trigger, searched_by, specialty, location, from_radius_km, outcome, radius_km, reason, policy_version,
+        searched_at, attempts, candidates]
+      properties:
+        seq:
+          type: integer
+          minimum: 1
+          description: Number of the search in the claim; the assignment names it.
+        trigger:
+          type: string
+          description: analyst, or automatic_retry of a claim pending assignment.
+          enum: [analyst, automatic_retry]
+        searched_by:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: null for automatic_retry.
+        specialty:
+          $ref: "#/components/schemas/Specialty"
+        location:
+          type: object
+          required: [source, latitude, longitude]
+          description: The location the search measured from.
+          properties:
+            source:
+              type: string
+              enum: [app, analyst]
+            latitude:
+              type: number
+              format: double
+            longitude:
+              type: number
+              format: double
+        from_radius_km:
+          type: number
+          example: 5
+        outcome:
+          type: string
+          description: found - a radius had eligible providers; exhausted - none up to the maximum radius.
+          enum: [found, exhausted]
+        radius_km:
+          type: number
+          description: The radius of the last attempt (where it found, or the maximum).
+          example: 5
+        reason:
+          type: string
+          nullable: true
+          description: Why the claim is pending assignment; null when found.
+          enum: [no_eligible_provider_within_max_radius]
+        policy_version:
+          type: string
+          example: assignment-policy-v1
+        searched_at:
+          type: string
+          format: date-time
+        attempts:
+          type: array
+          description: Every radius tried, in order.
+          items:
+            $ref: "#/components/schemas/SearchAttempt"
+        candidates:
+          type: array
+          description: >-
+            The providers with the specialty, nearest first, up to 20, eligible
+            or not, so the analyst sees why each one is not.
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/ProviderCandidate"
+    AssignmentRequest:
+      type: object
+      additionalProperties: false
+      required: [provider_id, search_seq]
+      properties:
+        provider_id:
+          type: string
+          pattern: '^prv-[a-z0-9-]{3,40}$'
+          example: prv-servicios-hogar-norte
+        search_seq:
+          type: integer
+          minimum: 1
+          description: The seq of the last search, which the analyst saw.
+    Assignment:
+      type: object
+      required: [provider, assigned_by, assigned_at, distance_km, search_seq, location_shared, policy_version, notice]
+      properties:
+        provider:
+          type: object
+          required: [id, name, contact_email, contact_phone]
+          description: The provider as it was when assigned.
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            contact_email:
+              type: string
+              format: email
+            contact_phone:
+              type: string
+              nullable: true
+        assigned_by:
+          $ref: "#/components/schemas/Actor"
+        assigned_at:
+          type: string
+          format: date-time
+        distance_km:
+          type: number
+          example: 2.3
+        search_seq:
+          type: integer
+          minimum: 1
+        location_shared:
+          type: object
+          required: [source, latitude, longitude, accuracy_m, address]
+          description: What the provider received to get to the site.
+          properties:
+            source:
+              type: string
+              enum: [app, analyst]
+            latitude:
+              type: number
+              format: double
+            longitude:
+              type: number
+              format: double
+            accuracy_m:
+              type: number
+              format: double
+              nullable: true
+            address:
+              type: string
+              nullable: true
+        policy_version:
+          type: string
+        notice:
+          type: object
+          required: [status, attempts, sent_at]
+          description: The e-mail to the provider; retried until it leaves.
+          properties:
+            status:
+              type: string
+              enum: [pending, sent]
+            attempts:
+              type: integer
+              minimum: 0
+            sent_at:
+              type: string
+              format: date-time
+              nullable: true
+    AssignmentState:
+      type: string
+      description: >-
+        not_required: the claim type needs no on-site visit. not_applicable:
+        the claim is not in evaluation and has no assignment. location_missing:
+        no coordinates from the app nor a location recorded by the analyst.
+        ready: located, not searched yet (or the location changed after the
+        last search). proposed: the last search found eligible providers.
+        pending_assignment: the last search found none up to the maximum
+        radius. assigned: the provider is confirmed.
+      enum: [not_required, not_applicable, location_missing, ready, proposed, pending_assignment, assigned]
+    ClaimAssignment:
+      type: object
+      required: [claim_id, filing_number, claim_status, incident_type, line, state, specialty, policy_version, location,
+        last_search, assignment]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+          example: SIN-2026-01655
+        claim_status:
+          $ref: "#/components/schemas/ClaimStatus"
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        line:
+          $ref: "#/components/schemas/PolicyLine"
+        state:
+          $ref: "#/components/schemas/AssignmentState"
+        specialty:
+          allOf:
+            - $ref: "#/components/schemas/Specialty"
+          nullable: true
+          description: null when the claim type needs no on-site visit.
+        policy_version:
+          type: string
+          example: assignment-policy-v1
+        location:
+          allOf:
+            - $ref: "#/components/schemas/IncidentLocation"
+          nullable: true
+        last_search:
+          allOf:
+            - $ref: "#/components/schemas/ProviderSearch"
+          nullable: true
+        assignment:
+          allOf:
+            - $ref: "#/components/schemas/Assignment"
+          nullable: true
+    AssignmentSummary:
+      type: object
+      required: [claim_id, state, specialty, provider_name, distance_km, assigned_at, reason]
+      properties:
+        claim_id:
+          type: string
+        state:
+          type: string
+          description: The states of AssignmentState, plus not_found for a claim that does not exist.
+          enum: [not_required, not_applicable, location_missing, ready, proposed, pending_assignment, assigned, not_found]
+        specialty:
+          allOf:
+            - $ref: "#/components/schemas/Specialty"
+          nullable: true
+        provider_name:
+          type: string
+          nullable: true
+        distance_km:
+          type: number
+          nullable: true
+        assigned_at:
+          type: string
+          format: date-time
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+          enum: [no_eligible_provider_within_max_radius]
+    AssignmentList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssignmentSummary"
+    AssignmentPolicy:
+      type: object
+      required: [version, radii_km, initial_radius_km, max_radius_km, specialties, retry_interval_seconds]
+      properties:
+        version:
+          type: string
+          example: assignment-policy-v1
+        radii_km:
+          type: array
+          description: The radii the search widens through, in order.
+          items:
+            type: number
+          example: [5, 10, 20]
+        initial_radius_km:
+          type: number
+          example: 5
+        max_radius_km:
+          type: number
+          example: 20
+        specialties:
+          type: array
+          items:
+            type: object
+            required: [line, incident_type, specialty]
+            properties:
+              line:
+                $ref: "#/components/schemas/PolicyLine"
+              incident_type:
+                $ref: "#/components/schemas/IncidentType"
+              specialty:
+                allOf:
+                  - $ref: "#/components/schemas/Specialty"
+                nullable: true
+                description: null - the claim type needs no on-site visit (theft).
+        retry_interval_seconds:
+          type: integer
+          description: How often a claim pending assignment is searched again.
+          example: 300
+    ProviderProfile:
+      type: object
+      additionalProperties: false
+      required: [name, specialties, latitude, longitude, address, contact_email]
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 120
+          example: Servicios Hogar Norte
+        specialties:
+          type: array
+          minItems: 1
+          maxItems: 6
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/Specialty"
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+        address:
+          type: string
+          minLength: 5
+          maxLength: 200
+        contact_email:
+          type: string
+          format: email
+          maxLength: 254
+          description: The channel the provider receives its assignments by.
+        contact_phone:
+          type: string
+          nullable: true
+          pattern: '^\+[1-9][0-9]{6,14}$'
+          description: Informative, in E.164.
+          example: "+576015550102"
+    ProviderAvailabilityRequest:
+      type: object
+      additionalProperties: false
+      required: [availability]
+      properties:
+        availability:
+          type: string
+          enum: [available, unavailable]
+        unavailable_until:
+          type: string
+          format: date
+          nullable: true
+          description: Only with unavailable; today or later. Informative, it does not make the provider available on its own.
+    Provider:
+      type: object
+      required: [id, name, specialties, latitude, longitude, address, contact_email, contact_phone, availability,
+        unavailable_until, busy_claim_id, updated_by, updated_at]
+      properties:
+        id:
+          type: string
+          example: prv-servicios-hogar-norte
+        name:
+          type: string
+        specialties:
+          type: array
+          items:
+            $ref: "#/components/schemas/Specialty"
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        address:
+          type: string
+        contact_email:
+          type: string
+          format: email
+        contact_phone:
+          type: string
+          nullable: true
+        availability:
+          $ref: "#/components/schemas/ProviderAvailability"
+        unavailable_until:
+          type: string
+          format: date
+          nullable: true
+        busy_claim_id:
+          type: string
+          nullable: true
+          description: The claim the provider is assigned to while busy.
+        updated_by:
+          type: string
+          description: E-mail of the analyst who last changed it, or "reference-data" for the seed.
+        updated_at:
+          type: string
+          format: date-time
+    ProviderList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/Provider"
