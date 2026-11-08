@@ -1,8 +1,18 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.9.0
+  version: 0.10.0
   description: >-
+    0.10.0 (HU-W2.1-03): the advisor reviews every filing before it enters
+    evaluation, with a verdict on each support (valid, illegible or missing). A filed claim is active (waiting for review) and is not
+    triaged nor listed for operations until the advisor approves it (POST
+    /v1/claims/{claim_id}/review-approval), which makes it in_evaluation; or
+    returns it with the reason and what is missing (POST
+    /v1/claims/{claim_id}/review-return), which makes it returned. GET
+    /v1/claims/reviews lists the filings to review and GET
+    /v1/claims/{claim_id}/review the detail. GET /v1/claims/{claim_id}/history
+    reads every change of status of a claim, recorded by the database as it
+    happens. The status gains returned.
     0.9.0 (HU-M2.2-01): the filing from the phone (POST /v1/claims) takes the
     optional estimated_amount_minor with the rules of the web filing, and its
     answer returns it when it was declared; it counts in the fingerprint of
@@ -140,7 +150,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
+            enum: [active, returned, in_evaluation, approved, paid, rejected, payment_exception]
         - name: policy_id
           in: query
           required: false
@@ -655,10 +665,12 @@ paths:
     get:
       summary: Claims in evaluation (HU-W2.2-03)
       description: >-
-        The claims of every insured in the statuses the triage evaluates
-        (active and in_evaluation), oldest filed first, each with its estimated
-        amount and its priority, so operations opens one to evaluate it. The
-        order by priority is HU-W2.2-02. Only operations.
+        The claims of every insured in evaluation (in_evaluation: approved by
+        the advisor, HU-W2.1-03), oldest filed first, each with its estimated
+        amount and its priority, so operations opens one to evaluate it. A
+        claim waiting for the review of the advisor (active) or returned to the
+        insured is not here. The order by priority is HU-W2.2-02. Only
+        operations.
       security:
         - cognitoJwt: []
       parameters:
@@ -771,6 +783,316 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: "claims_unavailable - retry"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/reviews:
+    get:
+      summary: Filings waiting for the review of the advisor (HU-W2.1-03)
+      description: >-
+        The claims of every insured that wait for the review of the advisor
+        (status active: just filed, or sent again after a return), oldest filed
+        first, with their estimated amount. They have no priority yet: the
+        triage only assesses a claim once the advisor approves it, so triage
+        comes with state not_applicable. Only the advisor.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: page_size
+          in: query
+          required: false
+          description: Claims per page, 1 to 50; 20 when absent.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+        - name: page_token
+          in: query
+          required: false
+          description: The next_page_token of the previous page; opaque.
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        "200":
+          description: One page of the filings to review
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationQueue"
+        "400":
+          description: invalid_request - page_size out of 1 to 50 or a page token that is not valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an advisor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/review:
+    get:
+      summary: Everything the advisor reviews a filing with (HU-W2.1-03)
+      description: >-
+        The same reading operations evaluates with (the claim with its supports
+        and evidence, its policy and coverage as the policy core describes them
+        today and the insured), plus the checklist of the supports of the
+        claim type to give a verdict on, the other claims of the insured on the
+        same policy and every review the filing already had (screen S8). Only
+        the advisor.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The filing and its reviews
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimReview"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an advisor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/review-approval:
+    post:
+      summary: Approve a filing, which enters evaluation (HU-W2.1-03)
+      description: >-
+        The advisor approves a filing waiting for review: every attached
+        support is valid. The claim becomes in_evaluation, the triage gives it
+        a level within 60 seconds and it enters the queue of operations. A
+        filing with a required support missing is not approved (422
+        supports_incomplete): it is returned. Only the advisor, and only once
+        per filing: a second approval, or one of a filing already returned,
+        answers 409.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: Approved; the claim is in evaluation
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewOutcome"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an advisor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: claim_not_reviewable - the claim is not waiting for review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: supports_incomplete - a required support is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/review-return:
+    post:
+      summary: Return a filing to the insured with what is missing (HU-W2.1-03)
+      description: >-
+        The advisor returns a filing waiting for review with the reason (from
+        a list), the message the insured reads, the verdict on the supports
+        that do not serve (illegible, or missing to ask for an optional one)
+        and the facts to correct; at least one support illegible or missing or
+        one fact. The answer carries the verdict on every support (screen A9).
+        The claim becomes returned and keeps its filing number; the insured
+        corrects it and sends it again (HU-W2.1-04), which makes it active again
+        for a new review. Only the advisor.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReturnRequest"
+      responses:
+        "200":
+          description: Returned to the insured
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewOutcome"
+        "400":
+          description: invalid_request - the body does not follow the schema
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an advisor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: claim_not_reviewable - the claim is not waiting for review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            message_required (only blanks), message_too_long, note_too_long,
+            nothing_requested (no support illegible or missing and no fact),
+            support_not_applicable (a code that is not a support of the claim
+            type) or verdict_not_applicable (an attached support marked missing,
+            or one that is not attached marked valid or illegible)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/history:
+    get:
+      summary: Every status the claim went through (HU-W2.1-03)
+      description: >-
+        The changes of status of the claim, oldest first, each with when it
+        happened, and the date of the last one. The database records them as
+        the status changes, whoever changes it, so every stage of the case is
+        here: filed, returned, sent again, in evaluation, decided and paid.
+        When the claim is returned, last_return says why and what is missing.
+        The insured reads only their own claims (another one answers 404, as if
+        it did not exist); the advisor and operations read any. It is the
+        source of the timeline of the case (HU-W2.1-02, HU-M2.4-01) and of the
+        notice of a change of stage (HU-M3.3-01).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The history of the claim
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimHistory"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured, an advisor or operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
           content:
             application/json:
               schema:
@@ -1742,7 +2064,7 @@ components:
             filed from the mobile app).
         status:
           type: string
-          enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
+          enum: [active, returned, in_evaluation, approved, paid, rejected, payment_exception]
         channel:
           type: string
           enum: [mobile, web]
@@ -1819,7 +2141,7 @@ components:
           type: string
         status:
           type: string
-          enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
+          enum: [active, returned, in_evaluation, approved, paid, rejected, payment_exception]
         channel:
           type: string
           enum: [mobile, web]
@@ -2456,3 +2778,222 @@ components:
                 $ref: "#/components/schemas/TriageLevel"
               target:
                 $ref: "#/components/schemas/TriageTarget"
+    ClaimStatus:
+      type: string
+      description: >-
+        active: filed, waiting for the review of the advisor. returned: the
+        advisor returned it to the insured to complete (HU-W2.1-03).
+        in_evaluation: approved by the advisor, with operations. approved,
+        paid, rejected and payment_exception: the decision of operations
+        (HU-W2.2-03).
+      enum: [active, returned, in_evaluation, approved, paid, rejected, payment_exception]
+    CorrectableFact:
+      type: string
+      description: A fact of the filing the advisor asks the insured to correct.
+      enum: [occurred_at, place, description, estimated_amount]
+    ReturnReasonCode:
+      type: string
+      description: Why the filing is returned (screen S8).
+      enum: [illegible_or_incomplete_supports, inconsistent_facts, missing_information, other]
+    SupportVerdict:
+      type: string
+      description: >-
+        valid: attached and serves. illegible: attached but does not serve, the
+        insured replaces it. missing: not attached, a required support or an
+        optional one the advisor asks for.
+      enum: [valid, illegible, missing]
+    ReturnRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code, message]
+      properties:
+        reason_code:
+          $ref: "#/components/schemas/ReturnReasonCode"
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: What the insured reads (screen A9).
+        supports:
+          type: array
+          maxItems: 12
+          description: >-
+            The verdict on the supports that do not serve. An attached support
+            that is not listed is valid; a required one that is not attached is
+            missing. An attached support takes valid or illegible; one that is
+            not attached, only missing (to ask for an optional one). A code
+            appears once.
+          items:
+            type: object
+            additionalProperties: false
+            required: [requirement_code, verdict]
+            properties:
+              requirement_code:
+                type: string
+                minLength: 1
+                maxLength: 40
+                example: traffic_report
+              verdict:
+                $ref: "#/components/schemas/SupportVerdict"
+              note:
+                type: string
+                maxLength: 300
+                description: Why, as the insured reads it next to the support.
+                example: borroso, no se lee el número de croquis
+        facts_to_correct:
+          type: array
+          maxItems: 4
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/CorrectableFact"
+    SupportAssessment:
+      type: object
+      required: [requirement_code, label, verdict, note]
+      properties:
+        requirement_code:
+          type: string
+        label:
+          type: string
+          example: Informe de tránsito o croquis
+        verdict:
+          $ref: "#/components/schemas/SupportVerdict"
+        note:
+          type: string
+          nullable: true
+    Review:
+      type: object
+      required: [seq, outcome, reviewed_by, reviewer_name, reviewed_at, reason_code, message, supports, facts_to_correct]
+      properties:
+        seq:
+          type: integer
+          minimum: 1
+          description: 1 for the first review of the filing, 2 after it was sent again, and so on.
+        outcome:
+          type: string
+          enum: [approved, returned]
+        reviewed_by:
+          type: string
+          description: The advisor who reviewed it (e-mail of the token).
+        reviewer_name:
+          type: string
+          description: The name of the advisor, as the insured reads it; the e-mail when the user has no name.
+        reviewed_at:
+          type: string
+          format: date-time
+        reason_code:
+          allOf:
+            - $ref: "#/components/schemas/ReturnReasonCode"
+          nullable: true
+          description: null when it was approved.
+        message:
+          type: string
+          nullable: true
+          description: What the insured reads; null when it was approved.
+        supports:
+          type: array
+          description: >-
+            The verdict on every support that is attached, or missing and
+            required or asked for. An approval has every attached support
+            valid.
+          items:
+            $ref: "#/components/schemas/SupportAssessment"
+        facts_to_correct:
+          type: array
+          items:
+            $ref: "#/components/schemas/CorrectableFact"
+    ReviewOutcome:
+      type: object
+      required: [claim_id, filing_number, status, review]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+        status:
+          $ref: "#/components/schemas/ClaimStatus"
+        review:
+          $ref: "#/components/schemas/Review"
+    ChecklistItem:
+      type: object
+      required: [requirement_code, label, required, files]
+      properties:
+        requirement_code:
+          type: string
+        label:
+          type: string
+        required:
+          type: boolean
+        files:
+          type: integer
+          minimum: 0
+          description: >-
+            Files attached for it. In a filing of the phone, the evidence counts
+            as vehicle_photos, the only support it requires.
+    ClaimReview:
+      allOf:
+        - $ref: "#/components/schemas/ClaimEvaluation"
+        - type: object
+          required: [checklist, prior_claims, reviews]
+          properties:
+            checklist:
+              type: array
+              description: Every support of the claim type, in the order of the catalog (screen S8).
+              items:
+                $ref: "#/components/schemas/ChecklistItem"
+            prior_claims:
+              type: array
+              description: The other claims the insured filed on the same policy, newest first, up to 20.
+              items:
+                $ref: "#/components/schemas/ClaimSummary"
+            reviews:
+              type: array
+              description: The reviews of the filing, oldest first.
+              items:
+                $ref: "#/components/schemas/Review"
+    StatusChange:
+      type: object
+      required: [id, status, previous_status, changed_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Grows with every change of every claim, so it also orders changes of different claims.
+        status:
+          $ref: "#/components/schemas/ClaimStatus"
+        previous_status:
+          allOf:
+            - $ref: "#/components/schemas/ClaimStatus"
+          nullable: true
+          description: null on the change that filed the claim.
+        changed_at:
+          type: string
+          format: date-time
+    ClaimHistory:
+      type: object
+      required: [claim_id, filing_number, status, last_changed_at, changes, reviews, last_return]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+        status:
+          $ref: "#/components/schemas/ClaimStatus"
+        last_changed_at:
+          type: string
+          format: date-time
+          description: When the claim reached its current status.
+        changes:
+          type: array
+          description: Oldest first.
+          items:
+            $ref: "#/components/schemas/StatusChange"
+        reviews:
+          type: array
+          description: The reviews of the advisor, oldest first (who approved or returned it, screen A8).
+          items:
+            $ref: "#/components/schemas/Review"
+        last_return:
+          allOf:
+            - $ref: "#/components/schemas/Review"
+          nullable: true
+          description: The review that returned the claim, while it is returned; null otherwise.

@@ -207,12 +207,13 @@ func startWithDecisions(t *testing.T, url string, core *termsCore, g *gateway, m
 
 	priorities := startSweep(t, db)
 	signer := filing.NewQueryService(records, pdf.NewReceiptRenderer()).WithObjects(objects)
+	reader := evaluation.NewService(records, records, priorities, signer, terms, objects).WithDecisions(decisions)
 	return service{db: db, bucket: objects, Handler: httpadapter.NewRouter(
 		httpadapter.WithClaimReads(filing.NewQueryService(records, pdf.NewReceiptRenderer()).WithObjects(objects), verifier),
 		httpadapter.WithWebFilings(filing.NewWebService(records, supports, policiesadapter.NewDirectory(coreClient), clock{}),
 			filing.NewSupportService(supports, objects, clock{}), verifier),
-		httpadapter.WithEvaluation(evaluation.NewService(records, records, priorities, signer, terms, objects).
-			WithDecisions(decisions), verifier),
+		httpadapter.WithEvaluation(reader, verifier),
+		withReviews(records, reader),
 		httpadapter.WithDecisions(decision.NewService(records, decisions, terms, clock{}, worker.Notify), verifier),
 	)}
 }
@@ -241,11 +242,11 @@ func waitForStatus(t *testing.T, svc service, token, id, want string) {
 func TestDecisionAcceptanceCriteria(t *testing.T) {
 	core, g, m := newTermsCore(t), newGateway(t), newMailbox(t)
 	svc := startWithDecisions(t, newDatabase(t), core, g, m)
-	paid := fileClaim(t, svc, "form-paga", waterDamageBody(t, svc, "carolina", cents(4_800_000)))
-	rejected := fileClaim(t, svc, "form-rechaza", waterDamageBody(t, svc, "carolina", nil))
+	paid := admit(t, svc, fileClaim(t, svc, "form-paga", waterDamageBody(t, svc, "carolina", cents(4_800_000))))
+	rejected := admit(t, svc, fileClaim(t, svc, "form-rechaza", waterDamageBody(t, svc, "carolina", nil)))
 	rec, filed := file(t, svc, "andres", "form-excepcion", waterDamageBody(t, svc, "andres", cents(2_000_000)))
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
-	exception := filed["claim_id"].(string)
+	exception := admit(t, svc, filed["claim_id"].(string))
 
 	t.Run("1 the analyst opens the claim from the list with all it is decided with", func(t *testing.T) {
 		rec, queue := call(t, svc, http.MethodGet, "/v1/claims/evaluations", "analista", nil, nil)
@@ -275,7 +276,7 @@ func TestDecisionAcceptanceCriteria(t *testing.T) {
 			rec, _ = postJSON(t, svc, "/v1/claims/"+paid+"/rejection", token, map[string]any{"reason": "x"})
 			assert.Equal(t, http.StatusForbidden, rec.Code, token)
 		}
-		assert.Equal(t, "active", statusFor(t, svc, "carolina", paid))
+		assert.Equal(t, "in_evaluation", statusFor(t, svc, "carolina", paid))
 	})
 
 	t.Run("2 the approval is bounded by the insured value, discounts the deductible and is paid", func(t *testing.T) {

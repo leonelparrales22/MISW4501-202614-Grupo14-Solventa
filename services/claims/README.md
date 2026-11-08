@@ -104,8 +104,8 @@ GET  /v1/claims[/{id}[/filing-receipt]] ─▶ casos propios de los dos canales,
   no es parte de esta historia.
 - **Comprobante:** PDF generado al vuelo desde el caso (`internal/adapters/pdf`), con fechas en hora de Colombia (UTC−5) y
   determinista: dos descargas dan el mismo archivo.
-- **Estado:** el caso nace `active` («Radicado» en el portal). La revisión del asesor (HU-W2.1-03), la devolución (HU-W2.1-04) y
-  el triage (HU-W2.2-01) no están en esta historia.
+- **Estado:** el caso nace `active` («Radicado» en el portal): espera la revisión del asesor (HU-W2.1-03). La devolución
+  (HU-W2.1-04) y el triage (HU-W2.2-01) no están en esta historia.
 
 ### Adaptadores (`internal/adapters`)
 
@@ -125,7 +125,7 @@ la información de la que salió. Contrato: [`docs/contratos/HU-W2.2-01-api.md`]
 
 ```
 claims (cada tarea de ECS)
-  triage.Worker ──cada 10 s──▶ casos en active o in_evaluation sin cálculo o con monto, tipo o versión de la política distintos
+  triage.Worker ──cada 10 s──▶ casos en in_evaluation sin cálculo o con monto, tipo o versión de la política distintos
                               └─▶ Service.Assess: nivel = severidad × banda de monto ──▶ INSERT en claim_triage (con su causa)   [CA-1…CA-3]
 GET /v1/claims/{id}/triage ──▶ operations: nivel, severidad, banda, monto, objetivo e historial · insured dueño: nivel y días    [CA-4]
 GET /v1/claims/triage?claim_id=… ─▶ el nivel de una página de casos en una llamada (operations)                                   [CA-4, CA-5]
@@ -142,8 +142,8 @@ GET /v1/claims/triage-policy ────▶ severidad por tipo, umbrales y obje
   que cambie el monto, el tipo o la cobertura de un caso (HU-W2.1-03, HU-W2.1-04, HU-W2.3-02) obtiene el recálculo sin llamar a
   nada. El primer barrido corre al arrancar, por eso un caso que llegó con el servicio detenido se prioriza apenas vuelve. Dos
   tareas no duplican un cálculo: cada uno ocupa el lugar `seq` siguiente del caso (llave primaria) y la que pierde no escribe.
-- **Estados que se priorizan:** `active` (mientras no exista la revisión del asesor, radicado es entrar a evaluación; HU-W2.1-03
-  lo quitará) e `in_evaluation` (HU-W2.2-03). Fuera de ellos no se recalcula, pero el último nivel sigue visible.
+- **Estados que se priorizan:** solo `in_evaluation`: desde HU-W2.1-03 un caso entra a evaluación cuando el asesor aprueba
+  la radicación (fin del supuesto S5). Fuera de él no se recalcula, pero el último nivel sigue visible.
 - **Causas:** `entered_evaluation`, `estimated_amount_changed`, `incident_type_changed`, `coverage_changed`,
   `provider_report_received` (reservada para HU-W2.3-02) y `policy_updated`. Un cambio que no mueve el nivel también se registra.
 - **El triage no consulta al core de pólizas:** la cobertura es la del tipo de siniestro y la línea sale del catálogo.
@@ -161,7 +161,7 @@ indemnizar —y el pago sale solo— o lo rechaza con su motivo. Contrato:
 [`docs/contratos/HU-W2.2-03-api.md`](../../docs/contratos/HU-W2.2-03-api.md).
 
 ```
-GET  /v1/claims/evaluations ─────────▶ casos en active o in_evaluation con su monto estimado y su prioridad           [CA-1]
+GET  /v1/claims/evaluations ─────────▶ casos en in_evaluation (aprobados por el asesor) con su monto y su prioridad  [CA-1]
 GET  /v1/claims/{id}/evaluation ─────▶ caso, soportes y evidencia firmados, triage, póliza y cobertura de hoy
                                        (core), asegurado con la cuenta enmascarada y la decisión                    [CA-1, CA-5]
 POST /v1/claims/{id}/approval ───────▶ costo bruto ≤ valor asegurado; paga bruto − deducible ──▶ approved          [CA-2]
@@ -188,6 +188,33 @@ POST /v1/claims/{id}/payout-retry ───▶ destino corregido o el mismo, mis
 - **Estados nuevos:** `approved`, `paid`, `rejected` y `payment_exception`. Ninguno es de evaluación, así que el caso sale
   de la cola y el triage deja de recalcularlo.
 
+## Revisión del asesor e historial de estados (HU-W2.1-03)
+
+El asesor revisa cada radicación antes de que entre a evaluación (pantalla S8): da un veredicto sobre cada soporte
+(válido, ilegible o falta) y la aprueba o la devuelve al asegurado con el motivo, el mensaje y lo que debe corregir. Contrato: [`docs/contratos/HU-W2.1-03-api.md`](../../docs/contratos/HU-W2.1-03-api.md).
+
+```
+GET  /v1/claims/reviews ─────────────▶ radicaciones en active, de la más antigua a la más nueva (advisor)
+GET  /v1/claims/{id}/review ─────────▶ lo de /evaluation sin el triage + checklist de soportes, siniestros previos
+                                       de la póliza y revisiones                                                    [CA-1]
+POST /v1/claims/{id}/review-approval ▶ todos los soportes válidos (sin un requerido faltante) ──▶ in_evaluation     [CA-2]
+POST /v1/claims/{id}/review-return ──▶ motivo (lista) + mensaje + veredicto por soporte y/o datos ──▶ returned       [CA-3]
+GET  /v1/claims/{id}/history ────────▶ cada cambio de estado (insured: solo los suyos; advisor y operations: todos)
+```
+
+- **Veredicto por soporte:** el *checklist* son los soportes del tipo de siniestro con sus archivos. En una radicación del
+  móvil la evidencia cuenta como `vehicle_photos`, el único requerido. Lo adjunto que el asesor no marca queda `valid`, y un
+  requerido sin adjuntar queda `missing`. Con un requerido faltante no se aprueba (`422 supports_incomplete`). Colisión gana
+  `plate_photo` (fotografía de la placa), opcional, para que el asesor pueda pedirla.
+- **Solo `advisor`** revisa (HA-S01). Cada revisión guarda quién (correo y nombre del token), cuándo, el veredicto de cada soporte y lo que pidió en `claim_review` (`seq` por ronda: un
+  caso reenviado por HU-W2.1-04 se revisa otra vez). La escritura mueve el estado en la misma sentencia y solo si el caso
+  sigue `active`, así que de dos asesores a la vez gana uno y el otro recibe `409`.
+- **El historial lo escribe la base:** un *trigger* de `claim` agrega una fila a `claim_status_change` en cada cambio de
+  `status`, sin importar qué código lo cambie. Es la fuente de la línea de tiempo (HU-W2.1-02, HU-M2.4-01) y de la
+  notificación por cambio de etapa (HU-M3.3-01). `claim_review` y `claim_status_change` son de solo inserción.
+- La migración `0007` reconstruye el historial de los casos anteriores: la radicación y, si estaban decididos, su estado
+  actual a la hora de la decisión.
+
 ## Requisitos de calidad que gobiernan el servicio
 
 - Consulta de estado del siniestro p95 ≤ 2 s en la app móvil (EC-L02): caché de lectura en Redis con corte duro de 900 ms; ante timeout responde la última versión válida con `stale=true`.
@@ -196,7 +223,7 @@ POST /v1/claims/{id}/payout-retry ───▶ destino corregido o el mismo, mis
 
 ## Datos y eventos
 
-- **BD propia:** PostgreSQL (siniestros): `claim` (con `channel`, `policy_snapshot` y `catalog_version` desde HU-W2.1-01 y `estimated_amount_minor` desde HU-W2.2-01), `claim_evidence`, `support_file` (metadatos; el archivo vive en S3), `claim_support` y `claim_triage` (HU-W2.2-01: cada cálculo del nivel, solo se agregan filas) con su vista `claim_current_triage`, `claim_decision` (HU-W2.2-03: la decisión y el pago de la indemnización) y `claim_payout_retry` (cada reintento manual). Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
+- **BD propia:** PostgreSQL (siniestros): `claim` (con `channel`, `policy_snapshot` y `catalog_version` desde HU-W2.1-01 y `estimated_amount_minor` desde HU-W2.2-01), `claim_evidence`, `support_file` (metadatos; el archivo vive en S3), `claim_support` y `claim_triage` (HU-W2.2-01: cada cálculo del nivel, solo se agregan filas) con su vista `claim_current_triage`, `claim_decision` (HU-W2.2-03: la decisión y el pago de la indemnización), `claim_payout_retry` (cada reintento manual), `claim_review` (HU-W2.1-03: cada revisión del asesor) y `claim_status_change` (cada cambio de estado, escrito por un *trigger*). Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
 - **Publica:** `ClaimApproved` (dispara notificación y pago paramétrico). Ver [catálogo de eventos](../../docs/events/README.md).
 - **Depende de:** `pkg/adapters` (`iot`, `payments`, `policies` desde HU-W2.1-01), `pkg/outbox`. HU-W2.1-01 no publica ni consume eventos.
 

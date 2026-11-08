@@ -123,7 +123,7 @@ func nuevo(t *testing.T, n ports.PolicyTermsReader) *escenario {
 	c, _, err := e.cases.CreateWeb(context.Background(), domain.ClaimRecord{
 		Claim: domain.Claim{ID: "cl-1", Subject: "sub-carolina", FilingKey: "k1", PolicyID: "HG-2025-880231",
 			IncidentType: domain.IncidentWaterDamage, OccurredAt: inicio.Add(-48 * time.Hour), Place: "Calle 1",
-			Description: "Filtración.", Status: domain.StatusActive, FiledAt: inicio.Add(-24 * time.Hour)},
+			Description: "Filtración.", Status: domain.StatusInEvaluation, FiledAt: inicio.Add(-24 * time.Hour)},
 		Channel: domain.ChannelWeb,
 	})
 	require.NoError(t, err)
@@ -262,7 +262,7 @@ func TestAnApprovalIsCheckedAgainstTheCoverageOfToday(t *testing.T) {
 		e := nuevo(t, tc.nucleo)
 		_, err := e.svc.Approve(ctx, e.claimID, "analista", tc.amount)
 		assert.ErrorIs(t, err, tc.want, name)
-		assert.Equal(t, domain.StatusActive, e.estado(t), "%s: nothing was decided", name)
+		assert.Equal(t, domain.StatusInEvaluation, e.estado(t), "%s: nothing was decided", name)
 	}
 	e := nuevo(t, nucleoDeCarolina())
 	_, err := e.svc.Approve(ctx, "no-existe", "analista", 1)
@@ -301,7 +301,7 @@ func TestARejectionWithoutReasonIsRefusedBeforeAskingTheCore(t *testing.T) {
 	e := nuevo(t, nucleo{errTerms: errors.New("no debería llamarse"), errHolder: errors.New("x")})
 	_, err := e.svc.Reject(context.Background(), e.claimID, "analista", "  ")
 	assert.ErrorIs(t, err, domain.ErrReasonRequired)
-	assert.Equal(t, domain.StatusActive, e.estado(t))
+	assert.Equal(t, domain.StatusInEvaluation, e.estado(t))
 }
 
 func TestWorkersRacingForAPayoutPayItOnce(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 	policiesadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/policies"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/evaluation"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/filing"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/triage"
 )
@@ -61,6 +62,7 @@ func startWithTriage(t *testing.T, url string, core *policyCore) service {
 		httpadapter.WithWebFilings(filing.NewWebService(records, supports, directory, clock{}),
 			filing.NewSupportService(supports, objects, clock{}), verifier),
 		httpadapter.WithTriage(priorities, verifier),
+		withReviews(records, evaluation.NewService(records, records, priorities, nil, nil, objects)),
 	)}
 }
 
@@ -165,7 +167,7 @@ func TestClaimTriageAcceptanceCriteria(t *testing.T) {
 
 	t.Run("CA-1 a claim that enters evaluation gets its level within 60 seconds, with the date and time", func(t *testing.T) {
 		filedAt := time.Now().UTC()
-		waterID = fileClaim(t, svc, "water-1", waterDamageBody(t, svc, "carolina", cents(4_800_000)))
+		waterID = admit(t, svc, fileClaim(t, svc, "water-1", waterDamageBody(t, svc, "carolina", cents(4_800_000))))
 
 		rec, pending := triageOf(t, svc, "analyst", waterID)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -189,7 +191,7 @@ func TestClaimTriageAcceptanceCriteria(t *testing.T) {
 		assert.InDelta(t, cents(4_800_000), current(body)["estimated_amount_minor"], 0)
 		assert.Equal(t, "water_damage", current(body)["coverage"])
 
-		theft := fileClaim(t, svc, "theft-1", theftBody(t, svc, "carolina"))
+		theft := admit(t, svc, fileClaim(t, svc, "theft-1", theftBody(t, svc, "carolina")))
 		body = waitForCalculations(t, svc, theft, 1)
 		assert.Equal(t, 1.0, current(body)["level"], "a theft is Triage 1 without amount")
 		assert.Equal(t, "unknown", current(body)["amount_band"])
@@ -197,7 +199,7 @@ func TestClaimTriageAcceptanceCriteria(t *testing.T) {
 
 		collision := collisionBody(t, svc, "carolina")
 		collision["estimated_amount_minor"] = cents(40_000_000)
-		id := fileClaim(t, svc, "collision-1", collision)
+		id := admit(t, svc, fileClaim(t, svc, "collision-1", collision))
 		body = waitForCalculations(t, svc, id, 1)
 		assert.Equal(t, 1.0, current(body)["level"], "a collision above 30 million")
 		assert.Equal(t, "high", current(body)["amount_band"])
@@ -220,16 +222,13 @@ func TestClaimTriageAcceptanceCriteria(t *testing.T) {
 		assert.Equal(t, 1.0, latest(body)["previous_level"])
 		assert.Equal(t, []any{"estimated_amount_changed", "incident_type_changed", "coverage_changed"}, latest(body)["causes"])
 
-		// The evaluation of HU-W2.2-03 moves the claim to in_evaluation: the
-		// same information, no new calculation.
-		_, err = svc.db.Exec(`UPDATE claim SET status = 'in_evaluation' WHERE id = $1`, waterID)
-		require.NoError(t, err)
+		// The same information, no new calculation.
 		time.Sleep(5 * sweepInterval)
 		assert.Equal(t, 3, countRows(t, svc.db, `SELECT count(*) FROM claim_triage WHERE claim_id = $1`, waterID))
 	})
 
 	t.Run("CA-3 a claim out of evaluation keeps its last level and is not recalculated", func(t *testing.T) {
-		id := fileClaim(t, svc, "water-paid", waterDamageBody(t, svc, "carolina", cents(4_800_000)))
+		id := admit(t, svc, fileClaim(t, svc, "water-paid", waterDamageBody(t, svc, "carolina", cents(4_800_000))))
 		waitForCalculations(t, svc, id, 1)
 
 		_, err := svc.db.Exec(`UPDATE claim SET status = 'paid', estimated_amount_minor = $1 WHERE id = $2`,
@@ -325,7 +324,7 @@ func TestTwoTasksSweepingTheSameDatabaseRecordEachCalculationOnce(t *testing.T) 
 	svc := startWithTriage(t, newDatabase(t), newPolicyCore(t))
 	startSweep(t, svc.db)
 
-	id := fileClaim(t, svc, "water-1", waterDamageBody(t, svc, "carolina", cents(4_800_000)))
+	id := admit(t, svc, fileClaim(t, svc, "water-1", waterDamageBody(t, svc, "carolina", cents(4_800_000))))
 	waitForCalculations(t, svc, id, 1)
 	_, err := svc.db.Exec(`UPDATE claim SET estimated_amount_minor = $1 WHERE id = $2`, cents(40_000_000), id)
 	require.NoError(t, err)
@@ -344,7 +343,8 @@ func TestAClaimOfTheMobileAppIsAssessedWithoutAmount(t *testing.T) {
 		ID: "11111111-1111-4111-8111-111111111111", Subject: "sub-carolina", FilingKey: "draft-1",
 		PolicyID: "AU-2025-118204", IncidentType: domain.IncidentCollision, OccurredAt: now.Add(-time.Hour),
 		Place: "Calle 80", Description: "Choque por alcance en el semáforo.", Details: map[string]string{},
-		Status: domain.StatusActive, FiledAt: now,
+		// Approved by the advisor (HU-W2.1-03) as it is stored.
+		Status: domain.StatusInEvaluation, FiledAt: now,
 	})
 	require.NoError(t, err)
 

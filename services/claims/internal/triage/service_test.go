@@ -144,7 +144,7 @@ func amount(cop int64) *int64 {
 func waterDamage(id string, cop *int64) domain.ClaimRecord {
 	return domain.ClaimRecord{
 		Claim: domain.Claim{ID: id, Subject: "sub-carolina", IncidentType: domain.IncidentWaterDamage,
-			Status: domain.StatusActive, FiledAt: filedAt, EstimatedAmountMinor: cop},
+			Status: domain.StatusInEvaluation, FiledAt: filedAt, EstimatedAmountMinor: cop},
 		Channel: domain.ChannelWeb, CatalogVersion: domain.CatalogVersionV1,
 	}
 }
@@ -162,7 +162,8 @@ func candidate(t *testing.T, store *fakeStore, id string) ports.TriageCandidate 
 }
 
 func TestTheFirstCalculationOfAClaimThatEntersEvaluation(t *testing.T) {
-	for _, status := range []domain.Status{domain.StatusActive, domain.StatusInEvaluation} {
+	// Since HU-W2.1-03 a claim enters evaluation when the advisor approves it.
+	for _, status := range []domain.Status{domain.StatusInEvaluation} {
 		c := waterDamage("cl-1", amount(4_800_000))
 		c.Status = status
 		store := newFakeStore(c)

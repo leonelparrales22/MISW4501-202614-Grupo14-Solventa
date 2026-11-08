@@ -18,6 +18,7 @@ const (
 	claimClientID    = "client_id"
 	claimIssuedAt    = "iat"
 	claimExpiresAt   = "exp"
+	claimName        = "name"
 )
 
 // Claims is the verified identity of the caller of a human route.
@@ -28,6 +29,10 @@ type Claims struct {
 	// Username is "cognito:username" (ID token) or "username" (access token).
 	Username string
 	Email    string
+	// Name is the "name" of the user pool: how the person is shown to others
+	// (the advisor who reviewed a claim, HU-W2.1-03). Empty when the user has
+	// none.
+	Name string
 	// PartnerID is "custom:partner_id": the partner a partner-portal user
 	// belongs to. It is written only when the user is provisioned.
 	PartnerID string
@@ -61,6 +66,7 @@ func claimsFromMap(m map[string]any) Claims {
 		Subject:   stringClaim(m, claimSubject),
 		Username:  stringClaim(m, claimIDUsername),
 		Email:     stringClaim(m, claimEmail),
+		Name:      stringClaim(m, claimName),
 		PartnerID: stringClaim(m, claimPartnerID),
 		TokenUse:  stringClaim(m, claimTokenUse),
 		ClientID:  stringClaim(m, claimClientID),

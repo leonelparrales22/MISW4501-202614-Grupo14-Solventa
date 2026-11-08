@@ -32,16 +32,18 @@ func (t IncidentType) Valid() bool {
 	return false
 }
 
-// Status is the state of the case. A filing is born active.
+// Status is the state of the case. A filing is born active: waiting for the
+// review of the advisor (HU-W2.1-03).
 type Status string
 
 const StatusActive Status = "active"
 
-// Known tells whether s is a status a claim can be in: active, in evaluation
-// or one of the decision (HU-W2.2-03), so the insured can filter by any.
+// Known tells whether s is a status a claim can be in: active, returned
+// (HU-W2.1-03), in evaluation or one of the decision (HU-W2.2-03), so the
+// insured can filter by any.
 func Known(s Status) bool {
 	switch s {
-	case StatusActive, StatusInEvaluation, StatusApproved, StatusPaid, StatusRejected, StatusPaymentException:
+	case StatusActive, StatusReturned, StatusInEvaluation, StatusApproved, StatusPaid, StatusRejected, StatusPaymentException:
 		return true
 	}
 	return false

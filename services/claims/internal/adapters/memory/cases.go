@@ -23,6 +23,9 @@ type CaseStore struct {
 	supports map[string]domain.SupportFile
 	// attachedTo tells the claim each support is attached to.
 	attachedTo map[string]string
+	// changes are the changes of status of every claim, in the order they
+	// happened, as the trigger of PostgreSQL records them (HU-W2.1-03).
+	changes []domain.StatusChange
 }
 
 // NewCaseStore builds an empty store.
@@ -233,7 +236,40 @@ func (s *CaseStore) insert(c domain.ClaimRecord) domain.ClaimRecord {
 	c = copyRecord(c)
 	s.byID[c.ID] = c
 	s.byKey[c.Subject+"\x00"+c.FilingKey] = c.ID
+	s.recordChange(c.ID, c.Status, "", c.FiledAt)
 	return copyRecord(c)
+}
+
+// moveTo changes the status of a claim and records the change, like the
+// trigger of PostgreSQL. The caller holds the lock.
+func (s *CaseStore) moveTo(claimID string, st domain.Status, at time.Time) {
+	c := s.byID[claimID]
+	if c.Status == st {
+		return
+	}
+	previous := c.Status
+	c.Status = st
+	s.byID[claimID] = c
+	s.recordChange(claimID, st, previous, at)
+}
+
+// recordChange keeps one change of status. The caller holds the lock.
+func (s *CaseStore) recordChange(claimID string, st, previous domain.Status, at time.Time) {
+	s.changes = append(s.changes, domain.StatusChange{ID: int64(len(s.changes) + 1), ClaimID: claimID,
+		Status: st, PreviousStatus: previous, ChangedAt: at.UTC()})
+}
+
+// History returns the changes of status of a claim, oldest first.
+func (s *CaseStore) History(_ context.Context, claimID string) ([]domain.StatusChange, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []domain.StatusChange
+	for _, c := range s.changes {
+		if c.ClaimID == claimID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 // olderThan tells whether the claim comes after the cursor in the list: the

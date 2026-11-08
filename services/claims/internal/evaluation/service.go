@@ -90,13 +90,19 @@ type QueuePage struct {
 	NextPageToken string
 }
 
-// Queue returns the claims in evaluation, oldest filed first. They are the
-// claims the triage evaluates (active and in_evaluation): while the review of
-// the advisor (HU-W2.1-03) does not exist, a filed claim enters evaluation as
-// it is filed (assumption S5 of HU-W2.2-01). The order by priority is
-// HU-W2.2-02; this list is what the evaluation needs to open a claim.
+// Queue returns the claims in evaluation, oldest filed first: the claims the
+// triage evaluates, which since HU-W2.1-03 are only the ones the advisor
+// approved. The order by priority is HU-W2.2-02; this list is what the
+// evaluation needs to open a claim.
 func (s *Service) Queue(ctx context.Context, pageSize int, pageToken string) (QueuePage, error) {
 	return s.page(ctx, domain.TriageableStatuses(), pageSize, pageToken)
+}
+
+// ReviewQueue returns the filings waiting for the review of the advisor
+// (HU-W2.1-03), oldest filed first. They have no priority yet: the triage
+// only assesses a claim once the advisor approves it.
+func (s *Service) ReviewQueue(ctx context.Context, pageSize int, pageToken string) (QueuePage, error) {
+	return s.page(ctx, []domain.Status{domain.StatusActive}, pageSize, pageToken)
 }
 
 // Exceptions returns the payment exceptions, oldest filed first: the approved
@@ -183,13 +189,26 @@ type Evaluation struct {
 
 // Detail returns the claim with everything around it, or ports.ErrClaimNotFound.
 func (s *Service) Detail(ctx context.Context, claimID string) (Evaluation, error) {
+	return s.detail(ctx, claimID, true)
+}
+
+// ReviewDetail is the detail the advisor reviews a filing with (HU-W2.1-03):
+// the same, without the priority. A filing waiting for review has none yet,
+// and the triage is read by operations and the insured only.
+func (s *Service) ReviewDetail(ctx context.Context, claimID string) (Evaluation, error) {
+	return s.detail(ctx, claimID, false)
+}
+
+func (s *Service) detail(ctx context.Context, claimID string, withTriage bool) (Evaluation, error) {
 	c, err := s.claims.Get(ctx, claimID)
 	if err != nil {
 		return Evaluation{}, err
 	}
-	view, err := s.triage.View(ctx, claimID)
-	if err != nil {
-		return Evaluation{}, fmt.Errorf("read the priority of the claim: %w", err)
+	view := triage.View{ClaimID: claimID, State: domain.TriageStateOf(c.Status, nil)}
+	if withTriage {
+		if view, err = s.triage.View(ctx, claimID); err != nil {
+			return Evaluation{}, fmt.Errorf("read the priority of the claim: %w", err)
+		}
 	}
 	out := Evaluation{Claim: c, Triage: view, Supports: s.supportLinks(ctx, c)}
 	if s.evidence != nil {

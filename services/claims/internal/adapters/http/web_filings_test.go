@@ -225,7 +225,8 @@ func TestTheFilingOptionsAreServed(t *testing.T) {
 		"incident_types":[{"code":"collision","label":"Colisión con daños al vehículo","requirements":[
 			{"code":"vehicle_photos","label":"Fotos del vehículo","required":true,"min_files":4,"max_files":10,"formats":["jpeg","png"]},
 			{"code":"driver_document","label":"Documento del conductor","required":true,"min_files":1,"max_files":2,"formats":["pdf","jpeg","png"]},
-			{"code":"traffic_report","label":"Informe de tránsito o croquis","required":true,"min_files":1,"max_files":3,"formats":["pdf","jpeg","png"]}]}]}]}`,
+			{"code":"traffic_report","label":"Informe de tránsito o croquis","required":true,"min_files":1,"max_files":3,"formats":["pdf","jpeg","png"]},
+			{"code":"plate_photo","label":"Fotografía de la placa","required":false,"min_files":0,"max_files":2,"formats":["jpeg","png"]}]}]}]}`,
 		rec.Body.String())
 }
 
