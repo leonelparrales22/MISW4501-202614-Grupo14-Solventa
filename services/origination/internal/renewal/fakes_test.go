@@ -312,3 +312,145 @@ func (f fakeCustomersByDocument) GetByDocument(_ context.Context, doc string) (d
 	}
 	return c, nil
 }
+
+type fakeRequotes struct {
+	mu   sync.Mutex
+	rows map[string]domain.RenewalRequote
+	err  error
+}
+
+func newFakeRequotes() *fakeRequotes { return &fakeRequotes{rows: map[string]domain.RenewalRequote{}} }
+
+func (f *fakeRequotes) Create(_ context.Context, r domain.RenewalRequote) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.rows[r.ID] = r
+	return nil
+}
+
+func (f *fakeRequotes) Get(_ context.Context, id string) (domain.RenewalRequote, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, found := f.rows[id]
+	if !found {
+		return domain.RenewalRequote{}, ports.ErrRenewalRequoteNotFound
+	}
+	return r, nil
+}
+
+func (f *fakeRequotes) Latest(_ context.Context, policyID string, periodEnd time.Time) (domain.RenewalRequote, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []domain.RenewalRequote
+	for _, r := range f.rows {
+		if r.PolicyID == policyID && r.PeriodEnd.Equal(periodEnd) {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return domain.RenewalRequote{}, ports.ErrRenewalRequoteNotFound
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+	return out[0], nil
+}
+
+// fakeAssisted records the advisor's formalizations next to the renewals of
+// the rig, as the store does in one transaction.
+type fakeAssisted struct {
+	mu       sync.Mutex
+	renewals *fakeRenewals
+	rows     map[string]domain.RenewalFormalization
+}
+
+func (f *fakeAssisted) CreateAssisted(ctx context.Context, r domain.Renewal, fz domain.RenewalFormalization) (domain.Renewal,
+	*domain.RenewalFormalization, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	stored, created, err := f.renewals.Create(ctx, r)
+	if err != nil {
+		return domain.Renewal{}, nil, false, err
+	}
+	if !created {
+		if existing, found := f.rows[stored.ID]; found {
+			return stored, &existing, false, nil
+		}
+		return stored, nil, false, nil
+	}
+	f.rows[r.ID] = fz
+	return stored, &fz, true, nil
+}
+
+func (f *fakeAssisted) GetFormalization(_ context.Context, renewalID string) (domain.RenewalFormalization, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fz, found := f.rows[renewalID]
+	if !found {
+		return domain.RenewalFormalization{}, ports.ErrRenewalFormalizationNotFound
+	}
+	return fz, nil
+}
+
+type fakeFreshProfiles struct {
+	mu    sync.Mutex
+	res   domain.ProfileResolution
+	err   error
+	calls int
+	got   []string
+}
+
+func (f *fakeFreshProfiles) ResolveFresh(_ context.Context, customerID string, consent bool) (domain.ProfileResolution, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.got = append(f.got, customerID)
+	if !consent {
+		return domain.ProfileResolution{}, errors.New("no consent")
+	}
+	return f.res, f.err
+}
+
+type fakeConsents struct {
+	mu     sync.Mutex
+	status domain.ConsentStatus
+	err    error
+	calls  int
+	got    []string
+}
+
+func (f *fakeConsents) Verify(_ context.Context, customerID string) (domain.ConsentStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.got = append(f.got, customerID)
+	return f.status, f.err
+}
+
+type fakeSender struct {
+	mu      sync.Mutex
+	err     error
+	notices []domain.ConsentCodeNotice
+}
+
+func (f *fakeSender) SendConsentCode(_ context.Context, n domain.ConsentCodeNotice) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.notices = append(f.notices, n)
+	return nil
+}
+
+func (f *fakeSender) last() domain.ConsentCodeNotice {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.notices[len(f.notices)-1]
+}
