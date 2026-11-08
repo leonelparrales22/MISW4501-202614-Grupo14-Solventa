@@ -278,3 +278,37 @@ func (f *fakeNotifier) Notify(_ context.Context, n domain.RenewalNotice) error {
 }
 
 var errBoom = errors.New("boom")
+
+// Fakes of the assisted renewal (HU-W1.5-03).
+
+type fakeOffers struct {
+	rows map[string]domain.PersonalizedOffer
+	err  error
+}
+
+func (f fakeOffers) Get(_ context.Context, id string) (domain.PersonalizedOffer, error) {
+	if f.err != nil {
+		return domain.PersonalizedOffer{}, f.err
+	}
+	o, found := f.rows[id]
+	if !found {
+		return domain.PersonalizedOffer{}, ports.ErrOfferNotFound
+	}
+	return o, nil
+}
+
+type fakeCustomersByDocument struct {
+	rows map[string]domain.Customer
+	err  error
+}
+
+func (f fakeCustomersByDocument) GetByDocument(_ context.Context, doc string) (domain.Customer, error) {
+	if f.err != nil {
+		return domain.Customer{}, f.err
+	}
+	c, found := f.rows[doc]
+	if !found {
+		return domain.Customer{}, ports.ErrCustomerNotFound
+	}
+	return c, nil
+}

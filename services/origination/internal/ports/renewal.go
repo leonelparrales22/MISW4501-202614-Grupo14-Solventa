@@ -106,3 +106,19 @@ type AssistedRenewalRepository interface {
 	// renewal was not formalized by an advisor.
 	GetFormalization(ctx context.Context, renewalID string) (domain.RenewalFormalization, error)
 }
+
+// OfferReader reads the offer a policy was bought from, to know the customer
+// its profile and its consent are keyed by and the channel it was sold in
+// (HU-W1.5-03, decision D-6). The PersonalizedOfferStore implements it.
+type OfferReader interface {
+	// Get returns ErrOfferNotFound for an unknown id (a demonstration offer
+	// has no stored row).
+	Get(ctx context.Context, offerID string) (domain.PersonalizedOffer, error)
+}
+
+// CustomerByDocument finds the customer with a document id; the
+// CustomerRepository implements it.
+type CustomerByDocument interface {
+	// GetByDocument returns ErrCustomerNotFound when the document is unknown.
+	GetByDocument(ctx context.Context, documentID string) (domain.Customer, error)
+}
