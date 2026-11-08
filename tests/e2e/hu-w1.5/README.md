@@ -1,9 +1,45 @@
-# E2E — HU-W1.5 · Renovación de pólizas en la nube
+# E2E — HU-W1.5 · Renovación de pólizas
 
-Verificaciones por API de las historias de renovación del asesor en la ventana de staging, siempre a través del portal de CloudFront
-(como lo llama el navegador) y solo con los usuarios permanentes de `bootstrap/identity` (`asesor@example.com`, `asegurado@example.com`).
-Las pruebas por componente y por criterio, sin AWS, están en `services/origination/tests/integration` (`expiring_test.go` para
-HU-W1.5-01).
+Pruebas de punta a punta de las historias de renovación del asesor: en local con Docker (`assisted-renewal.sh`, HU-W1.5-03) y en la
+ventana de staging, siempre a través del portal de CloudFront (como lo llama el navegador) y solo con los usuarios permanentes de
+`bootstrap/identity` (`asesor@example.com`, `asegurado@example.com`, `operaciones@example.com`). Las pruebas por componente y por
+criterio, sin AWS, están en `services/origination/tests/integration` (`expiring_test.go` para HU-W1.5-01 y `assisted_renewal_test.go`
+para HU-W1.5-03).
+
+## HU-W1.5-03 · Renovación asistida en local (`assisted-renewal.sh`)
+
+Levanta con [`docker-compose.yml`](docker-compose.yml) los servicios reales `audit` y `origination` (cada uno con su PostgreSQL), Redis,
+los *stubs* de Open Finance, Open Data y KYC detrás de Toxiproxy, la pasarela de pagos, el correo y Moto como Cognito, con
+`RENEWAL_WINDOW_DAYS=365` (una póliza de 12 meses comprada hoy ya se puede renovar). Compra seis pólizas **por el recorrido real**
+(consentimiento en `audit`, `POST /v1/offers`, el asegurado abre y acepta la oferta, entrega la tarjeta 4111 y el cobro se confirma) y
+recorre los escenarios:
+
+```
+./tests/e2e/hu-w1.5/assisted-renewal.sh
+```
+
+| Escenario | Qué comprueba |
+|---|---|
+| R1 | CA-1: `GET` con `can_requote` y `consent_mode: audit`; `POST …/requotes` → `201`, motor `v1`, descuento 8 %, fuentes `ok` |
+| R2 | CA-2: sin aceptación, medio desconocido, fecha futura o firma sin referencia → `422` por campo; ninguna renovación guardada |
+| R3 | CA-3: formalizar → cobro confirmado por la prima recotizada; póliza nueva con `renewal_of` y vigencia continua; certificado emitido, su PDF, el correo al titular y el monitor `channel=renewal` |
+| R4 | CA-4: tras reiniciar `origination`, el asesor (nombre de Moto), la fecha, el medio, la referencia y la recotización aplicada |
+| R5 / R5b | CA-5: Open Finance deshabilitado en Toxiproxy → `provisional`, `cache`, `last_profile_in_use` y `profile_date`; sin perfil en caché (borrado en Redis) → `base_actuarial` y `personalization_unavailable`; las fuentes vuelven → `normal` |
+| R6 | Sin *token* `401`; asegurado y operaciones `403` |
+| R7 | Dos asesores a la vez → `201` y `409`; el asegurado encuentra la misma renovación; un solo cobro |
+| R8 | Las respuestas sin `score`, código, correo del titular ni *token*; los registros de la renovación asistida sin documento, correo, referencia, código ni *token* |
+| R9 | D-9: el código llega al correo del titular (leído del *stub*), un código errado `422`, el cuarto envío `429`, el correcto `201` |
+| R10 | D-8: operaciones revoca el consentimiento en `audit` (`POST /v1/audit/consents/{id}/revocations`) → `422 consent_required` sin consultas a las fuentes; `audit` detenido → `503 consent_unverifiable` sin consultas |
+| R11 | D-10: póliza con el cobro original sin medio de pago, sembrada con `INSERT` en el PostgreSQL local (el recorrido real no la produce) → `payment_method_missing` y `409` al formalizar |
+| R12 | 01·D-3 (a+): la pasarela se reinicia y olvida sus *tokens* → el cobro de la renovación se rechaza; «Ver» muestra `failed`, `payment_rejected`, la fecha del fallo y `retry_until`; el asegurado entrega otra tarjeta → renovada |
+| R13 | D-13 (c): póliza de origen asistido sembrada con `INSERT` (oferta `off-q-…` con `channel = assisted`, su cobro y su póliza; el recorrido de HU-W1.1-03 necesitaría una cuenta del cliente) → `consent_mode: advisor_affirmation`; sin la casilla `422` sin preguntar a `audit` ni a las fuentes; con ella `201 advisor_affirmed`; formalizar → renovada |
+
+- «Sin consultas a las fuentes» se comprueba en Toxiproxy (cada llamada a un *stub* abre una conexión y el proxy la registra) y «sin
+  preguntar a `audit`» en su registro de peticiones.
+- Crea en el Moto local un segundo asesor sin el atributo `name` para R7. Los secretos (PostgreSQL, usuarios de Moto, el enlace de los
+  documentos) son aleatorios y nunca se imprimen; el entorno se elimina al terminar (`down -v`).
+- Requiere Docker (compose v2), `curl`, `jq` y la AWS CLI (solo contra el Moto local). Termina con un código distinto de cero si alguna
+  comprobación falla.
 
 ## HU-W1.5-01 · Pólizas próximas a vencer (`expiring-cloud.sh`)
 
