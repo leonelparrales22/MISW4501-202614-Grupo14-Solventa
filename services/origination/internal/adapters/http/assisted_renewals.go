@@ -237,11 +237,28 @@ func toAssistedRenewalResponse(v renewal.AssistedView) assistedRenewalResponse {
 	return out
 }
 
+// assistedPolicyID reads the policy id of the path. An id that no row can hold
+// (PostgreSQL text never carries NUL) is a policy that does not exist.
+func assistedPolicyID(w http.ResponseWriter, req *http.Request) (string, bool) {
+	id, ok := pathID(req, "policy_id")
+	switch {
+	case !ok:
+		writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars) is required")
+		return "", false
+	case !storableID(id):
+		writeError(w, http.StatusNotFound, "policy_not_found", "the policy does not exist")
+		return "", false
+	}
+	return id, true
+}
+
+// storableID tells whether id can name a stored row.
+func storableID(id string) bool { return !strings.ContainsRune(id, 0) }
+
 func getAssistedRenewal(svc AssistedRenewalService) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		id, ok := pathID(req, "policy_id")
+		id, ok := assistedPolicyID(w, req)
 		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars) is required")
 			return
 		}
 		v, err := svc.View(req.Context(), id)
@@ -265,9 +282,8 @@ func decodeOptional(w http.ResponseWriter, req *http.Request, into any) bool {
 
 func requoteRenewal(svc AssistedRenewalService) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		id, ok := pathID(req, "policy_id")
+		id, ok := assistedPolicyID(w, req)
 		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars) is required")
 			return
 		}
 		var in requoteRequest
@@ -285,9 +301,8 @@ func requoteRenewal(svc AssistedRenewalService) http.HandlerFunc {
 
 func requestRenewalConsentCode(svc AssistedRenewalService) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		id, ok := pathID(req, "policy_id")
+		id, ok := assistedPolicyID(w, req)
 		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars) is required")
 			return
 		}
 		var in renewalConsentCodeRequest
@@ -296,6 +311,10 @@ func requestRenewalConsentCode(svc AssistedRenewalService) http.HandlerFunc {
 		}
 		if strings.TrimSpace(in.RequoteID) == "" {
 			writeValidationError(w, &domain.ValidationError{Fields: []domain.FieldError{{Field: domain.RequoteIDField, Code: domain.CodeRequired}}})
+			return
+		}
+		if !storableID(in.RequoteID) {
+			writeError(w, http.StatusNotFound, "requote_not_found", "the requote does not exist for this policy")
 			return
 		}
 		sent, err := svc.RequestConsentCode(req.Context(), id, in.RequoteID)
@@ -309,9 +328,8 @@ func requestRenewalConsentCode(svc AssistedRenewalService) http.HandlerFunc {
 
 func formalizeRenewal(svc AssistedRenewalService) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		id, ok := pathID(req, "policy_id")
+		id, ok := assistedPolicyID(w, req)
 		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars) is required")
 			return
 		}
 		var in renewalFormalizeRequest
@@ -327,6 +345,10 @@ func formalizeRenewal(svc AssistedRenewalService) http.HandlerFunc {
 				invalid.Fields = append([]domain.FieldError{{Field: domain.RequoteIDField, Code: domain.CodeRequired}}, invalid.Fields...)
 			}
 			writeValidationError(w, invalid)
+			return
+		}
+		if !storableID(in.RequoteID) {
+			writeError(w, http.StatusNotFound, "requote_not_found", "the requote does not exist for this policy")
 			return
 		}
 		v, created, err := svc.Formalize(req.Context(), id, renewal.FormalizeInput{

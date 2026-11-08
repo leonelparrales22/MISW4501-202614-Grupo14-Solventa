@@ -331,3 +331,21 @@ func TestAnInvalidPolicyIDIsABadRequest(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, rec.Code, call.path)
 	}
 }
+
+func TestAnIDNoRowCanHoldIsNotFound(t *testing.T) {
+	svc := &fakeAssistedRenewals{}
+
+	rec := callAssisted(t, svc, http.MethodGet, "/v1/policies/pol%00x/assisted-renewal", "advisor:a", "")
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, "policy_not_found", decodeBody(t, rec)["error"])
+
+	rec = callAssisted(t, svc, http.MethodPost, "/v1/policies/pol-1/assisted-renewal/consent", "advisor:a", `{"requote_id":"rq\u0000"}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, "requote_not_found", decodeBody(t, rec)["error"])
+
+	rec = callAssisted(t, svc, http.MethodPost, "/v1/policies/pol-1/assisted-renewal/formalization", "advisor:a",
+		`{"requote_id":"rq\u0000","acceptance":{"method":"recorded_call","accepted_at":"2026-09-16T21:05:00Z","reference":"GRAB-1"}}`)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, "requote_not_found", decodeBody(t, rec)["error"])
+	assert.Empty(t, svc.gotPolicy, "the use case is never called")
+}
