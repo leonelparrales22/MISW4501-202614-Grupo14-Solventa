@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -241,4 +242,170 @@ func TestCustomerStoreFindsTheCustomerOfAnAccountSubject(t *testing.T) {
 	assert.ErrorIs(t, err, ports.ErrCustomerNotFound)
 	_, err = s.GetBySubject(ctx, "")
 	assert.ErrorIs(t, err, ports.ErrCustomerNotFound)
+}
+
+// Assisted renewal (HU-W1.5-03): the renewal row and the advisor's record are
+// written together, and the period keeps a single outcome.
+
+func sampleFormalization(r domain.Renewal, requoteID, advisor string) domain.RenewalFormalization {
+	return domain.RenewalFormalization{
+		RenewalID: r.ID, RequoteID: requoteID, AdvisorID: advisor, AdvisorEmail: advisor + "@example.com", AdvisorName: "Laura Gómez",
+		Acceptance:   domain.ConsentAcceptance{Method: domain.ConsentRecordedCall, AcceptedAt: requotedAt.Add(2 * time.Minute), Reference: "GRAB-2026-88931"},
+		FormalizedAt: requotedAt.Add(3 * time.Minute),
+	}
+}
+
+func TestCreateAssistedStoresTheRenewalWithItsFormalization(t *testing.T) {
+	db, p := newRenewalDB(t)
+	ctx := context.Background()
+	require.NoError(t, postgres.NewRenewalRequoteStore(db).Create(ctx, sampleRequote("rq-1", p, requotedAt)))
+	s := postgres.NewRenewalStore(db)
+	r := sampleRenewal(p, domain.RenewalAccepted)
+	f := sampleFormalization(r, "rq-1", "sub-advisor")
+
+	stored, formalization, created, err := s.CreateAssisted(ctx, r, f)
+
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, r, stored)
+	require.NotNil(t, formalization)
+	assert.Equal(t, f, *formalization)
+	got, err := s.GetFormalization(ctx, r.ID)
+	require.NoError(t, err)
+	assert.Equal(t, f, got, "the advisor, the date, the acceptance and the requote applied (CA-4)")
+	_, err = s.GetFormalization(ctx, "ren-404")
+	assert.ErrorIs(t, err, ports.ErrRenewalFormalizationNotFound)
+}
+
+func TestCreateAssistedFindsTheOutcomeAlreadyRecordedForThePeriod(t *testing.T) {
+	db, p := newRenewalDB(t)
+	ctx := context.Background()
+	requotes := postgres.NewRenewalRequoteStore(db)
+	require.NoError(t, requotes.Create(ctx, sampleRequote("rq-1", p, requotedAt)))
+	require.NoError(t, requotes.Create(ctx, sampleRequote("rq-2", p, requotedAt.Add(time.Minute))))
+	s := postgres.NewRenewalStore(db)
+	r := sampleRenewal(p, domain.RenewalAccepted)
+	first := sampleFormalization(r, "rq-1", "sub-advisor")
+	_, _, _, err := s.CreateAssisted(ctx, r, first)
+	require.NoError(t, err)
+
+	other := r
+	other.Premium = 1
+	stored, formalization, created, err := s.CreateAssisted(ctx, other, sampleFormalization(other, "rq-2", "sub-other"))
+
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, r, stored, "the second advisor finds the first renewal")
+	require.NotNil(t, formalization)
+	assert.Equal(t, first, *formalization)
+	var n int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM renewal_formalization`).Scan(&n))
+	assert.Equal(t, 1, n)
+}
+
+func TestCreateAssistedAfterTheInsuredRenewedOnlineHasNoFormalization(t *testing.T) {
+	db, p := newRenewalDB(t)
+	ctx := context.Background()
+	require.NoError(t, postgres.NewRenewalRequoteStore(db).Create(ctx, sampleRequote("rq-1", p, requotedAt)))
+	s := postgres.NewRenewalStore(db)
+	online := sampleRenewal(p, domain.RenewalAccepted)
+	_, _, err := s.Create(ctx, online)
+	require.NoError(t, err)
+
+	stored, formalization, created, err := s.CreateAssisted(ctx, online, sampleFormalization(online, "rq-1", "sub-advisor"))
+
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, online, stored)
+	assert.Nil(t, formalization, "the insured renewed: there is no advisor's record")
+}
+
+func TestCreateAssistedIsOneTransaction(t *testing.T) {
+	db, p := newRenewalDB(t)
+	ctx := context.Background()
+	s := postgres.NewRenewalStore(db)
+	r := sampleRenewal(p, domain.RenewalAccepted)
+
+	_, _, _, err := s.CreateAssisted(ctx, r, sampleFormalization(r, "rq-missing", "sub-advisor"))
+
+	require.Error(t, err, "the formalization cites a requote that does not exist")
+	_, err = s.Get(ctx, p.ID, p.CoverageEnd)
+	assert.ErrorIs(t, err, ports.ErrRenewalNotFound, "the renewal was rolled back with it")
+}
+
+func TestOfTwentyConcurrentAssistedRenewalsOfAPeriodExactlyOneIsCreated(t *testing.T) {
+	db, p := newRenewalDB(t)
+	ctx := context.Background()
+	requotes := postgres.NewRenewalRequoteStore(db)
+	s := postgres.NewRenewalStore(db)
+	const advisors = 20
+	for i := 0; i < advisors; i++ {
+		require.NoError(t, requotes.Create(ctx, sampleRequote(fmt.Sprintf("rq-%02d", i), p, requotedAt.Add(time.Duration(i)*time.Second))))
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	won := 0
+	winners := map[string]bool{}
+	start := make(chan struct{})
+	for i := 0; i < advisors; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			r := sampleRenewal(p, domain.RenewalAccepted)
+			_, f, created, err := s.CreateAssisted(ctx, r, sampleFormalization(r, fmt.Sprintf("rq-%02d", i), fmt.Sprintf("sub-%02d", i)))
+			assert.NoError(t, err)
+			mu.Lock()
+			defer mu.Unlock()
+			if created {
+				won++
+			}
+			if f != nil {
+				winners[f.AdvisorID] = true
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	assert.Equal(t, 1, won)
+	assert.Len(t, winners, 1, "everyone sees the same winner")
+	for table, want := range map[string]int{"renewal": 1, "renewal_formalization": 1} {
+		var n int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(&n))
+		assert.Equal(t, want, n, table)
+	}
+}
+
+func TestARenewalFormalizationIsAppendOnlyAndChecked(t *testing.T) {
+	db, p := newRenewalDB(t)
+	ctx := context.Background()
+	requotes := postgres.NewRenewalRequoteStore(db)
+	require.NoError(t, requotes.Create(ctx, sampleRequote("rq-1", p, requotedAt)))
+	s := postgres.NewRenewalStore(db)
+	r := sampleRenewal(p, domain.RenewalAccepted)
+
+	noReference := sampleFormalization(r, "rq-1", "sub-advisor")
+	noReference.Acceptance.Reference = ""
+	_, _, _, err := s.CreateAssisted(ctx, r, noReference)
+	assert.Error(t, err, "a recorded call needs its reference")
+
+	byCode := sampleFormalization(r, "rq-1", "sub-advisor")
+	byCode.AdvisorName = ""
+	byCode.Acceptance = domain.ConsentAcceptance{Method: domain.ConsentConfirmationCode, AcceptedAt: requotedAt.Add(time.Minute)}
+	_, f, created, err := s.CreateAssisted(ctx, r, byCode)
+	require.NoError(t, err, "the code needs no reference, and the token may carry no name")
+	assert.True(t, created)
+	assert.Empty(t, f.AdvisorName)
+	got, err := s.GetFormalization(ctx, r.ID)
+	require.NoError(t, err)
+	assert.Equal(t, byCode, got)
+
+	_, err = db.ExecContext(ctx, `UPDATE renewal_formalization SET advisor_id = 'x'`)
+	assert.Error(t, err)
+	_, err = db.ExecContext(ctx, `DELETE FROM renewal_formalization`)
+	assert.Error(t, err)
+	_, err = db.ExecContext(ctx, `TRUNCATE renewal_formalization`)
+	assert.Error(t, err)
 }
