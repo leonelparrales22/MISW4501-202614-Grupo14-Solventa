@@ -112,6 +112,13 @@ func main() {
 		opts = append(opts, httpadapter.WithReviews(
 			review.NewService(records, reviews, reviews, evaluations, systemClock{}, nil), verifier))
 		opts = append(opts, decisionRoutes(context.Background(), records, decisions, terms, verifier, os.Getenv)...)
+		// HU-W2.3-01: the assignment of the nearest provider to a claim in
+		// evaluation, and the registry of providers that operations keeps.
+		assignment, err := assignmentRoutes(context.Background(), records, os.Getenv, verifier)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		opts = append(opts, assignment...)
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)
 	}
