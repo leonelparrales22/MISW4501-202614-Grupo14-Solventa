@@ -123,6 +123,9 @@ type claimHistoryBody struct {
 	Changes       []statusChangeBody `json:"changes"`
 	Reviews       []reviewBody       `json:"reviews"`
 	LastReturn    *reviewBody        `json:"last_return"`
+	// HA-L02: whether the history came from the read cache, and when it was
+	// read.
+	*freshnessBody
 }
 
 // nullable is the text, or null when it is empty.
@@ -339,6 +342,7 @@ func claimHistory(svc Reviewer) http.HandlerFunc {
 		if !claims.HasAnyRole(security.RoleAdvisor, security.RoleOperations) {
 			owner = claims.Subject
 		}
+		req, fresh := trackFreshness(req)
 		h, err := svc.History(req.Context(), id, owner)
 		switch {
 		case errors.Is(err, ports.ErrClaimNotFound), errors.Is(err, review.ErrNotOwner):
@@ -368,6 +372,7 @@ func claimHistory(svc Reviewer) http.HandlerFunc {
 			body := reviewBodyOf(*r)
 			out.LastReturn = &body
 		}
+		out.freshnessBody = freshnessOf(w, fresh)
 		writeJSON(w, http.StatusOK, out)
 	}
 }
