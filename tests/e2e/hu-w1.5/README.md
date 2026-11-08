@@ -71,3 +71,31 @@ OUTPUT_FILE=<carpeta de evidencia>/expiring-cloud.txt \
   temporal privado.
 - Requiere `curl` y `jq` (sin `date -d`: las fechas de Colombia las calcula `jq`). `COGNITO_ENDPOINT` acepta un *endpoint* local solo para
   ensayar el guion. Termina con un código distinto de cero si alguna comprobación falla.
+
+## HU-W1.5-01 y HU-W1.5-03 · Siembra única y verificación en la nube (`assisted-renewal-cloud.sh`)
+
+Es **el único guion de siembra de las dos historias** (decisión V-2 a). Todo va por el portal de CloudFront y solo con los usuarios
+permanentes; **no crea usuarios** y nada de lo que siembra sobrevive al `down.sh` (la plataforma de staging es efímera).
+
+```
+PORTAL_URL=https://<distribución>.cloudfront.net SEED_USER_PASSWORD=… SEED_FILE=<carpeta de evidencia>/semilla.env \
+OUTPUT_FILE=<carpeta de evidencia>/seed.txt ./tests/e2e/hu-w1.5/assisted-renewal-cloud.sh --seed
+
+PORTAL_URL=… SEED_USER_PASSWORD=… OUTPUT_FILE=<carpeta de evidencia>/verify.txt ./tests/e2e/hu-w1.5/assisted-renewal-cloud.sh verify
+
+SEED_FILE=<carpeta de evidencia>/semilla.env ./tests/e2e/hu-w1.5/assisted-renewal-cloud.sh code <policy_id de P6>
+```
+
+| Subcomando | Qué hace |
+|---|---|
+| `--seed` | Compra por el recorrido real (consentimiento del titular en `audit` por la ruta del aliado —CloudFront agrega la llave—, `POST /v1/offers`, el asegurado abre y acepta la oferta, tokeniza la tarjeta 4111 en `/pasarela/tokens` y la entrega, y el cobro se confirma) siete pólizas de `asegurado@example.com` con titulares ficticios distintos (`@example.com`): P1 camino feliz (CA-1…CA-4), P2 modo degradado (CA-5), P3 renovada en línea por el asegurado (solo lectura y concurrencia; es la `RENEW_ONLINE_POLICY_ID` de `expiring-cloud.sh`), P4 pago fallido (01·D-3 a+), P5 consentimiento revocado (D-8), P6 código de confirmación (D-9), todas de 12 meses, y P7 de 24 meses, fuera de la ventana. Escribe sus ids, el consentimiento de cada una y el correo de su titular en `SEED_FILE` |
+| `verify` | Compra **sus propias** cuatro pólizas (P1…P7 quedan para la demostración) y comprueba por API: CA-1 (motor `v1`, descuento, factores, sin `score`), CA-2 (`422` por campo, nada guardado), CA-3 (renovada, cobro confirmado, certificado emitido, la póliza nueva en «Mis pólizas» con la prima recotizada), CA-4 (asesor, medio, referencia y recotización aplicada), D-9 (el código enmascarado y, con `LOG_GROUP` y la AWS CLI, el código leído del registro: errado `422`, correcto `201`; si no puede leerlo lo marca `SKIP`), D-8 (operaciones revoca por el portal → `422 consent_required`), roles (`401`, `403` del asegurado y de operaciones) y concurrencia (dos formalizaciones del asesor y la del asegurado a la vez → una renovación y un solo cobro) |
+| `code <policy_id>` | Lee de CloudWatch Logs, **solo lectura** (`logs filter-log-events` del *stream* `email`), el último código de renovación enviado al titular de una póliza sembrada y lo muestra en la terminal, para dictárselo al asesor en la demostración (aprobado por Nicolás) |
+
+- Lo que el recorrido real no produce se demuestra solo en local (`assisted-renewal.sh`): la póliza sin medio de pago (R11), el perfil
+  actuarial base (R5b) y la póliza de origen asistido (R13), que exigiría crear un usuario en el *pool* permanente.
+- Solo llama a `InitiateAuth` del *user pool* (con el cliente y la región del `config.json` del portal), al portal y, para el código, a
+  `logs filter-log-events`. La contraseña y los tokens nunca se imprimen: la contraseña viaja por la entrada estándar y el token en un
+  archivo temporal privado. `COGNITO_ENDPOINT` acepta un *endpoint* local solo para ensayar el guion.
+- Requiere `curl` y `jq` (y la AWS CLI para `code` y el D-9 de `verify`). Termina con un código distinto de cero si alguna comprobación
+  falla.
