@@ -60,6 +60,9 @@ type offerWiring struct {
 	// worker reads; reviews is the advisor inbox over the same database.
 	acceptances ports.AcceptanceRepository
 	reviews     ports.ReviewRepository
+	// consents verifies the consent with audit (AUDIT_URL), nil without it.
+	// The assisted renewal (HU-W1.5-03) shares it.
+	consents ports.ConsentVerifier
 }
 
 // newOfferWiring builds the personalized offer service over origination's
@@ -100,7 +103,7 @@ func newOfferWiring(ctx context.Context, cfg config, resolver *profiling.Resolve
 	} else {
 		log.Printf("AUDIT_URL is not set: the requote of provisional offers is not running (HU-W1.2-03)")
 	}
-	return offerWiring{router: router, service: service, acceptances: acceptances, reviews: st.reviews}
+	return offerWiring{router: router, service: service, acceptances: acceptances, reviews: st.reviews, consents: consents}
 }
 
 // newRequoteNotifier returns the e-mail notice of the requote, or nil without
