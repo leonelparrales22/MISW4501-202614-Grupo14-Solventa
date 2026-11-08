@@ -169,6 +169,13 @@ func main() {
 		} else {
 			logWithoutBilling(cfg.contracts.enabled)
 		}
+		// HU-W1.5-01: the advisor lists the policies about to expire, the ones
+		// the charge activated, with the same renewal window.
+		expiring, err := expiringOptions(cfg.billing.enabled, cfg.renewal.rules, st.db, verifier)
+		if err != nil {
+			log.Fatalf("could not set up the list of the policies about to expire: %v", err)
+		}
+		opts = append(opts, expiring...)
 		opts = append(opts, walletOptions(issued, newPolicyPortfolio(cfg.policyCore), verifier)...)
 		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
