@@ -209,7 +209,8 @@ variable "human_routes" {
     # The insured lists their policies and renews one online (HU-W1.5-02):
     # GET /v1/policies/{policy_id}/renewal and .../renewal/status, and
     # POST .../renewal to accept and pay it. The root /v1/policies stays
-    # read-only.
+    # read-only. The advisor lists the policies about to expire with
+    # GET /v1/policies/expiring (HU-W1.5-01), covered by the same proxy GET.
     policies = { methods = ["GET", "POST"], root_methods = ["GET"] }
     # Advisor inbox (HU-W1.1-02): list and read the requests, POST the
     # decision. Issuance exceptions of the premium charge (HA-D02): read by

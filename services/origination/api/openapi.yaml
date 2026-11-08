@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.13.0
+  version: 0.14.0
 paths:
   /health:
     get:
@@ -1189,6 +1189,96 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PolicyList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/expiring:
+    get:
+      summary: List the policies about to expire, for the advisor (HU-W1.5-01)
+      description: >
+        Screen S6 of the advisor portal ("Renovaciones"), the entry point of the
+        assisted renewal (HU-W1.5-03). Lists every policy origination issued
+        (line life) whose coverage ends inside the range of expiration and is
+        still in force, and whose current period is open: status expiring when
+        it has no renewal yet, renewal_in_progress when its renewal was accepted
+        and the premium is being charged. Renewed and not renewed periods leave
+        the list; a renewed policy appears again by the end of its new coverage.
+        The status is the stored renewal of the period: a renewal whose charge
+        was just confirmed reads as renewal_in_progress until the renewal sweep
+        settles it (RENEWAL_POLL_INTERVAL_MS, one minute by default). The range
+        is made of civil days of Colombia (UTC-5), both included; without it,
+        the range is today to today plus the renewal window
+        (RENEWAL_WINDOW_DAYS, 30 by default) of HU-W1.5-02, with only
+        expires_from it lasts the window from that day, and with only
+        expires_to it starts today; the answer carries the range applied.
+        can_renew is true only inside the renewal window and while the period
+        has no renewal (the rule of HU-W1.5-02); renewal_window says when it
+        opens. due_within_window counts the policies with an open period that
+        end within the renewal window from now, whatever the filter. Ordered by
+        the end of the coverage, then by policy id; a range with no policies is
+        an empty list, not an error. The status values may grow (HU-W1.6-02 will
+        add the policies cancelled for non-payment): a client shows an unknown
+        one neutrally. Every advisor sees every policy. Mounted with the premium
+        charge (PostgreSQL). Only advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: expires_from
+          in: query
+          required: false
+          description: First civil day of the range (AAAA-MM-DD, Colombia), included.
+          schema:
+            type: string
+            format: date
+        - name: expires_to
+          in: query
+          required: false
+          description: Last civil day of the range (AAAA-MM-DD, Colombia), included; not before expires_from.
+          schema:
+            type: string
+            format: date
+        - name: status
+          in: query
+          required: false
+          description: Only the policies with this status; both when absent.
+          schema:
+            type: string
+            enum: [expiring, renewal_in_progress]
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: The page of the policies about to expire, the range applied and the indicator
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExpiringPolicyList"
+        "400":
+          description: >
+            A date that is not AAAA-MM-DD, an unknown status or an invalid page or
+            page size (invalid_request); expires_to before expires_from
+            (out_of_range)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -3211,6 +3301,78 @@ components:
         partial:
           type: boolean
           description: True when the policy core did not answer and its policies are missing from items.
+    ExpiringPolicy:
+      type: object
+      required: [policy_id, line, product, holder, premium, currency, coverage_end, status, can_renew, renewal_window, renewal]
+      description: One policy about to expire (HU-W1.5-01). Its policy_id is the id of the assisted renewal (HU-W1.5-03).
+      properties:
+        policy_id:
+          type: string
+        line:
+          type: string
+          enum: [life, auto, home, travel]
+          description: The kind of insurance, as in the wallet; every policy origination issues is life.
+        product:
+          type: string
+          nullable: true
+          description: Null for the policies origination issues.
+        holder:
+          $ref: "#/components/schemas/PolicyHolder"
+        premium:
+          type: number
+          description: The monthly premium of the current period.
+        currency:
+          type: string
+        coverage_end:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [expiring, renewal_in_progress]
+          description: >
+            expiring: the current period has no renewal; renewal_in_progress: its
+            renewal was accepted and the premium is being charged. More values
+            may come (HU-W1.6-02).
+        can_renew:
+          type: boolean
+          description: True inside the renewal window while the period has no renewal (HU-W1.5-02).
+        renewal_window:
+          $ref: "#/components/schemas/RenewalWindow"
+        renewal:
+          nullable: true
+          description: The renewal of the current period, null when it has none.
+          allOf:
+            - $ref: "#/components/schemas/RenewalSummary"
+    ExpiringPolicyList:
+      type: object
+      required: [items, expires_from, expires_to, window_days, due_within_window, total, page, page_size]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/ExpiringPolicy"
+        expires_from:
+          type: string
+          format: date
+          description: First civil day of the range applied (the default one when the query had none).
+        expires_to:
+          type: string
+          format: date
+          description: Last civil day of the range applied.
+        window_days:
+          type: integer
+          description: The renewal window of HU-W1.5-02 (RENEWAL_WINDOW_DAYS).
+        due_within_window:
+          type: integer
+          description: Policies with an open period that end within the renewal window from now, whatever the filter.
+        total:
+          type: integer
+          description: Policies that match the query, whatever the page.
+        page:
+          type: integer
+        page_size:
+          type: integer
     RenewalTerms:
       type: object
       required: [premium, currency, insured_amount, coverages, coverage_start, coverage_end]
@@ -3311,5 +3473,6 @@ components:
             - renewal_closed
             - renewal_unavailable
             - charge_not_payable
+            - out_of_range
         message:
           type: string
