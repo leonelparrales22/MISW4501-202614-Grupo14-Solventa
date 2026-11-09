@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,18 +24,20 @@ import (
 
 type fakeEvaluation struct {
 	page      evaluation.QueuePage
+	priority  evaluation.PriorityPage
 	detail    evaluation.Evaluation
 	err       error
 	gotSize   int
 	gotToken  string
 	gotClaim  string
+	gotFilter evaluation.QueueFilter
 	callCount int
 }
 
-func (f *fakeEvaluation) Queue(_ context.Context, size int, token string) (evaluation.QueuePage, error) {
+func (f *fakeEvaluation) PriorityQueue(_ context.Context, size int, token string, filter evaluation.QueueFilter) (evaluation.PriorityPage, error) {
 	f.callCount++
-	f.gotSize, f.gotToken = size, token
-	return f.page, f.err
+	f.gotSize, f.gotToken, f.gotFilter = size, token, filter
+	return f.priority, f.err
 }
 
 func (f *fakeEvaluation) Exceptions(_ context.Context, size int, token string) (evaluation.QueuePage, error) {
@@ -62,7 +65,7 @@ func claimInEvaluation() domain.ClaimRecord {
 			ID: claimID, FilingNumber: "SIN-2026-01655", Subject: "sub-carolina", PolicyID: "HG-2025-880231",
 			IncidentType: domain.IncidentWaterDamage, OccurredAt: radicadoEn.Add(-21 * time.Hour),
 			Place: "Carrera 15 # 93-40", Description: "Filtración desde el apartamento superior.",
-			Status: domain.StatusActive, FiledAt: radicadoEn, EstimatedAmountMinor: &amount,
+			Status: domain.StatusInEvaluation, FiledAt: radicadoEn, EstimatedAmountMinor: &amount,
 		},
 		Channel: domain.ChannelWeb,
 	}
@@ -88,20 +91,35 @@ func TestOnlyOperationsReadsTheEvaluation(t *testing.T) {
 
 func TestTheQueueListsTheClaimsWithTheirPriority(t *testing.T) {
 	record := triageRecord(1, domain.Triage2, nil, nil, domain.CauseEnteredEvaluation)
-	f := &fakeEvaluation{page: evaluation.QueuePage{
+	mean := 101 * time.Hour
+	f := &fakeEvaluation{priority: evaluation.PriorityPage{
 		Items: []evaluation.QueueItem{{
 			Claim:  claimInEvaluation(),
 			Triage: triage.Summary{ClaimID: claimID, State: domain.TriageAssessed, Current: &record},
+			Holder: &domain.Holder{FullName: "Carolina Pérez Ruiz", DocumentType: "CC", DocumentID: "1020345678",
+				Email: "carolina@correo.example"},
 		}},
 		NextPageToken: "siguiente",
+		Summary: evaluation.QueueSummary{ByLevel: map[int]int{1: 3, 2: 7, 3: 12}, Unassessed: 1, Total: 23, Matching: 7,
+			MeanResolution: &mean, Decided: 9},
 	}}
 
-	rec := do(evaluationRouter(f), http.MethodGet, "/v1/claims/evaluations?page_size=10&page_token=abc", "operations", nil, nil)
+	rec := do(evaluationRouter(f), http.MethodGet,
+		"/v1/claims/evaluations?page_size=10&page_token=abc&level=2&line=home&status=in_evaluation", "operations", nil, nil)
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 	assert.Equal(t, 10, f.gotSize)
 	assert.Equal(t, "abc", f.gotToken)
+	assert.Equal(t, evaluation.QueueFilter{Level: 2, Line: domain.LineHome, Status: domain.StatusInEvaluation}, f.gotFilter)
+	summary := decode(t, do(evaluationRouter(f), http.MethodGet, "/v1/claims/evaluations", "operations", nil, nil))["summary"]
+	assert.Equal(t, map[string]any{
+		"total": 23.0, "matching": 7.0, "unassessed": 1.0, "mean_resolution_days": 4.2, "decided_in_window": 9.0,
+		"window_days": 30.0, "levels": []any{
+			map[string]any{"level": 1.0, "claims": 3.0}, map[string]any{"level": 2.0, "claims": 7.0},
+			map[string]any{"level": 3.0, "claims": 12.0}},
+	}, summary)
+	assert.Equal(t, evaluation.QueueFilter{}, f.gotFilter, "without filters, the whole queue")
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Equal(t, "siguiente", body["next_page_token"])
@@ -109,9 +127,41 @@ func TestTheQueueListsTheClaimsWithTheirPriority(t *testing.T) {
 	require.Len(t, items, 1)
 	item := items[0].(map[string]any)
 	assert.Equal(t, "SIN-2026-01655", item["filing_number"])
-	assert.Equal(t, "active", item["status"])
+	assert.Equal(t, "in_evaluation", item["status"])
 	assert.EqualValues(t, 480_000_000, item["estimated_amount_minor"])
 	assert.EqualValues(t, 2, item["triage"].(map[string]any)["level"])
+	assert.Equal(t, map[string]any{"full_name": "Carolina Pérez Ruiz", "document_type": "CC", "document_id": "1020345678"},
+		item["holder"], "the insured without their contact")
+}
+
+func TestTheQueueWithoutDecisionsOrInsuredSaysSo(t *testing.T) {
+	f := &fakeEvaluation{priority: evaluation.PriorityPage{
+		Items:   []evaluation.QueueItem{{Claim: claimInEvaluation(), Triage: triage.Summary{ClaimID: claimID, State: domain.TriagePending}}},
+		Summary: evaluation.QueueSummary{ByLevel: map[int]int{}},
+	}}
+
+	body := decode(t, do(evaluationRouter(f), http.MethodGet, "/v1/claims/evaluations?level=none", "operations", nil, nil))
+
+	assert.Equal(t, 4, f.gotFilter.Level, "none is the claims without a level")
+	assert.Nil(t, body["next_page_token"])
+	assert.Nil(t, body["items"].([]any)[0].(map[string]any)["holder"])
+	summary := body["summary"].(map[string]any)
+	assert.Nil(t, summary["mean_resolution_days"], "no claim decided: no mean, never a made-up one")
+	assert.Equal(t, []any{map[string]any{"level": 1.0, "claims": 0.0}, map[string]any{"level": 2.0, "claims": 0.0},
+		map[string]any{"level": 3.0, "claims": 0.0}}, summary["levels"])
+}
+
+func TestTheQueueRejectsAnInvalidFilter(t *testing.T) {
+	for _, query := range []string{"level=4", "level=0", "level=alta", "line=travel", "line=AUTO", "status=active",
+		"status=returned", "page_token=" + strings.Repeat("a", 513)} {
+		f := &fakeEvaluation{}
+		rec := do(evaluationRouter(f), http.MethodGet, "/v1/claims/evaluations?"+query, "operations", nil, nil)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, query)
+		assert.Zero(t, f.callCount, query)
+	}
+	rec := do(evaluationRouter(&fakeEvaluation{err: errors.New("database down")}), http.MethodGet,
+		"/v1/claims/evaluations", "operations", nil, nil)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
 func TestThePaymentExceptionsAreListedLikeTheQueue(t *testing.T) {
