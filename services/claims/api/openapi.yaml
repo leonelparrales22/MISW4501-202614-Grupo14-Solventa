@@ -1,8 +1,13 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.11.0
+  version: 0.12.0
   description: >-
+    0.12.0 (HU-W2.2-02): GET /v1/claims/evaluations is the queue of
+    operations ordered by priority (Triage 1, 2 and 3, then the claims without
+    a level, and in each the one filed first), filtered by level, line and
+    status, with the insured of each claim and a summary: the claims by level,
+    how many match and the mean time of resolution of the last 30 days.
     0.11.0 (HU-W2.3-01): the assignment of the nearest provider (assessor or
     workshop) to a claim in evaluation that needs an on-site visit. The
     claim's location comes from the most precise trusted evidence of the
@@ -1064,14 +1069,19 @@ paths:
                 $ref: "#/components/schemas/Error"
   /v1/claims/evaluations:
     get:
-      summary: Claims in evaluation (HU-W2.2-03)
+      summary: The queue of operations ordered by priority (HU-W2.2-02)
       description: >-
-        The claims of every insured in evaluation (in_evaluation: approved by
-        the advisor, HU-W2.1-03), oldest filed first, each with its estimated
-        amount and its priority, so operations opens one to evaluate it. A
-        claim waiting for the review of the advisor (active) or returned to the
-        insured is not here. The order by priority is HU-W2.2-02. Only
-        operations.
+        The claims waiting for the decision of operations (in_evaluation:
+        approved by the advisor, HU-W2.1-03), ordered by priority: Triage 1,
+        then 2, then 3, then the ones the triage has not assessed yet, and in
+        each the one filed first. A new level moves the claim in the next
+        read. Each claim carries its estimated amount, its priority and the
+        insured as the policy core describes them (null when the core does not
+        answer). The summary counts the whole queue by level, how many claims
+        match the filters and the mean time from the filing to the decision of
+        the claims decided in the last 30 days (null when none was). A claim
+        waiting for the review of the advisor or returned to the insured is
+        not here. Only operations.
       security:
         - cognitoJwt: []
       parameters:
@@ -1090,9 +1100,29 @@ paths:
           schema:
             type: string
             maxLength: 512
+        - name: level
+          in: query
+          required: false
+          description: Only the claims of a level of the triage, or none for the ones without a level yet.
+          schema:
+            type: string
+            enum: ["1", "2", "3", none]
+        - name: line
+          in: query
+          required: false
+          description: Only the claims of a line, by their claim type.
+          schema:
+            $ref: "#/components/schemas/PolicyLine"
+        - name: status
+          in: query
+          required: false
+          description: Only the claims of one status of the queue.
+          schema:
+            type: string
+            enum: [in_evaluation]
       responses:
         "200":
-          description: One page of the claims in evaluation
+          description: One page of the queue by priority and its summary
           headers:
             Cache-Control:
               schema:
@@ -1101,9 +1131,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/EvaluationQueue"
+                $ref: "#/components/schemas/PriorityQueue"
         "400":
-          description: invalid_request - page_size out of 1 to 50 or a page token that is not valid
+          description: invalid_request - page_size out of 1 to 50, a filter or a page token that is not valid
           content:
             application/json:
               schema:
@@ -4244,3 +4274,74 @@ components:
           maxItems: 200
           items:
             $ref: "#/components/schemas/Provider"
+    QueueHolder:
+      type: object
+      required: [full_name, document_type, document_id]
+      description: The insured of the claim, without their contact.
+      properties:
+        full_name:
+          type: string
+        document_type:
+          type: string
+        document_id:
+          type: string
+    PriorityQueueItem:
+      allOf:
+        - $ref: "#/components/schemas/EvaluationQueueItem"
+        - type: object
+          required: [holder]
+          properties:
+            holder:
+              allOf:
+                - $ref: "#/components/schemas/QueueHolder"
+              nullable: true
+              description: null when the policy core does not answer.
+    PriorityQueue:
+      type: object
+      required: [items, next_page_token, summary]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PriorityQueueItem"
+        next_page_token:
+          type: string
+          nullable: true
+        summary:
+          type: object
+          required: [total, matching, levels, unassessed, mean_resolution_days, decided_in_window, window_days]
+          properties:
+            total:
+              type: integer
+              minimum: 0
+              description: Claims in the queue, without the filters.
+            matching:
+              type: integer
+              minimum: 0
+              description: Claims that match the filters of the request.
+            levels:
+              type: array
+              description: The claims of the queue of each level, 1 to 3, without the filters.
+              items:
+                type: object
+                required: [level, claims]
+                properties:
+                  level:
+                    $ref: "#/components/schemas/TriageLevel"
+                  claims:
+                    type: integer
+                    minimum: 0
+            unassessed:
+              type: integer
+              minimum: 0
+              description: Claims of the queue the triage has not assessed yet.
+            mean_resolution_days:
+              type: number
+              nullable: true
+              description: Mean days from the filing to the decision, one decimal; null when none was decided in the window.
+            decided_in_window:
+              type: integer
+              minimum: 0
+            window_days:
+              type: integer
+              example: 30

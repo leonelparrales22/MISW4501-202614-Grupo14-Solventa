@@ -207,7 +207,8 @@ func startWithDecisions(t *testing.T, url string, core *termsCore, g *gateway, m
 
 	priorities := startSweep(t, db)
 	signer := filing.NewQueryService(records, pdf.NewReceiptRenderer()).WithObjects(objects)
-	reader := evaluation.NewService(records, records, priorities, signer, terms, objects).WithDecisions(decisions)
+	reader := evaluation.NewService(records, records, priorities, signer, terms, objects).WithDecisions(decisions).
+		WithPriorityQueue(postgres.PriorityQueueOf(records), clock{})
 	return service{db: db, bucket: objects, Handler: httpadapter.NewRouter(
 		httpadapter.WithClaimReads(filing.NewQueryService(records, pdf.NewReceiptRenderer()).WithObjects(objects), verifier),
 		httpadapter.WithWebFilings(filing.NewWebService(records, supports, policiesadapter.NewDirectory(coreClient), clock{}),
