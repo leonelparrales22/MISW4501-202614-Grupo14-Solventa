@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS renewal_requote (
     consent_id           TEXT             NOT NULL DEFAULT '',
     consent_affirmed_by  TEXT,
     consent_affirmed_at  TIMESTAMPTZ,
+    -- The e-mail and the name of the advisor who affirmed it, for the screens
+    -- (the name is empty when the account has none).
+    consent_affirmed_by_email TEXT NOT NULL DEFAULT '',
+    consent_affirmed_by_name  TEXT NOT NULL DEFAULT '',
     created_at           TIMESTAMPTZ      NOT NULL,
     expires_at           TIMESTAMPTZ      NOT NULL,
     recorded_at          TIMESTAMPTZ      NOT NULL DEFAULT now(),

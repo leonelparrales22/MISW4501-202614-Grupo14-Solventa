@@ -28,11 +28,11 @@ const renewalRequoteColumns = `requote_id, policy_id, period_end, advisor_id, pr
 	insured_amount_minor, term_months, coverages, discount_rate, requoted, rating_version, applied_rules,
 	mode, profile_source, profile_notice, profile_score, profile_category, profile_date, unavailable_source, sources,
 	profile_customer_id, origin_channel, consent_basis, consent_id, consent_affirmed_by, consent_affirmed_at,
-	created_at, expires_at`
+	consent_affirmed_by_email, consent_affirmed_by_name, created_at, expires_at`
 
 const insertRenewalRequote = `INSERT INTO renewal_requote (` + renewalRequoteColumns + `)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-		$22, $23, $24, $25, $26, $27, $28, $29)`
+		$22, $23, $24, $25, $26, $27, $28, $29, $30, $31)`
 
 const selectRenewalRequote = `SELECT ` + renewalRequoteColumns + ` FROM renewal_requote WHERE requote_id = $1`
 
@@ -77,7 +77,7 @@ func (s *RenewalRequoteStore) Create(ctx context.Context, r domain.RenewalRequot
 		string(r.Mode), string(r.ProfileSource), string(r.ProfileNotice), r.ProfileScore, r.ProfileCategory,
 		nullTime(r.ProfileDate), r.UnavailableSource, string(sourcesRaw),
 		r.ProfileCustomerID, string(r.OriginChannel), nullString(string(r.ConsentBasis)), r.ConsentID,
-		nullString(r.ConsentAffirmedBy), nullTime(r.ConsentAffirmedAt),
+		nullString(r.ConsentAffirmedBy), nullTime(r.ConsentAffirmedAt), r.ConsentAffirmedByEmail, r.ConsentAffirmedByName,
 		r.CreatedAt.UTC(), r.ExpiresAt.UTC())
 	if err != nil {
 		return fmt.Errorf("store the requote %s: %w", r.ID, err)
@@ -119,7 +119,7 @@ func scanRenewalRequote(row scanner) (domain.RenewalRequote, error) {
 		&insuredMinor, &r.Terms.TermMonths, &coverages, &r.DiscountRate, &r.Requoted, &r.RatingVersion, &rulesRaw,
 		&mode, &source, &notice, &r.ProfileScore, &r.ProfileCategory, &profileDate, &r.UnavailableSource, &sourcesRaw,
 		&r.ProfileCustomerID, &origin, &basis, &r.ConsentID, &affirmedBy, &affirmedAt,
-		&r.CreatedAt, &r.ExpiresAt)
+		&r.ConsentAffirmedByEmail, &r.ConsentAffirmedByName, &r.CreatedAt, &r.ExpiresAt)
 	if err != nil {
 		return domain.RenewalRequote{}, err
 	}

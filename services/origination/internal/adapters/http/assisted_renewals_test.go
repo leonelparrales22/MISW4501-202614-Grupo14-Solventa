@@ -114,8 +114,9 @@ func TestTheViewOfTheAssistedRenewalShowsTheScreenWithoutSecrets(t *testing.T) {
 	p.Holder.DocumentID = "1020345678"
 	rq := sampleRequoteSnapshot()
 	method := domain.PaymentMethod{Kind: domain.PaymentCard, Token: "tok_secret", Brand: "visa", Last4: "1111", Installments: 1, CapturedAt: requotedOn}
-	r := domain.Renewal{ID: "ren-pol-1-20261002", Status: domain.RenewalAccepted, ChargeID: "ren-pol-1-20261002",
-		AcceptedAt: requotedOn, RetryUntil: requotedOn.Add(72 * time.Hour)}
+	r := domain.Renewal{ID: "ren-pol-1-20261002", PeriodEnd: rq.PeriodEnd, Status: domain.RenewalAccepted, ChargeID: "ren-pol-1-20261002",
+		AcceptedAt: requotedOn, RetryUntil: requotedOn.Add(72 * time.Hour), Terms: rq.Terms, Premium: rq.Premium, Currency: rq.Currency,
+		DiscountRate: rq.DiscountRate, Requoted: true}
 	svc := &fakeAssistedRenewals{view: renewal.AssistedView{
 		Policy: p, WindowOpensAt: policyEndsAt.AddDate(0, 0, -30), WindowClosesAt: policyEndsAt, WindowOpen: true,
 		PaymentMethod: &method, Requote: &rq, RequoteStatus: domain.RequoteValid, Renewal: &r, Channel: renewal.ChannelAdvisor,
@@ -141,6 +142,12 @@ func TestTheViewOfTheAssistedRenewalShowsTheScreenWithoutSecrets(t *testing.T) {
 	renewalBody := body["renewal"].(map[string]any)
 	assert.Equal(t, "advisor", renewalBody["channel"])
 	assert.Equal(t, "2026-09-19T21:02:00Z", renewalBody["retry_until"], "until when the insured can retry (01·D-3 a+)")
+	terms := renewalBody["terms"].(map[string]any)
+	assert.Equal(t, rq.Premium, terms["premium"], "the conditions accepted for the period, from either channel")
+	assert.Equal(t, "2026-10-02T23:59:00Z", terms["coverage_start"])
+	assert.Equal(t, "2027-10-02T23:59:00Z", terms["coverage_end"])
+	assert.InDelta(t, 0.0527, renewalBody["premium_change_rate"], 0.0001)
+	assert.Equal(t, rq.DiscountRate, renewalBody["discount_rate"])
 	charge := body["charge"].(map[string]any)
 	assert.Equal(t, "failed", charge["status"])
 	assert.Equal(t, "payment_rejected", charge["failure_reason"])
@@ -195,6 +202,8 @@ func TestARequoteAnswersTheRenewedConditionsAndHowTheyWerePriced(t *testing.T) {
 	assert.Equal(t, "2026-08-27T21:02:00Z", body["profile_date"])
 	assert.Equal(t, "audit_verified", body["consent_basis"])
 	assert.Nil(t, body["consent_affirmed_at"])
+	assert.Nil(t, body["consent_affirmed_by_email"], "only an affirmed consent says who affirmed it")
+	assert.Nil(t, body["consent_affirmed_by_name"])
 	renewed := body["renewal"].(map[string]any)
 	assert.Equal(t, "2026-10-02T23:59:00Z", renewed["coverage_start"])
 	assert.Equal(t, "2027-10-02T23:59:00Z", renewed["coverage_end"])

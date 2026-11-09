@@ -242,6 +242,8 @@ func TestARequoteOfAnAssistedPolicyRecordsWhoAffirmedTheConsentAndWhen(t *testin
 	r := got.Requote
 	assert.Equal(t, domain.ConsentBasisAdvisorAffirmed, r.ConsentBasis)
 	assert.Equal(t, "sub-advisor", r.ConsentAffirmedBy)
+	assert.Equal(t, "sub-advisor@example.com", r.ConsentAffirmedByEmail)
+	assert.Equal(t, "Laura Gómez", r.ConsentAffirmedByName)
 	assert.Equal(t, t0, r.ConsentAffirmedAt)
 	assert.Equal(t, domain.OfferChannelAssisted, r.OriginChannel)
 	assert.Equal(t, "cus-q1", r.ProfileCustomerID)

@@ -318,7 +318,7 @@ func (a *AssistedService) Requote(ctx context.Context, policyID string, in Requo
 	r := domain.RenewalRequote{ID: id, PolicyID: p.ID, PeriodEnd: p.CoverageEnd, AdvisorID: claims.Subject,
 		ProfileCustomerID: origin.CustomerID, OriginChannel: origin.Channel, CreatedAt: now, ExpiresAt: domain.RenewalRequoteExpiry(now)}
 	if origin.CustomerID != "" {
-		if err := a.settleConsent(ctx, origin, in, claims.Subject, now, &r); err != nil {
+		if err := a.settleConsent(ctx, origin, in, claims, now, &r); err != nil {
 			return RequoteResult{}, err
 		}
 	}
@@ -354,15 +354,17 @@ func (a *AssistedService) Requote(ctx context.Context, policyID string, in Requo
 // settleConsent records on the requote on what consent the customer's data
 // is consulted, or refuses: the advisor's affirmation for a policy born in
 // the assisted channel, audit's answer for any other.
-func (a *AssistedService) settleConsent(ctx context.Context, origin Origin, in RequoteInput, advisorID string, now time.Time,
-	r *domain.RenewalRequote) error {
+func (a *AssistedService) settleConsent(ctx context.Context, origin Origin, in RequoteInput, advisor security.Claims,
+	now time.Time, r *domain.RenewalRequote) error {
 	if origin.Channel == domain.OfferChannelAssisted {
 		// audit keeps only the consents of the embedded channel: the advisor
 		// affirms this one, as in an assisted quote.
 		if err := domain.RequireConsentAffirmation(in.ConsentAffirmed); err != nil {
 			return err
 		}
-		r.ConsentBasis, r.ConsentAffirmedBy, r.ConsentAffirmedAt = domain.ConsentBasisAdvisorAffirmed, advisorID, now
+		r.ConsentBasis, r.ConsentAffirmedBy, r.ConsentAffirmedAt = domain.ConsentBasisAdvisorAffirmed, advisor.Subject, now
+		// Who affirmed it, as the formalization keeps who formalized (D-13 c).
+		r.ConsentAffirmedByEmail, r.ConsentAffirmedByName = advisor.Email, strings.TrimSpace(advisor.Name)
 		return nil
 	}
 	if a.consents == nil {

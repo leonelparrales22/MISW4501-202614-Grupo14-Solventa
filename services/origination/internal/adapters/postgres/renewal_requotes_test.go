@@ -68,6 +68,7 @@ func TestRenewalRequoteStoreKeepsAnAffirmedConsentAndARequoteWithoutProfile(t *t
 	affirmed := sampleRequote("rq-assisted", p, requotedAt)
 	affirmed.OriginChannel, affirmed.ConsentID = domain.OfferChannelAssisted, ""
 	affirmed.ConsentBasis, affirmed.ConsentAffirmedBy, affirmed.ConsentAffirmedAt = domain.ConsentBasisAdvisorAffirmed, "sub-advisor", requotedAt
+	affirmed.ConsentAffirmedByEmail, affirmed.ConsentAffirmedByName = "asesor@example.com", "Laura Gómez"
 	require.NoError(t, s.Create(ctx, affirmed))
 	got, err := s.Get(ctx, "rq-assisted")
 	require.NoError(t, err)

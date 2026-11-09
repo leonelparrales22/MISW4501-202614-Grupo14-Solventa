@@ -97,6 +97,11 @@ type requoteBody struct {
 	Sources           []requoteSourceBody `json:"sources"`
 	ConsentBasis      *string             `json:"consent_basis"`
 	ConsentAffirmedAt *time.Time          `json:"consent_affirmed_at"`
+	// ConsentAffirmedByEmail and ConsentAffirmedByName say who affirmed the
+	// consent (decision D-13 c); both null unless consent_basis is
+	// advisor_affirmed, and the name also when the account has none.
+	ConsentAffirmedByEmail *string `json:"consent_affirmed_by_email"`
+	ConsentAffirmedByName  *string `json:"consent_affirmed_by_name"`
 }
 
 type assistedRenewalSummaryBody struct {
@@ -109,6 +114,13 @@ type assistedRenewalSummaryBody struct {
 	AcceptedAt  *time.Time `json:"accepted_at"`
 	RetryUntil  *time.Time `json:"retry_until"`
 	ClosedAt    *time.Time `json:"closed_at"`
+	// Terms are the conditions accepted for the period, from either channel
+	// (null for a lapse, which accepted none), with the change of the premium
+	// against the current one, the discount and whether the engine priced it.
+	Terms             *renewalTermsBody `json:"terms"`
+	PremiumChangeRate float64           `json:"premium_change_rate"`
+	DiscountRate      float64           `json:"discount_rate"`
+	Requoted          bool              `json:"requoted"`
 }
 
 type renewalAcceptanceBody struct {
@@ -193,6 +205,10 @@ func toRequoteBody(p domain.Policy, r domain.RenewalRequote, status domain.Requo
 		Notice: optionalString(string(r.ProfileNotice)), Sources: make([]requoteSourceBody, 0, len(r.Sources)),
 		ConsentBasis: optionalString(string(r.ConsentBasis)), ConsentAffirmedAt: optionalTime(r.ConsentAffirmedAt),
 	}
+	if r.ConsentBasis == domain.ConsentBasisAdvisorAffirmed {
+		out.ConsentAffirmedByEmail = optionalString(r.ConsentAffirmedByEmail)
+		out.ConsentAffirmedByName = optionalString(r.ConsentAffirmedByName)
+	}
 	for _, rule := range r.AppliedRules {
 		out.AppliedRules = append(out.AppliedRules, appliedRuleBody{Code: rule.Code, Value: rule.Value})
 	}
@@ -221,7 +237,14 @@ func toAssistedRenewalResponse(v renewal.AssistedView) assistedRenewalResponse {
 	if r := v.Renewal; r != nil {
 		out.Renewal = &assistedRenewalSummaryBody{RenewalID: r.ID, Status: string(r.Status), Reason: optionalString(string(r.Reason)),
 			Channel: string(v.Channel), NewPolicyID: optionalString(r.NewPolicyID), ChargeID: optionalString(r.ChargeID),
-			AcceptedAt: optionalTime(r.AcceptedAt), RetryUntil: optionalTime(r.RetryUntil), ClosedAt: optionalTime(r.ClosedAt)}
+			AcceptedAt: optionalTime(r.AcceptedAt), RetryUntil: optionalTime(r.RetryUntil), ClosedAt: optionalTime(r.ClosedAt),
+			DiscountRate: r.DiscountRate, Requoted: r.Requoted}
+		if r.Currency != "" {
+			out.Renewal.Terms = &renewalTermsBody{Premium: r.Premium, Currency: r.Currency, InsuredAmount: r.Terms.InsuredAmount,
+				Coverages: toCoverageBodies(r.Terms.Coverages), CoverageStart: r.PeriodEnd.UTC(),
+				CoverageEnd: r.PeriodEnd.AddDate(0, r.Terms.TermMonths, 0).UTC()}
+			out.Renewal.PremiumChangeRate = domain.PremiumChangeRate(p.Premium, r.Premium)
+		}
 	}
 	if f := v.Formalization; f != nil {
 		out.Formalization = &renewalFormalizationBody{AdvisorID: f.AdvisorID, AdvisorEmail: f.AdvisorEmail,

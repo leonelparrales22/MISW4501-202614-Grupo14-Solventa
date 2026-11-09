@@ -431,6 +431,8 @@ func TestAssistedRenewalD13TheAdvisorAffirmsTheConsentOfAnAssistedPolicy(t *test
 	rq := e.requote(t, p.ID, `{"consent_affirmed":true}`)
 	assert.Equal(t, "advisor_affirmed", rq["consent_basis"])
 	assert.NotNil(t, rq["consent_affirmed_at"])
+	assert.Equal(t, "Laura Gómez", rq["consent_affirmed_by_name"], "S7b says who affirmed the consent")
+	assert.Equal(t, "laura@example.com", rq["consent_affirmed_by_email"])
 	var by string
 	require.NoError(t, e.db.QueryRowContext(context.Background(),
 		`SELECT consent_affirmed_by FROM renewal_requote WHERE requote_id = $1`, rq["requote_id"]).Scan(&by))
@@ -526,6 +528,8 @@ func TestAssistedRenewalTheViewShowsAFailedPaymentAndItsRetryDeadline(t *testing
 	})
 	assert.Equal(t, "insured", view["renewal"].(map[string]any)["channel"], "read only: the insured renewed")
 	assert.Nil(t, view["formalization"])
+	accepted := view["renewal"].(map[string]any)["terms"].(map[string]any)
+	assert.Positive(t, accepted["premium"], "the read only view shows the premium the insured accepted")
 	assert.NotNil(t, view["renewal"].(map[string]any)["retry_until"])
 }
 

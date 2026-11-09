@@ -136,6 +136,12 @@ type RenewalRequote struct {
 	ConsentID         string
 	ConsentAffirmedBy string
 	ConsentAffirmedAt time.Time
+	// ConsentAffirmedByEmail and ConsentAffirmedByName identify, for the
+	// screens, the advisor who affirmed the consent: the e-mail and the
+	// `name` claim of the token when the requote was made (the name may be
+	// empty).
+	ConsentAffirmedByEmail string
+	ConsentAffirmedByName  string
 
 	CreatedAt time.Time
 	ExpiresAt time.Time

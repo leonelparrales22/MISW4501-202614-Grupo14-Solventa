@@ -32,7 +32,8 @@ Renovaciones (HU-W1.5-01) ──«Renovar»/«Ver»──▶ GET /v1/policies/{p
   - `advisor_affirmation`: la póliza nació en el canal asistido: la pantalla muestra la casilla «El cliente autorizó consultar sus datos
     financieros para esta renovación» y el cuerpo debe traer `consent_affirmed: true`. Sin ella, `422 validation_failed` con el campo
     `consent_affirmed` y nada consultado. La recotización guarda quién afirmó y cuándo (`consent_basis: advisor_affirmed`,
-    `consent_affirmed_at`).
+    `consent_affirmed_at`, `consent_affirmed_by_name` —el claim `name` del *token*, `null` si la cuenta no lo tiene— y
+    `consent_affirmed_by_email`): S7b dice «Consentimiento afirmado por <nombre o correo> el <fecha>», aunque formalice otro asesor.
 - **Recotizar consulta primero las fuentes (decisión D-5 b).** Aunque haya un perfil reciente en caché. Si las fuentes no responden, usa
   el último perfil en caché (30 días como máximo) y lo dice: `mode: provisional`, `source: cache`, `notice: last_profile_in_use` y
   `profile_date` (CA-5). Sin un perfil reciente, el actuarial base: `source: base_actuarial`, `notice: personalization_unavailable`
@@ -88,7 +89,7 @@ Todo lo que pintan S7, S7b y «Ver»; la página funciona al recargarse. Ejemplo
 | Campo | Qué dice |
 |---|---|
 | `requote` | La última recotización del periodo, con `status` `valid` o `expired`; `null` si no hay |
-| `renewal` | La renovación del periodo (`accepted` → `renewed` / `not_renewed`) con `channel` (`advisor` o `insured`), `retry_until` y `new_policy_id`; `null` si no hay |
+| `renewal` | La renovación del periodo (`accepted` → `renewed` / `not_renewed`) con `channel` (`advisor` o `insured`), `retry_until`, `new_policy_id` y las condiciones aceptadas en cualquiera de los dos canales: `terms` (prima, moneda, valor asegurado, coberturas y la vigencia nueva; `null` en una caducidad, que no aceptó ninguna), `premium_change_rate`, `discount_rate` y `requoted`. Así el solo lectura de una renovación del asegurado muestra su prima y sus condiciones. `null` si no hay renovación |
 | `formalization` | El registro del asesor: `advisor_id`, `advisor_email`, `advisor_name` (o `null`), `formalized_at`, `requote_id` y `acceptance{method, accepted_at, reference}`; `null` si renovó el asegurado o no hay renovación |
 | `charge` | El cobro de la renovación: `status` (`pending`, `in_progress`, `confirmed`, `failed`), `failure_reason`, `decline_code`, `last_failure_at`, `attempts` y `policy_id` (la póliza nueva al confirmarse) |
 | `blocked_reason` | `renewal_not_available` (fuera de ventana o no renovada), `renewal_closed` (el periodo ya tiene renovación), `payment_method_missing`, o `null` |
@@ -116,7 +117,8 @@ Finance caído:
   "notice": "last_profile_in_use",
   "sources": [{ "source": "open_finance", "status": "timeout", "latency_ms": 120 },
               { "source": "open_data", "status": "ok", "latency_ms": 88 }, { "source": "kyc", "status": "ok", "latency_ms": 64 }],
-  "consent_basis": "audit_verified", "consent_affirmed_at": null
+  "consent_basis": "audit_verified", "consent_affirmed_at": null,
+  "consent_affirmed_by_email": null, "consent_affirmed_by_name": null
 }
 ```
 

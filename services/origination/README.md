@@ -608,7 +608,8 @@ POST …/assisted-renewal/formalization ▶ aceptación (llamada grabada, firma 
   se usa el mismo `ConsentVerifier` de `POST /v1/offers` (`AUDIT_URL`): sin consentimiento activo, `422 consent_required`; si `audit` no
   responde (o no está configurado), `503 consent_unverifiable`. En los dos casos no se consulta ninguna fuente ni la caché. `audit` solo
   guarda consentimientos del canal embebido, así que para una póliza vendida por un asesor la solicitud trae `consent_affirmed: true`
-  (la casilla de S7); la recotización guarda `consent_basis = advisor_affirmed`, el `sub` del asesor y la hora.
+  (la casilla de S7); la recotización guarda `consent_basis = advisor_affirmed`, el `sub`, el correo y el claim `name` del asesor que
+  afirmó y la hora, y el `GET` los expone para que S7b diga quién afirmó aunque formalice otro asesor.
 - **Fuentes primero (D-5 b).** «Recotizar» usa `ResolveFresh`: aunque haya un perfil completo reciente se consultan las fuentes; si no
   responden, el último perfil en caché (`last_profile_in_use`, con su fecha) o, sin uno reciente, el actuarial base
   (`personalization_unavailable`). La recotización guarda cuál se usó (D-7).
@@ -621,7 +622,11 @@ POST …/assisted-renewal/formalization ▶ aceptación (llamada grabada, firma 
 - **Sin medio de pago no se formaliza (D-10 a):** `blocked_reason: payment_method_missing` y `409`; el asegurado puede renovar desde su
   portal.
 - **Estado del cobro (01·D-3 a+):** el `GET` trae el cobro de la renovación de los dos canales y `retry_until`, para que «Ver» diga hasta
-  cuándo el cliente puede reintentar con otro medio desde su portal; el asesor no reintenta por él.
+  cuándo el cliente puede reintentar con otro medio desde su portal; el asesor no reintenta por él. También trae las condiciones que se
+  aceptaron (`renewal.terms`, la variación de la prima y el descuento), así que la renovación del asegurado se ve con su prima.
+- **Una inserción, un resultado (corrección tras la validación):** `insertRenewal` usa `ON CONFLICT DO NOTHING` sin columnas: el
+  `renewal_id` sale de la póliza y el periodo, y su choque significa lo mismo que el de `(policy_id, period_end)`; dos formalizaciones (o
+  una formalización y una renovación en línea) que se cruzan terminan en el resultado existente o en `409`, nunca en `503`.
 - **Nombre del asesor:** `renewal_formalization` guarda el `sub`, el correo y el claim `name` (vacío si la cuenta no lo tiene; la
   pantalla muestra entonces el correo).
 - **Tablas (`0014`):** `renewal_requote` (inmutable; `consent_basis` con su `CHECK` de quién y cuándo), `renewal_formalization` (solo se

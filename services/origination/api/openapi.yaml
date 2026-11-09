@@ -3757,7 +3757,7 @@ components:
       type: object
       required: [requote_id, created_at, expires_at, status, current, renewal, premium_change_rate, discount_rate, requoted,
         rating_version, applied_rules, mode, source, profile_date, unavailable_source, notice, sources, consent_basis,
-        consent_affirmed_at]
+        consent_affirmed_at, consent_affirmed_by_email, consent_affirmed_by_name]
       description: >
         A requote of the renewal made by an advisor. It never carries the score
         or the category of the profile.
@@ -3841,6 +3841,17 @@ components:
           format: date-time
           nullable: true
           description: When the advisor affirmed the consent; only with advisor_affirmed.
+        consent_affirmed_by_email:
+          type: string
+          nullable: true
+          description: E-mail of the advisor who affirmed the consent, kept when requoting; only with advisor_affirmed.
+        consent_affirmed_by_name:
+          type: string
+          nullable: true
+          description: >
+            Name of the advisor who affirmed the consent (the name claim of their
+            token when requoting); null when the account has none, and then the
+            screen shows consent_affirmed_by_email. Only with advisor_affirmed.
     AssistedRenewalPolicy:
       type: object
       required: [policy_id, line, holder, premium, currency, insured_amount, coverages, coverage_start, coverage_end, renewal_of]
@@ -3886,7 +3897,8 @@ components:
           type: boolean
     AssistedRenewalSummary:
       type: object
-      required: [renewal_id, status, reason, channel, new_policy_id, charge_id, accepted_at, retry_until, closed_at]
+      required: [renewal_id, status, reason, channel, new_policy_id, charge_id, accepted_at, retry_until, closed_at, terms,
+        premium_change_rate, discount_rate, requoted]
       properties:
         renewal_id:
           type: string
@@ -3920,6 +3932,25 @@ components:
           type: string
           format: date-time
           nullable: true
+        terms:
+          nullable: true
+          description: >
+            The conditions accepted for the period, by the advisor or by the
+            insured online: premium, currency, insured amount, coverages and the
+            renewed coverage. Null for a lapse, which accepted none.
+          allOf:
+            - $ref: "#/components/schemas/RenewalTerms"
+        premium_change_rate:
+          type: number
+          description: Change of the accepted premium against the current one, as a fraction (0.053 is +5.3 %); 0 without terms.
+        discount_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Good-experience discount applied to the accepted premium; 0 when none.
+        requoted:
+          type: boolean
+          description: False when the conditions repeat the current ones because the engine could not price the renewal.
     RenewalFormalization:
       type: object
       required: [advisor_id, advisor_email, advisor_name, formalized_at, requote_id, acceptance]
