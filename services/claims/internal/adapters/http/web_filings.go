@@ -435,11 +435,16 @@ type claimDetailBody struct {
 	// (HU-W2.2-01); absent when it was not, so the detail of the claims
 	// filed without it does not change.
 	EstimatedAmountMinor *int64 `json:"estimated_amount_minor,omitempty"`
+	// HA-L02: whether the detail came from the read cache, and when it was
+	// read; absent in the answer of a filing, which is not a read.
+	*freshnessBody
 }
 
 type claimListResponse struct {
 	Items         []claimSummaryBody `json:"items"`
 	NextPageToken *string            `json:"next_page_token"`
+	// HA-L02: whether the list came from the read cache, and when it was read.
+	*freshnessBody
 }
 
 func summaryBody(c domain.ClaimRecord) claimSummaryBody {
@@ -516,6 +521,7 @@ func listClaims(svc ClaimReader) http.HandlerFunc {
 			return
 		}
 
+		req, fresh := trackFreshness(req)
 		claims, _ := security.ClaimsFromContext(req.Context())
 		page, err := svc.List(req.Context(), claims.Subject, q)
 		switch {
@@ -534,6 +540,7 @@ func listClaims(svc ClaimReader) http.HandlerFunc {
 		if page.NextPageToken != "" {
 			out.NextPageToken = &page.NextPageToken
 		}
+		out.freshnessBody = freshnessOf(w, fresh)
 		writeJSON(w, http.StatusOK, out)
 	}
 }
@@ -545,9 +552,12 @@ func getClaim(svc ClaimReader) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "claim_not_found", "there is no claim with that id")
 			return
 		}
+		req, fresh := trackFreshness(req)
 		c, err := svc.Get(req.Context(), id)
 		if !writeReadError(w, req, err) {
-			writeJSON(w, http.StatusOK, detailBody(c, svc.EvidenceLinks(req.Context(), c)))
+			out := detailBody(c, svc.EvidenceLinks(req.Context(), c))
+			out.freshnessBody = freshnessOf(w, fresh)
+			writeJSON(w, http.StatusOK, out)
 		}
 	}
 }

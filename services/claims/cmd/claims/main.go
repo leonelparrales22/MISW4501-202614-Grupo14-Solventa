@@ -21,6 +21,7 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/evidence"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/filing"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/readcache"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/review"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -69,17 +70,33 @@ func main() {
 			log.Fatalf("could not set up the token verification: %v", err)
 		}
 		records, supports := claimStores(context.Background())
+		// HA-L02: with Redis, the insured's claim reads wait 900 ms for the
+		// database and then serve the last read from the cache, marked stale.
+		cacheCfg, err := loadReadCacheConfig(os.Getenv)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		var cache ports.ReadCache
+		if cacheCfg.addr != "" {
+			cache = newReadCache(context.Background(), cacheCfg)
+			log.Printf("read cache (HA-L02): Redis at %s, budget %s, TTL %s", cacheCfg.addr, cacheCfg.budget, cacheCfg.ttl)
+		} else {
+			log.Printf("%s is not set: the claim reads (HA-L02) have no read cache", envRedisAddr)
+		}
 		// HU-M2.1-01: the evidence of the phone lives in the bucket of the
 		// environment, and the filing checks every key against it.
 		evidences := evidenceStore(context.Background())
+		var claimReads httpadapter.ClaimReader = filing.NewQueryService(records, pdf.NewReceiptRenderer()).WithObjects(evidences)
+		if cache != nil {
+			claimReads = readcache.NewClaims(claimReads, cache, cacheCfg.budget, systemClock{})
+		}
 		opts = append(opts,
 			httpadapter.WithFilings(
 				filing.NewService(records, evidences, systemClock{}), verifier),
 			// HU-W2.1-01: the insured's claims of both channels, the detail
 			// (with the evidence of the phone, when there is a store to sign
 			// its reads) and the filing receipt.
-			httpadapter.WithClaimReads(
-				filing.NewQueryService(records, pdf.NewReceiptRenderer()).WithObjects(evidences), verifier))
+			httpadapter.WithClaimReads(claimReads, verifier))
 		if evidences != nil {
 			opts = append(opts,
 				httpadapter.WithEvidence(evidence.NewService(evidences, systemClock{}), verifier))
@@ -101,7 +118,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid configuration: %v", err)
 		}
-		evaluations := evaluationService(records, priorities, evidences, terms).WithDecisions(decisions)
+		// HU-W2.2-02: the claims in evaluation come ordered by priority.
+		queue, err := priorityQueueOf(records, decisions, priorities)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		evaluations := evaluationService(records, priorities, evidences, terms).WithDecisions(decisions).
+			WithPriorityQueue(queue, systemClock{})
 		opts = append(opts, httpadapter.WithEvaluation(evaluations, verifier))
 		// HU-W2.1-03: the advisor reviews every filing before it enters
 		// evaluation, and the history of the status of a claim is read here.
@@ -109,8 +132,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid configuration: %v", err)
 		}
-		opts = append(opts, httpadapter.WithReviews(
-			review.NewService(records, reviews, reviews, evaluations, systemClock{}, nil), verifier))
+		reviewSvc := review.NewService(records, reviews, reviews, evaluations, systemClock{}, nil)
+		var reviewer httpadapter.Reviewer = reviewSvc
+		if cache != nil {
+			reviewer = cachedReviewer{Service: reviewSvc,
+				history: readcache.NewHistory(reviewSvc, cache, cacheCfg.budget, systemClock{})}
+		}
+		opts = append(opts, httpadapter.WithReviews(reviewer, verifier))
 		opts = append(opts, decisionRoutes(context.Background(), records, decisions, terms, verifier, os.Getenv)...)
 		// HU-W2.3-01: the assignment of the nearest provider to a claim in
 		// evaluation, and the registry of providers that operations keeps.

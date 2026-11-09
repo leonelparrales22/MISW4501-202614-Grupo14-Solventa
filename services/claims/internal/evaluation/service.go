@@ -54,6 +54,9 @@ type Service struct {
 	// decisions is nil until WithDecisions: then the detail carries no
 	// decision.
 	decisions DecisionReader
+	// priority and clock are nil until WithPriorityQueue (HU-W2.2-02).
+	priority ports.PriorityQueue
+	clock    ports.Clock
 }
 
 // DecisionReader is the decision of a claim (HU-W2.2-03), or
@@ -81,6 +84,9 @@ func NewService(claims ports.ClaimRecords, queue ports.ClaimQueue, priorities Tr
 type QueueItem struct {
 	Claim  domain.ClaimRecord
 	Triage triage.Summary
+	// Holder is the insured as the policy core describes them, in the queue
+	// by priority (HU-W2.2-02); nil when it is not read or did not answer.
+	Holder *domain.Holder
 }
 
 // QueuePage is one page of the claims in evaluation. NextPageToken is empty on
