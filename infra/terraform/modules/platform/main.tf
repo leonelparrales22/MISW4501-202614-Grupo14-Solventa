@@ -558,6 +558,11 @@ locals {
       # the insured a rejection and its reason.
       PAYMENT_GATEWAY_URL = "http://payment-gateway.${local.namespace}:${local.stubs["payment-gateway"]}"
       EMAIL_URL           = "http://email.${local.namespace}:${local.stubs.email}"
+      # HA-L02: the read cache of the insured's claim queries. With it a read
+      # waits 900 ms for the database and then answers the last read, marked
+      # stale; without it the queries read the database only. The cluster is
+      # the one origination uses, which already admits every task.
+      REDIS_ADDR = module.redis.primary_endpoint
     }
 
     # HU-M3.1-01: the notification center of the insured and the push of the

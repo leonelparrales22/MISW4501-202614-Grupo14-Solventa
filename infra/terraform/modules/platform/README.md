@@ -212,6 +212,7 @@ el estado remoto cifrado del bucket de T4.
 | `POLICY_CORE_URL` | Stub `policy-core` por Cloud Map (9060) | Enciende la radicación web con soportes (HU-W2.1-01): opciones, subida de soportes y radicación. Sin ella `claims` no monta esas rutas y responde `404` |
 | `PAYMENT_GATEWAY_URL` | Stub `payment-gateway` por Cloud Map (9040) | Enciende la decisión del siniestro (HU-W2.2-03): aprobar paga la indemnización. Sin ella `claims` no monta aprobar, rechazar ni reintentar el pago |
 | `EMAIL_URL` | Stub `email` por Cloud Map (9030) | Avisa al asegurado el rechazo y su motivo (HU-W2.2-03). Sin ella los avisos esperan |
+| `REDIS_ADDR` | Endpoint de ElastiCache (el mismo clúster de originación) | Caché de lectura de las consultas del asegurado (HA-L02): si la base no responde en 900 ms, sale la última lectura marcada `stale`. Sin ella las consultas solo leen la base |
 | `DATABASE_URL` (secreto) | `<nombre>/claims/database` | Base propia de `claims` |
 
 ## Pendientes conocidos

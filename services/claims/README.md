@@ -10,7 +10,10 @@ más cercano a un caso en evaluación: ubicación del incidente (la de la app o 
 especialidad con radios de 5, 10 y 20 km, asignación confirmada por el analista con aviso por correo al prestador, búsqueda
 automática de los casos pendientes de asignación y el registro de prestadores que administra operaciones
 (`/v1/claims/{claim_id}/assignment`, `…/incident-location`, `…/provider-searches`, `/v1/claims/assignments`,
-`/v1/claims/assignment-policy` y `/v1/claims/providers*`). El resto de módulos sigue reservado.
+`/v1/claims/assignment-policy` y `/v1/claims/providers*`). **HA-L02:** caché de lectura en Redis delante de la lista, el detalle y
+el historial del asegurado (`GET /v1/claims`, `GET /v1/claims/{claim_id}` y `GET /v1/claims/{claim_id}/history`): cada lectura
+espera 900 ms a la base y, si no llega, responde la última lectura guardada con `stale: true` y la hora en que se leyó. El resto
+de módulos sigue reservado.
 
 ## Responsabilidades
 
@@ -21,6 +24,7 @@ automática de los casos pendientes de asignación y el registro de prestadores 
 | `assessors` | Prestadores (peritos y talleres) y su asignación al caso: elige el más cercano por distancia y especialidad, ampliando el radio si no hay disponibles (HU-W2.3-01). Seguimiento de la intervención y cierre del caso (HU-W2.3-02). Es el único dueño del cálculo de distancia. **HU-W2.3-01:** `Service` registra la ubicación del incidente, busca, asigna y lee la asignación de un caso, de una página de casos y la política vigente; `ProviderService` administra el registro de prestadores; `Worker` repite la búsqueda de los casos pendientes cada `ASSIGNMENT_RETRY_INTERVAL_SECONDS` y envía los avisos a los prestadores; `Suggest` es la búsqueda sin estado que reutilizará `assistance` (HU-W2.3-03) |
 | `assistance` | Asistencia en sitio: recibe las solicitudes del móvil con la ubicación del asegurado (HU-M2.3-01), las muestra en la bandeja de entrantes y gestiona su despacho y cierre con motivo (HU-W2.3-03). Para elegir prestador **llama a `assessors`**; no calcula distancias |
 | `parametric` | Pago automático cuando un evento externo (retraso de vuelo, clima) cruza un umbral |
+| `readcache` | **HA-L02:** `Claims` e `History` envuelven la consulta de los casos propios (`filing.QueryService`) y el historial de estados (`review.Service`) con un presupuesto de 900 ms hacia la base y la caché de lectura como respaldo. El comprobante y los enlaces de la evidencia no pasan por la caché |
 | `evidence` | **HU-M2.1-01:** emite la URL firmada con la que el teléfono sube cada foto o video al *bucket* de evidencia; el binario nunca cruza el servicio y lo que queda con el caso es su llave, su ubicación, su instante de captura y su resumen de integridad |
 
 ## Radicación del siniestro (HU-M2.2-01)
@@ -121,6 +125,7 @@ GET  /v1/claims[/{id}[/filing-receipt]] ─▶ casos propios de los dos canales,
 | `memory` | Sin `DATABASE_URL`: `CaseStore` sirve a los dos canales y a los metadatos de los soportes, y `TriageStore` guarda los cálculos del nivel sobre esos casos (HU-W2.2-01); `AssignmentStore` y `ProviderStore` (HU-W2.3-01) hacen lo mismo con la asignación y con los prestadores de referencia de la semilla (`ReferenceProviders`); todo se pierde al reiniciar |
 | `policies` | Puente de `pkg/adapters/policies` al puerto `PolicyDirectory`; deja fuera las pólizas mal descritas y traduce cualquier falla a `ErrPolicyDirectoryUnavailable` |
 | `pdf` | Comprobante de radicación con `go-pdf/fpdf` |
+| `redis` | **HA-L02:** `ReadCache`, la caché de lectura de las consultas sobre ElastiCache: claves `claims:read:v1:<alcance>:…` con TTL de 5 minutos. Una falla de Redis se registra y se lee como si no hubiera nada guardado; nunca hace fallar una consulta |
 | `s3` | `ObjectStore` sobre el *bucket* de evidencia: firma las subidas (evidencia del móvil y soportes del portal), comprueba lo que llegó, lee los primeros bytes de un objeto y firma las lecturas |
 
 ## Triage automático (HU-W2.2-01)
@@ -282,6 +287,34 @@ GET|POST /v1/claims/providers* ───────▶ registro de prestadores:
   operaciones puede devolverlo a `available` por la API.
 - **No publica ni consume eventos:** el caso, los prestadores y la asignación están en la misma base, y el aviso es un correo.
 
+## Consulta ágil del estado del siniestro (HA-L02)
+
+La lista, el detalle y el historial de estados que lee el asegurado (y el historial que leen el asesor y operaciones) pasan por
+una caché de lectura en Redis. Es el mecanismo validado en el experimento EC-L02 (p95 de 1.121 ms con un corte de 900 ms).
+Contrato: [`docs/contratos/HA-L02-api.md`](../../docs/contratos/HA-L02-api.md).
+
+```
+GET /v1/claims[/{id}[/history]]
+  └─ base de datos, con 900 ms (CLAIM_READ_BUDGET_MS)
+       ├─ responde ──────────────▶ se guarda en Redis y sale con stale=false, as_of=ahora
+       ├─ responde «no existe», «no es tuyo» o «filtro inválido» ─▶ sale tal cual (la base contestó: no se degrada)
+       └─ tarda más o falla ──▶ Redis
+                                  ├─ hay lectura guardada ─▶ sale con stale=true, as_of=hora de esa lectura
+                                  └─ no hay ──────────────▶ 503 claims_unavailable, como antes
+```
+
+- **Campos nuevos en las tres respuestas:** `stale` y `as_of`, más las cabeceras `X-Stale` y `X-Data-Source`
+  (`database` o `cache`). Son aditivos: el portal y el móvil que no los leen siguen funcionando. La respuesta de una
+  radicación no los lleva, porque no es una lectura.
+- **Aislamiento:** la clave lleva el `sub` de quien lee (`owner:<sub>:claim:<id>`, `owner:<sub>:list:<hash del filtro>`), así
+  que la caché solo devuelve algo que esa misma persona ya leyó de la base. El historial del asesor y de operaciones va en
+  claves `staff:` aparte.
+- **Frescura ≤ 5 minutos:** las lecturas normales siempre van primero a la base, y cada entrada vence a los 5 minutos
+  (`CLAIM_READ_CACHE_TTL_SECONDS`, máximo 300). Un cambio de estado nunca queda tapado por la caché más de ese tiempo.
+- **Sin Redis no pasa nada:** sin `REDIS_ADDR` las consultas leen solo la base. Si Redis se cae, la falla se registra y la
+  consulta sigue contra la base.
+- Prueba de carga: [`tests/load-k6/ha-l02`](../../tests/load-k6/ha-l02/README.md).
+
 ## Requisitos de calidad que gobiernan el servicio
 
 - Consulta de estado del siniestro p95 ≤ 2 s en la app móvil (EC-L02): caché de lectura en Redis con corte duro de 900 ms; ante timeout responde la última versión válida con `stale=true`.
@@ -319,6 +352,9 @@ Variables que el servicio lee:
 | `TRIAGE_SWEEP_INTERVAL_SECONDS` | HU-W2.2-01: el barrido del triage corre cada 10 s. Entre 1 y 30; otro valor impide arrancar. Solo se acorta en local y en la e2e |
 | `PAYMENT_GATEWAY_URL` | HU-W2.2-03: aprobar, rechazar y reintentar el pago no se montan (una aprobación no tendría cómo pagarse). La lectura de la evaluación sí |
 | `EMAIL_URL` | HU-W2.2-03: los rechazos se registran igual y sus avisos esperan hasta que se configure. **HU-W2.3-01:** también avisa al prestador asignado; sin ella las asignaciones se registran y sus avisos esperan |
+| `REDIS_ADDR` | HA-L02: las consultas del asegurado no tienen caché de lectura y solo leen la base. Un Redis que no responde al arrancar no impide arrancar |
+| `CLAIM_READ_BUDGET_MS` | HA-L02: cada consulta espera 900 ms a la base antes de usar la caché. Entre 50 y 5000; otro valor impide arrancar |
+| `CLAIM_READ_CACHE_TTL_SECONDS` | HA-L02: cada lectura guardada vence a los 300 s (5 minutos). Entre 1 y 300; otro valor impide arrancar |
 | `ASSIGNMENT_RETRY_INTERVAL_SECONDS` | HU-W2.3-01: la búsqueda automática de los casos pendientes de asignación corre cada 300 s. Entre 10 y 3600; otro valor impide arrancar. Solo se acorta en local y en la e2e |
 
 El `AUTH_ISSUER` del *user pool* permanente es

@@ -362,6 +362,13 @@ run "the_claim_filing_is_a_human_route" {
     ])
     error_message = "Claims verifies the token of the insured: it needs the user pool of the environment."
   }
+
+  # HA-L02: the endpoint of the cluster is only known after it exists, so
+  # what is checked is that claims gets it, like origination.
+  assert {
+    condition     = contains(keys(local.service_environment.claims), "REDIS_ADDR")
+    error_message = "Claims needs the Redis cluster for the read cache of the claim queries (HA-L02)."
+  }
 }
 
 # HU-W2.1-01: the web filing asks the policy core for the policies of the
