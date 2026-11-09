@@ -100,7 +100,11 @@ func (s *RenewalStore) Create(ctx context.Context, r domain.Renewal) (domain.Ren
 }
 
 // insertRenewal inserts the renewal unless its policy and period already have
-// one, and returns the inserted row (none on a conflict).
+// one, and returns the inserted row (none on a conflict). The conflict has no
+// target, so every unique index arbitrates it: UNIQUE (policy_id, period_end)
+// and the primary key renewal_id, which is derived from the same policy and
+// period. Two inserts of one period that race past the first check therefore
+// end in "no row" instead of a duplicate key error on renewal_pkey.
 func insertRenewal(ctx context.Context, db querier, r domain.Renewal) ([]domain.Renewal, error) {
 	coverages, err := encodeCoverages(r.Terms.Coverages)
 	if err != nil {
@@ -108,7 +112,7 @@ func insertRenewal(ctx context.Context, db querier, r domain.Renewal) ([]domain.
 	}
 	rows, err := listRenewals(ctx, db, `INSERT INTO renewal (`+renewalColumns+`)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
-		ON CONFLICT (policy_id, period_end) DO NOTHING
+		ON CONFLICT DO NOTHING
 		RETURNING `+renewalColumns,
 		r.ID, r.PolicyID, r.CustomerID, r.PeriodEnd.UTC(), string(r.Status), nullString(string(r.Reason)),
 		domain.ToMinorUnits(r.Premium), r.Currency, domain.ToMinorUnits(r.Terms.InsuredAmount), r.Terms.TermMonths,
