@@ -470,7 +470,11 @@ func TestTheListOfClaims(t *testing.T) {
 func TestTheLastPageHasANullToken(t *testing.T) {
 	rec := do(webRouter(&fakeWeb{}, &fakeUploads{}, &fakeReads{}), http.MethodGet, "/v1/claims", "insured", nil, nil)
 
-	assert.JSONEq(t, `{"items":[],"next_page_token":null}`, rec.Body.String())
+	m := decode(t, rec)
+	assert.Equal(t, []any{}, m["items"])
+	assert.Contains(t, m, "next_page_token")
+	assert.Nil(t, m["next_page_token"])
+	assert.Equal(t, false, m["stale"], "HA-L02: a read from the database")
 }
 
 func TestAnInvalidListQueryIs400(t *testing.T) {

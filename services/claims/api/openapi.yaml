@@ -163,6 +163,9 @@ paths:
         (mobile and web), newest first. A claim filed from the mobile app has
         no policy snapshot, so its policy line, product and insured object are
         null.
+        HA-L02: the read waits 900 ms for the database; when it does not
+        answer in time, the last read kept in the read cache answers, with
+        stale true and as_of the time it was read.
       security:
         - cognitoJwt: []
       parameters:
@@ -210,6 +213,10 @@ paths:
               schema:
                 type: string
                 enum: [no-store]
+            X-Stale:
+              $ref: "#/components/headers/XStale"
+            X-Data-Source:
+              $ref: "#/components/headers/XDataSource"
           content:
             application/json:
               schema:
@@ -1488,6 +1495,9 @@ paths:
         it did not exist); the advisor and operations read any. It is the
         source of the timeline of the case (HU-W2.1-02, HU-M2.4-01) and of the
         notice of a change of stage (HU-M3.3-01).
+        HA-L02: the read waits 900 ms for the database; when it does not
+        answer in time, the last read kept in the read cache answers, with
+        stale true and as_of the time it was read.
       security:
         - cognitoJwt: []
       parameters:
@@ -1500,6 +1510,10 @@ paths:
               schema:
                 type: string
                 enum: [no-store]
+            X-Stale:
+              $ref: "#/components/headers/XStale"
+            X-Data-Source:
+              $ref: "#/components/headers/XDataSource"
           content:
             application/json:
               schema:
@@ -1534,6 +1548,9 @@ paths:
       description: >-
         What the confirmation of the filing shows: number, status, policy,
         incident and supports. Only the insured who filed the claim reads it.
+        HA-L02: the read waits 900 ms for the database; when it does not
+        answer in time, the last read kept in the read cache answers, with
+        stale true and as_of the time it was read.
       security:
         - cognitoJwt: []
       parameters:
@@ -1546,6 +1563,10 @@ paths:
               schema:
                 type: string
                 enum: [no-store]
+            X-Stale:
+              $ref: "#/components/headers/XStale"
+            X-Data-Source:
+              $ref: "#/components/headers/XDataSource"
           content:
             application/json:
               schema:
@@ -2248,6 +2269,17 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 components:
+  headers:
+    XStale:
+      description: HA-L02. true when the read came from the read cache.
+      schema:
+        type: string
+        enum: ["true", "false"]
+    XDataSource:
+      description: HA-L02. Where the read came from.
+      schema:
+        type: string
+        enum: [database, cache]
   parameters:
     ClaimID:
       name: claim_id
@@ -2781,6 +2813,18 @@ components:
       type: object
       required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, place, description, filed_at, supports, evidence]
       properties:
+        stale:
+          type: boolean
+          description: >-
+            HA-L02. True when the database did not answer within 900 ms and
+            this is the last read kept in the read cache; the data may be out
+            of date.
+        as_of:
+          type: string
+          format: date-time
+          description: >-
+            HA-L02. When the data was read from the database: now for a
+            fresh read, the time of the cached read when stale is true.
         claim_id:
           type: string
           example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
@@ -2890,8 +2934,20 @@ components:
           format: date-time
     ClaimList:
       type: object
-      required: [items, next_page_token]
+      required: [items, next_page_token, stale, as_of]
       properties:
+        stale:
+          type: boolean
+          description: >-
+            HA-L02. True when the database did not answer within 900 ms and
+            this is the last read kept in the read cache; the data may be out
+            of date.
+        as_of:
+          type: string
+          format: date-time
+          description: >-
+            HA-L02. When the data was read from the database: now for a
+            fresh read, the time of the cached read when stale is true.
         items:
           type: array
           items:
@@ -3703,8 +3759,20 @@ components:
           format: date-time
     ClaimHistory:
       type: object
-      required: [claim_id, filing_number, status, last_changed_at, changes, reviews, last_return]
+      required: [claim_id, filing_number, status, last_changed_at, changes, reviews, last_return, stale, as_of]
       properties:
+        stale:
+          type: boolean
+          description: >-
+            HA-L02. True when the database did not answer within 900 ms and
+            this is the last read kept in the read cache; the data may be out
+            of date.
+        as_of:
+          type: string
+          format: date-time
+          description: >-
+            HA-L02. When the data was read from the database: now for a
+            fresh read, the time of the cached read when stale is true.
         claim_id:
           type: string
         filing_number:
