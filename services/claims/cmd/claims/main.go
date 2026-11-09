@@ -118,7 +118,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid configuration: %v", err)
 		}
-		evaluations := evaluationService(records, priorities, evidences, terms).WithDecisions(decisions)
+		// HU-W2.2-02: the claims in evaluation come ordered by priority.
+		queue, err := priorityQueueOf(records, decisions, priorities)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		evaluations := evaluationService(records, priorities, evidences, terms).WithDecisions(decisions).
+			WithPriorityQueue(queue, systemClock{})
 		opts = append(opts, httpadapter.WithEvaluation(evaluations, verifier))
 		// HU-W2.1-03: the advisor reviews every filing before it enters
 		// evaluation, and the history of the status of a claim is read here.

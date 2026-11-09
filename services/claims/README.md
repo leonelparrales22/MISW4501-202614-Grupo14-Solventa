@@ -171,7 +171,7 @@ indemnizar —y el pago sale solo— o lo rechaza con su motivo. Contrato:
 [`docs/contratos/HU-W2.2-03-api.md`](../../docs/contratos/HU-W2.2-03-api.md).
 
 ```
-GET  /v1/claims/evaluations ─────────▶ casos en in_evaluation (aprobados por el asesor) con su monto y su prioridad  [CA-1]
+GET  /v1/claims/evaluations ─────────▶ casos en in_evaluation ordenados por prioridad (HU-W2.2-02), con su monto     [CA-1]
 GET  /v1/claims/{id}/evaluation ─────▶ caso, soportes y evidencia firmados, triage, póliza y cobertura de hoy
                                        (core), asegurado con la cuenta enmascarada y la decisión                    [CA-1, CA-5]
 POST /v1/claims/{id}/approval ───────▶ costo bruto ≤ valor asegurado; paga bruto − deducible ──▶ approved          [CA-2]
@@ -314,6 +314,21 @@ GET /v1/claims[/{id}[/history]]
 - **Sin Redis no pasa nada:** sin `REDIS_ADDR` las consultas leen solo la base. Si Redis se cae, la falla se registra y la
   consulta sigue contra la base.
 - Prueba de carga: [`tests/load-k6/ha-l02`](../../tests/load-k6/ha-l02/README.md).
+
+## Cola de trabajo ordenada por prioridad (HU-W2.2-02)
+
+`GET /v1/claims/evaluations` es la cola de operaciones (O5): los casos `in_evaluation`, ordenados por nivel del triage
+(1, 2, 3 y al final los que aún no tienen) y en cada nivel por tiempo de espera desde la radicación. Contrato:
+[`docs/contratos/HU-W2.2-02-api.md`](../../docs/contratos/HU-W2.2-02-api.md).
+
+- **Orden en la base:** `PriorityQueue` (`internal/adapters/postgres/priority.go`) une `claim` con `claim_current_triage` y
+  ordena por `(rango, filed_at, id)` con paginación por cursor. Un nuevo cálculo del triage mueve el caso en la siguiente
+  lectura. En memoria, `memory.PriorityQueue` ordena con los niveles del servicio de triage.
+- **Filtros:** `level` (1, 2, 3, `none`), `line` (por el tipo de siniestro) y `status`. Los indicadores (`summary`) cuentan
+  toda la cola por nivel. `matching` cuenta lo que cumple los filtros, y el tiempo medio de resolución es el de los casos
+  decididos en los últimos 30 días (`null` si no hay ninguno).
+- **Asegurado de cada fila:** se lee del núcleo de pólizas una vez por asegurado de la página, con hasta 8 lecturas a la
+  vez. Si falla, la fila llega sin él.
 
 ## Requisitos de calidad que gobiernan el servicio
 
