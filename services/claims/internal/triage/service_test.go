@@ -38,6 +38,9 @@ type fakeStore struct {
 	failFor string
 	// conflictFor makes another task win the next Record of the claim.
 	conflictFor string
+	// afterCandidate runs once Candidate has read the claim: what another
+	// task does between that read and the next one.
+	afterCandidate func()
 }
 
 func newFakeStore(claims ...domain.ClaimRecord) *fakeStore {
@@ -80,12 +83,17 @@ func (s *fakeStore) Pending(_ context.Context, statuses []domain.Status, _ strin
 
 func (s *fakeStore) Candidate(_ context.Context, id string) (ports.TriageCandidate, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	c, ok := s.claims[id]
+	last := s.last(id)
+	hook := s.afterCandidate
+	s.mu.Unlock()
 	if !ok {
 		return ports.TriageCandidate{}, ports.ErrClaimNotFound
 	}
-	return ports.TriageCandidate{Claim: c, Last: s.last(id)}, nil
+	if hook != nil {
+		hook()
+	}
+	return ports.TriageCandidate{Claim: c, Last: last}, nil
 }
 
 func (s *fakeStore) Record(_ context.Context, r domain.TriageRecord) error {
@@ -380,6 +388,28 @@ func TestTheInsuredReadsOnlyTheTriageOfTheirClaims(t *testing.T) {
 
 	_, err = svc.View(as("sub-carolina", security.RoleInsured), "cl-404")
 	assert.ErrorIs(t, err, ports.ErrClaimNotFound)
+}
+
+// The sweep records the first calculation between the read of the claim and
+// the read of its history: the view says what its history shows, never
+// pending with a calculation in it.
+func TestTheViewIsConsistentWhenTheSweepRecordsBetweenItsReads(t *testing.T) {
+	store := newFakeStore(waterDamage("cl-1", amount(4_800_000)))
+	svc, _ := newService(store)
+	store.afterCandidate = func() {
+		store.afterCandidate = nil
+		recorded, err := svc.Sweep(context.Background(), 10)
+		require.NoError(t, err)
+		require.Equal(t, 1, recorded)
+	}
+
+	v, err := svc.View(as("sub-analyst", security.RoleOperations), "cl-1")
+
+	require.NoError(t, err)
+	require.Len(t, v.History, 1)
+	assert.Equal(t, domain.TriageAssessed, v.State)
+	require.NotNil(t, v.Current)
+	assert.Equal(t, 1, v.Current.Seq)
 }
 
 func TestAClaimThatNeverEnteredEvaluationHasNoTriage(t *testing.T) {
