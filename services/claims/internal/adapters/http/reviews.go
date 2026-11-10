@@ -123,6 +123,12 @@ type claimHistoryBody struct {
 	Changes       []statusChangeBody `json:"changes"`
 	Reviews       []reviewBody       `json:"reviews"`
 	LastReturn    *reviewBody        `json:"last_return"`
+	// Resubmissions are the times the insured sent the claim again after a
+	// return (HU-W2.1-04), oldest first.
+	Resubmissions []resubmissionBody `json:"resubmissions"`
+	// Requirements are the supports the claim can have with their rules
+	// (HU-W2.1-04): what the insured uploads to correct it.
+	Requirements []requirementBody `json:"requirements"`
 	// HA-L02: whether the history came from the read cache, and when it was
 	// read.
 	*freshnessBody
@@ -363,6 +369,11 @@ func claimHistory(svc Reviewer) http.HandlerFunc {
 			}
 			out.Changes = append(out.Changes, body)
 			out.LastChangedAt = c.ChangedAt.UTC()
+		}
+		out.Requirements = requirementBodiesOf(h.Requirements)
+		out.Resubmissions = make([]resubmissionBody, 0, len(h.Resubmissions))
+		for _, r := range h.Resubmissions {
+			out.Resubmissions = append(out.Resubmissions, resubmissionBodyOf(r))
 		}
 		out.Reviews = make([]reviewBody, 0, len(h.Reviews))
 		for _, r := range h.Reviews {

@@ -64,6 +64,27 @@ func TestTheReviewsLiveWhereTheClaimsLive(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestTheResubmissionsLiveWhereTheReviewsLive(t *testing.T) {
+	records := postgres.NewClaimRecordStore(nil)
+	reviews, err := reviewStoreOf(records)
+	require.NoError(t, err)
+	store, err := resubmissionStoreOf(records, reviews)
+	require.NoError(t, err)
+	assert.IsType(t, &postgres.ResubmissionStore{}, store)
+
+	cases := memory.NewCaseStore()
+	reviews, err = reviewStoreOf(cases)
+	require.NoError(t, err)
+	store, err = resubmissionStoreOf(cases, reviews)
+	require.NoError(t, err)
+	assert.Same(t, reviews, store, "in memory the reviews and the resubmissions are one store")
+
+	_, err = resubmissionStoreOf(cases, postgres.ReviewStoreOf(records))
+	assert.Error(t, err)
+	_, err = resubmissionStoreOf(fakeRecords{}, reviews)
+	assert.Error(t, err)
+}
+
 func TestTheTriageStartsItsSweep(t *testing.T) {
 	cases := memory.NewCaseStore()
 	_, _, err := cases.Create(context.Background(), domain.Claim{ID: "cl-1", Subject: "sub-carolina", FilingKey: "k",

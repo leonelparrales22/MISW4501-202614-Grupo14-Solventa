@@ -84,6 +84,20 @@ type requirementBody struct {
 	Formats  []string `json:"formats"`
 }
 
+// requirementBodiesOf are the supports with their rules, never null.
+func requirementBodiesOf(list []domain.Requirement) []requirementBody {
+	out := make([]requirementBody, 0, len(list))
+	for _, r := range list {
+		formats := make([]string, 0, len(r.Formats))
+		for _, f := range r.Formats {
+			formats = append(formats, string(f))
+		}
+		out = append(out, requirementBody{Code: r.Code, Label: r.Label, Required: r.Required, MinFiles: r.MinFiles,
+			MaxFiles: r.MaxFiles, Formats: formats})
+	}
+	return out
+}
+
 type incidentOptionBody struct {
 	Code         string            `json:"code"`
 	Label        string            `json:"label"`
@@ -121,17 +135,7 @@ func filingOptions(svc WebFilingService) http.HandlerFunc {
 				IncidentTypes: []incidentOptionBody{},
 			}
 			for _, o := range p.Incidents {
-				option := incidentOptionBody{Code: string(o.Type), Label: o.Label, Requirements: []requirementBody{}}
-				for _, r := range o.Requirements {
-					formats := make([]string, 0, len(r.Formats))
-					for _, f := range r.Formats {
-						formats = append(formats, string(f))
-					}
-					option.Requirements = append(option.Requirements, requirementBody{
-						Code: r.Code, Label: r.Label, Required: r.Required, MinFiles: r.MinFiles, MaxFiles: r.MaxFiles,
-						Formats: formats,
-					})
-				}
+				option := incidentOptionBody{Code: string(o.Type), Label: o.Label, Requirements: requirementBodiesOf(o.Requirements)}
 				body.IncidentTypes = append(body.IncidentTypes, option)
 			}
 			out.Policies = append(out.Policies, body)

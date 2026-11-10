@@ -121,28 +121,32 @@ type ChecklistItem struct {
 // Checklist is what the advisor reviews of a filing, in the order of the
 // catalog. A filing of the phone has no supports: its evidence (4 to 6
 // photographs) is the "Fotos del vehículo", the only one it requires, and the
-// rest of its claim type can be asked for.
+// rest of its claim type can be asked for. The supports the insured adds when
+// correcting it (HU-W2.1-04) count as well, and photographs of the vehicle
+// uploaded then replace the ones of the phone.
 func Checklist(c ClaimRecord) []ChecklistItem {
 	option, _ := CatalogFor(c.CatalogVersion).Incident(c.IncidentType)
+	files := map[string]int{}
+	for _, a := range c.Supports {
+		files[a.RequirementCode]++
+	}
 	var out []ChecklistItem
 	if c.Channel != ChannelWeb {
+		photos := files[SupportVehiclePhotos]
+		if photos == 0 {
+			photos = len(c.Evidence)
+		}
 		out = append(out, ChecklistItem{RequirementCode: SupportVehiclePhotos, Label: "Fotos del vehículo", Required: true,
-			Files: len(c.Evidence)})
+			Files: photos})
 		for _, r := range option.Requirements {
 			if r.Code != SupportVehiclePhotos {
-				out = append(out, ChecklistItem{RequirementCode: r.Code, Label: r.Label})
+				out = append(out, ChecklistItem{RequirementCode: r.Code, Label: r.Label, Files: files[r.Code]})
 			}
 		}
 		return out
 	}
 	for _, r := range option.Requirements {
-		item := ChecklistItem{RequirementCode: r.Code, Label: r.Label, Required: r.Required}
-		for _, a := range c.Supports {
-			if a.RequirementCode == r.Code {
-				item.Files++
-			}
-		}
-		out = append(out, item)
+		out = append(out, ChecklistItem{RequirementCode: r.Code, Label: r.Label, Required: r.Required, Files: files[r.Code]})
 	}
 	return out
 }

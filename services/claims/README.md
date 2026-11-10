@@ -225,6 +225,30 @@ GET  /v1/claims/{id}/history ────────▶ cada cambio de estado (
 - La migración `0007` reconstruye el historial de los casos anteriores: la radicación y, si estaban decididos, su estado
   actual a la hora de la decisión.
 
+## Edición de la radicación devuelta (HU-W2.1-04)
+
+El asegurado corrige una radicación que el asesor le devolvió y la reenvía (pantalla A9), sin crear otro siniestro.
+Contrato: [`docs/contratos/HU-W2.1-04-api.md`](../../docs/contratos/HU-W2.1-04-api.md).
+
+```
+GET  /v1/claims/{id}/history ───▶ last_return: motivo, mensaje, veredicto por soporte, datos a corregir y su seq  [CA-1]
+POST /v1/claims/{id}/resubmission ─▶ review_seq + hechos que cambian + por requisito el conjunto de archivos que queda
+     ├─ falta algo ──▶ 422 con todo lo pendiente (not_replaced, missing, reglas de la radicación)             [CA-3]
+     └─ completo ───▶ mismos id y radicado, active para una nueva revisión; claim_resubmission registra
+                      quién, cuándo y qué cambió                                                     [CA-2, CA-4, CA-5]
+```
+
+- **Editables:** fecha y hora, lugar, descripción y monto estimado; la póliza y el tipo no. La fecha se valida contra la
+  radicación y la vigencia de la póliza copiada.
+- **Soportes:** cada grupo es el conjunto completo que queda en el requisito. Los archivos nuevos se agregan a
+  `claim_support`, y los que salen se registran en `claim_support_withdrawal` y dejan de mostrarse: `claim_support` sigue
+  siendo de solo inserción. Un soporte ilegible exige un archivo nuevo, y uno faltante exige al menos un archivo.
+- **Concurrencia e idempotencia:** el `UPDATE` corrige el caso solo si sigue `returned` por esa misma revisión, así que de
+  dos reenvíos a la vez gana uno. Un reintento del mismo asegurado recibe el reenvío que ya entró.
+- **Radicaciones del móvil:** se corrigen desde el portal. Las fotos que se suben reemplazan las del móvil en el
+  *checklist* del asesor (`domain.Checklist`).
+- `claim_resubmission` y `claim_support_withdrawal` son de solo inserción (migración `0010`).
+
 ## Asignación del prestador más cercano (HU-W2.3-01)
 
 El analista de operaciones asigna a un caso en evaluación el prestador más cercano con la especialidad que el caso necesita,

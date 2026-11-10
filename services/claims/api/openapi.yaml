@@ -1,8 +1,19 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.12.0
+  version: 0.13.0
   description: >-
+    0.13.0 (HU-W2.1-04): POST /v1/claims/{claim_id}/resubmission is the
+    insured correcting a returned filing and sending it again: the facts that
+    change, the supports added or replaced (a group is the whole set of files
+    the requirement keeps), and review_seq, the return it answers. The claim
+    keeps its id and filing number, becomes active for a new review of the
+    advisor and the resubmission is recorded (who, when, what changed); the
+    history lists the resubmissions. Every support the advisor found illegible
+    must be replaced and every one missing uploaded, besides the required ones
+    of the claim type: otherwise 422 with every field still missing. Filings of
+    the phone too: photographs of the vehicle uploaded then replace the ones of
+    the phone.
     0.12.0 (HU-W2.2-02): GET /v1/claims/evaluations is the queue of
     operations ordered by priority (Triage 1, 2 and 3, then the claims without
     a level, and in each the one filed first), filtered by level, line and
@@ -1490,7 +1501,9 @@ paths:
         happened, and the date of the last one. The database records them as
         the status changes, whoever changes it, so every stage of the case is
         here: filed, returned, sent again, in evaluation, decided and paid.
-        When the claim is returned, last_return says why and what is missing.
+        When the claim is returned, last_return says why and what is missing,
+        and requirements the rules of the supports to upload (HU-W2.1-04);
+        resubmissions are the times it was sent again.
         The insured reads only their own claims (another one answers 404, as if
         it did not exist); the advisor and operations read any. It is the
         source of the timeline of the case (HU-W2.1-02, HU-M2.4-01) and of the
@@ -1536,6 +1549,95 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/resubmission:
+    post:
+      summary: Correct a returned filing and send it again (HU-W2.1-04)
+      description: >-
+        The insured who filed the claim corrects it while it is returned
+        (screen A9): the facts that change (occurred_at, place, description,
+        estimated_amount_minor; one that is not sent is kept) and the supports.
+        A support group is the whole set of files the requirement keeps after
+        the correction: the ids of the claim it keeps and the new ones
+        uploaded (POST /v1/claims/supports); a requirement that is not sent
+        keeps its files. review_seq is the review that returned the claim
+        (last_return.seq of the history). Everything is checked as the advisor
+        will review it: the facts with the rules of the filing (the time of the
+        incident within the validity of the policy copied at the filing), every
+        required support of the claim type with its files, every support the
+        advisor found illegible replaced with a new file (not_replaced) and
+        every one missing uploaded (missing). The claim keeps its id and filing
+        number and becomes active for a new review; the resubmission is
+        recorded with who, when and what changed, and the replaced files stop
+        being shown. A retry of a resubmission that went through answers 200
+        with the same one and the claim as it is now. Only the insured who
+        filed the claim; another insured's answers 404.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResubmissionRequest"
+      responses:
+        "200":
+          description: Sent again; the claim is active for a new review
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResubmissionOutcome"
+        "400":
+          description: invalid_request - the body does not follow the schema
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found - it does not exist or it is another insured's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            claim_not_returned (it is not returned: never was, or it was sent
+            already) or stale_return (review_seq is not the last return: read
+            the history and correct the last one)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every field and support still missing or invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResubmissionValidationError"
         "503":
           description: claims_unavailable - retry
           content:
@@ -3759,7 +3861,8 @@ components:
           format: date-time
     ClaimHistory:
       type: object
-      required: [claim_id, filing_number, status, last_changed_at, changes, reviews, last_return, stale, as_of]
+      required: [claim_id, filing_number, status, last_changed_at, changes, reviews, last_return, resubmissions,
+        requirements, stale, as_of]
       properties:
         stale:
           type: boolean
@@ -3798,6 +3901,151 @@ components:
             - $ref: "#/components/schemas/Review"
           nullable: true
           description: The review that returned the claim, while it is returned; null otherwise.
+        resubmissions:
+          type: array
+          description: >-
+            HU-W2.1-04. The times the insured sent the claim again after a
+            return, oldest first, with what changed.
+          items:
+            $ref: "#/components/schemas/Resubmission"
+        requirements:
+          type: array
+          description: >-
+            HU-W2.1-04. The supports the claim can have, with their rules, in
+            the order of the catalog: what the insured uploads to correct a
+            returned filing (screen A9). A filing of the phone has its
+            photographs of the vehicle as the one required.
+          items:
+            $ref: "#/components/schemas/Requirement"
+    ResubmissionRequest:
+      type: object
+      additionalProperties: false
+      required: [review_seq]
+      properties:
+        review_seq:
+          type: integer
+          minimum: 1
+          description: The review that returned the claim (last_return.seq of the history).
+        occurred_at:
+          type: string
+          format: date-time
+          description: RFC 3339. Not after the filing, and within the validity of the policy filed.
+        place:
+          type: string
+          description: 3 to 160 characters.
+        description:
+          type: string
+          description: 10 to 1000 characters.
+        estimated_amount_minor:
+          allOf:
+            - $ref: "#/components/schemas/EstimatedAmountMinor"
+          nullable: true
+          description: Null or absent keeps the amount filed.
+        supports:
+          type: array
+          maxItems: 20
+          description: >-
+            One group per requirement that changes: the whole set of files it
+            keeps (ids of the claim and new ones). At most 20 ids in all.
+          items:
+            $ref: "#/components/schemas/SupportGroup"
+    FactChange:
+      type: object
+      required: [fact, before, after]
+      properties:
+        fact:
+          $ref: "#/components/schemas/CorrectableFact"
+        before:
+          type: string
+          nullable: true
+          description: RFC 3339 for occurred_at, cents for estimated_amount; null for no value.
+        after:
+          type: string
+          nullable: true
+    SupportChange:
+      type: object
+      required: [requirement_code, label, added, withdrawn]
+      properties:
+        requirement_code:
+          type: string
+          example: traffic_report
+        label:
+          type: string
+          example: Informe de tránsito o croquis
+        added:
+          type: array
+          description: The ids of the files the resubmission added.
+          items:
+            type: string
+        withdrawn:
+          type: array
+          description: The ids of the files it replaced; they stop being shown.
+          items:
+            type: string
+    Resubmission:
+      type: object
+      required: [seq, review_seq, resubmitted_by, resubmitted_at, changed_facts, changed_supports]
+      properties:
+        seq:
+          type: integer
+          minimum: 1
+          description: 1 for the first resubmission of the claim, and so on.
+        review_seq:
+          type: integer
+          minimum: 1
+          description: The return it answered.
+        resubmitted_by:
+          type: string
+          description: The subject of the insured who sent it.
+        resubmitted_at:
+          type: string
+          format: date-time
+        changed_facts:
+          type: array
+          items:
+            $ref: "#/components/schemas/FactChange"
+        changed_supports:
+          type: array
+          items:
+            $ref: "#/components/schemas/SupportChange"
+    ResubmissionOutcome:
+      type: object
+      required: [claim_id, filing_number, status, resubmission]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+          description: The same filing number.
+        status:
+          $ref: "#/components/schemas/ClaimStatus"
+        resubmission:
+          $ref: "#/components/schemas/Resubmission"
+    ResubmissionValidationError:
+      type: object
+      required: [error, message, fields]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed]
+        message:
+          type: string
+        fields:
+          type: array
+          description: >-
+            Everything still missing or invalid at once. A support is named
+            supports.<requirement_code>; the list itself, supports.
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                example: supports.traffic_report
+              code:
+                type: string
+                enum: [required, invalid_format, out_of_range, missing, too_few, too_many, not_applicable,
+                  not_found, not_replaced]
     Specialty:
       type: string
       description: >-

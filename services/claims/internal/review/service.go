@@ -32,6 +32,10 @@ type Service struct {
 	// wake, when set, is called after an approval so the triage assesses the
 	// claim at once instead of on its next sweep.
 	wake func()
+	// The resubmission of a returned filing (HU-W2.1-04); nil until
+	// WithResubmissions.
+	resubmissions ports.ResubmissionStore
+	supports      ports.SupportStore
 }
 
 // NewService builds the service. wake may be nil.
@@ -131,6 +135,12 @@ type History struct {
 	// LastReturn is the review that returned the claim, while it is
 	// returned; nil otherwise.
 	LastReturn *domain.Review
+	// Resubmissions are the times the insured sent the claim again after a
+	// return, oldest first (HU-W2.1-04).
+	Resubmissions []domain.Resubmission
+	// Requirements are the supports the claim can have, with their rules:
+	// what the insured uploads to correct a returned filing (screen A9).
+	Requirements []domain.Requirement
 }
 
 // ErrNotOwner means an insured asked for the history of a claim that is not
@@ -151,12 +161,17 @@ func (s *Service) History(ctx context.Context, claimID, owner string) (History, 
 	if err != nil {
 		return History{}, err
 	}
-	out := History{Claim: c, Changes: changes}
+	out := History{Claim: c, Changes: changes, Requirements: domain.RequirementsOf(c)}
 	reviews, err := s.store.Reviews(ctx, claimID)
 	if err != nil {
 		return History{}, fmt.Errorf("read the reviews of the claim: %w", err)
 	}
 	out.Reviews = reviews
+	if s.resubmissions != nil {
+		if out.Resubmissions, err = s.resubmissions.Resubmissions(ctx, claimID); err != nil {
+			return History{}, fmt.Errorf("read the resubmissions of the claim: %w", err)
+		}
+	}
 	if c.Status == domain.StatusReturned {
 		for i := len(reviews) - 1; i >= 0; i-- {
 			if reviews[i].Outcome == domain.ReviewReturned {

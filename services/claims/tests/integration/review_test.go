@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -15,10 +16,17 @@ import (
 )
 
 // withReviews mounts the review of the advisor and the history of a claim
-// (HU-W2.1-03) over the evaluation the service already reads with.
+// (HU-W2.1-03) over the evaluation the service already reads with, and the
+// resubmission of a returned filing (HU-W2.1-04).
 func withReviews(records *postgres.ClaimRecordStore, reader *evaluation.Service) httpadapter.Option {
 	store := postgres.ReviewStoreOf(records)
-	return httpadapter.WithReviews(review.NewService(records, store, store, reader, clock{}, nil), verifier)
+	svc := review.NewService(records, store, store, reader, clock{}, nil).
+		WithResubmissions(postgres.ResubmissionStoreOf(records), postgres.SupportStoreOf(records))
+	reviews, resubmission := httpadapter.WithReviews(svc, verifier), httpadapter.WithResubmission(svc, verifier)
+	return func(r chi.Router) {
+		reviews(r)
+		resubmission(r)
+	}
 }
 
 // admit is the advisor approving a filing: since HU-W2.1-03 only then does

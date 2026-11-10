@@ -25,3 +25,17 @@ type StatusHistory interface {
 	// History returns the changes of a claim, oldest first.
 	History(ctx context.Context, claimID string) ([]domain.StatusChange, error)
 }
+
+// ResubmissionStore keeps the resubmissions of returned filings (HU-W2.1-04).
+// Recording one corrects the facts, attaches the new supports, withdraws the
+// replaced ones and makes the claim active again, all or nothing.
+type ResubmissionStore interface {
+	// Resubmit records the resubmission, conditionally on the claim being
+	// returned by the review it answers; it assigns the Seq. It returns
+	// domain.ErrNotReturned when the claim is not returned any more,
+	// ErrClaimNotFound when there is no such claim and
+	// ErrSupportAlreadyAttached when a new support is attached to a claim.
+	Resubmit(ctx context.Context, r domain.Resubmission) (domain.Resubmission, error)
+	// Resubmissions returns the resubmissions of a claim, oldest first.
+	Resubmissions(ctx context.Context, claimID string) ([]domain.Resubmission, error)
+}

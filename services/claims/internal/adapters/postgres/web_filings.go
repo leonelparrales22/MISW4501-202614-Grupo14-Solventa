@@ -367,7 +367,9 @@ func (s *ClaimRecordStore) supportsOf(ctx context.Context, claimID string) ([]do
 	rows, err := s.db.QueryContext(ctx, `SELECT f.support_id, f.owner_sub, f.file_name, f.content_type, f.byte_size,
 			f.sha256, f.uploaded_at, f.confirmed_at, cs.requirement_code, cs.position
 		FROM claim_support cs JOIN support_file f ON f.support_id = cs.support_id
-		WHERE cs.claim_id = $1 ORDER BY cs.position`, claimID)
+		WHERE cs.claim_id = $1
+		  AND NOT EXISTS (SELECT 1 FROM claim_support_withdrawal w WHERE w.support_id = cs.support_id)
+		ORDER BY cs.position`, claimID)
 	if err != nil {
 		return nil, fmt.Errorf("read the supports of the claim: %w", err)
 	}

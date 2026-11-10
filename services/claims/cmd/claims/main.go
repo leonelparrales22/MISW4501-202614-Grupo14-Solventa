@@ -132,13 +132,19 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid configuration: %v", err)
 		}
-		reviewSvc := review.NewService(records, reviews, reviews, evaluations, systemClock{}, nil)
+		resubmissions, err := resubmissionStoreOf(records, reviews)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		// HU-W2.1-04: the insured corrects a returned filing and sends it again.
+		reviewSvc := review.NewService(records, reviews, reviews, evaluations, systemClock{}, nil).
+			WithResubmissions(resubmissions, supports)
 		var reviewer httpadapter.Reviewer = reviewSvc
 		if cache != nil {
 			reviewer = cachedReviewer{Service: reviewSvc,
 				history: readcache.NewHistory(reviewSvc, cache, cacheCfg.budget, systemClock{})}
 		}
-		opts = append(opts, httpadapter.WithReviews(reviewer, verifier))
+		opts = append(opts, httpadapter.WithReviews(reviewer, verifier), httpadapter.WithResubmission(reviewSvc, verifier))
 		opts = append(opts, decisionRoutes(context.Background(), records, decisions, terms, verifier, os.Getenv)...)
 		// HU-W2.3-01: the assignment of the nearest provider to a claim in
 		// evaluation, and the registry of providers that operations keeps.
