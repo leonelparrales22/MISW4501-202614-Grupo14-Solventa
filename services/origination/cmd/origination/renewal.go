@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
+	emailadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/email"
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/http"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/formalization"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/profiling"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/rating"
@@ -101,4 +103,63 @@ func expiringOptions(billing bool, rules domain.RenewalPolicy, db *sql.DB,
 	log.Printf("policies about to expire (HU-W1.5-01): GET /v1/policies/expiring for the advisor, default range of %d days",
 		rules.WindowDays)
 	return []httpadapter.Option{httpadapter.WithExpiringPolicies(svc, verifier)}, nil
+}
+
+// assistedRenewalWiring is what the assisted renewal (HU-W1.5-03) takes from
+// the rest of the composition: the online renewal it extends, the profiling,
+// the offers its policies were bought from, the consent verifier of the
+// offers and the e-mail client.
+type assistedRenewalWiring struct {
+	renewals *renewal.Service
+	db       *sql.DB
+	resolver *profiling.Resolver
+	offers   ports.OfferReader
+	// consents is the verifier of POST /v1/offers (AUDIT_URL); without it the
+	// requote of a policy born in the embedded channel fails closed (503).
+	consents ports.ConsentVerifier
+	// email sends the confirmation code; without EMAIL_URL the code cannot be
+	// delivered (503), as in the purchase formalization (HU-W1.1-03).
+	email emailadapter.Sender
+}
+
+// newAssistedRenewalService wires the assisted renewal over origination's
+// database. It adds no variable: it uses the ones of the online renewal,
+// AUDIT_URL and EMAIL_URL.
+func newAssistedRenewalService(w assistedRenewalWiring) (*renewal.AssistedService, error) {
+	if w.db == nil {
+		return nil, fmt.Errorf("the assisted renewal needs origination's database (%s)", envDatabaseURL)
+	}
+	var sender ports.ConsentCodeSender = formalization.UnavailableSender{}
+	if w.email != nil {
+		sender = emailadapter.NewRenewalConsentNotifier(w.email)
+	}
+	customers := postgres.NewCustomerStore(w.db)
+	return renewal.NewAssistedService(renewal.AssistedConfig{
+		Renewals: w.renewals, Requotes: postgres.NewRenewalRequoteStore(w.db), Assisted: postgres.NewRenewalStore(w.db),
+		Origins: renewal.OriginFinder{Policies: postgres.NewPolicyStore(w.db), Charges: postgres.NewChargeStore(w.db),
+			Offers: w.offers, BySubject: customers, ByDocument: customers},
+		Profiles: w.resolver, Consents: w.consents,
+		Challenges: postgres.NewRenewalConsentChallengeStore(w.db), Sender: sender,
+	})
+}
+
+// assistedRenewalOptions mounts the assisted renewal (HU-W1.5-03) when the
+// online renewal of HU-W1.5-02 is wired (database and premium charge) and the
+// human routes are on (AUTH_ISSUER, a verifier). Otherwise nothing is mounted.
+func assistedRenewalOptions(w assistedRenewalWiring, verifier security.Verifier) ([]httpadapter.Option, error) {
+	if w.renewals == nil || verifier == nil {
+		return nil, nil
+	}
+	svc, err := newAssistedRenewalService(w)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("assisted renewal (HU-W1.5-03): /v1/policies/{policy_id}/assisted-renewal for the advisor")
+	if w.consents == nil {
+		log.Printf("assisted renewal (HU-W1.5-03): AUDIT_URL is not set, the requote of a policy born in the embedded channel answers 503 (fail-closed)")
+	}
+	if w.email == nil {
+		log.Printf("assisted renewal (HU-W1.5-03): %s is not set, the confirmation code cannot be delivered", envEmailURL)
+	}
+	return []httpadapter.Option{httpadapter.WithAssistedRenewals(svc, verifier)}, nil
 }

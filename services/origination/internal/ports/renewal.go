@@ -69,3 +69,56 @@ type CustomerBySubject interface {
 	// GetBySubject returns ErrCustomerNotFound when the subject has no customer.
 	GetBySubject(ctx context.Context, subject string) (domain.Customer, error)
 }
+
+// Errors of the assisted renewal (HU-W1.5-03).
+var (
+	// ErrRenewalRequoteNotFound is returned when a requote id is unknown, or
+	// when the period of a policy has no requote yet.
+	ErrRenewalRequoteNotFound = errors.New("renewal requote not found")
+	// ErrRenewalFormalizationNotFound is returned when a renewal was not
+	// formalized by an advisor (the insured renewed it online).
+	ErrRenewalFormalizationNotFound = errors.New("renewal formalization not found")
+)
+
+// RenewalRequoteRepository keeps the requotes advisors make of a renewal. There
+// is deliberately no Update or Delete: a requote is a snapshot the
+// formalization cites.
+type RenewalRequoteRepository interface {
+	// Create stores the requote.
+	Create(ctx context.Context, r domain.RenewalRequote) error
+	// Get returns ErrRenewalRequoteNotFound for an unknown id.
+	Get(ctx context.Context, requoteID string) (domain.RenewalRequote, error)
+	// Latest returns the last requote of the period of a policy, or
+	// ErrRenewalRequoteNotFound when it has none.
+	Latest(ctx context.Context, policyID string, periodEnd time.Time) (domain.RenewalRequote, error)
+}
+
+// AssistedRenewalRepository records the renewals advisors formalize.
+type AssistedRenewalRepository interface {
+	// CreateAssisted stores the renewal and its formalization in one
+	// transaction, unless the policy and period already have a renewal; then
+	// it stores nothing and returns the existing renewal with created=false,
+	// and its formalization (nil when the insured renewed online). Two
+	// advisors, or an advisor and the insured, get a single outcome.
+	CreateAssisted(ctx context.Context, r domain.Renewal, f domain.RenewalFormalization) (stored domain.Renewal,
+		formalization *domain.RenewalFormalization, created bool, err error)
+	// GetFormalization returns ErrRenewalFormalizationNotFound when the
+	// renewal was not formalized by an advisor.
+	GetFormalization(ctx context.Context, renewalID string) (domain.RenewalFormalization, error)
+}
+
+// OfferReader reads the offer a policy was bought from, to know the customer
+// its profile and its consent are keyed by and the channel it was sold in
+// (HU-W1.5-03, decision D-6). The PersonalizedOfferStore implements it.
+type OfferReader interface {
+	// Get returns ErrOfferNotFound for an unknown id (a demonstration offer
+	// has no stored row).
+	Get(ctx context.Context, offerID string) (domain.PersonalizedOffer, error)
+}
+
+// CustomerByDocument finds the customer with a document id; the
+// CustomerRepository implements it.
+type CustomerByDocument interface {
+	// GetByDocument returns ErrCustomerNotFound when the document is unknown.
+	GetByDocument(ctx context.Context, documentID string) (domain.Customer, error)
+}

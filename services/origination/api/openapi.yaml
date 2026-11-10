@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.14.0
+  version: 0.15.0
 paths:
   /health:
     get:
@@ -1283,6 +1283,290 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/{policy_id}/assisted-renewal:
+    get:
+      summary: Read where the assisted renewal of a policy stands, for the advisor (HU-W1.5-03)
+      description: >
+        Screens S7 and S7b of the advisor portal, opened from the list of the
+        policies about to expire (HU-W1.5-01) with "Renovar" or "Ver". Returns
+        the policy (line life; the holder without their contact), its renewal
+        window, the current conditions, the payment method the renewal charges
+        (without its token; null when none was registered), the last requote of
+        the current period, the renewal of the period with the channel that
+        made it (advisor when an advisor formalized it, insured when the
+        insured renewed online, HU-W1.5-02), the advisor's record and the
+        premium charge of the renewal with its outcome; renewal.retry_until
+        says until when the insured can retry with another payment method
+        from their portal. The renewal is settled first, as the online renewal
+        does. consent_mode is audit for a policy born in the embedded channel
+        (or whose channel is unknown): the requote asks audit for the consent;
+        advisor_affirmation for a policy born in the assisted channel: the
+        advisor affirms the customer's consent with consent_affirmed.
+        blocked_reason tells why the advisor cannot renew now: outside the
+        window or not renewed (renewal_not_available), the period already has
+        a renewal (renewal_closed), or there is no registered payment method
+        to charge (payment_method_missing; the requote is allowed, the
+        formalization is not). The page works on reload: everything comes from
+        here. Only advisors; no answer is cached.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: Where the assisted renewal stands
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistedRenewal"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/{policy_id}/assisted-renewal/requotes:
+    post:
+      summary: Requote the renewal of a policy with the rating engine (HU-W1.5-03)
+      description: >
+        CA-1. The consent comes first and nothing is consulted without it:
+        for a policy born in the embedded channel (or of unknown channel) audit
+        must answer that the customer has an active consent (otherwise 422
+        consent_required, and 503 consent_unverifiable when audit does not
+        answer); for a policy born in the assisted channel the body must carry
+        consent_affirmed true (otherwise 422 validation_failed on the field
+        consent_affirmed), and the requote records who affirmed it and when.
+        Then the external sources are queried first, even when a recent profile
+        is cached, and the cache only backs them: with the sources down the
+        requote uses the last cached profile (at most 30 days old) and says so
+        (mode provisional, source cache, notice last_profile_in_use and
+        profile_date, CA-5) or, without a recent one, the base actuarial
+        profile (notice personalization_unavailable). The engine prices the
+        renewal with the age of today, the same insured amount and the renewal
+        term, and the good-experience discount of HU-W1.5-02 applies. requoted
+        is false when the engine could not price it (no customer or birth date
+        for the policy) and the conditions repeat the current ones. The requote
+        is stored and immutable; it can be formalized for 24 hours and only
+        while it is the last one of the period. Only advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequoteRenewalRequest"
+      responses:
+        "201":
+          description: The requote, stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenewalRequote"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          $ref: "#/components/responses/RenewalNotAvailable"
+        "422":
+          description: >
+            A policy born in the assisted channel without consent_affirmed
+            (validation_failed, field consent_affirmed), or a policy born in the
+            embedded channel whose customer has no active consent in audit
+            (consent_required). Nothing was consulted.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "503":
+          description: The consent could not be verified (consent_unverifiable) or the requote could not be made (renewal_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/policies/{policy_id}/assisted-renewal/consent:
+    post:
+      summary: Send the insured the confirmation code of a renewal (HU-W1.5-03)
+      description: >
+        Only for the confirmation_code acceptance method, as in the purchase
+        (HU-W1.1-03): the service generates a code of 6 digits, keeps only its
+        hash and e-mails it to the holder of the policy; the code never travels
+        back to the advisor, who only gets the masked address. The code is
+        valid for 10 minutes and never past the requote. A new code replaces
+        the previous one, up to 3 codes per requote. Only the last valid
+        requote of an open period, of a policy with a registered payment
+        method, gets a code. Only advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenewalConsentCodeRequest"
+      responses:
+        "200":
+          description: The code was sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenewalConsentCodeSent"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The policy (policy_not_found) or its requote (requote_not_found) does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Outside the window or not renewed (renewal_not_available), renewed
+            by the insured (renewal_closed), already formalized by an advisor
+            (already_formalized) or without a registered payment method
+            (payment_method_missing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >
+            requote_id is missing (validation_failed), the requote expired
+            (requote_expired) or a newer one replaced it (requote_superseded)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "429":
+          description: The requote used all its codes (too_many_codes)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The code cannot be delivered (code_delivery_unavailable) or the renewal is down (renewal_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/policies/{policy_id}/assisted-renewal/formalization:
+    post:
+      summary: Formalize the renewal of a policy on behalf of the insured (HU-W1.5-03)
+      description: >
+        CA-2, CA-3 and CA-4. The advisor cites the requote the customer
+        accepted and records how and when they accepted, with the three
+        methods of the purchase (HU-W1.1-03): a recorded call or a remote
+        signature, identified by its reference, or the confirmation code the
+        customer received (5 attempts per requote). The requote must be the
+        last of the period and valid, and the policy must have a registered
+        payment method. Formalizing records the renewal of the period with the
+        advisor (with the name of their account when it has one), the date, the
+        acceptance and the requote applied, then charges the requoted premium
+        with the registered method through the premium charge of HA-D02 with
+        the channel renewal; once confirmed a new policy is active with the
+        coverage starting when the renewed one ends, and its certificate is
+        issued (HU-W1.3-03), as in the online renewal. One renewal per policy
+        and period: another advisor gets 409 already_formalized and, after the
+        insured renewed online, 409 renewal_closed; repeating it by the advisor
+        who formalized returns the same renewal (200) whatever the body. Every
+        invalid field is reported at once (422 validation_failed). Answers the
+        body of GET …/assisted-renewal. Only advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FormalizeRenewalRequest"
+      responses:
+        "200":
+          description: The caller already formalized the renewal of this period; the same renewal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistedRenewal"
+        "201":
+          description: The renewal was formalized and its charge started
+          headers:
+            Location:
+              description: Path of the assisted renewal of the policy.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistedRenewal"
+        "400":
+          description: The body is not valid JSON or the policy id is invalid (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The policy (policy_not_found) or its requote (requote_not_found) does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Another advisor formalized the period (already_formalized), the
+            insured renewed it (renewal_closed), it is outside the window or not
+            renewed (renewal_not_available), or there is no registered payment
+            method (payment_method_missing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >
+            A field is missing or invalid (validation_failed, with every field),
+            the requote expired (requote_expired) or was replaced
+            (requote_superseded), no code was requested (consent_code_required),
+            the code is not the one sent (invalid_confirmation_code) or it
+            expired (confirmation_code_expired)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "429":
+          description: The requote used all its attempts (too_many_attempts)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/RenewalUnavailable"
   /v1/policies/{policy_id}/renewal:
@@ -3436,6 +3720,388 @@ components:
           description: The premium charge of the renewal, as GET /v1/acceptances/{charge_id}/charge returns it.
           allOf:
             - $ref: "#/components/schemas/Charge"
+    RequoteRenewalRequest:
+      type: object
+      properties:
+        consent_affirmed:
+          type: boolean
+          description: >
+            The advisor's affirmation that the customer authorized the
+            consultation of their financial data for this renewal. Required and
+            true for a policy born in the assisted channel (consent_mode
+            advisor_affirmation); ignored for the others.
+    RequoteSource:
+      type: object
+      required: [source, status, latency_ms]
+      properties:
+        source:
+          type: string
+          description: open_finance, open_data or kyc.
+        status:
+          type: string
+          enum: [ok, timeout, error, circuit_open]
+        latency_ms:
+          type: integer
+          minimum: 0
+    AppliedRule:
+      type: object
+      required: [code, value]
+      description: One factor of the rating engine and the value it took.
+      properties:
+        code:
+          type: string
+          enum: [base_monthly_rate, age_factor, risk_factor, term_factor, rounding_step]
+        value:
+          type: number
+    RenewalRequote:
+      type: object
+      required: [requote_id, created_at, expires_at, status, current, renewal, premium_change_rate, discount_rate, requoted,
+        rating_version, applied_rules, mode, source, profile_date, unavailable_source, notice, sources, consent_basis,
+        consent_affirmed_at, consent_affirmed_by_email, consent_affirmed_by_name]
+      description: >
+        A requote of the renewal made by an advisor. It never carries the score
+        or the category of the profile.
+      properties:
+        requote_id:
+          type: string
+          description: '"rq-" and 128 random bits.'
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: 24 hours after it was made.
+        status:
+          type: string
+          enum: [valid, expired, superseded]
+        current:
+          $ref: "#/components/schemas/RenewalTerms"
+        renewal:
+          $ref: "#/components/schemas/RenewalTerms"
+        premium_change_rate:
+          type: number
+          description: Renewed premium against the current one, as a fraction (0.053 is +5.3 %).
+        discount_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Good-experience discount applied (0.08), 0 when none.
+        requoted:
+          type: boolean
+          description: False when the engine could not price the renewal and the conditions repeat the current ones.
+        rating_version:
+          type: string
+          nullable: true
+          description: Version of the rating engine (v1); null when not requoted.
+        applied_rules:
+          type: array
+          maxItems: 10
+          items:
+            $ref: "#/components/schemas/AppliedRule"
+        mode:
+          type: string
+          nullable: true
+          enum: [normal, provisional, null]
+          description: provisional when the sources did not answer; null when not requoted.
+        source:
+          type: string
+          nullable: true
+          enum: [open_finance, external_sources, cache, base_actuarial, null]
+        profile_date:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the cached profile was calculated; only with source cache.
+        unavailable_source:
+          type: string
+          nullable: true
+        notice:
+          type: string
+          nullable: true
+          enum: [last_profile_in_use, personalization_unavailable, null]
+          description: >
+            Which degraded profile priced the requote: the last cached one, or
+            the base actuarial one when there was no recent cached profile.
+        sources:
+          type: array
+          maxItems: 10
+          items:
+            $ref: "#/components/schemas/RequoteSource"
+        consent_basis:
+          type: string
+          nullable: true
+          enum: [audit_verified, advisor_affirmed, null]
+          description: >
+            On what consent the customer's data was consulted: audit's answer, or
+            the advisor's affirmation for a policy born in the assisted channel;
+            null when nothing was consulted.
+        consent_affirmed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the advisor affirmed the consent; only with advisor_affirmed.
+        consent_affirmed_by_email:
+          type: string
+          nullable: true
+          description: E-mail of the advisor who affirmed the consent, kept when requoting; only with advisor_affirmed.
+        consent_affirmed_by_name:
+          type: string
+          nullable: true
+          description: >
+            Name of the advisor who affirmed the consent (the name claim of their
+            token when requoting); null when the account has none, and then the
+            screen shows consent_affirmed_by_email. Only with advisor_affirmed.
+    AssistedRenewalPolicy:
+      type: object
+      required: [policy_id, line, holder, premium, currency, insured_amount, coverages, coverage_start, coverage_end, renewal_of]
+      properties:
+        policy_id:
+          type: string
+        line:
+          type: string
+          enum: [life]
+        holder:
+          $ref: "#/components/schemas/PolicyHolder"
+        premium:
+          type: number
+        currency:
+          type: string
+        insured_amount:
+          type: number
+        coverages:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/Coverage"
+        coverage_start:
+          type: string
+          format: date-time
+        coverage_end:
+          type: string
+          format: date-time
+        renewal_of:
+          type: string
+          nullable: true
+    AssistedRenewalWindow:
+      type: object
+      required: [opens_at, closes_at, open]
+      properties:
+        opens_at:
+          type: string
+          format: date-time
+        closes_at:
+          type: string
+          format: date-time
+        open:
+          type: boolean
+    AssistedRenewalSummary:
+      type: object
+      required: [renewal_id, status, reason, channel, new_policy_id, charge_id, accepted_at, retry_until, closed_at, terms,
+        premium_change_rate, discount_rate, requoted]
+      properties:
+        renewal_id:
+          type: string
+        status:
+          type: string
+          enum: [accepted, renewed, not_renewed]
+        reason:
+          type: string
+          nullable: true
+          enum: [no_response, payment_failed, null]
+        channel:
+          type: string
+          enum: [advisor, insured]
+          description: Who renewed the period.
+        new_policy_id:
+          type: string
+          nullable: true
+        charge_id:
+          type: string
+          nullable: true
+        accepted_at:
+          type: string
+          format: date-time
+          nullable: true
+        retry_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: Until when the insured can retry the payment with another method from their portal.
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+        terms:
+          nullable: true
+          description: >
+            The conditions accepted for the period, by the advisor or by the
+            insured online: premium, currency, insured amount, coverages and the
+            renewed coverage. Null for a lapse, which accepted none.
+          allOf:
+            - $ref: "#/components/schemas/RenewalTerms"
+        premium_change_rate:
+          type: number
+          description: Change of the accepted premium against the current one, as a fraction (0.053 is +5.3 %); 0 without terms.
+        discount_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Good-experience discount applied to the accepted premium; 0 when none.
+        requoted:
+          type: boolean
+          description: False when the conditions repeat the current ones because the engine could not price the renewal.
+    RenewalFormalization:
+      type: object
+      required: [advisor_id, advisor_email, advisor_name, formalized_at, requote_id, acceptance]
+      description: The advisor's record of the renewal (CA-4).
+      properties:
+        advisor_id:
+          type: string
+        advisor_email:
+          type: string
+        advisor_name:
+          type: string
+          nullable: true
+          description: The name of the advisor's account; null when it has none (the screen shows the e-mail).
+        formalized_at:
+          type: string
+          format: date-time
+        requote_id:
+          type: string
+        acceptance:
+          type: object
+          required: [method, accepted_at, reference]
+          properties:
+            method:
+              type: string
+              enum: [recorded_call, remote_signature, confirmation_code]
+            accepted_at:
+              type: string
+              format: date-time
+            reference:
+              type: string
+              nullable: true
+    RenewalCharge:
+      type: object
+      required: [status, failure_reason, decline_code, last_failure_at, attempts, policy_id]
+      description: Where the premium charge of the renewal stands; its deadline is renewal.retry_until.
+      properties:
+        status:
+          type: string
+          enum: [pending, in_progress, confirmed, failed]
+        failure_reason:
+          type: string
+          nullable: true
+        decline_code:
+          type: string
+          nullable: true
+        last_failure_at:
+          type: string
+          format: date-time
+          nullable: true
+        attempts:
+          type: integer
+          minimum: 0
+        policy_id:
+          type: string
+          nullable: true
+          description: The new policy once the charge is confirmed.
+    AssistedRenewal:
+      type: object
+      required: [policy, renewal_window, current, payment_method, requote, renewal, formalization, charge, consent_mode,
+        can_requote, can_formalize, blocked_reason]
+      properties:
+        policy:
+          $ref: "#/components/schemas/AssistedRenewalPolicy"
+        renewal_window:
+          $ref: "#/components/schemas/AssistedRenewalWindow"
+        current:
+          $ref: "#/components/schemas/RenewalTerms"
+        payment_method:
+          nullable: true
+          description: The method the renewal charges, without its token; null when the policy has none registered.
+          allOf:
+            - $ref: "#/components/schemas/PaymentMethod"
+        requote:
+          nullable: true
+          description: The last requote of the current period; null when there is none.
+          allOf:
+            - $ref: "#/components/schemas/RenewalRequote"
+        renewal:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/AssistedRenewalSummary"
+        formalization:
+          nullable: true
+          description: Null when nobody formalized the renewal (the insured renewed online, or there is none).
+          allOf:
+            - $ref: "#/components/schemas/RenewalFormalization"
+        charge:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/RenewalCharge"
+        consent_mode:
+          type: string
+          enum: [audit, advisor_affirmation]
+        can_requote:
+          type: boolean
+        can_formalize:
+          type: boolean
+        blocked_reason:
+          type: string
+          nullable: true
+          enum: [renewal_not_available, renewal_closed, payment_method_missing, null]
+    RenewalConsentCodeRequest:
+      type: object
+      required: [requote_id]
+      properties:
+        requote_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+    RenewalConsentCodeSent:
+      type: object
+      required: [requote_id, sent_to, expires_at]
+      properties:
+        requote_id:
+          type: string
+        sent_to:
+          type: string
+          description: Masked e-mail address of the holder, e.g. ca***@example.com.
+        expires_at:
+          type: string
+          format: date-time
+    FormalizeRenewalRequest:
+      type: object
+      required: [requote_id, acceptance]
+      properties:
+        requote_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The requote the customer accepted.
+        acceptance:
+          type: object
+          required: [method, accepted_at]
+          properties:
+            method:
+              type: string
+              enum: [recorded_call, remote_signature, confirmation_code]
+            accepted_at:
+              type: string
+              format: date-time
+              description: Not in the future and not before the minute the requote was made.
+            reference:
+              type: string
+              minLength: 1
+              maxLength: 64
+              pattern: "^[A-Za-z0-9._:/#-]+$"
+              description: Reference of the recording or the signature; required unless the method is confirmation_code.
+        confirmation_code:
+          type: string
+          pattern: "^[0-9]{6}$"
+          description: The code the insured received by e-mail; required with the confirmation_code method.
     Error:
       type: object
       required: [error, message]
@@ -3474,5 +4140,16 @@ components:
             - renewal_unavailable
             - charge_not_payable
             - out_of_range
+            - requote_not_found
+            - requote_expired
+            - requote_superseded
+            - already_formalized
+            - payment_method_missing
+            - consent_code_required
+            - invalid_confirmation_code
+            - confirmation_code_expired
+            - too_many_attempts
+            - too_many_codes
+            - code_delivery_unavailable
         message:
           type: string

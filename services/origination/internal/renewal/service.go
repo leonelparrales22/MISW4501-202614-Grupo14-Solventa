@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"time"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
@@ -207,47 +206,19 @@ func (s *Service) conditionsOf(p domain.Policy, q quote) domain.RenewalCondition
 // error) the renewal repeats the current conditions: it is never blocked and
 // never priced with invented data.
 func (s *Service) requote(ctx context.Context, p domain.Policy, now time.Time) quote {
-	same := quote{
-		terms:    domain.CoverageTerms{InsuredAmount: p.InsuredAmount, TermMonths: s.rules.TermMonths, Coverages: append([]domain.Coverage(nil), p.Coverages...)},
-		premium:  p.Premium,
-		currency: p.Currency,
-	}
 	if s.customers == nil || s.profiles == nil {
-		return same
+		return s.sameQuote(p)
 	}
 	cust, err := s.customers.GetBySubject(ctx, p.CustomerID)
 	if err != nil {
 		if !errors.Is(err, ports.ErrCustomerNotFound) {
 			slog.WarnContext(ctx, "the renewal keeps the current conditions: customer lookup failed", "policy_id", p.ID, "error", err)
 		}
-		return same
+		return s.sameQuote(p)
 	}
 	// The insured asks for the renewal from their own session: their consent
 	// is the request itself, as the advisor's is in an assisted quote.
-	res, err := s.profiles.Resolve(ctx, cust.ID, true)
-	if err != nil {
-		slog.WarnContext(ctx, "the renewal keeps the current conditions: no risk profile", "policy_id", p.ID, "error", err)
-		return same
-	}
-	rated, err := s.rater.Rate(ctx, ports.RatingInput{
-		Age: domain.AgeAt(cust.BirthDate, now), InsuredAmount: p.InsuredAmount, TermMonths: s.rules.TermMonths, Profile: res.Profile,
-	})
-	if err != nil || rated.Premium <= 0 {
-		slog.WarnContext(ctx, "the renewal keeps the current conditions: rating failed", "policy_id", p.ID, "error", err)
-		return same
-	}
-	q := quote{terms: same.terms, premium: rated.Premium, currency: rated.Currency, requoted: true}
-	if q.currency == "" {
-		q.currency = p.Currency
-	}
-	if len(rated.Coverages) > 0 {
-		q.terms.Coverages = append([]domain.Coverage(nil), rated.Coverages...)
-	}
-	if n, err := s.claims.ClaimsInLastYear(ctx, p.ID); err == nil && n <= domain.MaxNoClaimsYear {
-		q.discountRate = domain.DiscountRate
-		q.premium = math.Round(q.premium*(1-domain.DiscountRate)/100) * 100
-	}
-	return q
+	return s.price(ctx, p, cust.ID, cust.BirthDate, s.profiles.Resolve, now).quote
 }
 
 // registeredMethod is the payment method the policy was paid with, without

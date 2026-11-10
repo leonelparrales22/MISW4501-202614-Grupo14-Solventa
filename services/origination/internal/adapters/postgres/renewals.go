@@ -19,7 +19,10 @@ type RenewalStore struct {
 	db *sql.DB
 }
 
-var _ ports.RenewalRepository = (*RenewalStore)(nil)
+var (
+	_ ports.RenewalRepository         = (*RenewalStore)(nil)
+	_ ports.AssistedRenewalRepository = (*RenewalStore)(nil)
+)
 
 // NewRenewalStore builds a RenewalStore over db (already migrated).
 func NewRenewalStore(db *sql.DB) *RenewalStore { return &RenewalStore{db: db} }
@@ -60,7 +63,11 @@ func scanRenewal(s scanner) (domain.Renewal, error) {
 }
 
 func (s *RenewalStore) list(ctx context.Context, query string, args ...any) ([]domain.Renewal, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	return listRenewals(ctx, s.db, query, args...)
+}
+
+func listRenewals(ctx context.Context, db querier, query string, args ...any) ([]domain.Renewal, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list renewals: %w", err)
 	}
@@ -78,21 +85,9 @@ func (s *RenewalStore) list(ctx context.Context, query string, args ...any) ([]d
 
 // Create stores the renewal unless its policy and period already have one.
 func (s *RenewalStore) Create(ctx context.Context, r domain.Renewal) (domain.Renewal, bool, error) {
-	coverages, err := encodeCoverages(r.Terms.Coverages)
+	rows, err := insertRenewal(ctx, s.db, r)
 	if err != nil {
 		return domain.Renewal{}, false, err
-	}
-	rows, err := s.list(ctx, `INSERT INTO renewal (`+renewalColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
-		ON CONFLICT (policy_id, period_end) DO NOTHING
-		RETURNING `+renewalColumns,
-		r.ID, r.PolicyID, r.CustomerID, r.PeriodEnd.UTC(), string(r.Status), nullString(string(r.Reason)),
-		domain.ToMinorUnits(r.Premium), r.Currency, domain.ToMinorUnits(r.Terms.InsuredAmount), r.Terms.TermMonths,
-		string(coverages), r.DiscountRate, r.Requoted, nullString(r.ChargeID), nullString(r.NewPolicyID),
-		nullTime(r.AcceptedAt), nullTime(r.RetryUntil), nullTime(r.ClosedAt), nullTime(r.NotifiedAt),
-		r.NotificationFailed, r.CreatedAt.UTC())
-	if err != nil {
-		return domain.Renewal{}, false, fmt.Errorf("store renewal %s: %w", r.ID, err)
 	}
 	if len(rows) == 1 {
 		return rows[0], true, nil
@@ -102,6 +97,32 @@ func (s *RenewalStore) Create(ctx context.Context, r domain.Renewal) (domain.Ren
 		return domain.Renewal{}, false, err
 	}
 	return existing, false, nil
+}
+
+// insertRenewal inserts the renewal unless its policy and period already have
+// one, and returns the inserted row (none on a conflict). The conflict has no
+// target, so every unique index arbitrates it: UNIQUE (policy_id, period_end)
+// and the primary key renewal_id, which is derived from the same policy and
+// period. Two inserts of one period that race past the first check therefore
+// end in "no row" instead of a duplicate key error on renewal_pkey.
+func insertRenewal(ctx context.Context, db querier, r domain.Renewal) ([]domain.Renewal, error) {
+	coverages, err := encodeCoverages(r.Terms.Coverages)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := listRenewals(ctx, db, `INSERT INTO renewal (`+renewalColumns+`)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		ON CONFLICT DO NOTHING
+		RETURNING `+renewalColumns,
+		r.ID, r.PolicyID, r.CustomerID, r.PeriodEnd.UTC(), string(r.Status), nullString(string(r.Reason)),
+		domain.ToMinorUnits(r.Premium), r.Currency, domain.ToMinorUnits(r.Terms.InsuredAmount), r.Terms.TermMonths,
+		string(coverages), r.DiscountRate, r.Requoted, nullString(r.ChargeID), nullString(r.NewPolicyID),
+		nullTime(r.AcceptedAt), nullTime(r.RetryUntil), nullTime(r.ClosedAt), nullTime(r.NotifiedAt),
+		r.NotificationFailed, r.CreatedAt.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("store renewal %s: %w", r.ID, err)
+	}
+	return rows, nil
 }
 
 // Get returns ports.ErrRenewalNotFound when the period has no renewal.
@@ -187,4 +208,75 @@ func (s *RenewalStore) MarkNotified(ctx context.Context, renewalID string, at ti
 		return fmt.Errorf("record the notice of renewal %s: %w", renewalID, err)
 	}
 	return nil
+}
+
+// renewal_formalization (HU-W1.5-03, migration 0014): the record of a renewal
+// an advisor formalized, written with its renewal row.
+
+const renewalFormalizationColumns = `renewal_id, requote_id, advisor_id, advisor_email, advisor_name,
+	consent_method, accepted_at, consent_reference, formalized_at`
+
+const insertRenewalFormalization = `INSERT INTO renewal_formalization (` + renewalFormalizationColumns + `)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+
+const selectRenewalFormalization = `SELECT ` + renewalFormalizationColumns + ` FROM renewal_formalization WHERE renewal_id = $1`
+
+// CreateAssisted stores the renewal and its formalization in one transaction,
+// unless the policy and period already have a renewal. UNIQUE (policy_id,
+// period_end) decides who wins without locking: two advisors, or an advisor
+// and the insured renewing online, produce one renewal (EC-D02).
+func (s *RenewalStore) CreateAssisted(ctx context.Context, r domain.Renewal, f domain.RenewalFormalization) (
+	domain.Renewal, *domain.RenewalFormalization, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Renewal{}, nil, false, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := insertRenewal(ctx, tx, r)
+	if err != nil {
+		return domain.Renewal{}, nil, false, err
+	}
+	if len(rows) == 0 {
+		_ = tx.Rollback()
+		existing, err := s.Get(ctx, r.PolicyID, r.PeriodEnd)
+		if err != nil {
+			return domain.Renewal{}, nil, false, err
+		}
+		stored, err := s.GetFormalization(ctx, existing.ID)
+		switch {
+		case errors.Is(err, ports.ErrRenewalFormalizationNotFound):
+			return existing, nil, false, nil
+		case err != nil:
+			return domain.Renewal{}, nil, false, err
+		}
+		return existing, &stored, false, nil
+	}
+	if _, err := tx.ExecContext(ctx, insertRenewalFormalization,
+		f.RenewalID, f.RequoteID, f.AdvisorID, f.AdvisorEmail, f.AdvisorName,
+		string(f.Acceptance.Method), f.Acceptance.AcceptedAt.UTC(), f.Acceptance.Reference, f.FormalizedAt.UTC()); err != nil {
+		return domain.Renewal{}, nil, false, fmt.Errorf("store the formalization of renewal %s: %w", r.ID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Renewal{}, nil, false, fmt.Errorf("commit: %w", err)
+	}
+	return rows[0], &f, true, nil
+}
+
+// GetFormalization returns the formalization of the renewal.
+func (s *RenewalStore) GetFormalization(ctx context.Context, renewalID string) (domain.RenewalFormalization, error) {
+	var f domain.RenewalFormalization
+	var method string
+	err := s.db.QueryRowContext(ctx, selectRenewalFormalization, renewalID).Scan(
+		&f.RenewalID, &f.RequoteID, &f.AdvisorID, &f.AdvisorEmail, &f.AdvisorName,
+		&method, &f.Acceptance.AcceptedAt, &f.Acceptance.Reference, &f.FormalizedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.RenewalFormalization{}, ports.ErrRenewalFormalizationNotFound
+	}
+	if err != nil {
+		return domain.RenewalFormalization{}, fmt.Errorf("read the formalization of renewal %s: %w", renewalID, err)
+	}
+	f.Acceptance.Method = domain.ConsentMethod(method)
+	f.Acceptance.AcceptedAt, f.FormalizedAt = f.Acceptance.AcceptedAt.UTC(), f.FormalizedAt.UTC()
+	return f, nil
 }

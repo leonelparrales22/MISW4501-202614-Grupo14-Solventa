@@ -115,6 +115,8 @@ func main() {
 		var consentSender ports.ConsentCodeSender = formalization.UnavailableSender{}
 		// HU-W1.5-02: the not-renewed notice goes out through the same client.
 		var renewalNotifier ports.RenewalNotifier
+		// HU-W1.5-03: so does the confirmation code of an assisted renewal.
+		var renewalCodeEmail emailadapter.Sender
 		// One repository for every document of the service: the contractual
 		// PDF (HU-W1.3-03) and the faces of the identity document of the
 		// sign-up (HU-M1.1-01) go to the same bucket, so they share one client.
@@ -137,6 +139,7 @@ func main() {
 			reviewNotifier = emailadapter.NewReviewNotifier(contract.emailClient)
 			consentSender = emailadapter.NewConsentNotifier(contract.emailClient)
 			renewalNotifier = emailadapter.NewRenewalNotifier(contract.emailClient)
+			renewalCodeEmail = contract.emailClient
 			opts = append(opts, httpadapter.WithContractDocuments(contract.reader, verifier))
 		} else {
 			log.Printf("%s is not set: the contractual document and its notification (HU-W1.3-03) are not wired", envEmailURL)
@@ -150,6 +153,8 @@ func main() {
 		// HU-M1.2-01: the wallet lists the policies origination issued (with
 		// the premium charge) next to the ones of the policy core.
 		var issued wallet.RenewalLister
+		// HU-W1.5-03: the assisted renewal extends the online one.
+		var onlineRenewals *renewal.Service
 		if cfg.billing.enabled {
 			// HU-W1.5-02: every activation is also projected into the
 			// policies the insured sees and renews.
@@ -165,7 +170,7 @@ func main() {
 				log.Fatalf("could not set up the policy renewal: %v", err)
 			}
 			opts = append(opts, httpadapter.WithPolicies(renewals, verifier))
-			issued = renewals
+			issued, onlineRenewals = renewals, renewals
 		} else {
 			logWithoutBilling(cfg.contracts.enabled)
 		}
@@ -176,6 +181,14 @@ func main() {
 			log.Fatalf("could not set up the list of the policies about to expire: %v", err)
 		}
 		opts = append(opts, expiring...)
+		// HU-W1.5-03: the advisor requotes and formalizes the renewal of a
+		// policy about to expire, with the consent verifier of the offers.
+		assisted, err := assistedRenewalOptions(assistedRenewalWiring{renewals: onlineRenewals, db: st.db, resolver: resolver,
+			offers: st.offers, consents: offers.consents, email: renewalCodeEmail}, verifier)
+		if err != nil {
+			log.Fatalf("could not set up the assisted renewal: %v", err)
+		}
+		opts = append(opts, assisted...)
 		opts = append(opts, walletOptions(issued, newPolicyPortfolio(cfg.policyCore), verifier)...)
 		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
