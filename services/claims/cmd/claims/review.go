@@ -62,3 +62,17 @@ func levelsOf(priorities *triage.Service) memory.LevelReader {
 		return out, nil
 	}
 }
+
+// resubmissionStoreOf keeps the resubmissions of returned filings
+// (HU-W2.1-04) where the reviews are.
+func resubmissionStoreOf(records ports.ClaimRecords, reviews reviewStore) (ports.ResubmissionStore, error) {
+	switch r := records.(type) {
+	case *postgres.ClaimRecordStore:
+		return postgres.ResubmissionStoreOf(r), nil
+	case *memory.CaseStore:
+		if store, ok := reviews.(*memory.ReviewStore); ok {
+			return store, nil
+		}
+	}
+	return nil, fmt.Errorf("the resubmission has no store for the claims of %T", records)
+}
