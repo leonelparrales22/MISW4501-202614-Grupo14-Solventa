@@ -84,6 +84,9 @@ type ClaimRecord struct {
 	Policy         *Policy
 	CatalogVersion string
 	Supports       []AttachedSupport
+	// LastChangedAt is when the claim reached its current status
+	// (HU-W2.1-02); zero when it was not read.
+	LastChangedAt time.Time
 }
 
 // WebFingerprint summarizes a web filing. Two filings with the same key are

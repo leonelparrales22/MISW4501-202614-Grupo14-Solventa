@@ -41,6 +41,7 @@ type ClaimSource interface {
 	Get(ctx context.Context, id string) (domain.ClaimRecord, error)
 	Receipt(ctx context.Context, id string) (domain.ClaimRecord, []byte, error)
 	EvidenceLinks(ctx context.Context, c domain.ClaimRecord) []filing.EvidenceLink
+	SupportLink(ctx context.Context, claimID, supportID string) (filing.SupportLink, error)
 }
 
 // HistorySource is the history of the status of a claim (review.Service).
@@ -104,6 +105,11 @@ func (c *Claims) Receipt(ctx context.Context, id string) (domain.ClaimRecord, []
 // EvidenceLinks is not cached.
 func (c *Claims) EvidenceLinks(ctx context.Context, rec domain.ClaimRecord) []filing.EvidenceLink {
 	return c.source.EvidenceLinks(ctx, rec)
+}
+
+// SupportLink is not cached: the link is signed for a short time.
+func (c *Claims) SupportLink(ctx context.Context, claimID, supportID string) (filing.SupportLink, error) {
+	return c.source.SupportLink(ctx, claimID, supportID)
 }
 
 // History serves the history of the status of a claim with the read cache.

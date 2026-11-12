@@ -76,3 +76,15 @@ func resubmissionStoreOf(records ports.ClaimRecords, reviews reviewStore) (ports
 	}
 	return nil, fmt.Errorf("the resubmission has no store for the claims of %T", records)
 }
+
+// claimActivityOf reads the last change and the tally of the insured's claims
+// (HU-W2.1-02) where the claims are.
+func claimActivityOf(records ports.ClaimRecords, decisions ports.DecisionStore) (ports.ClaimActivity, error) {
+	switch r := records.(type) {
+	case *postgres.ClaimRecordStore:
+		return r, nil
+	case *memory.CaseStore:
+		return memory.NewClaimActivity(r, decisions), nil
+	}
+	return nil, fmt.Errorf("the reads of the insured have no store for the claims of %T", records)
+}

@@ -29,6 +29,56 @@ type QueryService struct {
 	claims   ports.ClaimRecords
 	receipts ports.ReceiptRenderer
 	objects  ports.ObjectStore
+	// activity and clock read the last change of each claim and the tally of
+	// the insured's claims (HU-W2.1-02); nil until WithActivity.
+	activity ports.ClaimActivity
+	clock    ports.Clock
+}
+
+// WithActivity makes the list and the detail say when each claim last changed
+// status, and the list carry the tally of the insured's claims (HU-W2.1-02).
+// clock tells the year whose payouts the tally adds up.
+func (s *QueryService) WithActivity(activity ports.ClaimActivity, clock ports.Clock) *QueryService {
+	s.activity, s.clock = activity, clock
+	return s
+}
+
+// SupportLinkTTL is how long the signed read of a support works.
+const SupportLinkTTL = 10 * time.Minute
+
+// SupportLink is a support of the claim and where to read it.
+type SupportLink struct {
+	File      domain.SupportFile
+	URL       string
+	ExpiresAt time.Time
+}
+
+// ErrDownloadsUnavailable means there is no object store to sign the read.
+var ErrDownloadsUnavailable = errors.New("claims: the supports cannot be downloaded now")
+
+// SupportLink signs the read of a support the claim shows (HU-W2.1-02, screen
+// A8), with the rules of Get: only the insured who filed it. A support that is
+// not one of the claim, or that a resubmission replaced, is
+// domain.ErrSupportNotFound.
+func (s *QueryService) SupportLink(ctx context.Context, claimID, supportID string) (SupportLink, error) {
+	c, err := s.Get(ctx, claimID)
+	if err != nil {
+		return SupportLink{}, err
+	}
+	for _, a := range c.Supports {
+		if a.File.ID != supportID {
+			continue
+		}
+		if s.objects == nil {
+			return SupportLink{}, ErrDownloadsUnavailable
+		}
+		signed, err := s.objects.SignDownload(ctx, a.File.ObjectKey(), SupportLinkTTL)
+		if err != nil {
+			return SupportLink{}, fmt.Errorf("sign the read of the support: %w", err)
+		}
+		return SupportLink{File: a.File, URL: signed.URL, ExpiresAt: signed.ExpiresAt}, nil
+	}
+	return SupportLink{}, domain.ErrSupportNotFound
 }
 
 // EvidenceLinkTTL is how long the signed read of a piece of evidence works.
@@ -90,6 +140,9 @@ type ClaimQuery struct {
 type ClaimPage struct {
 	Claims        []domain.ClaimRecord
 	NextPageToken string
+	// Summary is the tally of every claim of the insured, whatever the
+	// filters and the page (HU-W2.1-02); nil without WithActivity.
+	Summary *domain.ClaimTally
 }
 
 // List returns one page of the subject's claims, newest first.
@@ -109,7 +162,38 @@ func (s *QueryService) List(ctx context.Context, subject string, q ClaimQuery) (
 		last := page.Claims[size-1]
 		page.NextPageToken = encodeCursor(ports.ClaimCursor{FiledAt: last.FiledAt, ID: last.ID})
 	}
+	if s.activity == nil {
+		return page, nil
+	}
+	if err := s.withLastChanges(ctx, page.Claims); err != nil {
+		return ClaimPage{}, err
+	}
+	tally, err := s.activity.Tally(ctx, subject, domain.StartOfYear(s.clock.Now()))
+	if err != nil {
+		return ClaimPage{}, fmt.Errorf("tally the claims: %w", err)
+	}
+	page.Summary = &tally
 	return page, nil
+}
+
+// withLastChanges sets when each claim last changed status; a claim without
+// a recorded change keeps the time it was filed.
+func (s *QueryService) withLastChanges(ctx context.Context, claims []domain.ClaimRecord) error {
+	ids := make([]string, 0, len(claims))
+	for _, c := range claims {
+		ids = append(ids, c.ID)
+	}
+	changes, err := s.activity.LastChanges(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("read the last change of the claims: %w", err)
+	}
+	for i := range claims {
+		claims[i].LastChangedAt = claims[i].FiledAt
+		if at, ok := changes[claims[i].ID]; ok {
+			claims[i].LastChangedAt = at
+		}
+	}
+	return nil
 }
 
 // Get returns the claim when the caller filed it. Anyone else gets
@@ -122,6 +206,13 @@ func (s *QueryService) Get(ctx context.Context, id string) (domain.ClaimRecord, 
 	// HU-W2.1-03 will let the claims advisor read it too.
 	if err := security.RequireOwnerOrRole(ctx, c.Subject); err != nil {
 		return domain.ClaimRecord{}, err
+	}
+	if s.activity != nil {
+		one := []domain.ClaimRecord{c}
+		if err := s.withLastChanges(ctx, one); err != nil {
+			return domain.ClaimRecord{}, err
+		}
+		c = one[0]
 	}
 	return c, nil
 }
