@@ -52,12 +52,23 @@ func (a *ClaimActivity) LastChanges(_ context.Context, ids []string) (map[string
 func (a *ClaimActivity) Tally(ctx context.Context, subject string, since time.Time) (domain.ClaimTally, error) {
 	t := domain.ClaimTally{ByStatus: map[domain.Status]int{}}
 	var paid, returned []domain.ClaimRecord
+	policies := map[string]domain.PolicyRef{}
+	newest := map[string]time.Time{}
 	a.cases.mu.Lock()
 	for _, c := range a.cases.byID {
 		if c.Subject != subject {
 			continue
 		}
 		t.ByStatus[c.Status]++
+		ref, seen := policies[c.PolicyID]
+		if !seen {
+			ref = domain.PolicyRef{ID: c.PolicyID}
+		}
+		if p := c.Policy; p != nil && !c.FiledAt.Before(newest[c.PolicyID]) {
+			ref.Line, ref.Product, ref.InsuredObject = p.Line, p.Product, p.InsuredObject
+			newest[c.PolicyID] = c.FiledAt
+		}
+		policies[c.PolicyID] = ref
 		switch c.Status {
 		case domain.StatusPaid:
 			paid = append(paid, c)
@@ -93,5 +104,9 @@ func (a *ClaimActivity) Tally(ctx context.Context, subject string, since time.Ti
 		}
 		t.PendingAction = append(t.PendingAction, domain.ClaimRef{ID: c.ID, FilingNumber: c.FilingNumber})
 	}
+	for _, p := range policies {
+		t.Policies = append(t.Policies, p)
+	}
+	sort.Slice(t.Policies, func(i, j int) bool { return t.Policies[i].ID < t.Policies[j].ID })
 	return t, nil
 }

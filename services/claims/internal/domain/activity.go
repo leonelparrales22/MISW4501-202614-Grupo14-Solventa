@@ -30,6 +30,19 @@ type ClaimTally struct {
 	// PendingAction are the claims returned to the insured, newest filed
 	// first, up to MaxPendingAction.
 	PendingAction []ClaimRef
+	// Policies are the policies the insured filed claims on, by id: what
+	// the filter of A7 offers, whatever the policy core says of them now.
+	Policies []PolicyRef
+}
+
+// PolicyRef is a policy of the insured's claims. Line, Product and
+// InsuredObject come from the newest copy a claim kept; they are empty when no
+// claim on it kept one (the filings of the phone).
+type PolicyRef struct {
+	ID            string
+	Line          PolicyLine
+	Product       string
+	InsuredObject string
 }
 
 // MaxPendingAction bounds the returned claims the tally names.

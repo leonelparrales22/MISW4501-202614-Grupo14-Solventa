@@ -85,5 +85,42 @@ func (s *ClaimRecordStore) Tally(ctx context.Context, subject string, since time
 		}
 		t.PendingAction = append(t.PendingAction, r)
 	}
-	return t, returned.Err()
+	if err := returned.Err(); err != nil {
+		return domain.ClaimTally{}, fmt.Errorf("read the claims returned to the insured: %w", err)
+	}
+	if t.Policies, err = s.policiesOf(ctx, subject); err != nil {
+		return domain.ClaimTally{}, err
+	}
+	return t, nil
+}
+
+// policiesOf are the policies the subject filed on, by id, each with the
+// newest copy a claim kept of it.
+func (s *ClaimRecordStore) policiesOf(ctx context.Context, subject string) ([]domain.PolicyRef, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT policy_id,
+			(array_agg(policy_snapshot ORDER BY filed_at DESC) FILTER (WHERE policy_snapshot IS NOT NULL))[1]
+		FROM claim WHERE cognito_sub = $1 GROUP BY policy_id ORDER BY policy_id`, subject)
+	if err != nil {
+		return nil, fmt.Errorf("read the policies of the insured's claims: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []domain.PolicyRef
+	for rows.Next() {
+		var (
+			ref      domain.PolicyRef
+			snapshot []byte
+		)
+		if err := rows.Scan(&ref.ID, &snapshot); err != nil {
+			return nil, fmt.Errorf("read the policies of the insured's claims: %w", err)
+		}
+		p, err := decodePolicy(snapshot)
+		if err != nil {
+			return nil, err
+		}
+		if p != nil {
+			ref.Line, ref.Product, ref.InsuredObject = p.Line, p.Product, p.InsuredObject
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
 }

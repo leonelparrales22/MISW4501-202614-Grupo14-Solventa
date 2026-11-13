@@ -100,6 +100,38 @@ func TestClaimStatusAcceptanceCriteria(t *testing.T) {
 		assert.EqualValues(t, 1, summary["in_progress"], "the paid claim is closed")
 	})
 
+	t.Run("the three filters of A7 narrow the list, alone and together; the summary does not change", func(t *testing.T) {
+		ids := func(query string) []string {
+			rec, body := call(t, svc, http.MethodGet, "/v1/claims"+query, "carolina", nil, nil)
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			var out []string
+			for _, it := range body["items"].([]any) {
+				out = append(out, it.(map[string]any)["claim_id"].(string))
+			}
+			summary := body["summary"].(map[string]any)
+			assert.EqualValues(t, 1, summary["in_progress"], "the summary counts every claim, whatever the filters")
+			assert.Equal(t, []any{map[string]any{"policy_id": "HG-2025-880231", "line": "home", "product": "Hogar",
+				"insured_object": "Carrera 15 # 93-40"}}, summary["policies"])
+			return out
+		}
+		today := time.Now().In(time.FixedZone("UTC-5", -5*60*60)).Format(time.DateOnly)
+		tomorrow := time.Now().In(time.FixedZone("UTC-5", -5*60*60)).AddDate(0, 0, 1).Format(time.DateOnly)
+
+		assert.ElementsMatch(t, []string{paid, returned}, ids(""))
+		assert.Equal(t, []string{paid}, ids("?status=paid"))
+		assert.Empty(t, ids("?status=rejected"))
+		assert.ElementsMatch(t, []string{paid, returned}, ids("?policy_id=HG-2025-880231"))
+		assert.Empty(t, ids("?policy_id=AU-2025-118204"), "a policy without claims of Carolina")
+		assert.ElementsMatch(t, []string{paid, returned}, ids("?from="+today))
+		assert.Empty(t, ids("?from="+tomorrow))
+		assert.Equal(t, []string{paid}, ids("?status=paid&policy_id=HG-2025-880231&from="+today))
+
+		for _, bad := range []string{"?status=borrado", "?from=12/11/2026", "?policy_id=%20"} {
+			rec, _ := call(t, svc, http.MethodGet, "/v1/claims"+bad, "carolina", nil, nil)
+			assert.Equal(t, http.StatusBadRequest, rec.Code, bad)
+		}
+	})
+
 	t.Run("the insured downloads the supports the claim shows, and only those", func(t *testing.T) {
 		quote := supportIDsOf(t, svc, paid, "repair_quote")[0]
 		rec, body := call(t, svc, http.MethodGet, "/v1/claims/"+paid+"/supports/"+quote+"/download", "carolina", nil, nil)

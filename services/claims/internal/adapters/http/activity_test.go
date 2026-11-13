@@ -27,7 +27,11 @@ func TestTheListSaysTheLastChangeAndTalliesTheClaims(t *testing.T) {
 	reads := &fakeReads{page: filing.ClaimPage{Claims: []domain.ClaimRecord{c}, Summary: &domain.ClaimTally{
 		ByStatus:  map[domain.Status]int{domain.StatusReturned: 1, domain.StatusInEvaluation: 1, domain.StatusPaid: 2},
 		PaidSince: 1, PaidAmountMinor: 18_000_000, Currency: "COP",
-		PendingAction: []domain.ClaimRef{{ID: claimID, FilingNumber: "SIN-2026-01877"}}}}}
+		PendingAction: []domain.ClaimRef{{ID: claimID, FilingNumber: "SIN-2026-01877"}},
+		Policies: []domain.PolicyRef{
+			{ID: "AU-2025-118204", Line: domain.LineAuto, Product: "Autos", InsuredObject: "KJT-482"},
+			{ID: "AU-2026-000001"},
+		}}}}
 
 	rec := do(webRouterOf(reads), http.MethodGet, "/v1/claims", "insured", nil, nil)
 
@@ -40,6 +44,10 @@ func TestTheListSaysTheLastChangeAndTalliesTheClaims(t *testing.T) {
 		"by_status":      map[string]any{"returned": 1.0, "in_evaluation": 1.0, "paid": 2.0},
 		"paid_this_year": map[string]any{"claims": 1.0, "amount_minor": 18_000_000.0, "currency": "COP"},
 		"pending_action": []any{map[string]any{"claim_id": claimID, "filing_number": "SIN-2026-01877"}},
+		"policies": []any{
+			map[string]any{"policy_id": "AU-2025-118204", "line": "auto", "product": "Autos", "insured_object": "KJT-482"},
+			map[string]any{"policy_id": "AU-2026-000001", "line": nil, "product": nil, "insured_object": nil},
+		},
 	}, body["summary"])
 }
 

@@ -3140,7 +3140,7 @@ components:
       description: >-
         HU-W2.1-02. The tally of every claim of the insured, whatever the
         filters and the page (screen A7).
-      required: [in_progress, by_status, paid_this_year, pending_action]
+      required: [in_progress, by_status, paid_this_year, pending_action, policies]
       properties:
         in_progress:
           type: integer
@@ -3178,6 +3178,15 @@ components:
                 type: string
               filing_number:
                 type: string
+        policies:
+          type: array
+          description: >-
+            The policies the insured filed claims on, by id: what the filter
+            of A7 offers, also expired policies and the ones of filings of the
+            phone (line, product and insured object null when no claim kept a
+            copy of the policy).
+          items:
+            $ref: "#/components/schemas/PolicySummary"
     SupportDownload:
       type: object
       required: [support_id, file_name, content_type, byte_size, download_url, expires_at]

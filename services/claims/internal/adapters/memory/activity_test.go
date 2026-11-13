@@ -30,7 +30,7 @@ func (d decisionsOf) Decision(_ context.Context, id string) (domain.Decision, er
 func fileWith(t *testing.T, cases *memory.CaseStore, n int, subject string) string {
 	t.Helper()
 	c, _, err := cases.Create(context.Background(), domain.Claim{ID: fmt.Sprintf("cl-%d", n), Subject: subject,
-		FilingKey: fmt.Sprintf("k%d", n), IncidentType: domain.IncidentTheft, Status: domain.StatusActive,
+		FilingKey: fmt.Sprintf("k%d", n), PolicyID: "AU-2025-118204", IncidentType: domain.IncidentTheft, Status: domain.StatusActive,
 		FiledAt: filedAt.Add(time.Duration(n) * time.Hour), Details: map[string]string{}})
 	require.NoError(t, err)
 	return c.ID
@@ -67,6 +67,7 @@ func TestTheMemoryActivityReadsTheLastChangeAndTheTally(t *testing.T) {
 	require.Len(t, tally.PendingAction, 2)
 	assert.Equal(t, newer, tally.PendingAction[0].ID, "newest filed first")
 	assert.Zero(t, tally.PaidSince, "without decisions nothing is paid")
+	assert.Equal(t, []domain.PolicyRef{{ID: "AU-2025-118204"}}, tally.Policies, "filed from the phone: no copy, only the id")
 }
 
 func TestTheMemoryTallyAddsUpThePayoutsOfTheYear(t *testing.T) {

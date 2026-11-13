@@ -87,6 +87,8 @@ func TestTheTallyIsOfTheInsuredAndTheirYear(t *testing.T) {
 	assert.Equal(t, newer, tally.PendingAction[0].ID, "newest filed first")
 	assert.Equal(t, older, tally.PendingAction[1].ID)
 	assert.NotEmpty(t, tally.PendingAction[0].FilingNumber)
+	assert.Equal(t, []domain.PolicyRef{{ID: "AU-2025-118204", Line: domain.LineAuto, Product: "Autos",
+		InsuredObject: "KJT-482"}}, tally.Policies, "every claim of Carolina is on one policy, listed once")
 
 	none, err := s.claims.Tally(ctx, "sub-nadie", year)
 	require.NoError(t, err)
@@ -94,4 +96,24 @@ func TestTheTallyIsOfTheInsuredAndTheirYear(t *testing.T) {
 	assert.Zero(t, none.PaidAmountMinor)
 	assert.Empty(t, none.Currency)
 	assert.Empty(t, none.PendingAction)
+	assert.Empty(t, none.Policies)
+}
+
+func TestThePoliciesOfTheTallyIncludeTheOnesWithoutACopy(t *testing.T) {
+	s := newWebStores(t)
+	ctx := context.Background()
+	s.fileFor(t, 1, "sub-carolina", domain.StatusActive)
+	_, _, err := s.claims.Create(ctx, domain.Claim{ID: activityID(2), Subject: "sub-carolina", FilingKey: "movil-1",
+		PolicyID: "AU-2026-000001", IncidentType: domain.IncidentCollision, OccurredAt: filedAt.Add(-time.Hour),
+		Place: "Calle 80", Description: "Choque por alcance en el semáforo.", Details: map[string]string{},
+		Status: domain.StatusActive, FiledAt: filedAt})
+	require.NoError(t, err)
+
+	tally, err := s.claims.Tally(ctx, "sub-carolina", filedAt)
+
+	require.NoError(t, err)
+	assert.Equal(t, []domain.PolicyRef{
+		{ID: "AU-2025-118204", Line: domain.LineAuto, Product: "Autos", InsuredObject: "KJT-482"},
+		{ID: "AU-2026-000001"},
+	}, tally.Policies, "a filing of the phone has no copy of its policy, but it is still filtered by it")
 }

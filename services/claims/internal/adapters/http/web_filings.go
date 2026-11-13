@@ -457,6 +457,9 @@ type claimTallyBody struct {
 	ByStatus      map[string]int `json:"by_status"`
 	PaidThisYear  paidTallyBody  `json:"paid_this_year"`
 	PendingAction []claimRefBody `json:"pending_action"`
+	// Policies are the policies the insured filed claims on: the filter of
+	// A7, whatever the policy core says of them now.
+	Policies []policySummaryBody `json:"policies"`
 }
 
 type paidTallyBody struct {
@@ -473,7 +476,16 @@ type claimRefBody struct {
 func tallyBody(t domain.ClaimTally) *claimTallyBody {
 	out := &claimTallyBody{InProgress: t.InProgress(), ByStatus: map[string]int{},
 		PaidThisYear:  paidTallyBody{Claims: t.PaidSince, AmountMinor: t.PaidAmountMinor, Currency: nullable(t.Currency)},
-		PendingAction: make([]claimRefBody, 0, len(t.PendingAction))}
+		PendingAction: make([]claimRefBody, 0, len(t.PendingAction)),
+		Policies:      make([]policySummaryBody, 0, len(t.Policies))}
+	for _, p := range t.Policies {
+		body := policySummaryBody{PolicyID: p.ID}
+		if p.Line != "" {
+			line, product, object := string(p.Line), p.Product, p.InsuredObject
+			body.Line, body.Product, body.InsuredObject = &line, &product, &object
+		}
+		out.Policies = append(out.Policies, body)
+	}
 	for s, n := range t.ByStatus {
 		out.ByStatus[string(s)] = n
 	}
