@@ -37,6 +37,7 @@ type ClaimReader interface {
 	Get(ctx context.Context, id string) (domain.ClaimRecord, error)
 	Receipt(ctx context.Context, id string) (domain.ClaimRecord, []byte, error)
 	EvidenceLinks(ctx context.Context, c domain.ClaimRecord) []filing.EvidenceLink
+	SupportLink(ctx context.Context, claimID, supportID string) (filing.SupportLink, error)
 }
 
 var (
@@ -54,6 +55,7 @@ func WithClaimReads(svc ClaimReader, verifier security.Verifier) Option {
 			r.Get("/v1/claims", listClaims(svc))
 			r.Get("/v1/claims/{claim_id}", getClaim(svc))
 			r.Get("/v1/claims/{claim_id}/filing-receipt", getReceipt(svc))
+			r.Get("/v1/claims/{claim_id}/supports/{support_id}/download", supportDownload(svc))
 		})
 	}
 }
@@ -410,6 +412,10 @@ type claimSummaryBody struct {
 	IncidentType string            `json:"incident_type"`
 	OccurredAt   time.Time         `json:"occurred_at"`
 	FiledAt      time.Time         `json:"filed_at"`
+	// LastChangedAt is when the claim reached its current status
+	// (HU-W2.1-02); absent where it is not read, such as the prior claims of
+	// the review of the advisor.
+	LastChangedAt *time.Time `json:"last_changed_at,omitempty"`
 }
 
 // evidenceViewBody is a photograph or video captured by the insured in the place
@@ -444,9 +450,56 @@ type claimDetailBody struct {
 	*freshnessBody
 }
 
+// claimTallyBody is the tally of the insured's claims (HU-W2.1-02, screen
+// A7), whatever the filters and the page.
+type claimTallyBody struct {
+	InProgress    int            `json:"in_progress"`
+	ByStatus      map[string]int `json:"by_status"`
+	PaidThisYear  paidTallyBody  `json:"paid_this_year"`
+	PendingAction []claimRefBody `json:"pending_action"`
+	// Policies are the policies the insured filed claims on: the filter of
+	// A7, whatever the policy core says of them now.
+	Policies []policySummaryBody `json:"policies"`
+}
+
+type paidTallyBody struct {
+	Claims      int     `json:"claims"`
+	AmountMinor int64   `json:"amount_minor"`
+	Currency    *string `json:"currency"`
+}
+
+type claimRefBody struct {
+	ClaimID      string `json:"claim_id"`
+	FilingNumber string `json:"filing_number"`
+}
+
+func tallyBody(t domain.ClaimTally) *claimTallyBody {
+	out := &claimTallyBody{InProgress: t.InProgress(), ByStatus: map[string]int{},
+		PaidThisYear:  paidTallyBody{Claims: t.PaidSince, AmountMinor: t.PaidAmountMinor, Currency: nullable(t.Currency)},
+		PendingAction: make([]claimRefBody, 0, len(t.PendingAction)),
+		Policies:      make([]policySummaryBody, 0, len(t.Policies))}
+	for _, p := range t.Policies {
+		body := policySummaryBody{PolicyID: p.ID}
+		if p.Line != "" {
+			line, product, object := string(p.Line), p.Product, p.InsuredObject
+			body.Line, body.Product, body.InsuredObject = &line, &product, &object
+		}
+		out.Policies = append(out.Policies, body)
+	}
+	for s, n := range t.ByStatus {
+		out.ByStatus[string(s)] = n
+	}
+	for _, r := range t.PendingAction {
+		out.PendingAction = append(out.PendingAction, claimRefBody{ClaimID: r.ID, FilingNumber: r.FilingNumber})
+	}
+	return out
+}
+
 type claimListResponse struct {
 	Items         []claimSummaryBody `json:"items"`
 	NextPageToken *string            `json:"next_page_token"`
+	// Summary is the tally of every claim of the insured (HU-W2.1-02).
+	Summary *claimTallyBody `json:"summary,omitempty"`
 	// HA-L02: whether the list came from the read cache, and when it was read.
 	*freshnessBody
 }
@@ -456,6 +509,10 @@ func summaryBody(c domain.ClaimRecord) claimSummaryBody {
 		ClaimID: c.ID, FilingNumber: c.FilingNumber, Status: string(c.Status), Channel: string(c.Channel),
 		Policy:       policySummaryBody{PolicyID: c.PolicyID},
 		IncidentType: string(c.IncidentType), OccurredAt: c.OccurredAt.UTC(), FiledAt: c.FiledAt.UTC(),
+	}
+	if !c.LastChangedAt.IsZero() {
+		at := c.LastChangedAt.UTC()
+		out.LastChangedAt = &at
 	}
 	if p := c.Policy; p != nil {
 		line, product, object := string(p.Line), p.Product, p.InsuredObject
@@ -544,6 +601,9 @@ func listClaims(svc ClaimReader) http.HandlerFunc {
 		if page.NextPageToken != "" {
 			out.NextPageToken = &page.NextPageToken
 		}
+		if page.Summary != nil {
+			out.Summary = tallyBody(*page.Summary)
+		}
 		out.freshnessBody = freshnessOf(w, fresh)
 		writeJSON(w, http.StatusOK, out)
 	}
@@ -588,6 +648,45 @@ func getReceipt(svc ClaimReader) http.HandlerFunc {
 }
 
 // writeReadError answers a failed read and tells whether it did.
+type supportDownloadBody struct {
+	SupportID   string    `json:"support_id"`
+	FileName    string    `json:"file_name"`
+	ContentType string    `json:"content_type"`
+	ByteSize    int64     `json:"byte_size"`
+	DownloadURL string    `json:"download_url"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// supportDownload signs the read of one support of the insured's claim
+// (HU-W2.1-02, screen A8). The URL is short-lived and not cached.
+func supportDownload(svc ClaimReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		id, supportID := chi.URLParam(req, "claim_id"), chi.URLParam(req, "support_id")
+		if !claimIDPattern.MatchString(id) {
+			writeError(w, http.StatusNotFound, "claim_not_found", "there is no claim with that id")
+			return
+		}
+		if !domain.ValidSupportID(supportID) {
+			writeError(w, http.StatusNotFound, "support_not_found", "the claim has no support with that id")
+			return
+		}
+		link, err := svc.SupportLink(req.Context(), id, supportID)
+		switch {
+		case errors.Is(err, domain.ErrSupportNotFound):
+			writeError(w, http.StatusNotFound, "support_not_found", "the claim has no support with that id")
+			return
+		case errors.Is(err, filing.ErrDownloadsUnavailable):
+			writeError(w, http.StatusServiceUnavailable, "downloads_unavailable", "the support cannot be downloaded now")
+			return
+		case writeReadError(w, req, err):
+			return
+		}
+		f := link.File
+		writeJSON(w, http.StatusOK, supportDownloadBody{SupportID: f.ID, FileName: f.FileName,
+			ContentType: f.ContentType(), ByteSize: f.ByteSize, DownloadURL: link.URL, ExpiresAt: link.ExpiresAt.UTC()})
+	}
+}
+
 func writeReadError(w http.ResponseWriter, req *http.Request, err error) bool {
 	switch {
 	case err == nil:

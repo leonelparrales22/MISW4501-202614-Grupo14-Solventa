@@ -66,11 +66,18 @@ func assignmentStoresOf(records ports.ClaimRecords) (ports.AssignmentStore, port
 // the notices wait until it is configured.
 func assignmentRoutes(ctx context.Context, records ports.ClaimRecords, getenv func(string) string,
 	verifier security.Verifier) ([]httpadapter.Option, error) {
-	interval, err := loadAssignmentConfig(getenv)
+	store, providers, err := assignmentStoresOf(records)
 	if err != nil {
 		return nil, err
 	}
-	store, providers, err := assignmentStoresOf(records)
+	return assignmentRoutesOver(ctx, store, providers, getenv, verifier)
+}
+
+// assignmentRoutesOver is assignmentRoutes over stores the caller already
+// has: the history of the insured reads the same assignments (HU-W2.1-02).
+func assignmentRoutesOver(ctx context.Context, store ports.AssignmentStore, providers ports.ProviderStore,
+	getenv func(string) string, verifier security.Verifier) ([]httpadapter.Option, error) {
+	interval, err := loadAssignmentConfig(getenv)
 	if err != nil {
 		return nil, err
 	}

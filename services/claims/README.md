@@ -225,6 +225,21 @@ GET  /v1/claims/{id}/history ────────▶ cada cambio de estado (
 - La migración `0007` reconstruye el historial de los casos anteriores: la radicación y, si estaban decididos, su estado
   actual a la hora de la decisión.
 
+## Consulta de estado del siniestro por el cliente (HU-W2.1-02)
+
+El asegurado sigue la etapa de sus casos sin llamar (pantallas A7 y A8). Contrato:
+[`docs/contratos/HU-W2.1-02-api.md`](../../docs/contratos/HU-W2.1-02-api.md).
+
+- **Último cambio (CA-1):** el listado y el detalle traen `last_changed_at`, el último cambio de `claim_status_change`
+  (`ports.ClaimActivity.LastChanges`, una sola consulta por página).
+- **Resumen (A7):** el listado trae `summary` con los casos en curso, por estado, los pagados en el año (hora de Colombia)
+  con su monto neto y los devueltos que esperan al asegurado (`ClaimActivity.Tally`), sin importar los filtros ni la página.
+- **Decisión y prestador (A8):** el historial suma `decision` (`domain.DecisionView`) y `provider`
+  (`domain.ProviderView`), vistas reducidas sin la cuenta ni el contacto. Así tampoco llegan a la caché HA-L02.
+- **Descarga de soportes:** `GET /v1/claims/{id}/supports/{support_id}/download` firma por 10 minutos la lectura de un
+  soporte vigente del caso. No se guarda en la caché.
+- **Refresco (CA-2, umbral ≤ 5 min):** cada cambio queda en la base al instante y el portal vuelve a leer cada 60 s.
+
 ## Edición de la radicación devuelta (HU-W2.1-04)
 
 El asegurado corrige una radicación que el asesor le devolvió y la reenvía (pantalla A9), sin crear otro siniestro.

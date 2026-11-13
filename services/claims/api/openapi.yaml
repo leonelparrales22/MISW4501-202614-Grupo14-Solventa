@@ -1,8 +1,18 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.13.0
+  version: 0.14.0
   description: >-
+    0.14.0 (HU-W2.1-02): the insured follows the stage of their claims. The
+    list and the detail carry last_changed_at, when the claim reached its
+    current status; the list carries summary, the tally of every claim of the
+    insured whatever the filters (in progress, by status, paid this year and
+    what they paid, and the claims returned to correct). The history carries
+    decision (outcome, amount paid net of the deductible, payout status and
+    date, or the reason of a rejection) and provider (who attends and how far),
+    never the account nor the contact. GET
+    /v1/claims/{claim_id}/supports/{support_id}/download signs the read of a
+    support the claim shows, for 10 minutes.
     0.13.0 (HU-W2.1-04): POST /v1/claims/{claim_id}/resubmission is the
     insured correcting a returned filing and sending it again: the facts that
     change, the supports added or replaced (a group is the whole set of files
@@ -1965,6 +1975,59 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/supports/{support_id}/download:
+    get:
+      summary: Signed read of a support of one of the insured's claims (HU-W2.1-02)
+      description: >-
+        A short-lived signed URL (10 minutes) to read one support the claim
+        shows (screen A8); a support a resubmission replaced is not one any
+        more. Only the insured who filed the claim. It is not cached.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+        - name: support_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^sup-[0-9a-f]{32}$'
+      responses:
+        "200":
+          description: Where to read the support
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportDownload"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - not an insured, or the claim belongs to another insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found, or support_not_found (not a support the claim shows)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable or downloads_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/claims/{claim_id}/filing-receipt:
     get:
       summary: Filing receipt of one of the insured's claims, in PDF (HU-W2.1-01)
@@ -2961,6 +3024,12 @@ components:
         filed_at:
           type: string
           format: date-time
+        last_changed_at:
+          type: string
+          format: date-time
+          description: >-
+            HU-W2.1-02. When the claim reached its current status; the time it
+            was filed when it never moved.
         supports:
           $ref: "#/components/schemas/SupportsSummary"
         evidence:
@@ -3034,6 +3103,12 @@ components:
         filed_at:
           type: string
           format: date-time
+        last_changed_at:
+          type: string
+          format: date-time
+          description: >-
+            HU-W2.1-02. When the claim reached its current status; the time it
+            was filed when it never moved.
     ClaimList:
       type: object
       required: [items, next_page_token, stale, as_of]
@@ -3058,6 +3133,80 @@ components:
           type: string
           nullable: true
           description: Null on the last page.
+        summary:
+          $ref: "#/components/schemas/ClaimTally"
+    ClaimTally:
+      type: object
+      description: >-
+        HU-W2.1-02. The tally of every claim of the insured, whatever the
+        filters and the page (screen A7).
+      required: [in_progress, by_status, paid_this_year, pending_action, policies]
+      properties:
+        in_progress:
+          type: integer
+          minimum: 0
+          description: Claims not paid nor rejected.
+        by_status:
+          type: object
+          description: Claims in each status; a status without claims is absent.
+          additionalProperties:
+            type: integer
+            minimum: 1
+        paid_this_year:
+          type: object
+          required: [claims, amount_minor, currency]
+          properties:
+            claims:
+              type: integer
+              minimum: 0
+            amount_minor:
+              type: integer
+              format: int64
+              minimum: 0
+              description: What they paid, net of the deductible, in cents.
+            currency:
+              type: string
+              nullable: true
+        pending_action:
+          type: array
+          description: The claims returned to the insured to correct, newest filed first, up to 20.
+          items:
+            type: object
+            required: [claim_id, filing_number]
+            properties:
+              claim_id:
+                type: string
+              filing_number:
+                type: string
+        policies:
+          type: array
+          description: >-
+            The policies the insured filed claims on, by id: what the filter
+            of A7 offers, also expired policies and the ones of filings of the
+            phone (line, product and insured object null when no claim kept a
+            copy of the policy).
+          items:
+            $ref: "#/components/schemas/PolicySummary"
+    SupportDownload:
+      type: object
+      required: [support_id, file_name, content_type, byte_size, download_url, expires_at]
+      properties:
+        support_id:
+          type: string
+        file_name:
+          type: string
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, application/pdf]
+        byte_size:
+          type: integer
+          format: int64
+        download_url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
     WebValidationError:
       type: object
       required: [error, message]
@@ -3862,7 +4011,7 @@ components:
     ClaimHistory:
       type: object
       required: [claim_id, filing_number, status, last_changed_at, changes, reviews, last_return, resubmissions,
-        requirements, stale, as_of]
+        requirements, decision, provider, stale, as_of]
       properties:
         stale:
           type: boolean
@@ -3917,6 +4066,55 @@ components:
             photographs of the vehicle as the one required.
           items:
             $ref: "#/components/schemas/Requirement"
+        decision:
+          type: object
+          nullable: true
+          description: >-
+            HU-W2.1-02. The decision of operations as the insured reads it;
+            null until there is one. Never the account nor who decided.
+          required: [outcome, decided_at, amount_minor, currency, payout_status, paid_at, rejection_reason]
+          properties:
+            outcome:
+              type: string
+              enum: [approved, rejected]
+            decided_at:
+              type: string
+              format: date-time
+            amount_minor:
+              type: integer
+              format: int64
+              nullable: true
+              description: What the insurer pays, net of the deductible, in cents; null in a rejection.
+            currency:
+              type: string
+              nullable: true
+            payout_status:
+              type: string
+              nullable: true
+              enum: [pending, in_progress, confirmed, failed, null]
+            paid_at:
+              type: string
+              format: date-time
+              nullable: true
+            rejection_reason:
+              type: string
+              nullable: true
+        provider:
+          type: object
+          nullable: true
+          description: >-
+            HU-W2.1-02. The provider assigned to attend the claim; null until
+            there is one. Never how to reach them.
+          required: [name, distance_km, assigned_at]
+          properties:
+            name:
+              type: string
+            distance_km:
+              type: number
+              minimum: 0
+            assigned_at:
+              type: string
+              format: date-time
     ResubmissionRequest:
       type: object
       additionalProperties: false
