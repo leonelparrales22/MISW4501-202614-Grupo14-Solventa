@@ -145,7 +145,14 @@ func main() {
 				history: readcache.NewHistory(reviewSvc, cache, cacheCfg.budget, systemClock{})}
 		}
 		opts = append(opts, httpadapter.WithReviews(reviewer, verifier), httpadapter.WithResubmission(reviewSvc, verifier))
-		opts = append(opts, decisionRoutes(context.Background(), records, decisions, terms, verifier, os.Getenv)...)
+		decisionOpts, payouts := decisionRoutes(context.Background(), records, decisions, terms, verifier, os.Getenv)
+		opts = append(opts, decisionOpts...)
+		// HU-M2.4-01: the parametric engine files and resolves the claims of
+		// the external events of its queue, the payout worker of the decision
+		// pays them, and the outbox publishes ParametricPayoutCompleted.
+		if err := startParametric(context.Background(), records, terms, payouts, os.Getenv); err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
 		// HU-W2.3-01: the assignment of the nearest provider to a claim in
 		// evaluation, and the registry of providers that operations keeps.
 		assignment, err := assignmentRoutes(context.Background(), records, os.Getenv, verifier)

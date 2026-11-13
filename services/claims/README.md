@@ -12,8 +12,12 @@ automática de los casos pendientes de asignación y el registro de prestadores 
 (`/v1/claims/{claim_id}/assignment`, `…/incident-location`, `…/provider-searches`, `/v1/claims/assignments`,
 `/v1/claims/assignment-policy` y `/v1/claims/providers*`). **HA-L02:** caché de lectura en Redis delante de la lista, el detalle y
 el historial del asegurado (`GET /v1/claims`, `GET /v1/claims/{claim_id}` y `GET /v1/claims/{claim_id}/history`): cada lectura
-espera 900 ms a la base y, si no llega, responde la última lectura guardada con `stale: true` y la hora en que se leyó. El resto
-de módulos sigue reservado.
+espera 900 ms a la base y, si no llega, responde la última lectura guardada con `stale: true` y la hora en que se leyó.
+**HU-M2.4-01:** motor paramétrico mínimo: consume `ParametricTriggerObserved` de su cola SQS (`EVENTS_QUEUE_URL`, suscrita al
+tópico `iot`), radica y resuelve solo el siniestro cuando el retraso de un vuelo alcanza el umbral de la póliza de Viaje, lo paga
+con el trabajador de HU-W2.2-03 y publica `ParametricPayoutCompleted` con *outbox* (`EVENTS_TOPIC_ARN`); la lista, el detalle y
+el historial traen `automatic_resolution` con el parámetro, el umbral y el valor que generó el pago. El resto de módulos sigue
+reservado.
 
 ## Responsabilidades
 
@@ -23,7 +27,7 @@ de módulos sigue reservado.
 | `triage` | Priorización automática por severidad, monto y tiempo de respuesta comprometido. **HU-W2.2-01:** `Service` calcula el nivel de cada caso con la política `triage-policy-v1`, lo registra con su causa y lee el triage de un caso, de una página de casos y la política vigente; `Worker` barre la base cada `TRIAGE_SWEEP_INTERVAL_SECONDS` buscando los casos sin cálculo o cuyos datos cambiaron |
 | `assessors` | Prestadores (peritos y talleres) y su asignación al caso: elige el más cercano por distancia y especialidad, ampliando el radio si no hay disponibles (HU-W2.3-01). Seguimiento de la intervención y cierre del caso (HU-W2.3-02). Es el único dueño del cálculo de distancia. **HU-W2.3-01:** `Service` registra la ubicación del incidente, busca, asigna y lee la asignación de un caso, de una página de casos y la política vigente; `ProviderService` administra el registro de prestadores; `Worker` repite la búsqueda de los casos pendientes cada `ASSIGNMENT_RETRY_INTERVAL_SECONDS` y envía los avisos a los prestadores; `Suggest` es la búsqueda sin estado que reutilizará `assistance` (HU-W2.3-03) |
 | `assistance` | Asistencia en sitio: recibe las solicitudes del móvil con la ubicación del asegurado (HU-M2.3-01), las muestra en la bandeja de entrantes y gestiona su despacho y cierre con motivo (HU-W2.3-03). Para elegir prestador **llama a `assessors`**; no calcula distancias |
-| `parametric` | Pago automático cuando un evento externo (retraso de vuelo, clima) cruza un umbral |
+| `parametric` | Pago automático cuando un evento externo (retraso de vuelo, clima) cruza un umbral. **HU-M2.4-01:** `Service` resuelve cada observación (`ParametricTriggerObserved`, ya asociada a la póliza): lee la póliza y la cuenta del asegurado en el núcleo, aplica `parametric-rules-v1` (180 min de retraso o más pagan $ 180.000 COP) y guarda en una transacción el siniestro (canal `parametric`), su resolución automática y la aprobación con el pago pendiente, que paga el trabajador de `decision`. Es idempotente por observación; una que no paga se descarta con su motivo en el log |
 | `readcache` | **HA-L02:** `Claims` e `History` envuelven la consulta de los casos propios (`filing.QueryService`) y el historial de estados (`review.Service`) con un presupuesto de 900 ms hacia la base y la caché de lectura como respaldo. El comprobante y los enlaces de la evidencia no pasan por la caché |
 | `evidence` | **HU-M2.1-01:** emite la URL firmada con la que el teléfono sube cada foto o video al *bucket* de evidencia; el binario nunca cruza el servicio y lo que queda con el caso es su llave, su ubicación, su instante de captura y su resumen de integridad |
 
@@ -354,6 +358,24 @@ GET /v1/claims[/{id}[/history]]
 - **Asegurado de cada fila:** se lee del núcleo de pólizas una vez por asegurado de la página, con hasta 8 lecturas a la
   vez. Si falla, la fila llega sin él.
 
+## Motor paramétrico (HU-M2.4-01)
+
+El criterio 3 de HU-M2.4-01 pide que la línea de tiempo muestre un siniestro resuelto automáticamente con el parámetro y el valor
+que generó el pago. Contrato para el móvil: [`docs/contratos/HU-M2.4-01-api.md`](../../docs/contratos/HU-M2.4-01-api.md).
+Eventos: [`ParametricTriggerObserved` y `ParametricPayoutCompleted`](../../docs/events/README.md).
+
+- **Entrada:** `internal/adapters/messaging` consume `ParametricTriggerObserved` de la cola de `claims` (`pkg/events/sqsconsumer`).
+  Un *payload* inválido o el núcleo de pólizas caído son error: el mensaje se reintenta y termina en la DLQ.
+- **Una transacción:** `postgres.ClaimRecordStore.Resolve` inserta el siniestro con el mismo `INSERT` de los otros canales (nace
+  `in_evaluation`, con la clave `parametric-<observation_id>`), la fila de `claim_parametric_resolution` (solo inserción) y la
+  aprobación de `parametric-engine` con la sentencia de `Decide`. El historial queda `in_evaluation → approved`.
+- **Pago y evento:** el trabajador de `decision` (HU-W2.2-03) paga a la pasarela con la clave `indemnizacion-<claim_id>`. La
+  sentencia de `Confirm` que lo deja `paid` escribe además `ParametricPayoutCompleted` en `outbox_event` cuando el siniestro tiene
+  resolución paramétrica, y el relevo (`pkg/outbox`) lo publica en el tópico `claims`, que consume `notifications`.
+- **Se monta** con `DATABASE_URL`, `POLICY_CORE_URL`, `PAYMENT_GATEWAY_URL` y `EVENTS_QUEUE_URL`. Sin alguna de ellas, el log dice
+  por qué y el resto del servicio sigue respondiendo.
+- **Ensayo:** [`tests/e2e/hu-m2.4`](../../tests/e2e/hu-m2.4/README.md) (`app-local.sh` en local y `nube.sh` en AWS).
+
 ## Requisitos de calidad que gobiernan el servicio
 
 - Consulta de estado del siniestro p95 ≤ 2 s en la app móvil (EC-L02): caché de lectura en Redis con corte duro de 900 ms; ante timeout responde la última versión válida con `stale=true`.
@@ -362,9 +384,10 @@ GET /v1/claims[/{id}[/history]]
 
 ## Datos y eventos
 
-- **BD propia:** PostgreSQL (siniestros): `claim` (con `channel`, `policy_snapshot` y `catalog_version` desde HU-W2.1-01 y `estimated_amount_minor` desde HU-W2.2-01), `claim_evidence`, `support_file` (metadatos; el archivo vive en S3), `claim_support` y `claim_triage` (HU-W2.2-01: cada cálculo del nivel, solo se agregan filas) con su vista `claim_current_triage`, `claim_decision` (HU-W2.2-03: la decisión y el pago de la indemnización), `claim_payout_retry` (cada reintento manual), `claim_review` (HU-W2.1-03: cada revisión del asesor) y `claim_status_change` (cada cambio de estado, escrito por un *trigger*). HU-W2.3-01: `provider` (registro de prestadores), `claim_incident_location` (cada ubicación que registra el analista), `claim_provider_search` y `claim_provider_search_attempt` (cada búsqueda y cada radio intentado), `claim_assignment` (una por caso) y `provider_notice` (el aviso al prestador y sus intentos); las cuatro de historial son de solo inserción. Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
-- **Publica:** `ClaimApproved` (dispara notificación y pago paramétrico). Ver [catálogo de eventos](../../docs/events/README.md).
-- **Depende de:** `pkg/adapters` (`iot`, `payments`, `policies` desde HU-W2.1-01), `pkg/outbox`. HU-W2.1-01 no publica ni consume eventos.
+- **BD propia:** PostgreSQL (siniestros): `claim` (con `channel`, `policy_snapshot` y `catalog_version` desde HU-W2.1-01 y `estimated_amount_minor` desde HU-W2.2-01), `claim_evidence`, `support_file` (metadatos; el archivo vive en S3), `claim_support` y `claim_triage` (HU-W2.2-01: cada cálculo del nivel, solo se agregan filas) con su vista `claim_current_triage`, `claim_decision` (HU-W2.2-03: la decisión y el pago de la indemnización), `claim_payout_retry` (cada reintento manual), `claim_review` (HU-W2.1-03: cada revisión del asesor) y `claim_status_change` (cada cambio de estado, escrito por un *trigger*). HU-W2.3-01: `provider` (registro de prestadores), `claim_incident_location` (cada ubicación que registra el analista), `claim_provider_search` y `claim_provider_search_attempt` (cada búsqueda y cada radio intentado), `claim_assignment` (una por caso) y `provider_notice` (el aviso al prestador y sus intentos); las cuatro de historial son de solo inserción. HU-M2.4-01: `claim_parametric_resolution` (la resolución automática y su disparador, solo inserción) y `outbox_event` (los eventos por publicar). Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
+- **Publica:** `ParametricPayoutCompleted` con *outbox* (HU-M2.4-01) y, cuando se implemente, `ClaimApproved`. Ver [catálogo de eventos](../../docs/events/README.md).
+- **Consume:** `ParametricTriggerObserved` (HU-M2.4-01) de su cola, suscrita al tópico `iot`.
+- **Depende de:** `pkg/adapters` (`iot`, `payments`, `policies` desde HU-W2.1-01), `pkg/events`, `pkg/outbox`. HU-W2.1-01 no publica ni consume eventos.
 
 ## Historias asociadas
 
@@ -394,6 +417,9 @@ Variables que el servicio lee:
 | `REDIS_ADDR` | HA-L02: las consultas del asegurado no tienen caché de lectura y solo leen la base. Un Redis que no responde al arrancar no impide arrancar |
 | `CLAIM_READ_BUDGET_MS` | HA-L02: cada consulta espera 900 ms a la base antes de usar la caché. Entre 50 y 5000; otro valor impide arrancar |
 | `CLAIM_READ_CACHE_TTL_SECONDS` | HA-L02: cada lectura guardada vence a los 300 s (5 minutos). Entre 1 y 300; otro valor impide arrancar |
+| `EVENTS_QUEUE_URL` | HU-M2.4-01: el motor paramétrico no consume observaciones (tampoco se monta sin `DATABASE_URL`, `POLICY_CORE_URL` o `PAYMENT_GATEWAY_URL`). En local, `AWS_ENDPOINT_URL_SQS` apunta a LocalStack |
+| `EVENTS_TOPIC_ARN` | HU-M2.4-01: `ParametricPayoutCompleted` se queda en el *outbox* sin publicarse. En local, `AWS_ENDPOINT_URL_SNS` apunta a LocalStack |
+| `OUTBOX_POLL_INTERVAL_MS` | HU-M2.4-01: el relevo del *outbox* busca eventos cada 1000 ms. Entre 100 y 60000; otro valor impide arrancar |
 | `ASSIGNMENT_RETRY_INTERVAL_SECONDS` | HU-W2.3-01: la búsqueda automática de los casos pendientes de asignación corre cada 300 s. Entre 10 y 3600; otro valor impide arrancar. Solo se acorta en local y en la e2e |
 
 El `AUTH_ISSUER` del *user pool* permanente es

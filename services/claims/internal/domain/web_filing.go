@@ -84,6 +84,9 @@ type ClaimRecord struct {
 	Policy         *Policy
 	CatalogVersion string
 	Supports       []AttachedSupport
+	// Parametric is the automatic resolution of a claim the parametric
+	// engine filed (HU-M2.4-01); nil for a claim filed by the insured.
+	Parametric *ParametricResolution
 }
 
 // WebFingerprint summarizes a web filing. Two filings with the same key are

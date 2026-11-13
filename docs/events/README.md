@@ -9,7 +9,8 @@ Los servicios publican hechos de negocio en Amazon SNS (un tópico por dominio) 
 | `OfferGenerated` | `OfertaGenerada` | origination | audit | **Publicación pendiente (HU-W4.1-01).** Oferta personalizada generada (HU-W1.2-03); hoy solo queda en la tabla `offer` |
 | `OfferRequoted` | `OfertaRecotizada` | origination | audit, notifications | **Publicación pendiente (HU-W4.1-01).** Una oferta provisional se reemplazó por una normal al volver la fuente (HU-W1.2-03); hoy el aviso al cliente es el correo `offer-requoted:<id>` |
 | `ClaimApproved` | `SiniestroAprobado` | claims | notifications, audit | Dispara notificación y pago paramétrico |
-| `ParametricPayoutCompleted` | `PagoParametricoRealizado` | claims | notifications (HU-M3.1-01) | **Contrato definido en HU-M3.1-01; la publicación es del motor paramétrico (`claims/internal/parametric`, reservado).** El pago automático de un siniestro paramétrico quedó confirmado: `notifications` registra la notificación y envía el *push* en ≤ 60 s. Hoy lo publica el ensayo local `tests/e2e/hu-m3.1` |
+| `ParametricPayoutCompleted` | `PagoParametricoRealizado` | claims | notifications (HU-M3.1-01) | El pago automático de un siniestro paramétrico quedó confirmado: `notifications` registra la notificación y envía el *push* en ≤ 60 s. **Lo publica el motor paramétrico de `claims` con *outbox* desde HU-M2.4-01**, cuando la pasarela confirma el pago del siniestro que resolvió (antes lo simulaba `tests/e2e/hu-m3.1`) |
+| `ParametricTriggerObserved` | `ParametroObservado` | iot (telemetría; hoy `tests/e2e/hu-m2.4/nube.sh` y `app-local.sh`) | claims (HU-M2.4-01) | La telemetría observó el parámetro de una póliza paramétrica (el retraso del vuelo de un asegurado), ya asociado a la póliza. El motor paramétrico de `claims` radica, resuelve y paga el siniestro si el valor alcanza el umbral |
 | `CustomerLinked` | `ClienteVinculado` | origination | audit | La cuenta del asegurado (`sub` de Cognito) quedó vinculada a su documento al terminar el registro (HU-M1.1-01); `audit` lo usa para reconocer al titular de sus consentimientos (HU-M1.3-01). **Primer evento publicado con *outbox*** |
 | `PartnerCredentialsIssued`, `PartnerCredentialsRotated`, `PartnerCredentialsRevoked` | `CredencialesSocioEmitidas`, `CredencialesSocioRotadas`, `CredencialesSocioRevocadas` | partners | audit | Se generaron las credenciales de un socio al aprobarlo, se rotaron o se revocó la anterior al vencer la transición (HU-W3.1-01); `audit` las guarda en el registro de auditoría de suscripción con la fecha y el emisor. **Primer evento del tópico `partners`** |
 
@@ -123,8 +124,9 @@ y el mensaje termina en la DLQ tras los reintentos.
 
 ## `ParametricPayoutCompleted` (HU-M3.1-01)
 
-Lo publicará `claims` (motor paramétrico) en su tópico, con *outbox*, **cuando la pasarela confirme el pago automático**: el instante de esa
-confirmación (`paid_at`) es el inicio de los 60 s del criterio 1. Lo consume `notifications` desde su cola (suscrita al tópico `claims`,
+Lo publica `claims` (motor paramétrico, HU-M2.4-01) en su tópico, con *outbox*, **cuando la pasarela confirma el pago automático**: la
+misma sentencia que registra el pago confirmado escribe el evento en `outbox_event`, así que se publica si y solo si el pago se confirmó.
+El instante de esa confirmación (`paid_at`) es el inicio de los 60 s del criterio 1. Lo consume `notifications` desde su cola (suscrita al tópico `claims`,
 entrega *raw*, DLQ con 5 recepciones).
 
 **Sobre:** el común de `pkg/events.Envelope`, con `event_id` = `parametric-payout-completed-<payout_id>`, `event_type` =
@@ -135,11 +137,12 @@ entrega *raw*, DLQ con 5 recepciones).
 | Campo | Descripción |
 |---|---|
 | `payout_id` | Identifica el pago; clave de idempotencia del consumidor (una notificación por pago, `ntf-<payout_id>`) |
-| `claim_id`, `policy_id` | Siniestro paramétrico y póliza que lo pagó |
+| `claim_id`, `policy_id` | Siniestro paramétrico (el id de `GET /v1/claims/{claim_id}`) y póliza que lo pagó |
+| `filing_number` | Desde HU-M2.4-01 (opcional para el consumidor): el número de radicado `SIN-<año>-<5 dígitos>` que ve el asegurado |
 | `subject` | `sub` de la cuenta del asegurado: el destinatario del centro y del *push* |
 | `amount_minor`, `currency` | Monto pagado en unidades menores (centavos) y moneda ISO 4217 |
 | `trigger` | `parameter` (`flight_delay`…), `event_reference` (el vuelo `AV-8421`), `threshold`, `observed`, `unit` (`minutes`…), `observed_at` |
-| `payment_method` | `brand` y `last4`; nunca el número ni el token |
+| `payment_method` | `brand` y `last4`; nunca el número ni el token. En el pago de `claims`, `brand` es el banco de la cuenta de la indemnización y `last4`, sus últimos cuatro dígitos |
 | `idempotency_key` | Clave con la que se hizo el pago (HA-D02) |
 | `paid_at` | Confirmación del pago (UTC); si falta, el consumidor usa `occurred_at` |
 
@@ -147,5 +150,37 @@ entrega *raw*, DLQ con 5 recepciones).
 entrega por cada dispositivo del asegurado con permiso se escriben en una transacción; un trabajador envía los *push* con la misma clave de
 idempotencia y los reintenta hasta 24 h. Varios pagos el mismo día son notificaciones distintas (criterio 6). Un *payload* inválido o la base
 caída no borran el mensaje: reaparece al vencer la visibilidad y termina en la DLQ.
+
+Con el motor de `claims`, `event_id` = `parametric-payout-completed-ppo-<claim_id>`, `payout_id` = `ppo-<claim_id>` (un pago por siniestro)
+e `idempotency_key` = `indemnizacion-<claim_id>`, la clave del pago en la pasarela (HU-W2.2-03).
+
+## `ParametricTriggerObserved` (HU-M2.4-01)
+
+Lo publica la telemetría (el *stub* `iot`, todavía reservado; hoy `tests/e2e/hu-m2.4/nube.sh` en la nube y `app-local.sh --payout` en
+local) en el tópico **`iot`**. Lo consume `claims` desde su cola (suscrita solo al tópico `iot`, entrega *raw*, DLQ con 5 recepciones).
+
+**Sobre:** `event_id` = `parametric-trigger-observed-<observation_id>`, `event_type` = `ParametricTriggerObserved`, `event_version` = `1`,
+`source` = `iot` y `occurred_at` = el instante de la observación.
+
+**Payload:**
+
+| Campo | Descripción |
+|---|---|
+| `observation_id` | Identifica la observación; clave de idempotencia del consumidor. Si falta, se usa `event_id` |
+| `subject` | `sub` de la cuenta del asegurado, titular de la póliza |
+| `policy_id` | Póliza paramétrica a la que la telemetría ya asoció la observación (la de Viaje, `VJ-…`) |
+| `parameter` | `flight_delay` (el único con regla en `parametric-rules-v1`) |
+| `event_reference` | Lo observado, por ejemplo el vuelo `AV-8421` |
+| `observed`, `unit` | El valor observado y su unidad (`minutes`); obligatorio |
+| `observed_at` | Instante de la observación (UTC); si falta, se usa `occurred_at` |
+
+**Cómo se consume:** el motor lee la póliza y la cuenta del asegurado en el núcleo de pólizas y aplica `parametric-rules-v1`: un retraso de
+**180 minutos o más** en una póliza de Viaje vigente que cubre `flight_delay` paga **$ 180.000 COP** (como máximo el valor asegurado, sin
+deducible). En una sola transacción radica el siniestro (canal `parametric`), registra la resolución automática con su disparador (parámetro,
+umbral, valor observado) y la aprobación con su pago pendiente. El trabajador de pagos de HU-W2.2-03 lo paga a la pasarela y la
+confirmación publica `ParametricPayoutCompleted`. Es **idempotente por `observation_id`**: la misma observación otra vez no radica un segundo
+siniestro. Una observación que no paga (bajo el umbral, póliza no vigente, parámetro no cubierto, póliza o asegurado que el núcleo no conoce)
+se descarta y queda en el log como `parametric observation does not pay`. Un *payload* inválido o el núcleo caído no borran el mensaje:
+reaparece al vencer la visibilidad y termina en la DLQ.
 
 Los esquemas de los demás eventos se agregarán aquí al implementarlos. Los consumidores exactos pueden cambiar; confirmar en la Wiki ([Arquitectura final](https://github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/wiki/Arquitectura_final)).

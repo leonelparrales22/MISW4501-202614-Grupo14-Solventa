@@ -410,6 +410,40 @@ type claimSummaryBody struct {
 	IncidentType string            `json:"incident_type"`
 	OccurredAt   time.Time         `json:"occurred_at"`
 	FiledAt      time.Time         `json:"filed_at"`
+	// AutomaticResolution is what resolved a parametric claim (HU-M2.4-01);
+	// null for a claim evaluated by an analyst.
+	AutomaticResolution *automaticResolutionBody `json:"automatic_resolution"`
+}
+
+// automaticResolutionBody tells a claim the parametric engine resolved by
+// itself, with the parameter, its threshold and the value that made it pay
+// (HU-M2.4-01, criterion 3).
+type automaticResolutionBody struct {
+	ResolvedAt  time.Time   `json:"resolved_at"`
+	RuleVersion string      `json:"rule_version"`
+	Trigger     triggerBody `json:"trigger"`
+}
+
+type triggerBody struct {
+	Parameter      string    `json:"parameter"`
+	EventReference string    `json:"event_reference"`
+	Threshold      float64   `json:"threshold"`
+	Observed       float64   `json:"observed"`
+	Unit           string    `json:"unit"`
+	ObservedAt     time.Time `json:"observed_at"`
+}
+
+// automaticResolutionOf is the body of the automatic resolution of a claim,
+// or nil when it has none.
+func automaticResolutionOf(c domain.ClaimRecord) *automaticResolutionBody {
+	r := c.Parametric
+	if r == nil {
+		return nil
+	}
+	t := r.Trigger
+	return &automaticResolutionBody{ResolvedAt: r.ResolvedAt.UTC(), RuleVersion: r.RuleVersion,
+		Trigger: triggerBody{Parameter: string(t.Parameter), EventReference: t.EventReference, Threshold: t.Threshold,
+			Observed: t.Observed, Unit: t.Unit, ObservedAt: t.ObservedAt.UTC()}}
 }
 
 // evidenceViewBody is a photograph or video captured by the insured in the place
@@ -456,6 +490,7 @@ func summaryBody(c domain.ClaimRecord) claimSummaryBody {
 		ClaimID: c.ID, FilingNumber: c.FilingNumber, Status: string(c.Status), Channel: string(c.Channel),
 		Policy:       policySummaryBody{PolicyID: c.PolicyID},
 		IncidentType: string(c.IncidentType), OccurredAt: c.OccurredAt.UTC(), FiledAt: c.FiledAt.UTC(),
+		AutomaticResolution: automaticResolutionOf(c),
 	}
 	if p := c.Policy; p != nil {
 		line, product, object := string(p.Line), p.Product, p.InsuredObject

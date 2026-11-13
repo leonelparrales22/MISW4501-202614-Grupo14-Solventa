@@ -129,6 +129,29 @@ func (s *DecisionStore) held(ctx context.Context, query string, args ...any) (do
 // conditionally on the claim being in evaluation: of two analysts deciding at
 // once, the second finds the claim decided.
 func (s *DecisionStore) Decide(ctx context.Context, d domain.Decision) (domain.Decision, error) {
+	id, err := decideIn(ctx, s.db, d)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if err := s.claimExists(ctx, d.ClaimID); err != nil {
+			return domain.Decision{}, err
+		}
+		return domain.Decision{}, ports.ErrNotDecidable
+	case err != nil:
+		return domain.Decision{}, fmt.Errorf("record the decision of the claim %s: %w", d.ClaimID, err)
+	}
+	return s.Decision(ctx, id)
+}
+
+// rowQuerier is a *sql.DB or a *sql.Tx.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// decideIn records the decision and moves the claim in one statement, and
+// returns the id of the claim, or sql.ErrNoRows when the claim is not in
+// evaluation (or does not exist). The parametric engine runs it inside the
+// transaction that files its claim (HU-M2.4-01).
+func decideIn(ctx context.Context, q rowQuerier, d domain.Decision) (string, error) {
 	var (
 		approved, insured, payoutAmount            sql.NullInt64
 		deductible                                 sql.NullInt64
@@ -149,7 +172,7 @@ func (s *DecisionStore) Decide(ctx context.Context, d domain.Decision) (domain.D
 		reason, noticeTo, noticeNext = optional(d.Reason), optional(n.To), nullTimeOf(n.NextAttemptAt)
 	}
 	var id string
-	err := s.db.QueryRowContext(ctx, `WITH target AS (
+	err := q.QueryRowContext(ctx, `WITH target AS (
 			UPDATE claim SET status = $2 WHERE id = $1 AND status = ANY($3) RETURNING id
 		)
 		INSERT INTO claim_decision (claim_id, outcome, decided_by, decided_at,
@@ -161,16 +184,7 @@ func (s *DecisionStore) Decide(ctx context.Context, d domain.Decision) (domain.D
 		d.ClaimID, string(d.StatusOf()), statusNames(domain.DecidableStatuses()), string(d.Outcome), d.DecidedBy, d.DecidedAt.UTC(),
 		approved, insured, deductible, currency, key, beneficiary, payoutAmount, bank, bankName, accType, account,
 		status, next, reason, noticeTo, noticeNext).Scan(&id)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		if err := s.claimExists(ctx, d.ClaimID); err != nil {
-			return domain.Decision{}, err
-		}
-		return domain.Decision{}, ports.ErrNotDecidable
-	case err != nil:
-		return domain.Decision{}, fmt.Errorf("record the decision of the claim %s: %w", d.ClaimID, err)
-	}
-	return s.Decision(ctx, id)
+	return id, err
 }
 
 func (s *DecisionStore) claimExists(ctx context.Context, claimID string) error {
@@ -234,7 +248,11 @@ func (s *DecisionStore) Claim(ctx context.Context, claimID string, now time.Time
 	return d, claimed, nil
 }
 
-// Confirm records the confirmed payout and moves the claim to paid.
+// Confirm records the confirmed payout and moves the claim to paid. The payout
+// of a claim the parametric engine resolved also writes
+// ParametricPayoutCompleted to the outbox in the same statement (HU-M2.4-01,
+// docs/events/README.md): the event is published if and only if the payout
+// was confirmed.
 func (s *DecisionStore) Confirm(ctx context.Context, d domain.Decision, now time.Time, out idempotency.Outcome) (domain.Decision, error) {
 	return s.held(ctx, `WITH done AS (
 			UPDATE claim_decision SET payout_status = 'confirmed', paid_at = $3, payout_reference = $4,
@@ -243,6 +261,40 @@ func (s *DecisionStore) Confirm(ctx context.Context, d domain.Decision, now time
 			RETURNING *
 		), moved AS (
 			UPDATE claim SET status = 'paid' WHERE id IN (SELECT claim_id FROM done)
+		), event AS (
+			INSERT INTO outbox_event (event_id, event_type, payload, occurred_at, next_attempt_at)
+			SELECT 'parametric-payout-completed-ppo-' || d.claim_id, 'ParametricPayoutCompleted',
+				jsonb_build_object(
+					'event_id',      'parametric-payout-completed-ppo-' || d.claim_id,
+					'event_type',    'ParametricPayoutCompleted',
+					'event_version', 1,
+					'source',        'claims',
+					'occurred_at',   to_char($3::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+					'payload',       jsonb_build_object(
+						'payout_id',     'ppo-' || d.claim_id,
+						'claim_id',      d.claim_id,
+						'filing_number', c.filing_number,
+						'policy_id',     c.policy_id,
+						'subject',       c.cognito_sub,
+						'amount_minor',  d.payout_amount_minor,
+						'currency',      d.currency,
+						'trigger',       jsonb_build_object(
+							'parameter',       p.parameter,
+							'event_reference', p.event_reference,
+							'threshold',       p.threshold,
+							'observed',        p.observed,
+							'unit',            p.unit,
+							'observed_at',     to_char(p.observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')),
+						'payment_method', jsonb_build_object(
+							'brand', d.bank_name,
+							'last4', right(regexp_replace(d.account_number, '[^0-9]', '', 'g'), 4)),
+						'idempotency_key', d.payout_key,
+						'paid_at',       to_char($3::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))),
+				$3, $3
+			FROM done d
+			JOIN claim c ON c.id = d.claim_id
+			JOIN claim_parametric_resolution p ON p.claim_id = d.claim_id
+			ON CONFLICT (event_id) DO NOTHING
 		)
 		SELECT `+decisionColumns+` FROM done d JOIN claim c ON c.id = d.claim_id`,
 		d.ClaimID, d.Payout.ClaimedUntil.UTC(), now.UTC(), optional(out.Reference))

@@ -30,7 +30,7 @@ cliente ──HTTPS──▶ API Gateway REST (stage = ambiente; todos los tipos
 | Borde | [`apigateway`](../apigateway/README.md), [`cognito`](../cognito/README.md), [`alb`](../alb/README.md) | Usage plans y API keys por socio (D-7); user pool propio o externo (`existing_cognito`) con authorizer; ALB interno en subredes privadas, solo alcanzable desde el VPC link |
 | Cómputo | [`ecs`](../ecs/README.md) | Un servicio ECS por microservicio y por stub; autoescalado por CPU al 60 % (ADR-02); tarea `db-init` de un solo uso |
 | Datos | [`rds`](../rds/README.md), [`elasticache`](../elasticache/README.md) | PostgreSQL y Redis en subredes privadas; Multi-AZ por variable |
-| Eventos | [`messaging`](../messaging/README.md) | Tópicos `origination` y `claims`; colas `origination`, `audit`, `notifications` con DLQ ([catálogo](../../../../docs/events/README.md)) |
+| Eventos | [`messaging`](../messaging/README.md) | Tópicos `origination`, `claims`, `partners` e `iot` (HU-M2.4-01); colas `origination`, `claims` (HU-M2.4-01), `audit`, `notifications` con DLQ ([catálogo](../../../../docs/events/README.md)) |
 | Objetos | [`s3`](../s3/README.md) | `documents` (documento contractual, HU-W1.3-03) y `evidence` (evidencia de siniestros) |
 | Secretos | [`secrets`](../secrets/README.md) | Un secreto por servicio con su `DATABASE_URL`, y `origination/document-link` con la clave de los enlaces del documento contractual |
 
@@ -213,7 +213,13 @@ el estado remoto cifrado del bucket de T4.
 | `PAYMENT_GATEWAY_URL` | Stub `payment-gateway` por Cloud Map (9040) | Enciende la decisión del siniestro (HU-W2.2-03): aprobar paga la indemnización. Sin ella `claims` no monta aprobar, rechazar ni reintentar el pago |
 | `EMAIL_URL` | Stub `email` por Cloud Map (9030) | Avisa al asegurado el rechazo y su motivo (HU-W2.2-03). Sin ella los avisos esperan |
 | `REDIS_ADDR` | Endpoint de ElastiCache (el mismo clúster de originación) | Caché de lectura de las consultas del asegurado (HA-L02): si la base no responde en 900 ms, sale la última lectura marcada `stale`. Sin ella las consultas solo leen la base |
+| `EVENTS_QUEUE_URL` | Cola `claims` de `modules/messaging` (suscrita solo al tópico `iot`) | Motor paramétrico (HU-M2.4-01): consume `ParametricTriggerObserved`. Sin ella no se resuelve ningún siniestro paramétrico |
+| `EVENTS_TOPIC_ARN` | Tópico `claims` de `modules/messaging` | El relevo del *outbox* publica ahí `ParametricPayoutCompleted`, que recibe la cola `notifications` (HU-M2.4-01) |
 | `DATABASE_URL` (secreto) | `<nombre>/claims/database` | Base propia de `claims` |
+
+HU-M2.4-01 agrega el tópico `iot` (las observaciones de la telemetría; hoy las publica `tests/e2e/hu-m2.4/nube.sh` con las
+credenciales de quien lo corre) y la cola `claims` con su DLQ. El rol de la tarea de `claims` gana `ConsumeItsQueue` sobre su cola
+(`consumes = ["claims"]`); `PublishItsEvents` sobre el tópico `claims` ya lo tenía (T4).
 
 ## Pendientes conocidos
 

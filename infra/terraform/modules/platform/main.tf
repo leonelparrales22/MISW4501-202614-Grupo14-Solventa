@@ -55,7 +55,8 @@ locals {
       paths     = ["/v1/claims*"]
       buckets   = ["evidence"]
       publishes = ["claims"]
-      consumes  = []
+      # HU-M2.4-01: the parametric engine consumes the external events.
+      consumes = ["claims"]
     }
     partners = {
       priority = 3
@@ -125,9 +126,13 @@ locals {
 
   # Events of docs/events/README.md: one topic per publishing domain and one
   # queue per consumer.
-  topics = toset(["origination", "claims", "partners"])
+  # iot: the external events of the parametric policies (HU-M2.4-01), which the
+  # telemetry publishes already matched to the policy of the insured
+  # (ParametricTriggerObserved); today tests/e2e/hu-m2.4/nube.sh publishes them.
+  topics = toset(["origination", "claims", "partners", "iot"])
   queues = {
     origination = { topics = ["origination"] } # contractual document (HU-W1.3-03)
+    claims      = { topics = ["iot"] }         # parametric engine (HU-M2.4-01)
     # partners: audit record of the partner credentials (HU-W3.1-01).
     audit         = { topics = ["origination", "claims", "partners"] }
     notifications = { topics = ["origination", "claims"] }
@@ -563,6 +568,12 @@ locals {
       # stale; without it the queries read the database only. The cluster is
       # the one origination uses, which already admits every task.
       REDIS_ADDR = module.redis.primary_endpoint
+      # HU-M2.4-01: the parametric engine consumes ParametricTriggerObserved
+      # from the claims queue (subscribed to the iot topic) and its outbox
+      # relay publishes ParametricPayoutCompleted to the claims topic, which
+      # the notifications queue already receives.
+      EVENTS_QUEUE_URL = module.messaging.queue_urls["claims"]
+      EVENTS_TOPIC_ARN = module.messaging.topic_arns["claims"]
     }
 
     # HU-M3.1-01: the notification center of the insured and the push of the
