@@ -21,7 +21,8 @@ import (
 func withReviews(records *postgres.ClaimRecordStore, reader *evaluation.Service) httpadapter.Option {
 	store := postgres.ReviewStoreOf(records)
 	svc := review.NewService(records, store, store, reader, clock{}, nil).
-		WithResubmissions(postgres.ResubmissionStoreOf(records), postgres.SupportStoreOf(records))
+		WithResubmissions(postgres.ResubmissionStoreOf(records), postgres.SupportStoreOf(records)).
+		WithOutcome(postgres.DecisionStoreOf(records), postgres.AssignmentStoreOf(records))
 	reviews, resubmission := httpadapter.WithReviews(svc, verifier), httpadapter.WithResubmission(svc, verifier)
 	return func(r chi.Router) {
 		reviews(r)

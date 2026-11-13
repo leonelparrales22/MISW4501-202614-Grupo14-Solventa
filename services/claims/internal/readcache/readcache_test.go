@@ -59,6 +59,7 @@ type source struct {
 	hist  review.History
 	slow  bool
 	err   error
+	links int
 }
 
 func (s *source) answer(ctx context.Context) error {
@@ -88,6 +89,11 @@ func (s *source) Receipt(context.Context, string) (domain.ClaimRecord, []byte, e
 }
 
 func (s *source) EvidenceLinks(context.Context, domain.ClaimRecord) []filing.EvidenceLink { return nil }
+
+func (s *source) SupportLink(_ context.Context, _, supportID string) (filing.SupportLink, error) {
+	s.links++
+	return filing.SupportLink{URL: "https://bucket/" + supportID}, nil
+}
 
 func (s *source) History(ctx context.Context, _, _ string) (review.History, error) {
 	if err := s.answer(ctx); err != nil {
@@ -260,4 +266,17 @@ func TestAZeroBudgetIsTheDefault(t *testing.T) {
 	claims := readcache.NewClaims(&source{claim: claim(domain.StatusActive)}, newCache(), 0, &fixedClock{readAt})
 	_, err := claims.Get(as("sub-ana"), "c-1")
 	assert.NoError(t, err)
+}
+
+func TestTheDownloadOfASupportIsNeverCached(t *testing.T) {
+	src := &source{}
+	c := readcache.NewClaims(src, newCache(), budget, &fixedClock{readAt})
+
+	for i := 0; i < 2; i++ {
+		link, err := c.SupportLink(context.Background(), "cl-1", "sup-1")
+		require.NoError(t, err)
+		assert.Equal(t, "https://bucket/sup-1", link.URL)
+	}
+
+	assert.Equal(t, 2, src.links, "a signed link is short-lived: every read signs again")
 }

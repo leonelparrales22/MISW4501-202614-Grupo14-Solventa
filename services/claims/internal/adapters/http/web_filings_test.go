@@ -115,6 +115,15 @@ type fakeReads struct {
 	gotList filing.ClaimQuery
 	gotID   string
 	links   []filing.EvidenceLink
+	// link and linkErr answer the download of a support (HU-W2.1-02).
+	link       filing.SupportLink
+	linkErr    error
+	gotSupport string
+}
+
+func (f *fakeReads) SupportLink(_ context.Context, claimID, supportID string) (filing.SupportLink, error) {
+	f.gotID, f.gotSupport = claimID, supportID
+	return f.link, f.linkErr
 }
 
 func (f *fakeReads) EvidenceLinks(context.Context, domain.ClaimRecord) []filing.EvidenceLink {

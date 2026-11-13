@@ -129,12 +129,53 @@ type claimHistoryBody struct {
 	// Requirements are the supports the claim can have with their rules
 	// (HU-W2.1-04): what the insured uploads to correct it.
 	Requirements []requirementBody `json:"requirements"`
+	// Decision is the decision of operations and Provider the provider
+	// assigned, as the insured reads them (HU-W2.1-02); null when there is
+	// none yet.
+	Decision *decisionViewBody `json:"decision"`
+	Provider *providerViewBody `json:"provider"`
 	// AutomaticResolution is what resolved a parametric claim (HU-M2.4-01);
 	// null for a claim evaluated by an analyst.
 	AutomaticResolution *automaticResolutionBody `json:"automatic_resolution"`
 	// HA-L02: whether the history came from the read cache, and when it was
 	// read.
 	*freshnessBody
+}
+
+type decisionViewBody struct {
+	Outcome      string     `json:"outcome"`
+	DecidedAt    time.Time  `json:"decided_at"`
+	AmountMinor  *int64     `json:"amount_minor"`
+	Currency     *string    `json:"currency"`
+	PayoutStatus *string    `json:"payout_status"`
+	PaidAt       *time.Time `json:"paid_at"`
+	Reason       *string    `json:"rejection_reason"`
+}
+
+type providerViewBody struct {
+	Name       string    `json:"name"`
+	DistanceKm float64   `json:"distance_km"`
+	AssignedAt time.Time `json:"assigned_at"`
+}
+
+func decisionViewBodyOf(d *domain.DecisionView) *decisionViewBody {
+	if d == nil {
+		return nil
+	}
+	out := &decisionViewBody{Outcome: string(d.Outcome), DecidedAt: d.DecidedAt.UTC(), Currency: nullable(d.Currency),
+		PayoutStatus: nullable(string(d.PayoutStatus)), PaidAt: d.PaidAt, Reason: nullable(d.Reason)}
+	if d.AmountMinor > 0 {
+		amount := d.AmountMinor
+		out.AmountMinor = &amount
+	}
+	return out
+}
+
+func providerViewBodyOf(p *domain.ProviderView) *providerViewBody {
+	if p == nil {
+		return nil
+	}
+	return &providerViewBody{Name: p.Name, DistanceKm: p.DistanceKm, AssignedAt: p.AssignedAt.UTC()}
 }
 
 // nullable is the text, or null when it is empty.
@@ -374,6 +415,7 @@ func claimHistory(svc Reviewer) http.HandlerFunc {
 			out.LastChangedAt = c.ChangedAt.UTC()
 		}
 		out.Requirements = requirementBodiesOf(h.Requirements)
+		out.Decision, out.Provider = decisionViewBodyOf(h.Decision), providerViewBodyOf(h.Provider)
 		out.AutomaticResolution = automaticResolutionOf(h.Claim)
 		out.Resubmissions = make([]resubmissionBody, 0, len(h.Resubmissions))
 		for _, r := range h.Resubmissions {

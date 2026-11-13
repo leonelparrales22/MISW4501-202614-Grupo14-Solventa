@@ -1,7 +1,7 @@
 # Contrato de API — HU-M2.4-01 · Consulta y seguimiento del siniestro (móvil)
 
 > **Fuente para el cliente móvil (Kotlin).** Describe lo que la app lee del servicio `claims` para la línea de tiempo y el detalle del
-> siniestro. Contrato formal: `services/claims/api/openapi.yaml` (0.14.0). Las rutas ya existían (HU-W2.1-01, HU-W2.1-03, HU-W2.2-01 y
+> siniestro. Contrato formal: `services/claims/api/openapi.yaml` (0.15.0). Las rutas ya existían (HU-W2.1-01, HU-W2.1-03, HU-W2.2-01 y
 > HA-L02). Esta historia agrega la **resolución automática** del siniestro paramétrico (`automatic_resolution`, criterio 3) y el motor
 > paramétrico mínimo de `claims` que la produce. Todas las rutas son humanas (`Authorization: Bearer <ID token>`, rol `insured`); el
 > titular es el `sub` del token.

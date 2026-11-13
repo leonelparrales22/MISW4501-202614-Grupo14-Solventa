@@ -36,6 +36,29 @@ type Service struct {
 	// WithResubmissions.
 	resubmissions ports.ResubmissionStore
 	supports      ports.SupportStore
+	// The decision and the provider of a claim as the insured reads them
+	// (HU-W2.1-02); nil until WithOutcome.
+	decisions   DecisionReader
+	assignments AssignmentReader
+}
+
+// DecisionReader reads the decision of operations on a claim, or
+// ports.ErrDecisionNotFound.
+type DecisionReader interface {
+	Decision(ctx context.Context, claimID string) (domain.Decision, error)
+}
+
+// AssignmentReader reads the claim with its assignment.
+type AssignmentReader interface {
+	Case(ctx context.Context, claimID string) (ports.AssignmentCase, error)
+}
+
+// WithOutcome makes the history carry the decision on the claim and the
+// provider assigned, as the insured reads them (HU-W2.1-02, screen A8).
+// Either may be nil.
+func (s *Service) WithOutcome(decisions DecisionReader, assignments AssignmentReader) *Service {
+	s.decisions, s.assignments = decisions, assignments
+	return s
 }
 
 // NewService builds the service. wake may be nil.
@@ -141,6 +164,11 @@ type History struct {
 	// Requirements are the supports the claim can have, with their rules:
 	// what the insured uploads to correct a returned filing (screen A9).
 	Requirements []domain.Requirement
+	// Decision is the decision of operations and Provider the provider
+	// assigned, as the insured reads them (HU-W2.1-02); nil when there is
+	// none yet.
+	Decision *domain.DecisionView
+	Provider *domain.ProviderView
 }
 
 // ErrNotOwner means an insured asked for the history of a claim that is not
@@ -172,6 +200,9 @@ func (s *Service) History(ctx context.Context, claimID, owner string) (History, 
 			return History{}, fmt.Errorf("read the resubmissions of the claim: %w", err)
 		}
 	}
+	if err := s.withOutcome(ctx, &out); err != nil {
+		return History{}, err
+	}
 	if c.Status == domain.StatusReturned {
 		for i := len(reviews) - 1; i >= 0; i-- {
 			if reviews[i].Outcome == domain.ReviewReturned {
@@ -182,4 +213,30 @@ func (s *Service) History(ctx context.Context, claimID, owner string) (History, 
 		}
 	}
 	return out, nil
+}
+
+// withOutcome adds the decision and the provider assigned, when the claim has
+// them.
+func (s *Service) withOutcome(ctx context.Context, h *History) error {
+	if s.decisions != nil {
+		d, err := s.decisions.Decision(ctx, h.Claim.ID)
+		switch {
+		case err == nil:
+			v := domain.ViewOf(d)
+			h.Decision = &v
+		case !errors.Is(err, ports.ErrDecisionNotFound):
+			return fmt.Errorf("read the decision of the claim: %w", err)
+		}
+	}
+	if s.assignments != nil {
+		c, err := s.assignments.Case(ctx, h.Claim.ID)
+		if err != nil {
+			return fmt.Errorf("read the assignment of the claim: %w", err)
+		}
+		if c.Assignment != nil {
+			v := domain.ProviderViewOf(*c.Assignment)
+			h.Provider = &v
+		}
+	}
+	return nil
 }

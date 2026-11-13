@@ -64,6 +64,20 @@ func TestTheReviewsLiveWhereTheClaimsLive(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestTheReadsOfTheInsuredLiveWhereTheClaimsLive(t *testing.T) {
+	records := postgres.NewClaimRecordStore(nil)
+	activity, err := claimActivityOf(records, nil)
+	require.NoError(t, err)
+	assert.Same(t, records, activity)
+
+	activity, err = claimActivityOf(memory.NewCaseStore(), nil)
+	require.NoError(t, err)
+	assert.IsType(t, &memory.ClaimActivity{}, activity)
+
+	_, err = claimActivityOf(fakeRecords{}, nil)
+	assert.Error(t, err)
+}
+
 func TestTheResubmissionsLiveWhereTheReviewsLive(t *testing.T) {
 	records := postgres.NewClaimRecordStore(nil)
 	reviews, err := reviewStoreOf(records)

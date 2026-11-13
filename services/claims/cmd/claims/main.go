@@ -86,7 +86,18 @@ func main() {
 		// HU-M2.1-01: the evidence of the phone lives in the bucket of the
 		// environment, and the filing checks every key against it.
 		evidences := evidenceStore(context.Background())
-		var claimReads httpadapter.ClaimReader = filing.NewQueryService(records, pdf.NewReceiptRenderer()).WithObjects(evidences)
+		decisions, err := decisionStoreOf(records)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		activity, err := claimActivityOf(records, decisions)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		// HU-W2.1-02: the list and the detail say when each claim last changed
+		// status, and the list carries the tally of the insured's claims.
+		var claimReads httpadapter.ClaimReader = filing.NewQueryService(records, pdf.NewReceiptRenderer()).
+			WithObjects(evidences).WithActivity(activity, systemClock{})
 		if cache != nil {
 			claimReads = readcache.NewClaims(claimReads, cache, cacheCfg.budget, systemClock{})
 		}
@@ -114,10 +125,6 @@ func main() {
 		// terms of its policy when the policy core is configured, and the
 		// decision on it, which pays the indemnity or notifies the rejection.
 		terms := policyTerms(os.Getenv)
-		decisions, err := decisionStoreOf(records)
-		if err != nil {
-			log.Fatalf("invalid configuration: %v", err)
-		}
 		// HU-W2.2-02: the claims in evaluation come ordered by priority.
 		queue, err := priorityQueueOf(records, decisions, priorities)
 		if err != nil {
@@ -136,9 +143,15 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid configuration: %v", err)
 		}
-		// HU-W2.1-04: the insured corrects a returned filing and sends it again.
+		assignments, providers, err := assignmentStoresOf(records)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		// HU-W2.1-04: the insured corrects a returned filing and sends it
+		// again. HU-W2.1-02: the history carries the decision and the provider
+		// as the insured reads them.
 		reviewSvc := review.NewService(records, reviews, reviews, evaluations, systemClock{}, nil).
-			WithResubmissions(resubmissions, supports)
+			WithResubmissions(resubmissions, supports).WithOutcome(decisions, assignments)
 		var reviewer httpadapter.Reviewer = reviewSvc
 		if cache != nil {
 			reviewer = cachedReviewer{Service: reviewSvc,
@@ -155,7 +168,7 @@ func main() {
 		}
 		// HU-W2.3-01: the assignment of the nearest provider to a claim in
 		// evaluation, and the registry of providers that operations keeps.
-		assignment, err := assignmentRoutes(context.Background(), records, os.Getenv, verifier)
+		assignment, err := assignmentRoutesOver(context.Background(), assignments, providers, os.Getenv, verifier)
 		if err != nil {
 			log.Fatalf("invalid configuration: %v", err)
 		}

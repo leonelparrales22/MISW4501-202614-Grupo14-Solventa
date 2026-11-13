@@ -84,6 +84,9 @@ type ClaimRecord struct {
 	Policy         *Policy
 	CatalogVersion string
 	Supports       []AttachedSupport
+	// LastChangedAt is when the claim reached its current status
+	// (HU-W2.1-02); zero when it was not read.
+	LastChangedAt time.Time
 	// Parametric is the automatic resolution of a claim the parametric
 	// engine filed (HU-M2.4-01); nil for a claim filed by the insured.
 	Parametric *ParametricResolution
