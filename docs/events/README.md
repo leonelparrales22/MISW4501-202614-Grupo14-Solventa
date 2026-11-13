@@ -137,8 +137,7 @@ entrega *raw*, DLQ con 5 recepciones).
 | Campo | Descripción |
 |---|---|
 | `payout_id` | Identifica el pago; clave de idempotencia del consumidor (una notificación por pago, `ntf-<payout_id>`) |
-| `claim_id`, `policy_id` | Siniestro paramétrico (el id de `GET /v1/claims/{claim_id}`) y póliza que lo pagó |
-| `filing_number` | Desde HU-M2.4-01 (opcional para el consumidor): el número de radicado `SIN-<año>-<5 dígitos>` que ve el asegurado |
+| `claim_id`, `policy_id` | Siniestro paramétrico (su número de radicado `SIN-<año>-<5 dígitos>`, el que ve el asegurado en M10b) y póliza que lo pagó |
 | `subject` | `sub` de la cuenta del asegurado: el destinatario del centro y del *push* |
 | `amount_minor`, `currency` | Monto pagado en unidades menores (centavos) y moneda ISO 4217 |
 | `trigger` | `parameter` (`flight_delay`…), `event_reference` (el vuelo `AV-8421`), `threshold`, `observed`, `unit` (`minutes`…), `observed_at` |
@@ -151,8 +150,8 @@ entrega por cada dispositivo del asegurado con permiso se escriben en una transa
 idempotencia y los reintenta hasta 24 h. Varios pagos el mismo día son notificaciones distintas (criterio 6). Un *payload* inválido o la base
 caída no borran el mensaje: reaparece al vencer la visibilidad y termina en la DLQ.
 
-Con el motor de `claims`, `event_id` = `parametric-payout-completed-ppo-<claim_id>`, `payout_id` = `ppo-<claim_id>` (un pago por siniestro)
-e `idempotency_key` = `indemnizacion-<claim_id>`, la clave del pago en la pasarela (HU-W2.2-03).
+Con el motor de `claims`, `event_id` = `parametric-payout-completed-ppo-<id del siniestro>`, `payout_id` = `ppo-<id del siniestro>` (un pago por siniestro)
+e `idempotency_key` = `indemnizacion-<id del siniestro>`, la clave del pago en la pasarela (HU-W2.2-03).
 
 ## `ParametricTriggerObserved` (HU-M2.4-01)
 

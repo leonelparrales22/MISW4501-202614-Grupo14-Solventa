@@ -272,8 +272,7 @@ func (s *DecisionStore) Confirm(ctx context.Context, d domain.Decision, now time
 					'occurred_at',   to_char($3::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
 					'payload',       jsonb_build_object(
 						'payout_id',     'ppo-' || d.claim_id,
-						'claim_id',      d.claim_id,
-						'filing_number', c.filing_number,
+						'claim_id',      c.filing_number,
 						'policy_id',     c.policy_id,
 						'subject',       c.cognito_sub,
 						'amount_minor',  d.payout_amount_minor,

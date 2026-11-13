@@ -109,7 +109,7 @@ for line in sys.stdin.read().split('\t'):
     line = line.strip()
     if line:
         e = json.loads(line); p = e['payload']
-        print('   Published', e['event_type'], 'for', p['filing_number'], p['amount_minor'] // 100, p['currency'],
+        print('   Published', e['event_type'], 'for', p['claim_id'], p['amount_minor'] // 100, p['currency'],
               '(notifications sends the push from it).')" || true
   exit 0
   ;;

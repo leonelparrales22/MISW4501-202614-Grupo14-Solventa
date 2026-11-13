@@ -138,7 +138,7 @@ func TestTheConfirmedPayoutWritesTheEventOfNotifications(t *testing.T) {
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(e.Payload, &payload))
 	assert.Equal(t, map[string]any{
-		"payout_id": "ppo-" + parametricClaim, "claim_id": parametricClaim, "filing_number": stored.FilingNumber,
+		"payout_id": "ppo-" + parametricClaim, "claim_id": stored.FilingNumber,
 		"policy_id": "VJ-2026-000931", "subject": "sub-a", "amount_minor": float64(18_000_000), "currency": "COP",
 		"trigger": map[string]any{"parameter": "flight_delay", "event_reference": "AV-8421", "threshold": float64(180),
 			"observed": float64(215), "unit": "minutes", "observed_at": "2026-09-11T21:39:00.000000Z"},

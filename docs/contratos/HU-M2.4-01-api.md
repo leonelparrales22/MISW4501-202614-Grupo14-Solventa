@@ -62,8 +62,8 @@ Las etapas cumplidas son las de `changes[]`; la actual es la última. El histori
   `automatic_resolution` llega en `null`; el campo siempre está presente.
 - **Qué mostrar:** el rótulo o ícono de "Resolución automática", el parámetro objetivo (`trigger.parameter` + `event_reference`, por
   ejemplo "Retraso del vuelo AV-8421"), el umbral (`threshold` + `unit`) y el valor que generó el pago (`observed` + `unit`).
-- **El monto pagado** llega en la notificación de HU-M3.1-01 (`amount_minor`, `currency`). El `claim_id` de esa notificación es el de
-  `GET /v1/claims/{claim_id}`, así que tocarla puede abrir este detalle.
+- **El monto pagado** llega en la notificación de HU-M3.1-01 (`amount_minor`, `currency`). El `claim_id` de esa notificación es el
+  número de radicado (`SIN-…`), el mismo `filing_number` de estas lecturas.
 - Un siniestro paramétrico no tiene soportes ni evidencia: `requirements` llega vacío.
 
 ## 4. Información potencialmente desactualizada (criterio 4)
