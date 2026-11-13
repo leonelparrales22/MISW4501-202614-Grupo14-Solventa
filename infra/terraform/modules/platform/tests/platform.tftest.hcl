@@ -1113,6 +1113,55 @@ run "origination_publishes_to_its_topic" {
   }
 }
 
+# HU-M2.4-01: the parametric engine of claims consumes the external events of
+# the iot topic from its own queue and publishes ParametricPayoutCompleted to
+# the claims topic, which the notifications queue receives.
+run "claims_consumes_the_iot_topic_and_publishes_to_its_topic" {
+  command = plan
+
+  override_resource {
+    target          = module.messaging.aws_sns_topic.this
+    override_during = plan
+    values = {
+      arn = "arn:aws:sns:us-east-2:123456789012:solventa-test-claims"
+    }
+  }
+
+  override_resource {
+    target          = module.messaging.aws_sqs_queue.this
+    override_during = plan
+    values = {
+      url = "https://sqs.us-east-2.amazonaws.com/123456789012/solventa-test-claims"
+      arn = "arn:aws:sqs:us-east-2:123456789012:solventa-test-claims"
+    }
+  }
+
+  assert {
+    condition     = contains(local.topics, "iot") && local.queues.claims.topics == ["iot"]
+    error_message = "The claims queue receives the external events of the iot topic, and only them."
+  }
+
+  assert {
+    condition     = contains(local.queues.notifications.topics, "claims")
+    error_message = "ParametricPayoutCompleted reaches the notifications queue (HU-M3.1-01)."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.claims.EVENTS_QUEUE_URL == module.messaging.queue_urls["claims"] &&
+      local.service_environment.claims.EVENTS_TOPIC_ARN == module.messaging.topic_arns["claims"]
+    )
+    error_message = "claims consumes its queue and its outbox relay publishes to the claims topic."
+  }
+
+  assert {
+    condition = anytrue([
+      for st in local.task_role_statements.claims : st.sid == "ConsumeItsQueue"
+    ]) && anytrue([for st in local.task_role_statements.claims : st.sid == "PublishItsEvents"])
+    error_message = "The task role of claims can consume its queue and publish to its topic."
+  }
+}
+
 run "partner_display_names_can_be_replaced" {
   command = plan
 

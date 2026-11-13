@@ -1,8 +1,18 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.14.0
+  version: 0.15.0
   description: >-
+    0.15.0 (HU-M2.4-01): the claims the parametric engine resolves by itself.
+    The list, the detail and the history of a claim gain
+    automatic_resolution (null for a claim evaluated by an analyst): when it
+    was resolved, the rules applied and the trigger (the parameter, its
+    threshold and the value observed that made it pay). Such a claim has
+    channel parametric, incident_type flight_delay, the line travel in its
+    policy and no requirements; its history goes in_evaluation, approved and
+    paid. The engine consumes ParametricTriggerObserved and publishes
+    ParametricPayoutCompleted (docs/events/README.md); no route is added.
+    Compatible with 0.14.0 (it only adds a field and enum values of reads).
     0.14.0 (HU-W2.1-02): the insured follows the stage of their claims. The
     list and the detail carry last_changed_at, when the claim reached its
     current status; the list carries summary, the tally of every claim of the
@@ -2701,6 +2711,50 @@ components:
     PolicyLine:
       type: string
       enum: [auto, home]
+    ClaimIncidentType:
+      type: string
+      description: >-
+        The type of a claim as it is read: every IncidentType, and
+        flight_delay, the parameter of a claim the parametric engine resolved
+        (HU-M2.4-01), which no filing accepts.
+      enum: [collision, theft, third_party_damage, glass, water_damage, other, flight_delay]
+    AutomaticResolution:
+      type: object
+      description: >-
+        HU-M2.4-01. A claim the parametric engine filed and resolved by
+        itself when an external event crossed the threshold of its policy.
+      required: [resolved_at, rule_version, trigger]
+      properties:
+        resolved_at:
+          type: string
+          format: date-time
+        rule_version:
+          type: string
+          example: parametric-rules-v1
+        trigger:
+          type: object
+          required: [parameter, event_reference, threshold, observed, unit, observed_at]
+          properties:
+            parameter:
+              type: string
+              example: flight_delay
+            event_reference:
+              type: string
+              description: What was observed, such as the flight.
+              example: AV-8421
+            threshold:
+              type: number
+              example: 180
+            observed:
+              type: number
+              description: The value that made it pay; at least the threshold.
+              example: 215
+            unit:
+              type: string
+              example: minutes
+            observed_at:
+              type: string
+              format: date-time
     FileFormat:
       type: string
       enum: [jpeg, png, pdf]
@@ -2924,8 +2978,9 @@ components:
         policy_id:
           type: string
         line:
-          allOf:
-            - $ref: "#/components/schemas/PolicyLine"
+          type: string
+          description: travel is the policy of a parametric claim (HU-M2.4-01).
+          enum: [auto, home, travel]
           nullable: true
         product:
           type: string
@@ -2976,8 +3031,14 @@ components:
                   $ref: "#/components/schemas/AttachedFile"
     ClaimDetail:
       type: object
-      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, place, description, filed_at, supports, evidence]
+      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, place, description, filed_at, supports, evidence,
+        automatic_resolution]
       properties:
+        automatic_resolution:
+          allOf:
+            - $ref: "#/components/schemas/AutomaticResolution"
+          nullable: true
+          description: HU-M2.4-01. Null for a claim evaluated by an analyst.
         stale:
           type: boolean
           description: >-
@@ -3009,11 +3070,12 @@ components:
           enum: [active, returned, in_evaluation, approved, paid, rejected, payment_exception]
         channel:
           type: string
-          enum: [mobile, web]
+          description: parametric is a claim the parametric engine filed and resolved by itself (HU-M2.4-01).
+          enum: [mobile, web, parametric]
         policy:
           $ref: "#/components/schemas/PolicySummary"
         incident_type:
-          $ref: "#/components/schemas/IncidentType"
+          $ref: "#/components/schemas/ClaimIncidentType"
         occurred_at:
           type: string
           format: date-time
@@ -3081,8 +3143,14 @@ components:
           nullable: true
     ClaimSummary:
       type: object
-      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, filed_at]
+      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, filed_at,
+        automatic_resolution]
       properties:
+        automatic_resolution:
+          allOf:
+            - $ref: "#/components/schemas/AutomaticResolution"
+          nullable: true
+          description: HU-M2.4-01. Null for a claim evaluated by an analyst.
         claim_id:
           type: string
         filing_number:
@@ -3092,11 +3160,12 @@ components:
           enum: [active, returned, in_evaluation, approved, paid, rejected, payment_exception]
         channel:
           type: string
-          enum: [mobile, web]
+          description: parametric is a claim the parametric engine filed and resolved by itself (HU-M2.4-01).
+          enum: [mobile, web, parametric]
         policy:
           $ref: "#/components/schemas/PolicySummary"
         incident_type:
-          $ref: "#/components/schemas/IncidentType"
+          $ref: "#/components/schemas/ClaimIncidentType"
         occurred_at:
           type: string
           format: date-time
@@ -4011,8 +4080,16 @@ components:
     ClaimHistory:
       type: object
       required: [claim_id, filing_number, status, last_changed_at, changes, reviews, last_return, resubmissions,
-        requirements, decision, provider, stale, as_of]
+        requirements, decision, provider, stale, as_of, automatic_resolution]
       properties:
+        automatic_resolution:
+          allOf:
+            - $ref: "#/components/schemas/AutomaticResolution"
+          nullable: true
+          description: >-
+            HU-M2.4-01. What resolved the claim when the parametric engine
+            did, so the timeline tells it apart from a claim evaluated by an
+            analyst; null otherwise.
         stale:
           type: boolean
           description: >-

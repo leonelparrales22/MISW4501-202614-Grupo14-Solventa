@@ -134,6 +134,9 @@ type claimHistoryBody struct {
 	// none yet.
 	Decision *decisionViewBody `json:"decision"`
 	Provider *providerViewBody `json:"provider"`
+	// AutomaticResolution is what resolved a parametric claim (HU-M2.4-01);
+	// null for a claim evaluated by an analyst.
+	AutomaticResolution *automaticResolutionBody `json:"automatic_resolution"`
 	// HA-L02: whether the history came from the read cache, and when it was
 	// read.
 	*freshnessBody
@@ -413,6 +416,7 @@ func claimHistory(svc Reviewer) http.HandlerFunc {
 		}
 		out.Requirements = requirementBodiesOf(h.Requirements)
 		out.Decision, out.Provider = decisionViewBodyOf(h.Decision), providerViewBodyOf(h.Provider)
+		out.AutomaticResolution = automaticResolutionOf(h.Claim)
 		out.Resubmissions = make([]resubmissionBody, 0, len(h.Resubmissions))
 		for _, r := range h.Resubmissions {
 			out.Resubmissions = append(out.Resubmissions, resubmissionBodyOf(r))

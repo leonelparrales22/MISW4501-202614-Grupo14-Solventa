@@ -397,6 +397,7 @@ func TestAWebFilingAnswersWithTheClaimDetail(t *testing.T) {
 	assert.JSONEq(t, `{"claim_id":"`+claimID+`","filing_number":"SIN-2026-01712","status":"active","channel":"web",
 		"policy":{"policy_id":"AU-2025-118204","line":"auto","product":"Autos","insured_object":"KJT-482"},
 		"incident_type":"other","occurred_at":"2026-09-14T23:40:00Z","filed_at":"2026-10-23T15:00:00Z",
+		"automatic_resolution":null,
 		"place":"Calle 80","description":"Un golpe por detrás.","evidence":[],
 		"supports":{"required_total":1,"required_attached":1,"files":1,"items":[{"requirement_code":"supporting_document",
 			"label":"Documento de soporte","files":[{"support_id":"sup-`+strings.Repeat("c", 32)+`","file_name":"croquis.pdf",

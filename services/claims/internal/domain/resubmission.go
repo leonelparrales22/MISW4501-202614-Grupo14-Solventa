@@ -339,6 +339,10 @@ func checkCorrectedSupports(after ClaimRecord, requirements []Requirement, last 
 // catalog. A filing of the phone has its photographs of the vehicle as the
 // one required support, whatever its claim type asks for (see Checklist).
 func RequirementsOf(c ClaimRecord) []Requirement {
+	// A parametric claim is resolved without supports (HU-M2.4-01).
+	if c.Channel == ChannelParametric {
+		return nil
+	}
 	option, _ := CatalogFor(c.CatalogVersion).Incident(c.IncidentType)
 	if c.Channel == ChannelWeb {
 		return append([]Requirement(nil), option.Requirements...)

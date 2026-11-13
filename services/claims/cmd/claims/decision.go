@@ -42,12 +42,14 @@ func decisionStoreOf(records ports.ClaimRecords) (ports.DecisionStore, error) {
 
 // decisionRoutes mounts the decision of a claim and starts the worker that
 // pays the approvals and notifies the rejections, which runs until ctx ends.
+// It returns the worker too, which also pays the claims of the parametric
+// engine (HU-M2.4-01); nil when the gateway is not configured.
 func decisionRoutes(ctx context.Context, records ports.ClaimRecords, store ports.DecisionStore,
-	terms ports.PolicyTermsReader, verifier security.Verifier, getenv func(string) string) []httpadapter.Option {
+	terms ports.PolicyTermsReader, verifier security.Verifier, getenv func(string) string) ([]httpadapter.Option, *decision.Worker) {
 	gatewayURL := getenv(envPaymentGatewayURL)
 	if gatewayURL == "" {
 		log.Printf("%s is not set: the decision of a claim (HU-W2.2-03) is not mounted", envPaymentGatewayURL)
-		return nil
+		return nil, nil
 	}
 	gateway := payouts.NewGateway(payments.NewClient(payments.Config{BaseURL: gatewayURL, Breaker: resilience.DefaultConfig()}))
 	var mailer ports.Mailer
@@ -64,5 +66,5 @@ func decisionRoutes(ctx context.Context, records ports.ClaimRecords, store ports
 	log.Printf("decision (HU-W2.2-03): payment gateway at %s, %d automatic attempts per payout",
 		gatewayURL, domain.MaxAutomaticPayoutAttempts)
 	return []httpadapter.Option{httpadapter.WithDecisions(
-		decision.NewService(records, store, terms, systemClock{}, worker.Notify), verifier)}
+		decision.NewService(records, store, terms, systemClock{}, worker.Notify), verifier)}, worker
 }

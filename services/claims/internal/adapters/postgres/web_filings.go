@@ -51,7 +51,7 @@ type policySnapshot struct {
 // and assigns its filing number. When the subject already filed with the same
 // key it returns that claim and created=false, or ErrFilingKeyReused.
 func (s *ClaimRecordStore) Create(ctx context.Context, c domain.Claim) (domain.Claim, bool, error) {
-	stored, created, err := s.create(ctx, domain.ClaimRecord{Claim: c, Channel: domain.ChannelMobile}, c.Fingerprint())
+	stored, created, err := s.create(ctx, domain.ClaimRecord{Claim: c, Channel: domain.ChannelMobile}, c.Fingerprint(), nil)
 	if err != nil {
 		return domain.Claim{}, false, err
 	}
@@ -62,7 +62,7 @@ func (s *ClaimRecordStore) Create(ctx context.Context, c domain.Claim) (domain.C
 // transaction.
 func (s *ClaimRecordStore) CreateWeb(ctx context.Context, c domain.ClaimRecord) (domain.ClaimRecord, bool, error) {
 	c.Channel = domain.ChannelWeb
-	return s.create(ctx, c, c.WebFingerprint())
+	return s.create(ctx, c, c.WebFingerprint(), nil)
 }
 
 // create is the only writer of the claim table. The filing key is read first:
@@ -70,8 +70,11 @@ func (s *ClaimRecordStore) CreateWeb(ctx context.Context, c domain.ClaimRecord) 
 // burn a filing number. The unique index settles the race between two retries
 // that arrive at the same time, and then the row that won is read back. The
 // claim, its evidence and its supports are written together: a case whose
-// evidence is missing would claim what it cannot show.
-func (s *ClaimRecordStore) create(ctx context.Context, c domain.ClaimRecord, fingerprint string) (domain.ClaimRecord, bool, error) {
+// evidence is missing would claim what it cannot show. then, when set, writes
+// what else belongs to a new claim in the same transaction (the automatic
+// resolution of HU-M2.4-01).
+func (s *ClaimRecordStore) create(ctx context.Context, c domain.ClaimRecord, fingerprint string,
+	then func(context.Context, *sql.Tx, domain.ClaimRecord) error) (domain.ClaimRecord, bool, error) {
 	switch stored, filed, err := s.byFilingKey(ctx, c.Subject, c.FilingKey); {
 	case err == nil:
 		return sameFiling(stored, filed, c.Channel, fingerprint)
@@ -131,6 +134,11 @@ func (s *ClaimRecordStore) create(ctx context.Context, c domain.ClaimRecord, fin
 				return domain.ClaimRecord{}, false, ports.ErrSupportAlreadyAttached
 			}
 			return domain.ClaimRecord{}, false, fmt.Errorf("attach the support %s: %w", a.File.ID, err)
+		}
+	}
+	if then != nil {
+		if err := then(ctx, tx, c); err != nil {
+			return domain.ClaimRecord{}, false, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -238,6 +246,9 @@ func (s *ClaimRecordStore) withAttachments(ctx context.Context, c domain.ClaimRe
 	if c.Evidence, err = s.evidenceOf(ctx, c.ID); err != nil {
 		return domain.ClaimRecord{}, err
 	}
+	if c.Parametric, err = s.parametricOf(ctx, c); err != nil {
+		return domain.ClaimRecord{}, err
+	}
 	return c, nil
 }
 
@@ -301,6 +312,13 @@ func (s *ClaimRecordStore) ListByOwner(ctx context.Context, subject string, f po
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list the claims: %w", err)
+	}
+	_ = rows.Close()
+	// HU-M2.4-01: the list tells a claim resolved automatically apart.
+	for i := range out {
+		if out[i].Parametric, err = s.parametricOf(ctx, out[i]); err != nil {
+			return nil, fmt.Errorf("list the claims: %w", err)
+		}
 	}
 	return out, nil
 }
