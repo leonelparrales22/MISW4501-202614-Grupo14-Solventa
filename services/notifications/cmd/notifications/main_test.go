@@ -116,8 +116,9 @@ func TestWithoutAQueueThereIsNoConsumer(t *testing.T) {
 }
 
 type recorder struct {
-	got    []domain.ParametricPayout
-	stages []domain.ClaimStageChange
+	got      []domain.ParametricPayout
+	stages   []domain.ClaimStageChange
+	expiries []domain.ExpiryAlert
 }
 
 func (r *recorder) RecordPayout(_ context.Context, p domain.ParametricPayout) error {
@@ -127,6 +128,11 @@ func (r *recorder) RecordPayout(_ context.Context, p domain.ParametricPayout) er
 
 func (r *recorder) RecordStageChange(_ context.Context, c domain.ClaimStageChange) error {
 	r.stages = append(r.stages, c)
+	return nil
+}
+
+func (r *recorder) RecordExpiryAlert(_ context.Context, e domain.ExpiryAlert) error {
+	r.expiries = append(r.expiries, e)
 	return nil
 }
 
@@ -159,6 +165,24 @@ func TestTheRouterHandlesTheChangesOfStage(t *testing.T) {
 
 	require.Len(t, rec.stages, 1)
 	assert.Equal(t, "in_evaluation", rec.stages[0].Stage)
+}
+
+func TestTheRouterHandlesTheExpiryAlerts(t *testing.T) {
+	rec := &recorder{}
+	router, err := eventRouter(rec)
+	require.NoError(t, err)
+	e, err := events.New("policy-expiry-approaching-AU-2025-118204-2026-11-30-30", "PolicyExpiryApproaching",
+		"origination", 1, time.Now(), map[string]any{
+			"policy_id": "AU-2025-118204", "subject": "sub-a", "source": "policy_core", "line": "auto",
+			"product": "Autos", "insured_object": "KJT-482", "coverage_end": "2026-11-30T00:00:00Z",
+			"milestone_days": 30, "days_left": 15, "detected_at": "2026-11-14T15:00:00Z",
+		})
+	require.NoError(t, err)
+
+	require.NoError(t, router.Handle(context.Background(), e))
+
+	require.Len(t, rec.expiries, 1)
+	assert.Equal(t, 30, rec.expiries[0].MilestoneDays)
 }
 
 func TestWithoutTheIssuerTheCenterIsNotMounted(t *testing.T) {

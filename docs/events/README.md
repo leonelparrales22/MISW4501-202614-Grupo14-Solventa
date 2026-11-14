@@ -12,6 +12,7 @@ Los servicios publican hechos de negocio en Amazon SNS (un tópico por dominio) 
 | `ParametricPayoutCompleted` | `PagoParametricoRealizado` | claims | notifications (HU-M3.1-01) | El pago automático de un siniestro paramétrico quedó confirmado: `notifications` registra la notificación y envía el *push* en ≤ 60 s. **Lo publica el motor paramétrico de `claims` con *outbox* desde HU-M2.4-01**, cuando la pasarela confirma el pago del siniestro que resolvió (antes lo simulaba `tests/e2e/hu-m3.1`) |
 | `ParametricTriggerObserved` | `ParametroObservado` | iot (telemetría; hoy `tests/e2e/hu-m2.4/nube.sh` y `app-local.sh`) | claims (HU-M2.4-01) | La telemetría observó el parámetro de una póliza paramétrica (el retraso del vuelo de un asegurado), ya asociado a la póliza. El motor paramétrico de `claims` radica, resuelve y paga el siniestro si el valor alcanza el umbral |
 | `ClaimStageChanged` | `EtapaDelSiniestroCambiada` | claims | notifications (HU-M3.3-01) | Un siniestro llegó a una etapa que el asegurado espera: en evaluación, aprobado o pagado. `notifications` registra la notificación y envía el *push* en ≤ 60 s. Lo escribe en el *outbox* `claims/internal/stages` a partir del historial de estados |
+| `PolicyExpiryApproaching` | `VencimientoDePolizaProximo` | origination | notifications (HU-M3.2-01) | Una póliza activa del asegurado (de originación o del núcleo de pólizas) llegó a 30, 15 o 5 días de su vencimiento. `notifications` registra la notificación con la fecha exacta de vencimiento y envía el *push*. Lo escribe en el *outbox* `origination/internal/expiryalert`, un barrido horario |
 | `CustomerLinked` | `ClienteVinculado` | origination | audit | La cuenta del asegurado (`sub` de Cognito) quedó vinculada a su documento al terminar el registro (HU-M1.1-01); `audit` lo usa para reconocer al titular de sus consentimientos (HU-M1.3-01). **Primer evento publicado con *outbox*** |
 | `PartnerCredentialsIssued`, `PartnerCredentialsRotated`, `PartnerCredentialsRevoked` | `CredencialesSocioEmitidas`, `CredencialesSocioRotadas`, `CredencialesSocioRevocadas` | partners | audit | Se generaron las credenciales de un socio al aprobarlo, se rotaron o se revocó la anterior al vencer la transición (HU-W3.1-01); `audit` las guarda en el registro de auditoría de suscripción con la fecha y el emisor. **Primer evento del tópico `partners`** |
 
@@ -213,5 +214,45 @@ cambios anteriores a la migración `0012` de `claims` son historia y no se avisa
 **Cómo se consume:** idempotente por `change_id`. La notificación y una entrega por cada dispositivo con permiso se escriben en una
 transacción, y el *push* va en su propio grupo (`claim_stages`) con `claim_id` en `data`. Un *payload* inválido o la base caída no borran el
 mensaje: reaparece y termina en la DLQ.
+
+## `PolicyExpiryApproaching` (HU-M3.2-01)
+
+Lo publica `origination` en su tópico, con *outbox*. Un barrido en proceso (`internal/expiryalert`, cada `EXPIRY_ALERT_INTERVAL_MS`, por
+omisión 1 h, en cada tarea) mira las pólizas **activas** de las dos fuentes de la billetera: las de originación (`life`) y las del núcleo de
+pólizas, consultadas **por titular vinculado** (cada cliente de originación con `cognito_sub`; el titular en el núcleo es ese `sub`). Lo
+consume `notifications` desde su cola (la misma de los siniestros, suscrita también al tópico `origination`).
+
+**Regla del hito (último cruzado):** `days_left` = días calendario entre hoy y la fecha de fin de la cobertura, ambas en Colombia
+(America/Bogota). Con `days_left < 0` no hay aviso; si no, el hito es el menor de {30, 15, 5} que no sea menor que `days_left` (ninguno con
+más de 30). Se emite solo si `(policy_id, fin del periodo, hito)` no se avisó antes (tabla `policy_expiry_notice`, escrita en la misma
+transacción que el evento con `ON CONFLICT DO NOTHING`, así que varias tareas a la vez no duplican nada). Nunca salen varios a la vez: una
+póliza vista por primera vez a 14 días recibe solo el de 15, y el de 30 ya no sale.
+
+**Qué no lo produce:** una póliza de originación cuyo periodo ya tiene una fila `renewal` (aceptada, renovada o no renovada: el asegurado
+ya actuó) o que ya tiene sucesora (`renewal_of`); una póliza del núcleo que no está `active`; una cobertura que ya terminó. Una renovación
+en el núcleo extiende `valid_to`: el periodo nuevo empieza sus hitos de cero. Si el núcleo falla para un titular, ese titular se salta y se
+reintenta en el siguiente barrido.
+
+**Sobre:** `event_id` = `policy-expiry-approaching-<policy_id>-<fin del periodo en Colombia, AAAA-MM-DD>-<milestone_days>`, `event_type` =
+`PolicyExpiryApproaching`, `event_version` = `1`, `source` = `origination` y `occurred_at` = `detected_at`.
+
+**Payload:**
+
+| Campo | Descripción |
+|---|---|
+| `policy_id` | Póliza (la de originación o el número del núcleo, p. ej. `AU-2025-118204`) |
+| `subject` | `sub` de la cuenta del asegurado: el destinatario |
+| `source` | `origination` o `policy_core` |
+| `line` | `life`, `auto`, `home` o `travel` |
+| `product`, `insured_object` | Producto y objeto asegurado; `null` cuando la fuente no los nombra (las de vida de originación) |
+| `coverage_end` | Fin de la cobertura (RFC 3339, UTC), tal como lo guarda o devuelve la fuente: la fecha exacta del aviso |
+| `milestone_days` | Hito alcanzado: `30`, `15` o `5` |
+| `days_left` | Días que faltaban al detectarlo (`>= 0`) |
+| `detected_at` | Cuándo se detectó (UTC) |
+
+**Cómo se consume:** idempotente por póliza, periodo e hito (notificación `ntf-expiry-<policy_id>-<AAAAMMDD>-<milestone_days>`, de tipo
+`policy_expiry`). La notificación y una entrega por cada dispositivo con permiso se escriben en una transacción; el *push* va en el grupo
+`policy_expiry` con `policy_id` en `data`. Un *payload* inválido o la base caída no borran el mensaje: reaparece y termina en la DLQ.
+Contrato para el móvil: [`docs/contratos/HU-M3.2-01-api.md`](../contratos/HU-M3.2-01-api.md).
 
 Los esquemas de los demás eventos se agregarán aquí al implementarlos. Los consumidores exactos pueden cambiar; confirmar en la Wiki ([Arquitectura final](https://github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/wiki/Arquitectura_final)).
