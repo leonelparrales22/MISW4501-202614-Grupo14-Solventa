@@ -35,8 +35,21 @@ correr el script la conserva. Puertos, todos en `127.0.0.1`: *gateway* 8396, Loc
 
 ## En AWS
 
-No hace falta ningún script: el barrido corre en cada tarea de `origination` cada hora y la cola de `notifications` ya está suscrita al
-tópico `origination`, así que no hay cambios de infraestructura. Contrato: [`docs/contratos/HU-M3.2-01-api.md`](../../../docs/contratos/HU-M3.2-01-api.md).
+El barrido corre en cada tarea de `origination` cada hora y la cola de `notifications` ya está suscrita al tópico `origination`, así que
+no hay cambios de infraestructura. Al arrancar, `origination` deja en su log `expiry alerts (HU-M3.2-01): 30, 15 and 5 days before the
+end of the policies …`.
+
+**Por qué en AWS se publica el evento a mano.** El simulador del núcleo desplegado no tiene semilla: la vigencia que deriva para cada
+titular está anclada al día de hoy, así que sus pólizas nunca quedan a 30, 15 o 5 días y el barrido no avisa nada allá. Para validar en
+staging lo que ve el asegurado (CA-1, CA-2 en el centro y CA-4 con Firebase), `nube.sh` publica en el tópico `solventa-stg-origination`
+el mismo `PolicyExpiryApproaching` que publicaría el barrido, para la póliza de autos que el núcleo le da a ese asegurado:
+
+```
+SUBJECT=<sub de asegurado@example.com> bash tests/e2e/hu-m3.2/nube.sh [DÍAS]   # 15 por omisión; de 0 a 30
+```
+
+Con los mismos días el mismo día, el evento repite su id y `notifications` conserva la notificación que ya tenía (CA-2). El barrido en
+sí —los hitos, la no repetición y los periodos renovados (CA-2 y CA-3)— lo validan las pruebas de `origination` y este entorno local. Contrato: [`docs/contratos/HU-M3.2-01-api.md`](../../../docs/contratos/HU-M3.2-01-api.md).
 
 Las pruebas por componente están en `services/origination/internal/{domain,expiryalert,adapters/memory,adapters/postgres}`
 (`expiry_alert*_test.go`, `sweeper_test.go`) y en `services/notifications/internal/...` (`expiry*_test.go`,
