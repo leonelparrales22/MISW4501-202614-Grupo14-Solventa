@@ -70,3 +70,19 @@ func TestTheErrorOfFCMKeepsItsClass(t *testing.T) {
 
 	assert.ErrorIs(t, err, idempotency.ErrRejected)
 }
+
+// HU-M3.2-01: an expiry alert tells which policy to open.
+func TestAnExpiryAlertTellsWhichPolicyToOpen(t *testing.T) {
+	client := &fakeClient{}
+	e := domain.ExpiryAlert{PolicyID: "AU-2025-118204", Subject: "sub-a", Source: domain.ExpirySourcePolicyCore,
+		Line: "auto", CoverageEnd: time.Date(2026, 11, 30, 5, 0, 0, 0, time.UTC), MilestoneDays: 30, DaysLeft: 16,
+		DetectedAt: at}
+	d := domain.NewDelivery(domain.NewExpiryNotification(e, at), device(), at)
+
+	_, err := fcm.NewSender(client).Send(context.Background(), d)
+
+	require.NoError(t, err)
+	assert.Equal(t, pkgfcm.Message{Token: "tok-fcm-1", CollapseKey: "ntf-expiry-AU-2025-118204-20261130-30",
+		Data: map[string]string{fcm.DataNotificationID: "ntf-expiry-AU-2025-118204-20261130-30",
+			fcm.DataKind: domain.KindPolicyExpiry, fcm.DataPolicyID: "AU-2025-118204"}}, client.got)
+}

@@ -89,6 +89,14 @@ func main() {
 	if relay != nil {
 		go relay.Run(context.Background())
 	}
+	// HU-M1.2-01 and HU-M3.2-01: the policy core the wallet lists and the
+	// expiry alerts look at; nil without POLICY_CORE_URL.
+	portfolio := newPolicyPortfolio(cfg.policyCore)
+	// HU-M3.2-01: alerts 30, 15 and 5 days before a policy expires, written
+	// to the outbox (PolicyExpiryApproaching) for the notifications service.
+	if err := startExpiryAlerts(context.Background(), cfg.expiryAlerts, st, portfolio); err != nil {
+		log.Fatalf("could not set up the expiry alerts: %v", err)
+	}
 	offers := newOfferWiring(context.Background(), cfg, resolver, st)
 	cfg.acceptances.offers, cfg.acceptances.acceptanceStore, cfg.acceptances.reviewStore = offers.router, offers.acceptances, offers.reviews
 
@@ -189,7 +197,7 @@ func main() {
 			log.Fatalf("could not set up the assisted renewal: %v", err)
 		}
 		opts = append(opts, assisted...)
-		opts = append(opts, walletOptions(issued, newPolicyPortfolio(cfg.policyCore), verifier)...)
+		opts = append(opts, walletOptions(issued, portfolio, verifier)...)
 		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
 			httpadapter.WithAcceptances(acceptances, verifier),
@@ -292,8 +300,11 @@ type config struct {
 	// Personalized offer (HU-W1.2-03).
 	offers offerConfig
 
-	// Policy core read by the wallet (HU-M1.2-01).
+	// Policy core read by the wallet (HU-M1.2-01) and the expiry alerts.
 	policyCore policyCoreConfig
+
+	// Alerts before a policy expires (HU-M3.2-01).
+	expiryAlerts expiryAlertConfig
 }
 
 // acceptanceConfig configures the offer acceptance (HU-W1.3-01). Its routes
@@ -617,6 +628,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadPolicyCoreConfig(getenv, &cfg.policyCore); err != nil {
+		return config{}, err
+	}
+	if err := loadExpiryAlertConfig(getenv, &cfg.expiryAlerts); err != nil {
 		return config{}, err
 	}
 	return cfg, nil

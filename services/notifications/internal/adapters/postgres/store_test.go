@@ -316,3 +316,36 @@ func TestAChangeOfStageIsRecordedWithItsPushesAndReadBack(t *testing.T) {
 	require.NotNil(t, d.Notification.Stage)
 	assert.Equal(t, "SIN-2026-01655", d.Notification.Stage.FilingNumber)
 }
+
+// HU-M3.2-01: an expiry alert is a notification like the others: its pushes,
+// its round trip and its place in the center.
+func TestAnExpiryAlertIsRecordedWithItsPushesAndReadBack(t *testing.T) {
+	store, _ := newStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.SaveDevice(ctx, device("inst-1", true)))
+	e := domain.ExpiryAlert{PolicyID: "AU-2025-118204", Subject: "sub-a", Source: domain.ExpirySourcePolicyCore,
+		Line: "auto", Product: "Autos", InsuredObject: "KJT-482", CoverageEnd: time.Date(2026, 11, 30, 5, 0, 0, 0, time.UTC),
+		MilestoneDays: 30, DaysLeft: 16, DetectedAt: paidAt}
+	n := domain.NewExpiryNotification(e, paidAt.Add(2*time.Second))
+
+	created, ids, err := store.Record(ctx, n, paidAt.Add(2*time.Second))
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, []string{"ntf-expiry-AU-2025-118204-20261130-30:inst-1"}, ids)
+	again, _, err := store.Record(ctx, n, paidAt.Add(3*time.Second))
+	require.NoError(t, err)
+	assert.False(t, again, "a redelivered alert changes nothing")
+
+	got, err := store.Get(ctx, "sub-a", n.ID)
+	require.NoError(t, err)
+	assert.Equal(t, domain.KindPolicyExpiry, got.Kind)
+	assert.Equal(t, n.Expiry, got.Expiry, "the alert survives the round trip")
+	assert.Nil(t, got.Payout)
+	assert.Nil(t, got.Stage)
+
+	d, ok, err := store.Claim(ctx, ids[0], paidAt.Add(3*time.Second), time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotNil(t, d.Notification.Expiry)
+	assert.Equal(t, 30, d.Notification.Expiry.MilestoneDays)
+}

@@ -121,6 +121,18 @@ type stageBody struct {
 	PaidAt       *time.Time `json:"paid_at"`
 }
 
+// expiryBody is the alert that a policy is about to expire (HU-M3.2-01).
+// product and insured_object are null when the source does not name them.
+type expiryBody struct {
+	PolicyID      string    `json:"policy_id"`
+	Line          string    `json:"line"`
+	Product       *string   `json:"product"`
+	InsuredObject *string   `json:"insured_object"`
+	CoverageEnd   time.Time `json:"coverage_end"`
+	MilestoneDays int       `json:"milestone_days"`
+	DaysLeft      int       `json:"days_left"`
+}
+
 type notificationBody struct {
 	NotificationID string      `json:"notification_id"`
 	Kind           string      `json:"kind"`
@@ -129,6 +141,7 @@ type notificationBody struct {
 	ReadAt         *time.Time  `json:"read_at"`
 	Payout         *payoutBody `json:"payout"`
 	Stage          *stageBody  `json:"stage"`
+	Expiry         *expiryBody `json:"expiry"`
 }
 
 func toBody(n domain.Notification) notificationBody {
@@ -157,7 +170,19 @@ func toBody(n domain.Notification) notificationBody {
 			out.Stage.Amount, out.Stage.Currency = &amount, &currency
 		}
 	}
+	if e := n.Expiry; e != nil {
+		out.Expiry = &expiryBody{PolicyID: e.PolicyID, Line: e.Line, Product: nullable(e.Product),
+			InsuredObject: nullable(e.InsuredObject), CoverageEnd: e.CoverageEnd.UTC(), MilestoneDays: e.MilestoneDays,
+			DaysLeft: e.DaysLeft}
+	}
 	return out
+}
+
+func nullable(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 type listResponse struct {

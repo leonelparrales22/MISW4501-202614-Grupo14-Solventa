@@ -157,6 +157,11 @@ func (w *Worker) log(ctx context.Context, rep idempotency.Report[domain.Delivery
 		if c := d.Notification.Stage; c != nil {
 			attrs = append(attrs, "latency_ms", w.now().Sub(c.ChangedAt).Milliseconds())
 		}
+		// HU-M3.2-01: from the detection of the milestone to the provider
+		// accepting it.
+		if e := d.Notification.Expiry; e != nil {
+			attrs = append(attrs, "latency_ms", w.now().Sub(e.DetectedAt).Milliseconds())
+		}
 		slog.InfoContext(ctx, "push delivered", append(attrs, "reference", d.Reference)...)
 	case idempotency.StatusFailed:
 		slog.WarnContext(ctx, "push not delivered; the notification stays in the center",

@@ -108,7 +108,7 @@ func TestTheListCarriesEverythingTheCenterAndTheDetailShow(t *testing.T) {
 	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 	assert.Equal(t, 20, svc.limit)
 	assert.JSONEq(t, `{"unread_count":1,"items":[{"notification_id":"ntf-ppo-1","kind":"parametric_payout",
-		"occurred_at":"2026-09-11T21:40:00Z","created_at":"2026-09-11T21:40:02Z","read_at":null,"stage":null,
+		"occurred_at":"2026-09-11T21:40:00Z","created_at":"2026-09-11T21:40:02Z","read_at":null,"stage":null,"expiry":null,
 		"payout":{"payout_id":"ppo-1","claim_id":"SIN-2026-01702","policy_id":"VJ-2026-000931","amount":180000,
 		"currency":"COP","trigger":{"parameter":"flight_delay","event_reference":"AV-8421","threshold":180,"observed":215,
 		"unit":"minutes","observed_at":"2026-09-11T21:39:00Z"},"payment_method":{"brand":"visa","last4":"1111"},
@@ -218,8 +218,39 @@ func TestAChangeOfStageCarriesItsStageItsClaimAndItsAmount(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.JSONEq(t, `{"unread_count":1,"items":[{"notification_id":"ntf-stage-42","kind":"claim_stage_changed",
-		"occurred_at":"2026-09-20T14:40:05Z","created_at":"2026-09-20T14:40:05Z","read_at":null,"payout":null,
+		"occurred_at":"2026-09-20T14:40:05Z","created_at":"2026-09-20T14:40:05Z","read_at":null,"payout":null,"expiry":null,
 		"stage":{"change_id":42,"claim_id":"cl-1","filing_number":"SIN-2026-01655","policy_id":"HG-2025-880231",
 		"stage":"approved","changed_at":"2026-09-20T14:40:05Z","amount":4132500,"currency":"COP","paid_at":null}}]}`,
 		rec.Body.String())
+}
+
+// HU-M3.2-01: an expiry alert carries the policy, its exact expiry date and
+// the days left; a source that does not name the product leaves it null.
+func TestAnExpiryAlertCarriesThePolicyItsDateAndTheDaysLeft(t *testing.T) {
+	detected := time.Date(2026, 11, 14, 15, 0, 0, 0, time.UTC)
+	core := domain.ExpiryAlert{PolicyID: "AU-2025-118204", Subject: "sub-a", Source: domain.ExpirySourcePolicyCore,
+		Line: "auto", Product: "Autos", InsuredObject: "KJT-482", CoverageEnd: time.Date(2026, 11, 30, 5, 0, 0, 0, time.UTC),
+		MilestoneDays: 30, DaysLeft: 16, DetectedAt: detected}
+	life := domain.ExpiryAlert{PolicyID: "pol-acc-1", Subject: "sub-a", Source: domain.ExpirySourceOrigination,
+		Line: "life", CoverageEnd: time.Date(2026, 11, 19, 4, 59, 59, 0, time.UTC), MilestoneDays: 5, DaysLeft: 4,
+		DetectedAt: detected}
+	svc := &fakeCenter{items: []domain.Notification{domain.NewExpiryNotification(core, detected),
+		domain.NewExpiryNotification(life, detected)}}
+
+	rec := call(t, svc, http.MethodGet, "/v1/notifications", "insured:sub-a", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"unread_count":2,"items":[
+		{"notification_id":"ntf-expiry-AU-2025-118204-20261130-30","kind":"policy_expiry",
+		"occurred_at":"2026-11-14T15:00:00Z","created_at":"2026-11-14T15:00:00Z","read_at":null,"payout":null,"stage":null,
+		"expiry":{"policy_id":"AU-2025-118204","line":"auto","product":"Autos","insured_object":"KJT-482",
+		"coverage_end":"2026-11-30T05:00:00Z","milestone_days":30,"days_left":16}},
+		{"notification_id":"ntf-expiry-pol-acc-1-20261118-5","kind":"policy_expiry",
+		"occurred_at":"2026-11-14T15:00:00Z","created_at":"2026-11-14T15:00:00Z","read_at":null,"payout":null,"stage":null,
+		"expiry":{"policy_id":"pol-acc-1","line":"life","product":null,"insured_object":null,
+		"coverage_end":"2026-11-19T04:59:59Z","milestone_days":5,"days_left":4}}]}`, rec.Body.String())
+
+	one := call(t, svc, http.MethodGet, "/v1/notifications/ntf-expiry-AU-2025-118204-20261130-30", "insured:sub-a", "")
+	require.Equal(t, http.StatusOK, one.Code)
+	assert.Contains(t, one.Body.String(), `"milestone_days":30`)
 }

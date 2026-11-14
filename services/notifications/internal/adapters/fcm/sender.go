@@ -18,6 +18,8 @@ const (
 	DataNotificationID = "notification_id"
 	DataKind           = "kind"
 	DataClaimID        = "claim_id"
+	// DataPolicyID is the policy an expiry alert opens (HU-M3.2-01).
+	DataPolicyID = "policy_id"
 )
 
 // Client is what the sender needs from the FCM client.
@@ -37,7 +39,8 @@ var _ ports.PushSender = (*Sender)(nil)
 
 // Send delivers the push of d. The text is not sent: the app writes it from
 // the center. The claim goes with a change of stage, so the app can open its
-// timeline, and with a payout, as the simulator did. The errors of the client
+// timeline, and with a payout, as the simulator did; the policy goes with an
+// expiry alert (HU-M3.2-01), so the app can open it. The errors of the client
 // already classify the outcome for pkg/idempotency.
 func (s *Sender) Send(ctx context.Context, d domain.Delivery) (idempotency.Outcome, error) {
 	data := map[string]string{DataNotificationID: d.NotificationID, DataKind: d.Notification.Kind}
@@ -46,6 +49,9 @@ func (s *Sender) Send(ctx context.Context, d domain.Delivery) (idempotency.Outco
 	}
 	if c := d.Notification.Stage; c != nil {
 		data[DataClaimID] = c.ClaimID
+	}
+	if e := d.Notification.Expiry; e != nil {
+		data[DataPolicyID] = e.PolicyID
 	}
 	r, err := s.client.Send(ctx, pkgfcm.Message{Token: d.Token, Data: data, CollapseKey: d.NotificationID})
 	if err != nil {
