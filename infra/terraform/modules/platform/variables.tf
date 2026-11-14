@@ -380,3 +380,20 @@ variable "ephemeral" {
   type        = bool
   default     = false
 }
+
+variable "fcm" {
+  description = "Firebase Cloud Messaging for the pushes of notifications (HU-M3.3-01): the Firebase project and the ARN of the permanent secret with the JSON of its service account, created outside the platform so it never reaches the state and survives every window. null keeps the push stub (HU-M3.1-01)."
+  type = object({
+    project_id             = string
+    credentials_secret_arn = string
+  })
+  default = null
+
+  validation {
+    condition = var.fcm == null ? true : (
+      length(trimspace(var.fcm.project_id)) > 0 &&
+      can(regex("^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:", var.fcm.credentials_secret_arn))
+    )
+    error_message = "fcm needs the Firebase project and the ARN of a Secrets Manager secret."
+  }
+}

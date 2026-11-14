@@ -50,6 +50,55 @@ type triggerJSON struct {
 	ObservedAt     time.Time `json:"observed_at"`
 }
 
+// stageJSON is the payload of a claim stage notification (HU-M3.3-01).
+type stageJSON struct {
+	ChangeID     int64      `json:"change_id"`
+	ClaimID      string     `json:"claim_id"`
+	FilingNumber string     `json:"filing_number"`
+	PolicyID     string     `json:"policy_id"`
+	Stage        string     `json:"stage"`
+	ChangedAt    time.Time  `json:"changed_at"`
+	AmountMinor  *int64     `json:"amount_minor,omitempty"`
+	Currency     string     `json:"currency,omitempty"`
+	PaidAt       *time.Time `json:"paid_at,omitempty"`
+}
+
+// encodePayload is the payload of a notification, by its kind.
+func encodePayload(n domain.Notification) ([]byte, error) {
+	if c := n.Stage; c != nil {
+		return json.Marshal(stageJSON{ChangeID: c.ChangeID, ClaimID: c.ClaimID, FilingNumber: c.FilingNumber,
+			PolicyID: c.PolicyID, Stage: c.Stage, ChangedAt: c.ChangedAt.UTC(), AmountMinor: c.AmountMinor,
+			Currency: c.Currency, PaidAt: c.PaidAt})
+	}
+	return encodePayout(n.Payout)
+}
+
+// decodePayload sets the payout or the change of stage of a notification, by
+// its kind.
+func decodePayload(n *domain.Notification, raw []byte) error {
+	if n.Kind == domain.KindClaimStageChanged {
+		var j stageJSON
+		if err := json.Unmarshal(raw, &j); err != nil {
+			return fmt.Errorf("decode the change of stage: %w", err)
+		}
+		c := domain.ClaimStageChange{ChangeID: j.ChangeID, ClaimID: j.ClaimID, FilingNumber: j.FilingNumber,
+			PolicyID: j.PolicyID, Subject: n.Subject, Stage: j.Stage, ChangedAt: j.ChangedAt.UTC(),
+			AmountMinor: j.AmountMinor, Currency: j.Currency}
+		if j.PaidAt != nil {
+			at := j.PaidAt.UTC()
+			c.PaidAt = &at
+		}
+		n.Stage = &c
+		return nil
+	}
+	p, err := decodePayout(n.Kind, n.Subject, raw)
+	if err != nil {
+		return err
+	}
+	n.Payout = p
+	return nil
+}
+
 func encodePayout(p *domain.ParametricPayout) ([]byte, error) {
 	if p == nil {
 		return []byte(`{}`), nil
@@ -79,11 +128,11 @@ func decodePayout(kind, subject string, raw []byte) (*domain.ParametricPayout, e
 	}, nil
 }
 
-// RecordPayout stores the notification and one delivery per reachable device
-// of its subject in one transaction. A notification that already exists
-// changes nothing.
-func (s *Store) RecordPayout(ctx context.Context, n domain.Notification, now time.Time) (bool, []string, error) {
-	payload, err := encodePayout(n.Payout)
+// Record stores the notification and one delivery per reachable device of its
+// subject in one transaction. A notification that already exists changes
+// nothing.
+func (s *Store) Record(ctx context.Context, n domain.Notification, now time.Time) (bool, []string, error) {
+	payload, err := encodePayload(n)
 	if err != nil {
 		return false, nil, err
 	}
@@ -177,11 +226,9 @@ func scanNotification(r scanner) (domain.Notification, error) {
 		t := readAt.Time.UTC()
 		n.ReadAt = &t
 	}
-	p, err := decodePayout(n.Kind, n.Subject, payload)
-	if err != nil {
+	if err := decodePayload(&n, payload); err != nil {
 		return domain.Notification{}, err
 	}
-	n.Payout = p
 	return n, nil
 }
 
@@ -285,11 +332,9 @@ func scanDelivery(r scanner) (domain.Delivery, error) {
 		d.SentAt = &t
 	}
 	d.Reference, d.LastError = reference.String, lastErr.String
-	p, err := decodePayout(n.Kind, n.Subject, payload)
-	if err != nil {
+	if err := decodePayload(n, payload); err != nil {
 		return domain.Delivery{}, err
 	}
-	n.Payout = p
 	return d, nil
 }
 

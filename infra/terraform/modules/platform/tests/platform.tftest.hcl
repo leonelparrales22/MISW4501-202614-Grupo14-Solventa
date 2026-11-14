@@ -1263,3 +1263,51 @@ run "partners_manages_the_credentials_and_publishes_to_audit" {
     error_message = "The operations portal reaches /v1/partners with Cognito."
   }
 }
+
+# HU-M3.3-01: with FCM the pushes leave for Firebase with the permanent secret,
+# and the stub is no longer the provider; without it nothing changes.
+run "notifications_pushes_through_fcm" {
+  command = plan
+
+  variables {
+    fcm = {
+      project_id             = "solventa-94126"
+      credentials_secret_arn = "arn:aws:secretsmanager:us-east-2:123456789012:secret:solventa/fcm/service-account-AbCdEf"
+    }
+  }
+
+  assert {
+    condition = (
+      local.service_environment.notifications.FCM_PROJECT_ID == "solventa-94126" &&
+      !contains(keys(local.service_environment.notifications), "PUSH_PROVIDER_URL")
+    )
+    error_message = "With fcm, notifications sends to Firebase and not to the push stub."
+  }
+
+  assert {
+    condition     = local.service_secrets.notifications.FCM_CREDENTIALS == "arn:aws:secretsmanager:us-east-2:123456789012:secret:solventa/fcm/service-account-AbCdEf"
+    error_message = "The service account of Firebase reaches notifications as a secret, never as plain environment."
+  }
+}
+
+run "notifications_keeps_the_push_stub_without_fcm" {
+  command = plan
+
+  assert {
+    condition = (
+      contains(keys(local.service_environment.notifications), "PUSH_PROVIDER_URL") &&
+      !contains(keys(local.service_secrets.notifications), "FCM_CREDENTIALS")
+    )
+    error_message = "Without fcm, the pushes go to the stub as in HU-M3.1-01."
+  }
+}
+
+run "fcm_needs_a_secret_arn" {
+  command = plan
+
+  variables {
+    fcm = { project_id = "solventa-94126", credentials_secret_arn = "solventa/fcm/service-account" }
+  }
+
+  expect_failures = [var.fcm]
+}

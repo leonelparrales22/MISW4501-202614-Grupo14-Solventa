@@ -45,6 +45,13 @@ func (s *Sender) Send(ctx context.Context, d domain.Delivery) (idempotency.Outco
 		m.Title, m.Body = text.Title, text.Body
 		m.Data[DataClaimID] = p.ClaimID
 	}
+	// HU-M3.3-01: a change of stage opens the timeline of the claim, so the
+	// push carries its id, not its number.
+	if c := d.Notification.Stage; c != nil {
+		text := templates.StageChange(*c, d.Locale)
+		m.Group, m.Title, m.Body = domain.GroupClaimStages, text.Title, text.Body
+		m.Data[DataClaimID] = c.ClaimID
+	}
 	r, err := s.client.Send(ctx, m)
 	if err != nil {
 		return idempotency.Outcome{}, err

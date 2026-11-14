@@ -125,7 +125,12 @@ POOL="${COGNITO_POOL_ID:-us-east-2_EWwg8NL2C}"
 export AUTH_ISSUER="https://cognito-idp.us-east-2.amazonaws.com/$POOL"
 export AUTH_JWKS_URL="$AUTH_ISSUER/.well-known/jwks.json"
 export AUTH_CLIENT_IDS="${COGNITO_CLIENT_IDS:-6dri40bi3sk74cr0jb5djq43c0}"
-PG_PASSWORD="$(head -c 128 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)"
+# The password of a running environment is kept: a new one would recreate the
+# services with it while the databases still have the old one.
+PG_PASSWORD="$($COMPOSE exec -T postgres-claims printenv POSTGRES_PASSWORD 2>/dev/null | tr -d '' || true)"
+if [[ -z "$PG_PASSWORD" ]]; then
+  PG_PASSWORD="$(head -c 128 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)"
+fi
 export PG_PASSWORD
 
 echo "== Starting PostgreSQL, Redis, Toxiproxy, LocalStack, the stubs and claims (tokens of the pool $POOL)"

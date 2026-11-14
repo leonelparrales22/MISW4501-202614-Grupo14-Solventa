@@ -167,6 +167,26 @@ El rol de la tarea ya tenía `ConsumeItsQueue` sobre la cola `audit` (T4).
 El rol de la tarea ya tenía `ConsumeItsQueue` sobre la cola `notifications` (T4); el grupo de seguridad de las tareas ya abre el 9070
 entre tareas, como los demás stubs.
 
+### Firebase Cloud Messaging (HU-M3.3-01)
+
+Con la variable `fcm` (`project_id` y `credentials_secret_arn`), `notifications` recibe `FCM_PROJECT_ID` y, como secreto,
+`FCM_CREDENTIALS` (el JSON de la cuenta de servicio), y deja de recibir `PUSH_PROVIDER_URL`: los *push* salen por Firebase y llegan al
+teléfono aunque la app esté cerrada. Sin `fcm`, como en HU-M3.1-01, van al stub. Las tareas ya salen a internet (IP pública sin NAT, o el
+NAT), así que no hace falta red nueva; el rol de ejecución lee el secreto porque está entre los `secrets` del servicio.
+
+Las dos composiciones (`staging/platform` y `production-demo/platform`) pasan el proyecto `solventa-94126` y leen el ARN del secreto
+**permanente** `solventa/fcm/service-account` por su nombre (`data "aws_secretsmanager_secret"`). Ese secreto se crea **una vez, fuera de
+Terraform**, para que la clave no quede en el estado y sobreviva a cada ventana. Sin él, el `plan` de las composiciones falla:
+
+```bash
+# Una sola vez, con credenciales AWS que puedan escribir en Secrets Manager:
+aws secretsmanager create-secret --region us-east-2 --name solventa/fcm/service-account \
+  --description "Cuenta de servicio de Firebase solventa-94126: notifications envía los push por FCM HTTP v1 (HU-M3.3-01)" \
+  --secret-string file://fcm-solventa.json
+# Para cambiar la clave después: aws secretsmanager put-secret-value --region us-east-2 \
+#   --secret-id solventa/fcm/service-account --secret-string file://fcm-solventa.json
+```
+
 ## Imágenes
 
 `backend-cd` publica `solventa/<imagen>:<sha de 12>` y solo reconstruye las imágenes que cambiaron. Por eso:

@@ -63,3 +63,21 @@ func TestTheClientErrorKeepsItsClassification(t *testing.T) {
 
 	require.ErrorIs(t, err, idempotency.ErrAmbiguous)
 }
+
+// HU-M3.3-01: the push of a change of stage goes in its own thread and opens
+// the timeline of the claim, so it carries the id of the claim.
+func TestThePushOfAChangeOfStageOpensTheClaim(t *testing.T) {
+	client := &fakeClient{}
+	c := domain.ClaimStageChange{ChangeID: 42, ClaimID: "cl-1", FilingNumber: "SIN-2026-01655", Subject: "sub-a",
+		Stage: domain.StageInEvaluation, ChangedAt: time.Date(2026, 9, 5, 15, 2, 0, 0, time.UTC)}
+	n := domain.NewStageNotification(c, c.ChangedAt)
+	d := domain.NewDelivery(n, domain.Device{InstallationID: "inst-1", Token: "tok-1", Locale: domain.LocaleSpanish}, c.ChangedAt)
+
+	_, err := pushprovider.NewSender(client).Send(context.Background(), d)
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.GroupClaimStages, client.got.Group)
+	assert.Equal(t, "Tu siniestro está en evaluación", client.got.Title)
+	assert.Equal(t, map[string]string{pushprovider.DataNotificationID: "ntf-stage-42",
+		pushprovider.DataKind: domain.KindClaimStageChanged, pushprovider.DataClaimID: "cl-1"}, client.got.Data)
+}

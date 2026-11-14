@@ -23,12 +23,12 @@ type Clock interface {
 // NotificationStore keeps the notification center and the devices of every
 // insured.
 type NotificationStore interface {
-	// RecordPayout stores the notification of a payout and, in the same
-	// transaction, one pending delivery per reachable device of the insured.
-	// It is idempotent by notification id: when the notification already
-	// exists it changes nothing and returns created=false with the deliveries
-	// it had.
-	RecordPayout(ctx context.Context, n domain.Notification, now time.Time) (created bool, deliveries []string, err error)
+	// Record stores a notification (a payout, HU-M3.1-01, or a change of
+	// stage, HU-M3.3-01) and, in the same transaction, one pending delivery
+	// per reachable device of the insured. It is idempotent by notification
+	// id: when the notification already exists it changes nothing and returns
+	// created=false with the deliveries it had.
+	Record(ctx context.Context, n domain.Notification, now time.Time) (created bool, deliveries []string, err error)
 	// List returns the notifications of the subject, the newest first, at
 	// most limit, and how many of all of them are unread.
 	List(ctx context.Context, subject string, limit int) (items []domain.Notification, unread int, err error)

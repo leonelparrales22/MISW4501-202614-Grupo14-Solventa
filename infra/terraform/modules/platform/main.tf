@@ -582,15 +582,22 @@ locals {
     # PUSH_PROVIDER_URL no push is sent (the notifications wait in the
     # center). The role already had ConsumeItsQueue on the notifications
     # queue, which is subscribed to the claims topic (T4).
-    notifications = {
-      PORT              = tostring(local.service_port)
-      AWS_REGION        = data.aws_region.current.region
-      AUTH_ISSUER       = local.cognito.issuer
-      AUTH_JWKS_URL     = local.cognito.jwks_url
-      AUTH_CLIENT_IDS   = join(",", values(local.cognito.client_ids))
-      EVENTS_QUEUE_URL  = module.messaging.queue_urls["notifications"]
-      PUSH_PROVIDER_URL = "http://push.${local.namespace}:${local.stubs.push}"
-    }
+    #
+    # HU-M3.3-01: with var.fcm the pushes go to Firebase Cloud Messaging
+    # (FCM_PROJECT_ID here and FCM_CREDENTIALS from the permanent secret), so
+    # they reach the device even with the app closed; without it, to the push
+    # stub, as in HU-M3.1-01.
+    notifications = merge(
+      {
+        PORT             = tostring(local.service_port)
+        AWS_REGION       = data.aws_region.current.region
+        AUTH_ISSUER      = local.cognito.issuer
+        AUTH_JWKS_URL    = local.cognito.jwks_url
+        AUTH_CLIENT_IDS  = join(",", values(local.cognito.client_ids))
+        EVENTS_QUEUE_URL = module.messaging.queue_urls["notifications"]
+      },
+      var.fcm == null ? { PUSH_PROVIDER_URL = "http://push.${local.namespace}:${local.stubs.push}" } : { FCM_PROJECT_ID = var.fcm.project_id },
+    )
   }
 
   # Secrets Manager values of each service (the ECS secrets field): its
@@ -599,6 +606,8 @@ locals {
     for k in keys(local.services) : k => merge(
       { DATABASE_URL = "${module.secrets.arns["${k}/database"]}:DATABASE_URL::" },
       k == "origination" ? { DOCUMENT_LINK_SECRET = "${module.secrets.arns["origination/document-link"]}:DOCUMENT_LINK_SECRET::" } : {},
+      # HU-M3.3-01: the whole JSON of the Firebase service account.
+      k == "notifications" && var.fcm != null ? { FCM_CREDENTIALS = var.fcm.credentials_secret_arn } : {},
     )
   }
 }

@@ -34,7 +34,7 @@ type fakeStore struct {
 	devices    []domain.Device
 }
 
-func (f *fakeStore) RecordPayout(_ context.Context, n domain.Notification, _ time.Time) (bool, []string, error) {
+func (f *fakeStore) Record(_ context.Context, n domain.Notification, _ time.Time) (bool, []string, error) {
 	f.recorded = append(f.recorded, n)
 	return f.created, f.deliveries, f.err
 }

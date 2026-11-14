@@ -1,8 +1,17 @@
 openapi: 3.0.3
 info:
   title: Solventa - notifications service
-  version: 0.2.0
+  version: 0.3.0
   description: >
+    0.3.0 (HU-M3.3-01): the notification of every change of stage of a claim
+    of the insured (event ClaimStageChanged of the claims service): kind
+    claim_stage_changed with stage, the stage the claim reached (in_evaluation,
+    approved or paid), when, the claim (claim_id to open its timeline and
+    filing_number to show) and, for the approval and the payment, the amount
+    and the date of the disbursement. Its push goes in its own thread and
+    carries claim_id. Compatible with 0.2.0 (it adds a kind and the stage
+    field, null for the payouts). Guide: docs/contratos/HU-M3.3-01-api.md.
+
     The notification center of the insured and the pushes of the automatic
     parametric payments (HU-M3.1-01). The notifications are recorded from the
     event ParametricPayoutCompleted of the claims service (SQS queue of the
@@ -232,14 +241,14 @@ components:
           minimum: 0
     Notification:
       type: object
-      required: [notification_id, kind, occurred_at, created_at, read_at, payout]
+      required: [notification_id, kind, occurred_at, created_at, read_at, payout, stage]
       properties:
         notification_id:
           type: string
-          description: ntf-<payout_id>; one per payout.
+          description: ntf-<payout_id>, one per payout; ntf-stage-<change_id>, one per change of stage.
         kind:
           type: string
-          enum: [parametric_payout]
+          enum: [parametric_payout, claim_stage_changed]
           description: The app writes the texts of each kind in its own language.
         occurred_at:
           type: string
@@ -258,6 +267,47 @@ components:
           description: The automatic payment, for kind parametric_payout.
           allOf:
             - $ref: "#/components/schemas/ParametricPayout"
+        stage:
+          nullable: true
+          description: The change of stage of a claim, for kind claim_stage_changed (HU-M3.3-01).
+          allOf:
+            - $ref: "#/components/schemas/ClaimStageChange"
+    ClaimStageChange:
+      type: object
+      required: [change_id, claim_id, filing_number, policy_id, stage, changed_at, amount, currency, paid_at]
+      properties:
+        change_id:
+          type: integer
+          format: int64
+        claim_id:
+          type: string
+          description: The id of the claim, to open its timeline (GET /v1/claims/{claim_id} of claims).
+        filing_number:
+          type: string
+          description: The number the insured sees, SIN-<year>-<five digits>.
+        policy_id:
+          type: string
+        stage:
+          type: string
+          enum: [in_evaluation, approved, paid]
+        changed_at:
+          type: string
+          format: date-time
+          description: When the claim reached the stage.
+        amount:
+          type: number
+          nullable: true
+          description: >-
+            The amount approved or paid, in units of the currency: what the
+            insured receives, net of the deductible. Null for in_evaluation.
+        currency:
+          type: string
+          nullable: true
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: The date of the disbursement, for paid.
     ParametricPayout:
       type: object
       required: [payout_id, claim_id, policy_id, amount, currency, trigger, payment_method, idempotency_key, paid_at]
