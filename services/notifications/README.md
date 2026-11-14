@@ -8,26 +8,29 @@ la envía a cada dispositivo del asegurado que dio el permiso con reintentos ide
 centro (`GET /v1/notifications`, `GET /v1/notifications/{id}`, lectura) y el registro del dispositivo (`PUT /v1/devices/{id}`). **El
 proveedor de *push* es el simulador `stubs/push`** (decisión del equipo para esta historia): Firebase Cloud Messaging queda para cuando se
 cree el proyecto de Firebase, y entra cambiando solo el adaptador. Contrato para el móvil:
-[`docs/contratos/HU-M3.1-01-api.md`](../../docs/contratos/HU-M3.1-01-api.md).
+[`docs/contratos/HU-M3.1-01-api.md`](../../docs/contratos/HU-M3.1-01-api.md). **HU-M3.3-01:** consume también `ClaimStageChanged` y
+registra una notificación por cada cambio de etapa del siniestro (en evaluación, aprobado con su monto, pagado con monto y fecha), con su
+*push* en el grupo `claim_stages` y el `claim_id` para abrir la línea de tiempo. Guía:
+[`docs/contratos/HU-M3.3-01-api.md`](../../docs/contratos/HU-M3.3-01-api.md).
 
 ## Responsabilidades
 
 | Módulo (`internal/`) | Qué hace |
 |---|---|
-| `domain` | **HU-M3.1-01:** `ParametricPayout` (el pago con su disparador —parámetro, evento, umbral, valor observado— y el medio de pago sin número), `Notification` (una por pago, `ntf-<payout_id>`; nunca se sobrescribe), `Device` (instalación de la app: token, idioma y si dio el permiso) y `Delivery` (el *push* de una notificación a un dispositivo, con el estado de `pkg/idempotency`) |
-| `application` | **HU-M3.1-01:** `Service` registra la notificación de un pago y sus entregas (idempotente por pago; sin dispositivo con permiso, la notificación queda en el centro), lista y lee el centro del que llama, marca leídas y registra dispositivos (sin permiso no guarda el token) |
+| `domain` | **HU-M3.3-01:** `ClaimStageChange` (la etapa, el siniestro con su id y su radicado, la hora y, si aplica, el monto y la fecha del desembolso) y su notificación `ntf-stage-<change_id>`, de tipo `claim_stage_changed`. **HU-M3.1-01:** `ParametricPayout` (el pago con su disparador —parámetro, evento, umbral, valor observado— y el medio de pago sin número), `Notification` (una por pago, `ntf-<payout_id>`; nunca se sobrescribe), `Device` (instalación de la app: token, idioma y si dio el permiso) y `Delivery` (el *push* de una notificación a un dispositivo, con el estado de `pkg/idempotency`) |
+| `application` | **HU-M3.3-01:** `RecordStageChange`, igual que un pago: idempotente por cambio y la notificación queda en el centro aunque no haya dispositivo. **HU-M3.1-01:** `Service` registra la notificación de un pago y sus entregas (idempotente por pago; sin dispositivo con permiso, la notificación queda en el centro), lista y lee el centro del que llama, marca leídas y registra dispositivos (sin permiso no guarda el token) |
 | `push` | Reglas de envío *push* (destinatarios, preferencias, reintentos). **HU-M3.1-01:** `Worker` toma las entregas vencidas con *lease* y las envía con la misma clave en cada intento (`pkg/idempotency.Runner`): espera creciente de 1 s a 1 min, rechazo definitivo si el proveedor no conoce el dispositivo y abandono a las 24 h. Se despierta en cuanto se registra un pago (`Wake`) y registra la latencia desde la confirmación del pago (`push delivered … latency_ms`) |
-| `templates` | Plantillas de mensajes por tipo de evento e idioma. **HU-M3.1-01:** el título y el cuerpo del *push* del pago paramétrico en español e inglés, con el monto, la moneda y el evento («Pago automático recibido: $ 180.000 COP» / «Tu vuelo AV-8421 se retrasó 215 min…») |
+| `templates` | Plantillas de mensajes por tipo de evento e idioma. **HU-M3.3-01:** el *push* de cada etapa en español e inglés, con el radicado, la fecha y hora en Colombia y el monto («Tu siniestro fue aprobado: $ 4.132.500 COP»). **HU-M3.1-01:** el título y el cuerpo del *push* del pago paramétrico en español e inglés, con el monto, la moneda y el evento («Pago automático recibido: $ 180.000 COP» / «Tu vuelo AV-8421 se retrasó 215 min…») |
 
 ## Adaptadores (`internal/adapters`)
 
 | Adaptador | Qué hace |
 |---|---|
 | `http` | Router `chi`: `GET /health` y, con `AUTH_ISSUER`, las rutas humanas del centro (rol `insured`, `Cache-Control: no-store`; la notificación de otro asegurado responde 404) |
-| `messaging` | Consumidor de `ParametricPayoutCompleted` (`pkg/events`): traduce el *payload* al dominio; un *payload* inválido o una base caída es un error, así que el mensaje reaparece y termina en la DLQ |
+| `messaging` | Consumidores de `ParametricPayoutCompleted` y, desde HU-M3.3-01, de `ClaimStageChanged` (`pkg/events`): traduce el *payload* al dominio; un *payload* inválido o una base caída es un error, así que el mensaje reaparece y termina en la DLQ |
 | `postgres` | Base propia (`database/sql` + `pgx` v5), migraciones embebidas con `pg_advisory_lock`. `Store`: tablas `notification`, `device` y `push_delivery`; la notificación y sus entregas se escriben en una transacción y el protocolo de reclamo de `pkg/idempotency` es una sentencia condicional por paso |
-| `pushprovider` | Puente entre `pkg/adapters/push` (corte de 2 s, circuit breaker, clasificación rechazado/ambiguo/no enviado) y el puerto `PushSender`: escribe el *push* en el idioma del dispositivo, lo agrupa en `parametric_payouts` y le pone en `data` qué abrir (`notification_id`, `kind`, `claim_id`) |
-| `fcm` | Reservado para el cliente de Firebase Cloud Messaging |
+| `pushprovider` | Puente entre `pkg/adapters/push` (corte de 2 s, circuit breaker, clasificación rechazado/ambiguo/no enviado) y el puerto `PushSender`: escribe el *push* en el idioma del dispositivo, lo agrupa en `parametric_payouts` (o en `claim_stages`, HU-M3.3-01) y le pone en `data` qué abrir (`notification_id`, `kind`, `claim_id`) |
+| `fcm` | **HU-M3.3-01:** puente entre `pkg/adapters/fcm` y el puerto `PushSender`: un mensaje de solo datos (`notification_id`, `kind`, `claim_id`) por entrega, con `collapse_key` = la notificación; el texto lo escribe la app. Es el proveedor en AWS; `pushprovider` (el simulador) queda para local y las e2e |
 
 ## Configuración (variables de entorno)
 
@@ -37,6 +40,7 @@ cree el proyecto de Firebase, y entra cambiando solo el adaptador. Contrato para
 | `DATABASE_URL` | — | PostgreSQL propio (secreto). Sin ella solo se sirve `/health` |
 | `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_CLIENT_IDS` | — | Verificación de los ID tokens de Cognito (`pkg/security`). Sin `AUTH_ISSUER` no se montan las rutas del centro |
 | `EVENTS_QUEUE_URL` | — | Cola SQS del servicio, suscrita al tópico `claims`. Sin ella no se consume ningún pago |
+| `FCM_PROJECT_ID`, `FCM_CREDENTIALS` | — | **HU-M3.3-01:** el proyecto de Firebase y el JSON de su cuenta de servicio (secreto). Con ellas los *push* van a Firebase Cloud Messaging y `PUSH_PROVIDER_URL` no se usa; van juntas. Unas credenciales que no son de una cuenta de servicio impiden arrancar |
 | `PUSH_PROVIDER_URL` | — | Proveedor de *push* (`stubs/push`, puerto 9070). Sin él no se envía ningún *push*: las notificaciones esperan en el centro |
 | `PUSH_PROVIDER_TIMEOUT_MS` | `2000` | Corte duro de cada envío |
 | `PUSH_POLL_INTERVAL_MS` | `1000` | Cada cuánto el trabajador busca entregas vencidas (un pago nuevo lo despierta enseguida) |
@@ -45,16 +49,15 @@ cree el proyecto de Firebase, y entra cambiando solo el adaptador. Contrato para
 ## Datos y eventos
 
 - **BD propia:** PostgreSQL (notificaciones): `notification`, `device` y `push_delivery` (migración `0001`).
-- **Consume:** `ParametricPayoutCompleted` de `claims` (HU-M3.1-01) mediante una cola SQS propia (con DLQ), con un consumidor idempotente
-  por pago. Ver [catálogo de eventos](../../docs/events/README.md). Los demás tipos de evento se borran sin efecto.
+- **Consume:** `ParametricPayoutCompleted` (HU-M3.1-01) y `ClaimStageChanged` (HU-M3.3-01) de `claims` mediante una cola SQS propia
+  (con DLQ), con consumidores idempotentes por pago y por cambio de etapa. Ver [catálogo de eventos](../../docs/events/README.md). Los demás tipos de evento se borran sin efecto.
 - **Salida:** HTTPS hacia el proveedor de *push* (asíncrona); hoy `stubs/push`.
 
 ## Lo que queda fuera de HU-M3.1-01
 
-- **El motor paramétrico:** `claims/internal/parametric` sigue reservado; el evento lo publica hoy el ensayo local
-  ([`tests/e2e/hu-m3.1`](../../tests/e2e/hu-m3.1/README.md)) en lugar de `claims`.
-- **Firebase Cloud Messaging:** sin proyecto de Firebase, el *push* llega al simulador y no al teléfono; la app consulta el centro (ver la
-  guía del contrato).
+- **El motor paramétrico:** ya existe desde HU-M2.4-01 (`claims/internal/parametric`) y publica el evento con *outbox*.
+- **Firebase Cloud Messaging:** desde HU-M3.3-01, con `FCM_PROJECT_ID` y `FCM_CREDENTIALS` el *push* sale por FCM (proyecto
+  `solventa-94126`) y llega al teléfono aunque la app esté cerrada. Sin ellas, al simulador, como en HU-M3.1-01.
 
 ## Historias asociadas
 

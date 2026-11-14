@@ -97,7 +97,11 @@ type Notification struct {
 	CreatedAt time.Time
 	// ReadAt is nil while the insured has not read it.
 	ReadAt *time.Time
+	// Payout is the payment of a parametric payout notification; Stage, the
+	// change of a claim stage notification (HU-M3.3-01). One of them is set,
+	// by Kind.
 	Payout *ParametricPayout
+	Stage  *ClaimStageChange
 }
 
 // NotificationIDFor is the id of the notification of a payout: one per

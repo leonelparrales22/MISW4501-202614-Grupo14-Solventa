@@ -77,6 +77,37 @@ func TestWithAProviderTheWorkerSendsToIt(t *testing.T) {
 	assert.NotNil(t, w)
 }
 
+// A service account as Firebase gives it, with a key that is never used
+// (HU-M3.3-01): the client only reads it to sign the token of a real send.
+const serviceAccount = `{"type":"service_account","project_id":"solventa-94126","client_email":"fcm@solventa-94126.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n","token_uri":"https://oauth2.googleapis.com/token"}`
+
+func TestWithFCMTheWorkerSendsToFirebaseBeforeTheSimulator(t *testing.T) {
+	cfg, err := loadConfig(env(map[string]string{"FCM_PROJECT_ID": "solventa-94126", "FCM_CREDENTIALS": serviceAccount,
+		"PUSH_PROVIDER_URL": "http://push:9070"}))
+	require.NoError(t, err)
+
+	sender, provider, err := pushSender(cfg)
+
+	require.NoError(t, err)
+	assert.NotNil(t, sender)
+	assert.Equal(t, "Firebase Cloud Messaging (solventa-94126)", provider)
+	w, err := newPushWorker(cfg, postgres.NewStore(nil))
+	require.NoError(t, err)
+	assert.NotNil(t, w)
+}
+
+func TestFCMNeedsItsProjectAndItsServiceAccount(t *testing.T) {
+	_, err := loadConfig(env(map[string]string{"FCM_PROJECT_ID": "solventa-94126"}))
+	assert.Error(t, err, "a project without credentials")
+	_, err = loadConfig(env(map[string]string{"FCM_CREDENTIALS": serviceAccount}))
+	assert.Error(t, err, "credentials without a project")
+
+	cfg, err := loadConfig(env(map[string]string{"FCM_PROJECT_ID": "solventa-94126", "FCM_CREDENTIALS": `{"type":"user"}`}))
+	require.NoError(t, err)
+	_, err = newPushWorker(cfg, postgres.NewStore(nil))
+	assert.Error(t, err, "credentials that are not a service account stop the service")
+}
+
 func TestWithoutAQueueThereIsNoConsumer(t *testing.T) {
 	c, err := newEventConsumer(context.Background(), config{}, nil)
 
@@ -84,10 +115,18 @@ func TestWithoutAQueueThereIsNoConsumer(t *testing.T) {
 	assert.Nil(t, c)
 }
 
-type recorder struct{ got []domain.ParametricPayout }
+type recorder struct {
+	got    []domain.ParametricPayout
+	stages []domain.ClaimStageChange
+}
 
 func (r *recorder) RecordPayout(_ context.Context, p domain.ParametricPayout) error {
 	r.got = append(r.got, p)
+	return nil
+}
+
+func (r *recorder) RecordStageChange(_ context.Context, c domain.ClaimStageChange) error {
+	r.stages = append(r.stages, c)
 	return nil
 }
 
@@ -104,6 +143,22 @@ func TestTheRouterHandlesTheAutomaticPayments(t *testing.T) {
 	require.NoError(t, router.Handle(context.Background(), e))
 
 	assert.Len(t, rec.got, 1)
+}
+
+func TestTheRouterHandlesTheChangesOfStage(t *testing.T) {
+	rec := &recorder{}
+	router, err := eventRouter(rec)
+	require.NoError(t, err)
+	e, err := events.New("claim-stage-changed-7", "ClaimStageChanged", "claims", 1, time.Now(), map[string]any{
+		"change_id": 7, "claim_id": "cl-1", "filing_number": "SIN-2026-01655", "subject": "sub-a",
+		"stage": "in_evaluation", "changed_at": "2026-09-05T15:02:00Z",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, router.Handle(context.Background(), e))
+
+	require.Len(t, rec.stages, 1)
+	assert.Equal(t, "in_evaluation", rec.stages[0].Stage)
 }
 
 func TestWithoutTheIssuerTheCenterIsNotMounted(t *testing.T) {

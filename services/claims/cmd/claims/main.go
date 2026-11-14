@@ -166,6 +166,10 @@ func main() {
 		if err := startParametric(context.Background(), records, terms, payouts, os.Getenv); err != nil {
 			log.Fatalf("invalid configuration: %v", err)
 		}
+		// HU-M3.3-01: every change of stage the insured waits for becomes a
+		// ClaimStageChanged in the outbox, which notifications turns into the
+		// notification and the push.
+		startStageNotices(context.Background(), records)
 		// HU-W2.3-01: the assignment of the nearest provider to a claim in
 		// evaluation, and the registry of providers that operations keeps.
 		assignment, err := assignmentRoutesOver(context.Background(), assignments, providers, os.Getenv, verifier)

@@ -108,7 +108,7 @@ func TestTheListCarriesEverythingTheCenterAndTheDetailShow(t *testing.T) {
 	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 	assert.Equal(t, 20, svc.limit)
 	assert.JSONEq(t, `{"unread_count":1,"items":[{"notification_id":"ntf-ppo-1","kind":"parametric_payout",
-		"occurred_at":"2026-09-11T21:40:00Z","created_at":"2026-09-11T21:40:02Z","read_at":null,
+		"occurred_at":"2026-09-11T21:40:00Z","created_at":"2026-09-11T21:40:02Z","read_at":null,"stage":null,
 		"payout":{"payout_id":"ppo-1","claim_id":"SIN-2026-01702","policy_id":"VJ-2026-000931","amount":180000,
 		"currency":"COP","trigger":{"parameter":"flight_delay","event_reference":"AV-8421","threshold":180,"observed":215,
 		"unit":"minutes","observed_at":"2026-09-11T21:39:00Z"},"payment_method":{"brand":"visa","last4":"1111"},
@@ -203,4 +203,23 @@ func TestHealth(t *testing.T) {
 	rec := httptest.NewRecorder()
 	httpadapter.NewRouter().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// HU-M3.3-01: a change of stage carries what the center shows (the stage, the
+// claim and when it changed) and the id the app opens the timeline with.
+func TestAChangeOfStageCarriesItsStageItsClaimAndItsAmount(t *testing.T) {
+	amount := int64(413_250_000)
+	changed := time.Date(2026, 9, 20, 14, 40, 5, 0, time.UTC)
+	c := domain.ClaimStageChange{ChangeID: 42, ClaimID: "cl-1", FilingNumber: "SIN-2026-01655", PolicyID: "HG-2025-880231",
+		Subject: "sub-a", Stage: domain.StageApproved, ChangedAt: changed, AmountMinor: &amount, Currency: "COP"}
+	svc := &fakeCenter{items: []domain.Notification{domain.NewStageNotification(c, changed)}}
+
+	rec := call(t, svc, http.MethodGet, "/v1/notifications", "insured:sub-a", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"unread_count":1,"items":[{"notification_id":"ntf-stage-42","kind":"claim_stage_changed",
+		"occurred_at":"2026-09-20T14:40:05Z","created_at":"2026-09-20T14:40:05Z","read_at":null,"payout":null,
+		"stage":{"change_id":42,"claim_id":"cl-1","filing_number":"SIN-2026-01655","policy_id":"HG-2025-880231",
+		"stage":"approved","changed_at":"2026-09-20T14:40:05Z","amount":4132500,"currency":"COP","paid_at":null}}]}`,
+		rec.Body.String())
 }

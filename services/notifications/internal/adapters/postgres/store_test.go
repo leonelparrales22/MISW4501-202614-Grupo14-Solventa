@@ -118,12 +118,12 @@ func TestRecordPayoutCreatesOneDeliveryPerReachableDeviceAndIsIdempotent(t *test
 	require.NoError(t, store.SaveDevice(ctx, device("inst-2", false)))
 	n := domain.NewPayoutNotification(payout("ppo-1"), paidAt.Add(2*time.Second))
 
-	created, ids, err := store.RecordPayout(ctx, n, paidAt.Add(2*time.Second))
+	created, ids, err := store.Record(ctx, n, paidAt.Add(2*time.Second))
 	require.NoError(t, err)
 	assert.True(t, created)
 	assert.Equal(t, []string{"ntf-ppo-1:inst-1"}, ids, "a device without the permission gets no push")
 
-	created, again, err := store.RecordPayout(ctx, n, paidAt.Add(time.Minute))
+	created, again, err := store.Record(ctx, n, paidAt.Add(time.Minute))
 	require.NoError(t, err)
 	assert.False(t, created)
 	assert.Equal(t, ids, again)
@@ -140,12 +140,12 @@ func TestTheCenterListsEveryPayoutTheNewestFirstAndCountsTheUnread(t *testing.T)
 	for i, id := range []string{"ppo-1", "ppo-2", "ppo-3"} {
 		p := payout(id)
 		p.PaidAt = paidAt.Add(time.Duration(i) * time.Hour)
-		_, _, err := store.RecordPayout(ctx, domain.NewPayoutNotification(p, p.PaidAt), p.PaidAt)
+		_, _, err := store.Record(ctx, domain.NewPayoutNotification(p, p.PaidAt), p.PaidAt)
 		require.NoError(t, err)
 	}
 	other := payout("ppo-x")
 	other.Subject = "sub-b"
-	_, _, err := store.RecordPayout(ctx, domain.NewPayoutNotification(other, paidAt), paidAt)
+	_, _, err := store.Record(ctx, domain.NewPayoutNotification(other, paidAt), paidAt)
 	require.NoError(t, err)
 
 	items, unread, err := store.List(ctx, "sub-a", 10)
@@ -173,7 +173,7 @@ func TestTheCenterListsEveryPayoutTheNewestFirstAndCountsTheUnread(t *testing.T)
 func TestAnotherInsuredsNotificationLooksLikeOneThatDoesNotExist(t *testing.T) {
 	store, _ := newStore(t)
 	ctx := context.Background()
-	_, _, err := store.RecordPayout(ctx, domain.NewPayoutNotification(payout("ppo-1"), paidAt), paidAt)
+	_, _, err := store.Record(ctx, domain.NewPayoutNotification(payout("ppo-1"), paidAt), paidAt)
 	require.NoError(t, err)
 
 	_, err = store.Get(ctx, "sub-b", "ntf-ppo-1")
@@ -202,7 +202,7 @@ func TestDeliveriesFollowTheClaimProtocol(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, store.SaveDevice(ctx, device("inst-1", true)))
 	now := paidAt.Add(time.Second)
-	_, ids, err := store.RecordPayout(ctx, domain.NewPayoutNotification(payout("ppo-1"), now), now)
+	_, ids, err := store.Record(ctx, domain.NewPayoutNotification(payout("ppo-1"), now), now)
 	require.NoError(t, err)
 	id := ids[0]
 
@@ -248,7 +248,7 @@ func TestAFailedDeliveryKeepsItsNotification(t *testing.T) {
 	store, _ := newStore(t)
 	ctx := context.Background()
 	require.NoError(t, store.SaveDevice(ctx, device("inst-1", true)))
-	_, ids, err := store.RecordPayout(ctx, domain.NewPayoutNotification(payout("ppo-1"), paidAt), paidAt)
+	_, ids, err := store.Record(ctx, domain.NewPayoutNotification(payout("ppo-1"), paidAt), paidAt)
 	require.NoError(t, err)
 	rec, _, err := store.Claim(ctx, ids[0], paidAt, time.Second)
 	require.NoError(t, err)
@@ -266,7 +266,7 @@ func TestAnExpiredLeaseCanBeClaimedAgain(t *testing.T) {
 	store, _ := newStore(t)
 	ctx := context.Background()
 	require.NoError(t, store.SaveDevice(ctx, device("inst-1", true)))
-	_, ids, err := store.RecordPayout(ctx, domain.NewPayoutNotification(payout("ppo-1"), paidAt), paidAt)
+	_, ids, err := store.Record(ctx, domain.NewPayoutNotification(payout("ppo-1"), paidAt), paidAt)
 	require.NoError(t, err)
 	first, _, err := store.Claim(ctx, ids[0], paidAt, time.Second)
 	require.NoError(t, err)
@@ -284,4 +284,35 @@ func idsOf(items []domain.Notification) []string {
 		out = append(out, n.ID)
 	}
 	return out
+}
+
+// HU-M3.3-01: a change of stage is a notification like a payout: its pushes,
+// its round trip and its place in the center.
+func TestAChangeOfStageIsRecordedWithItsPushesAndReadBack(t *testing.T) {
+	store, _ := newStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.SaveDevice(ctx, device("inst-1", true)))
+	amount := int64(413_250_000)
+	paid := paidAt.Add(-time.Second)
+	c := domain.ClaimStageChange{ChangeID: 42, ClaimID: "cl-1", FilingNumber: "SIN-2026-01655", PolicyID: "HG-2025-880231",
+		Subject: "sub-a", Stage: domain.StagePaid, ChangedAt: paidAt, AmountMinor: &amount, Currency: "COP", PaidAt: &paid}
+	n := domain.NewStageNotification(c, paidAt.Add(2*time.Second))
+
+	created, ids, err := store.Record(ctx, n, paidAt.Add(2*time.Second))
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, []string{"ntf-stage-42:inst-1"}, ids)
+
+	got, err := store.Get(ctx, "sub-a", n.ID)
+	require.NoError(t, err)
+	assert.Equal(t, domain.KindClaimStageChanged, got.Kind)
+	assert.Equal(t, n.Stage, got.Stage, "the change survives the round trip")
+	assert.Nil(t, got.Payout)
+
+	// The delivery carries the change, so the push can be written.
+	d, ok, err := store.Claim(ctx, ids[0], paidAt.Add(3*time.Second), time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotNil(t, d.Notification.Stage)
+	assert.Equal(t, "SIN-2026-01655", d.Notification.Stage.FilingNumber)
 }

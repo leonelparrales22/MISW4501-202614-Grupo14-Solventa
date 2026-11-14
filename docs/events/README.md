@@ -11,6 +11,7 @@ Los servicios publican hechos de negocio en Amazon SNS (un tópico por dominio) 
 | `ClaimApproved` | `SiniestroAprobado` | claims | notifications, audit | Dispara notificación y pago paramétrico |
 | `ParametricPayoutCompleted` | `PagoParametricoRealizado` | claims | notifications (HU-M3.1-01) | El pago automático de un siniestro paramétrico quedó confirmado: `notifications` registra la notificación y envía el *push* en ≤ 60 s. **Lo publica el motor paramétrico de `claims` con *outbox* desde HU-M2.4-01**, cuando la pasarela confirma el pago del siniestro que resolvió (antes lo simulaba `tests/e2e/hu-m3.1`) |
 | `ParametricTriggerObserved` | `ParametroObservado` | iot (telemetría; hoy `tests/e2e/hu-m2.4/nube.sh` y `app-local.sh`) | claims (HU-M2.4-01) | La telemetría observó el parámetro de una póliza paramétrica (el retraso del vuelo de un asegurado), ya asociado a la póliza. El motor paramétrico de `claims` radica, resuelve y paga el siniestro si el valor alcanza el umbral |
+| `ClaimStageChanged` | `EtapaDelSiniestroCambiada` | claims | notifications (HU-M3.3-01) | Un siniestro llegó a una etapa que el asegurado espera: en evaluación, aprobado o pagado. `notifications` registra la notificación y envía el *push* en ≤ 60 s. Lo escribe en el *outbox* `claims/internal/stages` a partir del historial de estados |
 | `CustomerLinked` | `ClienteVinculado` | origination | audit | La cuenta del asegurado (`sub` de Cognito) quedó vinculada a su documento al terminar el registro (HU-M1.1-01); `audit` lo usa para reconocer al titular de sus consentimientos (HU-M1.3-01). **Primer evento publicado con *outbox*** |
 | `PartnerCredentialsIssued`, `PartnerCredentialsRotated`, `PartnerCredentialsRevoked` | `CredencialesSocioEmitidas`, `CredencialesSocioRotadas`, `CredencialesSocioRevocadas` | partners | audit | Se generaron las credenciales de un socio al aprobarlo, se rotaron o se revocó la anterior al vencer la transición (HU-W3.1-01); `audit` las guarda en el registro de auditoría de suscripción con la fecha y el emisor. **Primer evento del tópico `partners`** |
 
@@ -181,5 +182,36 @@ confirmación publica `ParametricPayoutCompleted`. Es **idempotente por `observa
 siniestro. Una observación que no paga (bajo el umbral, póliza no vigente, parámetro no cubierto, póliza o asegurado que el núcleo no conoce)
 se descarta y queda en el log como `parametric observation does not pay`. Un *payload* inválido o el núcleo caído no borran el mensaje:
 reaparece al vencer la visibilidad y termina en la DLQ.
+
+## `ClaimStageChanged` (HU-M3.3-01)
+
+Lo publica `claims` en su tópico, con *outbox*. El historial de estados (`claim_status_change`) registra cada cambio, lo haga quien lo haga
+(la revisión del asesor, la decisión de operaciones, el pago); `internal/stages` lo mira cada 2 s y escribe el evento de cada cambio que el
+asegurado espera. Lo consume `notifications` desde su cola (la misma del pago paramétrico, suscrita al tópico `claims`).
+
+**Qué cambios lo producen:** la entrada a evaluación (`in_evaluation`), la aprobación viniendo de evaluación (`approved`; la vuelta a
+`approved` al reintentar un pago con novedad no es otra aprobación) y el pago (`paid`). **No** lo producen la radicación, la devolución, el
+rechazo ni la novedad del pago, ni los siniestros paramétricos (canal `parametric`), que ya avisan con `ParametricPayoutCompleted`. Los
+cambios anteriores a la migración `0012` de `claims` son historia y no se avisan.
+
+**Sobre:** `event_id` = `claim-stage-changed-<change_id>` (uno por cambio), `event_type` = `ClaimStageChanged`, `event_version` = `1`,
+`source` = `claims` y `occurred_at` = `changed_at`.
+
+**Payload:**
+
+| Campo | Descripción |
+|---|---|
+| `change_id` | Identifica el cambio en el historial; clave de idempotencia del consumidor (una notificación por cambio, `ntf-stage-<change_id>`) |
+| `claim_id` | Id del siniestro: con él la app abre la línea de tiempo (`GET /v1/claims/{claim_id}`) |
+| `filing_number` | Número de radicado `SIN-<año>-<5 dígitos>`, el que ve el asegurado |
+| `policy_id`, `subject` | Póliza del siniestro y `sub` de la cuenta del asegurado (el destinatario) |
+| `stage`, `previous_stage` | La etapa a la que llegó (`in_evaluation`, `approved`, `paid`) y la anterior |
+| `changed_at` | Cuándo llegó a la etapa (UTC): el inicio de los 60 s y la hora que muestra la notificación |
+| `amount_minor`, `currency` | Solo en `approved` y `paid`: lo que recibe el asegurado (el monto aprobado menos el deducible), en centavos |
+| `paid_at` | Solo en `paid`: la fecha del desembolso |
+
+**Cómo se consume:** idempotente por `change_id`. La notificación y una entrega por cada dispositivo con permiso se escriben en una
+transacción, y el *push* va en su propio grupo (`claim_stages`) con `claim_id` en `data`. Un *payload* inválido o la base caída no borran el
+mensaje: reaparece y termina en la DLQ.
 
 Los esquemas de los demás eventos se agregarán aquí al implementarlos. Los consumidores exactos pueden cambiar; confirmar en la Wiki ([Arquitectura final](https://github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/wiki/Arquitectura_final)).

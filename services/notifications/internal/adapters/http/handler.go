@@ -107,6 +107,20 @@ type payoutBody struct {
 	PaidAt         time.Time         `json:"paid_at"`
 }
 
+// stageBody is the change of stage of a claim (HU-M3.3-01). claim_id is
+// what the app opens the timeline with; filing_number, what it shows.
+type stageBody struct {
+	ChangeID     int64      `json:"change_id"`
+	ClaimID      string     `json:"claim_id"`
+	FilingNumber string     `json:"filing_number"`
+	PolicyID     string     `json:"policy_id"`
+	Stage        string     `json:"stage"`
+	ChangedAt    time.Time  `json:"changed_at"`
+	Amount       *float64   `json:"amount"`
+	Currency     *string    `json:"currency"`
+	PaidAt       *time.Time `json:"paid_at"`
+}
+
 type notificationBody struct {
 	NotificationID string      `json:"notification_id"`
 	Kind           string      `json:"kind"`
@@ -114,6 +128,7 @@ type notificationBody struct {
 	CreatedAt      time.Time   `json:"created_at"`
 	ReadAt         *time.Time  `json:"read_at"`
 	Payout         *payoutBody `json:"payout"`
+	Stage          *stageBody  `json:"stage"`
 }
 
 func toBody(n domain.Notification) notificationBody {
@@ -132,6 +147,14 @@ func toBody(n domain.Notification) notificationBody {
 			Trigger: triggerBody{Parameter: t.Parameter, EventReference: t.EventReference, Threshold: t.Threshold,
 				Observed: t.Observed, Unit: t.Unit, ObservedAt: observedAt},
 			PaymentMethod: paymentMethodBody{Brand: p.Method.Brand, Last4: p.Method.Last4},
+		}
+	}
+	if c := n.Stage; c != nil {
+		out.Stage = &stageBody{ChangeID: c.ChangeID, ClaimID: c.ClaimID, FilingNumber: c.FilingNumber,
+			PolicyID: c.PolicyID, Stage: c.Stage, ChangedAt: c.ChangedAt.UTC(), PaidAt: c.PaidAt}
+		if c.AmountMinor != nil {
+			amount, currency := float64(*c.AmountMinor)/100, c.Currency
+			out.Stage.Amount, out.Stage.Currency = &amount, &currency
 		}
 	}
 	return out
