@@ -58,8 +58,8 @@ func TestADataMessageWithHighPriorityGoesToTheProject(t *testing.T) {
 	assert.Equal(t, "/v1/projects/solventa-94126/messages:send", path)
 	assert.Equal(t, "Bearer token-de-prueba", auth)
 	assert.Equal(t, map[string]any{"message": map[string]any{
-		"token": "tok-1",
-		"data":  map[string]any{"notification_id": "ntf-stage-42"},
+		"token":   "tok-1",
+		"data":    map[string]any{"notification_id": "ntf-stage-42"},
 		"android": map[string]any{"priority": "HIGH", "ttl": "86400s", "collapse_key": "ntf-stage-42"},
 	}}, got, "data only: the app writes the notification")
 }

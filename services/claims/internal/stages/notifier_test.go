@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,15 +100,17 @@ func TestAChangeThatNotifiesNothingHasNoEvent(t *testing.T) {
 	assert.Nil(t, ev)
 }
 
+// fakeStore counts its calls atomically: the notifier calls it from its own
+// goroutine while the test reads the count.
 type fakeStore struct {
 	passes []int
 	err    error
-	calls  int
+	calls  atomic.Int32
 }
 
 func (f *fakeStore) NoticePending(_ context.Context, limit int,
 	toEvent func(domain.StageChange) (*ports.OutboxEvent, error)) (int, error) {
-	f.calls++
+	f.calls.Add(1)
 	if f.err != nil {
 		return 0, f.err
 	}
@@ -133,10 +136,10 @@ func TestAFullBatchIsFollowedByAnotherPassAtOnce(t *testing.T) {
 		stages.NewNotifier(store, time.Hour).Run(ctx)
 		close(done)
 	}()
-	require.Eventually(t, func() bool { return store.calls >= 2 }, time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return store.calls.Load() >= 2 }, time.Second, 5*time.Millisecond)
 	cancel()
 	<-done
-	assert.Equal(t, 2, store.calls, "the second pass found less than a batch and waits for the next tick")
+	assert.Equal(t, int32(2), store.calls.Load(), "the second pass found less than a batch and waits for the next tick")
 }
 
 func TestAFailingPassIsRetriedOnTheNextTick(t *testing.T) {
