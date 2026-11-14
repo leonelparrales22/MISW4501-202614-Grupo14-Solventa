@@ -63,8 +63,26 @@ type stageJSON struct {
 	PaidAt       *time.Time `json:"paid_at,omitempty"`
 }
 
+// expiryJSON is the payload of a policy expiry notification (HU-M3.2-01).
+type expiryJSON struct {
+	PolicyID      string    `json:"policy_id"`
+	Source        string    `json:"source"`
+	Line          string    `json:"line"`
+	Product       string    `json:"product,omitempty"`
+	InsuredObject string    `json:"insured_object,omitempty"`
+	CoverageEnd   time.Time `json:"coverage_end"`
+	MilestoneDays int       `json:"milestone_days"`
+	DaysLeft      int       `json:"days_left"`
+	DetectedAt    time.Time `json:"detected_at"`
+}
+
 // encodePayload is the payload of a notification, by its kind.
 func encodePayload(n domain.Notification) ([]byte, error) {
+	if e := n.Expiry; e != nil {
+		return json.Marshal(expiryJSON{PolicyID: e.PolicyID, Source: e.Source, Line: e.Line, Product: e.Product,
+			InsuredObject: e.InsuredObject, CoverageEnd: e.CoverageEnd.UTC(), MilestoneDays: e.MilestoneDays,
+			DaysLeft: e.DaysLeft, DetectedAt: e.DetectedAt.UTC()})
+	}
 	if c := n.Stage; c != nil {
 		return json.Marshal(stageJSON{ChangeID: c.ChangeID, ClaimID: c.ClaimID, FilingNumber: c.FilingNumber,
 			PolicyID: c.PolicyID, Stage: c.Stage, ChangedAt: c.ChangedAt.UTC(), AmountMinor: c.AmountMinor,
@@ -73,9 +91,19 @@ func encodePayload(n domain.Notification) ([]byte, error) {
 	return encodePayout(n.Payout)
 }
 
-// decodePayload sets the payout or the change of stage of a notification, by
-// its kind.
+// decodePayload sets the payout, the change of stage or the expiry alert of a
+// notification, by its kind.
 func decodePayload(n *domain.Notification, raw []byte) error {
+	if n.Kind == domain.KindPolicyExpiry {
+		var j expiryJSON
+		if err := json.Unmarshal(raw, &j); err != nil {
+			return fmt.Errorf("decode the expiry alert: %w", err)
+		}
+		n.Expiry = &domain.ExpiryAlert{PolicyID: j.PolicyID, Subject: n.Subject, Source: j.Source, Line: j.Line,
+			Product: j.Product, InsuredObject: j.InsuredObject, CoverageEnd: j.CoverageEnd.UTC(),
+			MilestoneDays: j.MilestoneDays, DaysLeft: j.DaysLeft, DetectedAt: j.DetectedAt.UTC()}
+		return nil
+	}
 	if n.Kind == domain.KindClaimStageChanged {
 		var j stageJSON
 		if err := json.Unmarshal(raw, &j); err != nil {

@@ -39,11 +39,12 @@ func loadPolicyCoreConfig(getenv func(string) string, cfg *policyCoreConfig) err
 	return nil
 }
 
-// newPolicyPortfolio builds the policy core the wallet reads, or nil when
-// POLICY_CORE_URL is not set.
+// newPolicyPortfolio builds the policy core the wallet and the expiry alerts
+// (HU-M3.2-01) read, or nil when POLICY_CORE_URL is not set.
 func newPolicyPortfolio(cfg policyCoreConfig) ports.PolicyPortfolio {
 	if cfg.url == "" {
-		log.Printf("%s is not set: the wallet (HU-M1.2-01) lists only the policies origination issued", envPolicyCoreURL)
+		log.Printf("%s is not set: the wallet (HU-M1.2-01) lists, and the expiry alerts (HU-M3.2-01) look at, only the policies origination issued",
+			envPolicyCoreURL)
 		return nil
 	}
 	log.Printf("wallet (HU-M1.2-01): policy core at %s, timeout %s", cfg.url, cfg.timeout)

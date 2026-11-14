@@ -92,6 +92,33 @@ func (s *Service) RecordStageChange(ctx context.Context, c domain.ClaimStageChan
 	return nil
 }
 
+// RecordExpiryAlert records the notification that a policy is about to expire
+// and the push to every device of the insured that accepts it (HU-M3.2-01).
+// Like a payout, it is stored even without such a device and a redelivered
+// event changes nothing: one notification per policy, period and milestone.
+func (s *Service) RecordExpiryAlert(ctx context.Context, e domain.ExpiryAlert) error {
+	if err := e.Validate(); err != nil {
+		return err
+	}
+	now := s.clock.Now().UTC()
+	n := domain.NewExpiryNotification(e, now)
+	created, deliveries, err := s.store.Record(ctx, n, now)
+	if err != nil {
+		return err
+	}
+	if !created {
+		slog.InfoContext(ctx, "policy expiry already notified", "notification_id", n.ID, "policy_id", e.PolicyID)
+		return nil
+	}
+	slog.InfoContext(ctx, "policy expiry notification recorded", "notification_id", n.ID, "policy_id", e.PolicyID,
+		"milestone_days", e.MilestoneDays, "days_left", e.DaysLeft, "deliveries", len(deliveries),
+		"received_after_ms", now.Sub(e.DetectedAt).Milliseconds())
+	if len(deliveries) > 0 {
+		s.wake()
+	}
+	return nil
+}
+
 // List returns the notifications of the caller, the newest first, and how
 // many are unread. A limit outside 1..MaxListLimit takes DefaultListLimit.
 func (s *Service) List(ctx context.Context, limit int) ([]domain.Notification, int, error) {

@@ -81,3 +81,23 @@ func TestThePushOfAChangeOfStageOpensTheClaim(t *testing.T) {
 	assert.Equal(t, map[string]string{pushprovider.DataNotificationID: "ntf-stage-42",
 		pushprovider.DataKind: domain.KindClaimStageChanged, pushprovider.DataClaimID: "cl-1"}, client.got.Data)
 }
+
+// HU-M3.2-01: the push of an expiry alert goes in its own thread, says the
+// exact expiry date and opens the policy.
+func TestThePushOfAnExpiryAlertOpensThePolicy(t *testing.T) {
+	client := &fakeClient{}
+	detected := time.Date(2026, 11, 14, 15, 0, 0, 0, time.UTC)
+	e := domain.ExpiryAlert{PolicyID: "AU-2025-118204", Subject: "sub-a", Source: domain.ExpirySourcePolicyCore,
+		Line: "auto", Product: "Autos", CoverageEnd: time.Date(2026, 11, 30, 5, 0, 0, 0, time.UTC), MilestoneDays: 30,
+		DaysLeft: 16, DetectedAt: detected}
+	d := domain.NewDelivery(domain.NewExpiryNotification(e, detected),
+		domain.Device{InstallationID: "inst-1", Token: "tok-1", Locale: domain.LocaleSpanish}, detected)
+
+	_, err := pushprovider.NewSender(client).Send(context.Background(), d)
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.GroupPolicyExpiry, client.got.Group)
+	assert.Equal(t, "Tu póliza Autos vence el 30/11/2026", client.got.Title)
+	assert.Equal(t, map[string]string{pushprovider.DataNotificationID: "ntf-expiry-AU-2025-118204-20261130-30",
+		pushprovider.DataKind: domain.KindPolicyExpiry, pushprovider.DataPolicyID: "AU-2025-118204"}, client.got.Data)
+}

@@ -18,6 +18,8 @@ const (
 	DataNotificationID = "notification_id"
 	DataKind           = "kind"
 	DataClaimID        = "claim_id"
+	// DataPolicyID is the policy an expiry alert opens (HU-M3.2-01).
+	DataPolicyID = "policy_id"
 )
 
 // Client is what the sender needs from the push client.
@@ -51,6 +53,12 @@ func (s *Sender) Send(ctx context.Context, d domain.Delivery) (idempotency.Outco
 		text := templates.StageChange(*c, d.Locale)
 		m.Group, m.Title, m.Body = domain.GroupClaimStages, text.Title, text.Body
 		m.Data[DataClaimID] = c.ClaimID
+	}
+	// HU-M3.2-01: an expiry alert opens the policy.
+	if e := d.Notification.Expiry; e != nil {
+		text := templates.PolicyExpiry(*e, d.Locale)
+		m.Group, m.Title, m.Body = domain.GroupPolicyExpiry, text.Title, text.Body
+		m.Data[DataPolicyID] = e.PolicyID
 	}
 	r, err := s.client.Send(ctx, m)
 	if err != nil {

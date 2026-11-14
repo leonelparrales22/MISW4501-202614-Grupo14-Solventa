@@ -1,8 +1,18 @@
 openapi: 3.0.3
 info:
   title: Solventa - notifications service
-  version: 0.3.0
+  version: 0.4.0
   description: >
+    0.4.0 (HU-M3.2-01): the alerts 30, 15 and 5 days before a policy of the
+    insured expires (event PolicyExpiryApproaching of the origination
+    service): kind policy_expiry with expiry, the policy (policy_id, line,
+    product and insured_object, null when the source does not name them), its
+    exact end (coverage_end), the milestone reached (milestone_days) and the
+    days left when it was detected. One per policy, period and milestone. Its
+    push goes in its own thread and carries policy_id. Compatible with 0.3.0
+    (it adds a kind and the expiry field, null for the other kinds). Guide:
+    docs/contratos/HU-M3.2-01-api.md.
+
     0.3.0 (HU-M3.3-01): the notification of every change of stage of a claim
     of the insured (event ClaimStageChanged of the claims service): kind
     claim_stage_changed with stage, the stage the claim reached (in_evaluation,
@@ -241,14 +251,18 @@ components:
           minimum: 0
     Notification:
       type: object
-      required: [notification_id, kind, occurred_at, created_at, read_at, payout, stage]
+      required: [notification_id, kind, occurred_at, created_at, read_at, payout, stage, expiry]
       properties:
         notification_id:
           type: string
-          description: ntf-<payout_id>, one per payout; ntf-stage-<change_id>, one per change of stage.
+          description: >-
+            ntf-<payout_id>, one per payout; ntf-stage-<change_id>, one per
+            change of stage; ntf-expiry-<policy_id>-<YYYYMMDD>-<milestone_days>,
+            one per policy, period and milestone (the date is the end of the
+            coverage in Colombia).
         kind:
           type: string
-          enum: [parametric_payout, claim_stage_changed]
+          enum: [parametric_payout, claim_stage_changed, policy_expiry]
           description: The app writes the texts of each kind in its own language.
         occurred_at:
           type: string
@@ -272,6 +286,44 @@ components:
           description: The change of stage of a claim, for kind claim_stage_changed (HU-M3.3-01).
           allOf:
             - $ref: "#/components/schemas/ClaimStageChange"
+        expiry:
+          nullable: true
+          description: The alert that a policy is about to expire, for kind policy_expiry (HU-M3.2-01).
+          allOf:
+            - $ref: "#/components/schemas/ExpiryAlert"
+    ExpiryAlert:
+      type: object
+      required: [policy_id, line, product, insured_object, coverage_end, milestone_days, days_left]
+      properties:
+        policy_id:
+          type: string
+          description: The policy, to open it in the wallet (GET /v1/policies of origination).
+        line:
+          type: string
+          description: The line of insurance (life, auto, home, travel), as the source names it.
+        product:
+          type: string
+          nullable: true
+          description: The product of the policy (Autos); null for the life policies of origination.
+        insured_object:
+          type: string
+          nullable: true
+          description: What the policy insures (KJT-482); null when the source does not name it.
+        coverage_end:
+          type: string
+          format: date-time
+          description: >-
+            When the coverage ends, as the source keeps it. The app shows its
+            date in Colombia (America/Bogota), the one the milestones count.
+        milestone_days:
+          type: integer
+          enum: [30, 15, 5]
+          description: The milestone reached; only the last one crossed is alerted.
+        days_left:
+          type: integer
+          minimum: 0
+          maximum: 30
+          description: Calendar days left, in Colombia, when the alert was detected.
     ClaimStageChange:
       type: object
       required: [change_id, claim_id, filing_number, policy_id, stage, changed_at, amount, currency, paid_at]

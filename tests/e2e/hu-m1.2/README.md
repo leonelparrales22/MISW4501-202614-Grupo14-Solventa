@@ -34,6 +34,15 @@ Ruiz», CC `DOCUMENT` (por omisión `1020304050`, el mismo del ensayo de HU-M1.3
 | CA-5 | Ver la prueba unitaria del móvil: la advertencia sale cuando la copia tiene más de 30 días |
 | CA-6 | La copia se guarda cifrada con una clave del Android Keystore: en `adb shell run-as co.solventa.movil sqlite3 databases/solventa.db 'select * from poliza'` el contenido no se lee |
 
+**HU-M3.2-01 (`--dias-para-vencer N`).** `SUBJECT=<el mismo> bash tests/e2e/hu-m1.2/app-local.sh --dias-para-vencer N` hace que
+AU-2025-118204 venza en el último segundo del día que está a N días de hoy en Colombia (N días de calendario, la cuenta de los avisos de
+vencimiento) y recrea el núcleo para que lea la fecha; se combina con `--changes`. Sin la opción el vencimiento sigue siendo a 16 días como
+siempre. **Este entorno no produce el aviso de punta a punta:** originación corre sin `DATABASE_URL`, así que el barrido usa los clientes en
+memoria y no hay ninguno con el `sub` del asegurado (se crea solo al registrarse desde la app con el *user pool*), no hay
+`EVENTS_TOPIC_ARN` (el evento quedaría en el *outbox*) ni servicio `notifications`. El ensayo del aviso está en
+[`tests/e2e/hu-m3.2`](../hu-m3.2/README.md), que agrega PostgreSQL, el cliente vinculado, LocalStack y `notifications` detrás de un
+*gateway*.
+
 Se detiene con `docker compose -f tests/e2e/hu-m1.2/docker-compose.yml down -v`. Puertos (solo `127.0.0.1`, para no chocar con
 `hu-m1.3`): `origination` 8392 y `policy-core` 9392. Sin `DATABASE_URL` ni pasarela, originación no emite pólizas aquí: la lista es la del
 núcleo. Las pruebas por componente están en `services/origination/internal/wallet`, `internal/adapters/policycore` y

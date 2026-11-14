@@ -1,0 +1,161 @@
+# HU-M3.2-01 local backend for the mobile app (alerts 30, 15 and 5 days before
+# a policy expires): the real origination and notifications services with
+# their PostgreSQL, LocalStack with the origination topic and the
+# notifications queue (localstack/init-messaging.sh), the policy core stub
+# seeded with the policies of the prototype (POLICY_SEED_FILE, written by
+# app-local.sh), the push stub and an nginx in front of both services
+# (gateway.conf) so the app has one base URL, like the API Gateway in AWS. The
+# human routes verify the tokens of the permanent user pool (written by
+# app-local.sh), so the insured signs in on the emulator. Build context is the
+# repository root.
+#
+# Published ports (127.0.0.1 only, configurable): the gateway 8396 (the one the
+# app calls), LocalStack 4580 and the push stub 9396 (GET /messages shows what
+# the device would have got).
+name: hu-m3-2-local
+
+x-aws-local: &aws-local
+  AWS_REGION: us-east-2
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_EC2_METADATA_DISABLED: "true"
+
+services:
+  postgres-origination:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=origination
+      - POSTGRES_USER=origination
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U origination -d origination"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  postgres-notifications:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=notifications
+      - POSTGRES_USER=notifications
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notifications -d notifications"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # LocalStack 4.14.0: the last image that starts without an auth token
+  # (decision D-10 a of HA-D02).
+  localstack:
+    image: localstack/localstack:4.14.0
+    ports:
+      - "127.0.0.1:${LOCALSTACK_PORT:-4580}:4566"
+    environment:
+      - SERVICES=sns,sqs
+      - AWS_DEFAULT_REGION=us-east-2
+    volumes:
+      - ./localstack/init-messaging.sh:/etc/localstack/init/ready.d/init-messaging.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal --region us-east-2 sns list-subscriptions-by-topic --topic-arn arn:aws:sns:us-east-2:000000000000:solventa-local-origination --query 'length(Subscriptions)' --output text | grep -q '^1$'"]
+      interval: 3s
+      timeout: 10s
+      retries: 60
+
+  # Required by origination's profiling; the expiry alerts do not use it.
+  openfinance:
+    build:
+      context: ../../..
+      dockerfile: stubs/openfinance/Dockerfile
+    environment:
+      PORT: "9000"
+
+  policy-core:
+    build:
+      context: ../../..
+      dockerfile: stubs/policy-core/Dockerfile
+    environment:
+      PORT: "9060"
+      POLICY_SEED_FILE: /seed/policy-seed.json
+    volumes:
+      - ./generated:/seed:ro
+
+  push:
+    build:
+      context: ../../..
+      dockerfile: stubs/push/Dockerfile
+    ports:
+      - "127.0.0.1:${PUSH_PORT:-9396}:9070"
+    environment:
+      PORT: "9070"
+
+  origination:
+    build:
+      context: ../../..
+      dockerfile: services/origination/Dockerfile
+    environment:
+      <<: *aws-local
+      PORT: "8080"
+      REDIS_ADDR: redis:6379
+      OPEN_FINANCE_URL: http://openfinance:9000
+      DATABASE_URL: postgres://origination:${PG_PASSWORD:-}@postgres-origination:5432/origination?sslmode=disable
+      POLICY_CORE_URL: http://policy-core:9060
+      AUTH_ISSUER: ${AUTH_ISSUER:-}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
+      AUTH_CLIENT_IDS: ${AUTH_CLIENT_IDS:-}
+      # HU-M3.2-01: the sweep every 10 s instead of every hour, and the outbox
+      # relay publishes PolicyExpiryApproaching here.
+      EXPIRY_ALERT_INTERVAL_MS: "10000"
+      EVENTS_TOPIC_ARN: arn:aws:sns:us-east-2:000000000000:solventa-local-origination
+      AWS_ENDPOINT_URL_SNS: http://localstack:4566
+    depends_on:
+      postgres-origination:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      openfinance:
+        condition: service_started
+      policy-core:
+        condition: service_started
+
+  notifications:
+    build:
+      context: ../../..
+      dockerfile: services/notifications/Dockerfile
+    environment:
+      <<: *aws-local
+      PORT: "8080"
+      DATABASE_URL: postgres://notifications:${PG_PASSWORD:-}@postgres-notifications:5432/notifications?sslmode=disable
+      AUTH_ISSUER: ${AUTH_ISSUER:-}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
+      AUTH_CLIENT_IDS: ${AUTH_CLIENT_IDS:-}
+      EVENTS_QUEUE_URL: http://localstack:4566/000000000000/solventa-local-notifications
+      AWS_ENDPOINT_URL_SQS: http://localstack:4566
+      PUSH_PROVIDER_URL: http://push:9070
+    depends_on:
+      postgres-notifications:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      push:
+        condition: service_started
+
+  gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8396}:8080"
+    volumes:
+      - ./gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - origination
+      - notifications

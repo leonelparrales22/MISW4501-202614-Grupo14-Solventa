@@ -41,7 +41,7 @@ const (
 	// envDatabaseURL is the service's own PostgreSQL (a secret, never logged).
 	envDatabaseURL = "DATABASE_URL"
 	// envEventsQueueURL is the SQS queue of the service, subscribed to the
-	// claims topic.
+	// claims and origination topics.
 	envEventsQueueURL = "EVENTS_QUEUE_URL"
 	// envPushProviderURL is the push provider (stubs/push locally).
 	envPushProviderURL       = "PUSH_PROVIDER_URL"
@@ -200,16 +200,18 @@ func newEventConsumer(ctx context.Context, cfg config, svc eventRecorder) (*sqsc
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("domain events: consuming %s and %s from %s", messaging.EventTypeParametricPayoutCompleted,
-		messaging.EventTypeClaimStageChanged, cfg.eventsQueueURL)
+	log.Printf("domain events: consuming %s, %s and %s from %s", messaging.EventTypeParametricPayoutCompleted,
+		messaging.EventTypeClaimStageChanged, messaging.EventTypePolicyExpiryApproaching, cfg.eventsQueueURL)
 	return consumer, nil
 }
 
 // eventRecorder is what the consumers record: the automatic payments
-// (HU-M3.1-01) and the changes of stage of the claims (HU-M3.3-01).
+// (HU-M3.1-01), the changes of stage of the claims (HU-M3.3-01) and the
+// alerts before a policy expires (HU-M3.2-01).
 type eventRecorder interface {
 	messaging.PayoutRecorder
 	messaging.StageRecorder
+	messaging.ExpiryRecorder
 }
 
 // eventRouter routes the events of the notifications queue to their handlers.
@@ -219,6 +221,10 @@ func eventRouter(svc eventRecorder) (*events.Router, error) {
 		return nil, err
 	}
 	if err := router.Register(messaging.EventTypeParametricPayoutCompleted, messaging.NewParametricPayoutHandler(svc)); err != nil {
+		return nil, err
+	}
+	if err := router.Register(messaging.EventTypePolicyExpiryApproaching,
+		messaging.NewPolicyExpiryApproachingHandler(svc)); err != nil {
 		return nil, err
 	}
 	return router, nil
