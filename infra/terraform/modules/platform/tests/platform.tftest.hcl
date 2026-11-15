@@ -312,6 +312,22 @@ run "inbox_and_exceptions_are_routed" {
   }
 }
 
+# HU-W3.2-01: the partner portal reads the summary of its dashboard from
+# origination, behind the Cognito authorizer, and the root has no method.
+run "the_partner_dashboard_is_a_human_route_of_origination" {
+  command = plan
+
+  assert {
+    condition = (
+      var.human_routes["partner-metrics"].methods == tolist(["GET"]) &&
+      length(var.human_routes["partner-metrics"].root_methods) == 0 &&
+      contains(local.services.origination.paths, "/v1/partner-metrics*") &&
+      !contains(local.services.partners.paths, "/v1/partner-metrics*")
+    )
+    error_message = "GET /v1/partner-metrics/summary (HU-W3.2-01) is a human route that the ALB sends to origination; its root has no method."
+  }
+}
+
 # HU-W1.3-04 and HU-W1.5-02: the issuance monitor of operations and the online
 # renewal of the insured write through the gateway, so their routes take POST
 # under the root while the root stays read-only.
@@ -830,10 +846,10 @@ run "offers_root_is_partner_and_sub_paths_are_human" {
   }
 
   # consents (HU-M1.3-02), issuances (HU-W1.3-04) and policies (HU-W1.5-02)
-  # set their root to GET only, and notifications and devices (HU-M3.1-01)
-  # set theirs too; they have their own tests.
+  # set their root to GET only, notifications and devices (HU-M3.1-01) and
+  # partner-metrics (HU-W3.2-01) set theirs too; they have their own tests.
   assert {
-    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents", "issuances", "policies", "notifications", "devices"], k)])
+    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents", "issuances", "policies", "notifications", "devices", "partner-metrics"], k)])
     error_message = "Every other human route keeps its root as before."
   }
 }
@@ -1261,6 +1277,45 @@ run "partners_manages_the_credentials_and_publishes_to_audit" {
   assert {
     condition     = contains(keys(var.human_routes), "partners")
     error_message = "The operations portal reaches /v1/partners with Cognito."
+  }
+}
+
+# HU-W3.2-03: the dashboard of the partner reads the SLO alarms of the partner
+# API from partners, with read-only CloudWatch permissions.
+run "partners_reads_the_slo_of_the_partner_api" {
+  command = plan
+
+  assert {
+    condition     = local.service_environment.partners.SLO_ALARM_PREFIX == "solventa-test-slo-"
+    error_message = "partners receives the prefix of the SLO alarms (the platform turns them on)."
+  }
+
+  assert {
+    condition = (
+      contains([for st in local.task_role_statements.partners : st.sid], "ReadTheSloMetricsAndAlarms") &&
+      contains([for st in local.task_role_statements.partners : st.sid], "ReadTheHistoryOfTheSloAlarms") &&
+      alltrue([for st in local.task_role_statements.partners : alltrue([for a in st.actions : !startswith(a, "cloudwatch:") || contains(["cloudwatch:DescribeAlarms", "cloudwatch:GetMetricData", "cloudwatch:DescribeAlarmHistory"], a)])])
+    )
+    error_message = "partners only reads CloudWatch: the alarms, their history and the metrics."
+  }
+
+  assert {
+    condition = alltrue([
+      for k, sts in local.task_role_statements : k == "partners" || alltrue([
+        for st in sts : !contains(["ReadTheSloMetricsAndAlarms", "ReadTheHistoryOfTheSloAlarms"], st.sid)
+      ])
+    ])
+    error_message = "Only partners reads the SLO alarms."
+  }
+
+  assert {
+    condition = (
+      var.human_routes["partner-metrics"].methods == tolist(["GET"]) &&
+      var.human_routes["partner-performance"].methods == tolist(["GET"]) &&
+      contains(local.services.partners.paths, "/v1/partner-performance*") &&
+      !contains(local.services.origination.paths, "/v1/partner-performance*")
+    )
+    error_message = "GET /v1/partner-performance (HU-W3.2-03) is a human route that the ALB sends to partners."
   }
 }
 

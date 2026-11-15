@@ -45,6 +45,8 @@ locals {
         # somewhere: without this rule it answers 404 and the mobile sign-up
         # never reaches the service.
         "/v1/registrations*",
+        # Summary of the dashboard of the commercial partner (HU-W3.2-01).
+        "/v1/partner-metrics*",
       ]
       buckets   = ["documents"]
       publishes = ["origination"]
@@ -60,7 +62,7 @@ locals {
     }
     partners = {
       priority = 3
-      paths    = ["/v1/partners*"]
+      paths    = ["/v1/partners*", "/v1/partner-performance*"]
       buckets  = []
       # HU-W3.1-01: the credential events of the partners go to audit.
       publishes = ["partners"]
@@ -292,6 +294,9 @@ module "apigateway" {
   cors_allow_origin      = var.cors_allow_origin
   payment_tokenization   = {}
   registration_route     = {}
+  # HU-W3.2-03: the SLO alarms of the partner API, read by the dashboard of
+  # the partner (p95 <= 400 ms of HA-L01, 5XX at or over 5 % as unavailable).
+  slo_alarms = { enabled = true }
 }
 
 # --- Data -----------------------------------------------------------------------------------
@@ -451,6 +456,20 @@ locals {
         actions   = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:DELETE"]
         resources = ["arn:aws:apigateway:${data.aws_region.current.region}::/usageplans*"]
       }],
+      # HU-W3.2-03: partners reads the SLO alarms of the partner API (state
+      # and history, the incidents) and their API Gateway metrics. Only reads:
+      # DescribeAlarms and GetMetricData have no resource-level permission;
+      # the history is limited to the SLO alarms.
+      k != "partners" ? [] : [{
+        sid       = "ReadTheSloMetricsAndAlarms"
+        actions   = ["cloudwatch:DescribeAlarms", "cloudwatch:GetMetricData"]
+        resources = ["*"]
+      }],
+      k != "partners" ? [] : [{
+        sid       = "ReadTheHistoryOfTheSloAlarms"
+        actions   = ["cloudwatch:DescribeAlarmHistory"]
+        resources = ["arn:aws:cloudwatch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:alarm:${module.apigateway.slo_alarm_prefix}*"]
+      }],
       k != "partners" ? [] : [{
         sid       = "ReadTheStageOfThePartnerPlans"
         actions   = ["apigateway:GET"]
@@ -541,6 +560,9 @@ locals {
       GATEWAY_STAGE_NAME            = module.apigateway.stage_name
       CREDENTIAL_GRACE_PERIOD_HOURS = "24"
       EVENTS_TOPIC_ARN              = module.messaging.topic_arns["partners"]
+      # HU-W3.2-03: the SLO alarms of the partner API, the source of the
+      # technical performance of the dashboard of the partner.
+      SLO_ALARM_PREFIX = module.apigateway.slo_alarm_prefix
     }
 
     # Claims serves the filing of the mobile assistant (HU-M2.2-01), which is

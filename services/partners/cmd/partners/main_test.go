@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	sdkcloudwatch "github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -78,4 +79,37 @@ type tokenVerifier struct{}
 
 func (tokenVerifier) Verify(context.Context, string) (security.Claims, error) {
 	return security.Claims{}, security.ErrInvalidToken
+}
+
+// HU-W3.2-03: the performance of the partner API needs the prefix of the SLO
+// alarms and the user pool; the objective of RC-02 can be set.
+func TestThePerformanceNeedsThePrefixAndTheUserPool(t *testing.T) {
+	cfg, err := loadConfig(env(nil))
+	require.NoError(t, err)
+	opts, err := performanceOptions(context.Background(), cfg, tokenVerifier{})
+	require.NoError(t, err)
+	assert.Empty(t, opts, "without SLO_ALARM_PREFIX it is not mounted")
+
+	cfg, err = loadConfig(env(map[string]string{envSLOAlarmPrefix: "solventa-stg-slo-", envSLOObjective: "99.5"}))
+	require.NoError(t, err)
+	assert.Equal(t, "solventa-stg-slo-", cfg.sloPrefix)
+	assert.Equal(t, 99.5, cfg.sloObjective)
+	opts, err = performanceOptions(context.Background(), cfg, nil)
+	require.NoError(t, err)
+	assert.Empty(t, opts, "without AUTH_ISSUER it is not mounted")
+
+	opts, err = performanceRoutes(sdkcloudwatch.New(sdkcloudwatch.Options{Region: "us-east-2"}), cfg, tokenVerifier{})
+	require.NoError(t, err)
+	assert.Len(t, opts, 1)
+
+	v, err := newVerifier(context.Background(), cfg)
+	require.NoError(t, err)
+	assert.Nil(t, v)
+}
+
+func TestTheObjectiveIsAPercentage(t *testing.T) {
+	for _, raw := range []string{"0", "101", "abc", "-1"} {
+		_, err := loadConfig(env(map[string]string{envSLOObjective: raw}))
+		assert.Error(t, err, raw)
+	}
 }
