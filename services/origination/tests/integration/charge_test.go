@@ -262,11 +262,26 @@ func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
 	db := newChargeDB(t)
 	clock := wallClock{}
 	e := &chargeEnv{gw: newPayGateway(t), mail: newMailProvider(t)}
+	// The directory of the documents is created before the workers start:
+	// cleanups run last in, first out, so it is removed only after the
+	// workers below have stopped, and so is the database.
+	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	var running sync.WaitGroup
+	t.Cleanup(func() {
+		cancel()
+		running.Wait()
+	})
+	start := func(run func(context.Context)) {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			run(ctx)
+		}()
+	}
 
 	// The real contractual issuance of HU-W1.3-03.
-	store, err := filestore.New(t.TempDir())
+	store, err := filestore.New(dir)
 	require.NoError(t, err)
 	signer, err := links.NewSigner("0123456789abcdef0123456789abcdef")
 	require.NoError(t, err)
@@ -279,7 +294,7 @@ func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
 	}, issuance.ContractConfig{PollInterval: 10 * time.Millisecond, RetryBase: 20 * time.Millisecond, RetryMax: 50 * time.Millisecond,
 		MaxAttempts: o.contractAttempts, PublicBaseURL: "https://api.solventa.example"})
 	e.service = contracts
-	go contracts.Run(ctx)
+	start(contracts.Run)
 	e.consumer = &flakyConsumer{fail: o.consumerFails, next: contracts}
 
 	// The premium charge of HA-D02.
@@ -297,7 +312,7 @@ func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
 			PollInterval: 10 * time.Millisecond, ClaimLease: 2 * time.Second, Retry: policy,
 		}, e.consumer)
 		require.NoError(t, err)
-		go w.Run(ctx)
+		start(w.Run)
 		workers = append(workers, w)
 	}
 	notify := func() {
@@ -319,7 +334,7 @@ func newChargeEnv(t *testing.T, o chargeEnvOptions) *chargeEnv {
 	processor := issuance.NewProcessor(offers, acceptances, memory.NewUnderwriterStub(clock, 0, memory.DefaultReviewScoreThreshold), memory.NewReviewQueueStub(),
 		billing.NewStarter(charges, billing.OfferTerms(fixtureCoverageTerms()), clock, policy, notify), clock,
 		issuance.ProcessorConfig{PollInterval: 10 * time.Millisecond, RetryBase: 20 * time.Millisecond, RetryMax: 40 * time.Millisecond})
-	go processor.Run(ctx)
+	start(processor.Run)
 
 	e.srv = httptest.NewServer(httpadapter.NewRouter(profiling.NewResolver(nil, nil, clock),
 		httpadapter.WithObservability("origination"),
