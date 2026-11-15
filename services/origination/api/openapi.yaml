@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.15.0
+  version: 0.16.0
 paths:
   /health:
     get:
@@ -1285,6 +1285,244 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "503":
           $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/change-requests:
+    get:
+      summary: List the change requests of the insured (HU-W1.4-01)
+      description: >
+        Screen A11 of the insured portal ("Mis solicitudes"): the change requests
+        the caller filed on their policies, the latest filed first. status is
+        the stored one (five values); the insured sees not_applied as in_review
+        while it has no decision_reason and as rejected once the analyst
+        returned it with one (adjustment A-1), and the filter speaks that
+        projection: in_review also lists the not applied requests without a
+        reason, and rejected the ones with a reason. filed_from is a civil day
+        of Colombia (UTC-5), included. The indicators ignore the filter: the
+        open requests (filed, in review, or not applied without a reason) with
+        the latest filed, the ones applied in the civil year with the last one
+        applied, and the rejected ones (also the returned not applied ones)
+        with the last one. policies are the policies of the caller that have
+        requests, the options of the filter. Only the requests of the caller:
+        those of another insured never appear. Mounted with the premium charge
+        (PostgreSQL). Only insured users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Only the requests the insured sees with this status; every status when absent.
+          schema:
+            type: string
+            enum: [filed, in_review, applied, rejected]
+        - name: policy_id
+          in: query
+          required: false
+          description: Only the requests of this policy.
+          schema:
+            type: string
+            maxLength: 128
+        - name: filed_from
+          in: query
+          required: false
+          description: Only the requests filed from this civil day (AAAA-MM-DD, Colombia), included.
+          schema:
+            type: string
+            format: date
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: The page of the requests, the indicators and the policies with requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangeRequestPage"
+        "400":
+          description: >
+            Every query parameter that cannot be read (validation_failed with
+            the list: an unknown status, a date that is not AAAA-MM-DD, a page or
+            page size out of range, a policy_id that is too long)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ChangeRequestUnavailable"
+  /v1/policies/change-requests/{request_id}:
+    get:
+      summary: Read one change request of the insured (HU-W1.4-01)
+      description: >
+        Screen A3b of the insured portal: the request with the photo of the
+        value when it was filed (previous), what the insured asked for
+        (requested), the difference field by field (changes), who filed it and
+        where it stands. Only the owner of the policy reads it (another insured
+        gets 403); an id that is not SOL-MOD-<year>-<number> is not found.
+        Only insured users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The change request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangeRequest"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The change request does not exist (change_request_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ChangeRequestUnavailable"
+  /v1/policies/{policy_id}/current-terms:
+    get:
+      summary: Read the terms of a policy the insured can change (HU-W1.4-01)
+      description: >
+        What screen A3 starts from (CA-1): the insured value, the beneficiaries
+        designated for the remainder, the onerous beneficiary (the lender of
+        the credit, which cannot be changed; partner_id and name are null when
+        they are not known, for example in an advisor sale) and the contact
+        data of the policy (address and phone are null while not registered;
+        email is the contact e-mail of the policy, not the sign-in one).
+        in_force tells whether a change can be filed now; open_requests lists
+        the open request of each type that has one, which blocks a new one of
+        that type. limits are the rules of the capture. Only the policies
+        origination issued (a policy of the policy core is not found). Only
+        the insured who owns the policy (403 for another insured).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The current terms of the policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyCurrentTerms"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "503":
+          $ref: "#/components/responses/ChangeRequestUnavailable"
+  /v1/policies/{policy_id}/change-requests:
+    post:
+      summary: File a change request of a policy in force (HU-W1.4-01)
+      description: >
+        The insured who owns the policy asks for new beneficiaries, a new
+        insured value or new contact data (CA-1). The body carries the type,
+        the channel and only the member of that type; the onerous beneficiary
+        never travels (additionalProperties false, 400). Every invalid field is
+        answered at once and nothing is filed (CA-3): beneficiaries are 1 to 10
+        with a name, a relationship and a document of the catalogs (only digits
+        in CC, TI and RC), a share above 0 with up to two decimals, shares that
+        add up to exactly 100 (share_total_not_100) and no document twice
+        (duplicate); the insured value is a whole value in COP inside the
+        limits of the rating engine; the personal data carry at least one of
+        address (5 to 160 characters), email or phone (10 digits, +57
+        optional); and something must change (no_change). Per policy and type
+        only one request can be open (filed, in review, or not applied and not
+        returned to the insured): another one answers 409 change_request_open
+        with the id of the open one, also when two are filed at once. The id
+        is SOL-MOD-<civil year of Colombia>-<number of at least four digits>,
+        consecutive per year with no gaps (CA-2). The request keeps the photo
+        of the current value and who filed it. Only the insured who owns the
+        policy (403 for another insured, CA-4).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeRequestInput"
+      responses:
+        "201":
+          description: The request was filed with status filed
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/policies/change-requests/{request_id}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangeRequest"
+        "400":
+          description: >
+            A body that is not JSON, a member the contract does not name (also
+            the onerous beneficiary) or a member of another type (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          description: >
+            The policy is not in force (policy_not_in_force), or it already has
+            an open request of the same type (change_request_open, with its
+            request_id)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ChangeRequestConflict"
+                  - $ref: "#/components/schemas/Error"
+        "422":
+          description: Every invalid or missing field at once (validation_failed); nothing is filed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "503":
+          $ref: "#/components/responses/ChangeRequestUnavailable"
   /v1/policies/{policy_id}/assisted-renewal:
     get:
       summary: Read where the assisted renewal of a policy stands, for the advisor (HU-W1.5-03)
@@ -2059,6 +2297,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    ChangeRequestUnavailable:
+      description: The change request could not be read or filed (change_request_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     RenewalUnavailable:
       description: The renewal could not be read or processed (renewal_unavailable); retry later
       content:
@@ -2218,7 +2462,7 @@ components:
           description: JSON name of the invalid field.
         code:
           type: string
-          enum: [required, invalid_format, out_of_range]
+          enum: [required, invalid_format, out_of_range, share_total_not_100, duplicate, no_change]
     ValidationError:
       type: object
       required: [error, message, fields]
@@ -4102,6 +4346,410 @@ components:
           type: string
           pattern: "^[0-9]{6}$"
           description: The code the insured received by e-mail; required with the confirmation_code method.
+    Beneficiary:
+      type: object
+      required: [full_name, relationship, document_type, document_number, share_percent]
+      description: A person who receives a share of the remainder of the insured value, after the outstanding balance of the lender (HU-W1.4-01).
+      properties:
+        full_name:
+          type: string
+        relationship:
+          type: string
+          enum: [spouse_or_partner, child, parent, sibling, grandchild, other]
+        document_type:
+          type: string
+          enum: [CC, TI, RC, CE, PA]
+          description: CC citizenship card, TI identity card, RC civil registry, CE foreigner card, PA passport.
+        document_number:
+          type: string
+        share_percent:
+          type: number
+          description: Share of the remainder, in percent with up to two decimals.
+    BeneficiaryInput:
+      type: object
+      additionalProperties: false
+      required: [full_name, relationship, document_type, document_number, share_percent]
+      properties:
+        full_name:
+          type: string
+          description: 3 to 120 characters with at least one letter, once the spaces are collapsed.
+        relationship:
+          type: string
+          enum: [spouse_or_partner, child, parent, sibling, grandchild, other]
+        document_type:
+          type: string
+          enum: [CC, TI, RC, CE, PA]
+        document_number:
+          type: string
+          description: 5 to 20 letters or digits once trimmed; only digits in CC, TI and RC.
+        share_percent:
+          type: number
+          description: Above 0 and up to 100, with up to two decimals; the shares add up to exactly 100.
+    OnerousBeneficiary:
+      type: object
+      required: [partner_id, name, basis]
+      description: >
+        The lender of the credit the policy secures; the insured cannot change
+        it. partner_id and name are null when they are not known (an advisor
+        sale, or a partner without a display name in PARTNER_DISPLAY_NAMES for
+        name): the client shows a generic label.
+      properties:
+        partner_id:
+          type: string
+          nullable: true
+        name:
+          type: string
+          nullable: true
+        basis:
+          type: string
+          enum: [outstanding_balance]
+    PersonalData:
+      type: object
+      required: [address, email, phone]
+      description: >
+        The contact data of a policy. In the current terms, a null member is not
+        registered; in a requested change, a null member does not change. email
+        is the contact e-mail of the policy, never the sign-in one (decision D-5 a).
+      properties:
+        address:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+          description: The 10 digits of a Colombian number.
+    PersonalDataInput:
+      type: object
+      additionalProperties: false
+      description: At least one member; a missing or null member does not change.
+      properties:
+        address:
+          type: string
+          nullable: true
+          description: 5 to 160 characters once the spaces are collapsed.
+        email:
+          type: string
+          nullable: true
+          description: A bare e-mail address of at most 254 characters.
+        phone:
+          type: string
+          nullable: true
+          description: 10 digits, with +57 or without it; spaces and hyphens are ignored.
+    PolicyCurrentTerms:
+      type: object
+      required: [policy, terms, open_requests, limits]
+      properties:
+        policy:
+          type: object
+          required: [policy_id, line, holder_name, coverage_start, coverage_end, in_force]
+          properties:
+            policy_id:
+              type: string
+            line:
+              type: string
+              enum: [life]
+            holder_name:
+              type: string
+            coverage_start:
+              type: string
+              format: date-time
+            coverage_end:
+              type: string
+              format: date-time
+            in_force:
+              type: boolean
+              description: The coverage is running now; a change can be filed only then.
+        terms:
+          type: object
+          required: [insured_amount, currency, beneficiaries, onerous_beneficiary, personal_data]
+          properties:
+            insured_amount:
+              type: number
+            currency:
+              type: string
+            beneficiaries:
+              type: array
+              maxItems: 10
+              items:
+                $ref: "#/components/schemas/Beneficiary"
+            onerous_beneficiary:
+              nullable: true
+              allOf:
+                - $ref: "#/components/schemas/OnerousBeneficiary"
+            personal_data:
+              $ref: "#/components/schemas/PersonalData"
+        open_requests:
+          type: array
+          maxItems: 3
+          description: The open request of each type that has one.
+          items:
+            type: object
+            required: [request_id, change_type, status, filed_at]
+            properties:
+              request_id:
+                type: string
+              change_type:
+                type: string
+                enum: [beneficiaries, insured_amount, personal_data]
+              status:
+                type: string
+                enum: [filed, in_review, not_applied]
+              filed_at:
+                type: string
+                format: date-time
+        limits:
+          type: object
+          required: [insured_amount_min, insured_amount_max, max_beneficiaries, relationships, document_types]
+          properties:
+            insured_amount_min:
+              type: number
+            insured_amount_max:
+              type: number
+            max_beneficiaries:
+              type: integer
+            relationships:
+              type: array
+              items:
+                type: string
+            document_types:
+              type: array
+              items:
+                type: string
+    BeneficiariesChangeInput:
+      type: object
+      additionalProperties: false
+      required: [change_type, channel, beneficiaries]
+      properties:
+        change_type:
+          type: string
+          enum: [beneficiaries]
+        channel:
+          type: string
+          enum: [web, mobile]
+        beneficiaries:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: 1 to 10 beneficiaries whose shares add up to 100; they replace the designated ones.
+          items:
+            $ref: "#/components/schemas/BeneficiaryInput"
+    InsuredAmountChangeInput:
+      type: object
+      additionalProperties: false
+      required: [change_type, channel, insured_amount]
+      properties:
+        change_type:
+          type: string
+          enum: [insured_amount]
+        channel:
+          type: string
+          enum: [web, mobile]
+        insured_amount:
+          type: number
+          description: Whole value in COP between 10000000 and 2000000000, different from the current one.
+    PersonalDataChangeInput:
+      type: object
+      additionalProperties: false
+      required: [change_type, channel, personal_data]
+      properties:
+        change_type:
+          type: string
+          enum: [personal_data]
+        channel:
+          type: string
+          enum: [web, mobile]
+        personal_data:
+          $ref: "#/components/schemas/PersonalDataInput"
+    ChangeRequestInput:
+      description: The type of the change, the channel and only the member of that type (HU-W1.4-01).
+      oneOf:
+        - $ref: "#/components/schemas/BeneficiariesChangeInput"
+        - $ref: "#/components/schemas/InsuredAmountChangeInput"
+        - $ref: "#/components/schemas/PersonalDataChangeInput"
+    ChangeContent:
+      type: object
+      description: >
+        One side of a change, with only the members of its type: beneficiaries
+        (and, on the previous side, the onerous beneficiary), insured_amount and
+        currency, or personal_data.
+      properties:
+        beneficiaries:
+          type: array
+          items:
+            $ref: "#/components/schemas/Beneficiary"
+        onerous_beneficiary:
+          $ref: "#/components/schemas/OnerousBeneficiary"
+        insured_amount:
+          type: number
+        currency:
+          type: string
+        personal_data:
+          $ref: "#/components/schemas/PersonalData"
+    FieldChange:
+      type: object
+      required: [field, previous, requested]
+      description: >
+        One line of the difference. field is beneficiaries (previous and
+        requested are a Beneficiary, previous null for a new one and requested
+        null for a removed one), insured_amount (numbers) or
+        personal_data.address, personal_data.email or personal_data.phone
+        (texts, previous null when it was not registered).
+      properties:
+        field:
+          type: string
+        previous:
+          description: A Beneficiary, a number, a text or null.
+        requested:
+          description: A Beneficiary, a number, a text or null.
+    ChangeRequest:
+      type: object
+      required: [request_id, policy_id, change_type, channel, status, status_changed_at, decision_reason, filed_at, requested_by,
+        previous, requested, changes]
+      properties:
+        request_id:
+          type: string
+          pattern: "^SOL-MOD-[0-9]{4}-[0-9]{4,}$"
+        policy_id:
+          type: string
+        change_type:
+          type: string
+          enum: [beneficiaries, insured_amount, personal_data]
+        channel:
+          type: string
+          enum: [web, mobile]
+        status:
+          type: string
+          enum: [filed, in_review, applied, rejected, not_applied]
+          description: >
+            The stored status (HU-W1.4-02 moves it from filed). The insured sees
+            not_applied as in_review without a decision_reason and as rejected
+            with one.
+        status_changed_at:
+          type: string
+          format: date-time
+        decision_reason:
+          type: string
+          nullable: true
+          description: What the analyst told the insured when rejecting or returning the request.
+        filed_at:
+          type: string
+          format: date-time
+        requested_by:
+          type: object
+          required: [email, name]
+          properties:
+            email:
+              type: string
+            name:
+              type: string
+              nullable: true
+              description: Null when the account has no name; the client shows the e-mail.
+        previous:
+          $ref: "#/components/schemas/ChangeContent"
+        requested:
+          $ref: "#/components/schemas/ChangeContent"
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldChange"
+    ChangeRequestSummary:
+      type: object
+      required: [request_id, policy_id, change_type, channel, status, status_changed_at, decision_reason, filed_at]
+      properties:
+        request_id:
+          type: string
+        policy_id:
+          type: string
+        change_type:
+          type: string
+          enum: [beneficiaries, insured_amount, personal_data]
+        channel:
+          type: string
+          enum: [web, mobile]
+        status:
+          type: string
+          enum: [filed, in_review, applied, rejected, not_applied]
+        status_changed_at:
+          type: string
+          format: date-time
+        decision_reason:
+          type: string
+          nullable: true
+        filed_at:
+          type: string
+          format: date-time
+    ChangeRequestIndicator:
+      type: object
+      required: [count, latest]
+      properties:
+        count:
+          type: integer
+        latest:
+          type: object
+          nullable: true
+          required: [request_id, change_type, filed_at, status_changed_at]
+          properties:
+            request_id:
+              type: string
+            change_type:
+              type: string
+              enum: [beneficiaries, insured_amount, personal_data]
+            filed_at:
+              type: string
+              format: date-time
+            status_changed_at:
+              type: string
+              format: date-time
+    ChangeRequestPage:
+      type: object
+      required: [items, page, page_size, total_items, total_pages, indicators, policies]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/ChangeRequestSummary"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total_items:
+          type: integer
+          description: Requests that pass the filter, whatever the page.
+        total_pages:
+          type: integer
+        indicators:
+          type: object
+          required: [open, applied_this_year, rejected]
+          description: Whatever the filter.
+          properties:
+            open:
+              $ref: "#/components/schemas/ChangeRequestIndicator"
+            applied_this_year:
+              $ref: "#/components/schemas/ChangeRequestIndicator"
+            rejected:
+              $ref: "#/components/schemas/ChangeRequestIndicator"
+        policies:
+          type: array
+          items:
+            type: string
+          description: The policies of the caller that have requests (options of the filter).
+    ChangeRequestConflict:
+      type: object
+      required: [error, message, request_id]
+      properties:
+        error:
+          type: string
+          enum: [change_request_open]
+        message:
+          type: string
+        request_id:
+          type: string
+          nullable: true
+          description: The open request of the same type; null only if it closed before it could be read.
     Error:
       type: object
       required: [error, message]
@@ -4151,5 +4799,8 @@ components:
             - too_many_attempts
             - too_many_codes
             - code_delivery_unavailable
+            - policy_not_in_force
+            - change_request_not_found
+            - change_request_unavailable
         message:
           type: string
