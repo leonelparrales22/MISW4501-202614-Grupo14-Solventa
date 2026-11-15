@@ -7,6 +7,9 @@
 // the parallel profiling (HA-L01). POST /documents/reads and POST
 // /verifications are the identity check of the sign-up (HU-M1.1-01): read the
 // data printed on the document, then verify the person (see identity.go).
+// POST /document-checks tells whether the identity document of a new
+// beneficiary is valid in the registry, before an endorsement is applied
+// (HU-W1.4-02, see document_check.go).
 package main
 
 import (
@@ -58,6 +61,7 @@ func newHandler(delay time.Duration) http.Handler {
 		}
 	})
 	addIdentityRoutes(mux, delay)
+	addDocumentCheckRoutes(mux, delay)
 	return mux
 }
 
