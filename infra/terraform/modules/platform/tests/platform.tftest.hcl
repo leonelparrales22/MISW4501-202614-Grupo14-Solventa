@@ -1081,7 +1081,7 @@ run "audit_gets_the_queue_the_user_pool_and_the_catalog" {
   }
 
   assert {
-    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES) == { "aliado-banco-1" = "Banco Aliado" }
+    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES) == { "aliado-banco-1" = "Banco Aliado", "portal-embebido" = "Banco Aliado" }
     error_message = "audit gets the catalog of entity names as JSON (decision D-2 a)."
   }
 
