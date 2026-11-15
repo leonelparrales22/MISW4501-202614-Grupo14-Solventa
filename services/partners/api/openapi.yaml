@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - partners service
-  version: 0.2.0
+  version: 0.3.0
   description: >
     Commercial partners (B2B). HU-W3.1-01: the operations portal registers a
     partner (pending approval) and approves it; the approval creates, in the
@@ -16,7 +16,10 @@ info:
     quota itself is enforced by the gateway, which answers 429 with the
     standard Solventa body only to the partner that exceeds it. The routes are
     mounted only with DATABASE_URL and AUTH_*. Contract:
-    docs/contratos/HU-W3.1-01-api.md.
+    docs/contratos/HU-W3.1-01-api.md. HU-W3.2-03: the partner portal reads the
+    technical performance of the partner API (GET /v1/partner-performance),
+    from the SLO alarms in CloudWatch; mounted with SLO_ALARM_PREFIX and AUTH_*,
+    without the database. Contract: docs/contratos/HU-W3.2-03-api.md.
 security:
   - cognitoJwt: []
 paths:
@@ -184,13 +187,74 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/Unavailable"
+  /v1/partner-performance:
+    get:
+      summary: Read the technical performance of the partner API (HU-W3.2-03)
+      description: >
+        Screen B3 of the partner portal ("Desempeño técnico de la API"). The SLO
+        of the integration is the one of the partner API, which every partner
+        shares: p95 latency within the budget of HA-L01 (400 ms) and
+        availability >= 99.9 % (RC-02), measured in CloudWatch. Each partner
+        route (POST /v1/risk-profiles/resolve, GET
+        /v1/risk-profiles/{customer_id}, POST /v1/offers, GET
+        /v1/audit/consent-terms/current and POST /v1/audit/consents) has two SLO
+        alarms on its API Gateway metrics: latency (p95 over the budget in two
+        5-minute periods in a row) and errors (5XX answers at or over 5 % in
+        three 1-minute periods in a row). status is unavailable while an errors
+        alarm is active, degraded while only a latency alarm is, and
+        operational otherwise. availability.percent is the share of requests
+        of those routes answered without a 5XX in the period, rounded down to
+        two decimals (100 without requests; a 4XX is the request of the partner,
+        not a failure of the API). latency.p95_ms is the p95 of the slowest
+        route with requests in the period (null without requests) and
+        latency.budget_ms the threshold of the latency alarms. Each incident is
+        one time an alarm was active, overlapping the period, the most recent
+        first; an open one has ended_at null and lasts until now. The periods
+        are civil days of Colombia (UTC-5) up to now: today, the last 7 days
+        (default) or the last 30 days. Only users of the partner portal.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [today, 7d, 30d]
+            default: 7d
+      responses:
+        "200":
+          description: The performance of the period
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Performance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller is not a user of the partner portal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: telemetry_unavailable (CloudWatch did not answer, or there are no SLO alarms); try again
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   securitySchemes:
     cognitoJwt:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: ID token of the Cognito user pool (HA-S01); operations role.
+      description: ID token of the Cognito user pool (HA-S01); operations role, partner role for /v1/partner-performance.
   headers:
     NoStore:
       schema:
@@ -236,6 +300,73 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    Performance:
+      type: object
+      required: [period, from, to, status, availability, latency, incidents]
+      properties:
+        period:
+          type: string
+          enum: [today, 7d, 30d]
+        from:
+          type: string
+          format: date-time
+          description: 00:00 of Colombia of the first day of the period.
+        to:
+          type: string
+          format: date-time
+          description: The moment of the measurement.
+        status:
+          type: string
+          enum: [operational, degraded, unavailable]
+        availability:
+          type: object
+          required: [percent, objective_percent, requests, server_errors]
+          properties:
+            percent:
+              type: number
+            objective_percent:
+              type: number
+              description: Availability objective of RC-02 (99.9).
+            requests:
+              type: integer
+            server_errors:
+              type: integer
+        latency:
+          type: object
+          required: [p95_ms, budget_ms]
+          properties:
+            p95_ms:
+              type: number
+              nullable: true
+            budget_ms:
+              type: number
+        incidents:
+          type: array
+          items:
+            $ref: "#/components/schemas/Incident"
+    Incident:
+      type: object
+      required: [id, kind, route, started_at, ended_at, duration_seconds, resolved]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [degraded, unavailable]
+        route:
+          type: string
+          description: Method and resource of the affected route, for example POST /v1/offers.
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        duration_seconds:
+          type: integer
+        resolved:
+          type: boolean
     Error:
       type: object
       required: [error, message]
