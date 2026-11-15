@@ -1523,6 +1523,77 @@ paths:
                 $ref: "#/components/schemas/ValidationError"
         "503":
           $ref: "#/components/responses/ChangeRequestUnavailable"
+  /v1/partner-metrics/summary:
+    get:
+      summary: Read the summary of the integration of the partner of the caller (HU-W3.2-01)
+      description: >
+        Screen B1 of the partner portal ("Tablero de integración"). Counts, for
+        the partner of the caller only, the quotes it requested through the
+        embedded channel and the policies issued from them in a range of civil
+        days of Colombia (UTC-5), both included, and the conversion between
+        both. The partner is always the custom:partner_id claim of the verified
+        token (HA-S01): the request cannot name another one, and a partner_id
+        in the query is ignored; a user of the partner portal without the claim
+        gets 403. A quote requested is an embedded offer of the partner created
+        in the range (POST /v1/offers); the offer the advisor adjusts and the
+        renewal of an offer are not new requests. A policy issued is a new
+        policy (not a renewal) of an offer of the partner whose coverage started
+        in the range, which is when its premium was confirmed; a quote of an
+        earlier day issued inside the range counts as a policy of the range.
+        conversion_rate is policies_issued / quotes_requested x 100 with one
+        decimal, and 0 when there are no quotes. A range without activity
+        answers zeros, not an error. Mounted with PostgreSQL (DATABASE_URL);
+        without the premium charge no policy is ever issued. Only users of the
+        partner portal.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: First civil day of the range (AAAA-MM-DD, Colombia), included.
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          description: >
+            Last civil day of the range (AAAA-MM-DD, Colombia), included; not
+            before from, and at most 366 days after it counting both.
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: The summary of the range
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartnerSummary"
+        "400":
+          description: >
+            A missing day or one that is not AAAA-MM-DD (invalid_request); to
+            before from (out_of_range); more than 366 days (range_too_long)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: The summary could not be read (metrics_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/policies/{policy_id}/assisted-renewal:
     get:
       summary: Read where the assisted renewal of a policy stands, for the advisor (HU-W1.5-03)
@@ -3871,6 +3942,34 @@ components:
           description: The renewal of the current period, null when it has none.
           allOf:
             - $ref: "#/components/schemas/RenewalSummary"
+    PartnerSummary:
+      type: object
+      description: Summary of the integration of the partner in a range (HU-W3.2-01).
+      required: [partner_id, from, to, quotes_requested, policies_issued, conversion_rate]
+      properties:
+        partner_id:
+          type: string
+          description: The partner of the caller (custom:partner_id of its token).
+        from:
+          type: string
+          format: date
+          description: First civil day of the range applied (Colombia).
+        to:
+          type: string
+          format: date
+          description: Last civil day of the range applied (Colombia).
+        quotes_requested:
+          type: integer
+          minimum: 0
+          description: Embedded offers the partner requested in the range.
+        policies_issued:
+          type: integer
+          minimum: 0
+          description: New policies issued in the range from offers of the partner.
+        conversion_rate:
+          type: number
+          minimum: 0
+          description: policies_issued / quotes_requested x 100, one decimal; 0 without quotes.
     ExpiringPolicyList:
       type: object
       required: [items, expires_from, expires_to, window_days, due_within_window, total, page, page_size]
@@ -4802,5 +4901,7 @@ components:
             - policy_not_in_force
             - change_request_not_found
             - change_request_unavailable
+            - range_too_long
+            - metrics_unavailable
         message:
           type: string

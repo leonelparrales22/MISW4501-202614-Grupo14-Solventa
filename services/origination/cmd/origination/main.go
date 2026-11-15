@@ -205,6 +205,9 @@ func main() {
 		}
 		opts = append(opts, assisted...)
 		opts = append(opts, walletOptions(issued, portfolio, verifier)...)
+		// HU-W3.2-01: the commercial partner reads the summary of its
+		// integration (quotes, policies issued and conversion).
+		opts = append(opts, partnerMetricsOptions(st.db, verifier)...)
 		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
 			httpadapter.WithAcceptances(acceptances, verifier),
