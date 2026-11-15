@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // HU-W1.4-01: the change request an insured files on one of their policies
@@ -588,7 +589,8 @@ func validateBeneficiaries(requested, current []Beneficiary) []FieldError {
 		switch {
 		case b.FullName == "":
 			bad(at("full_name"), CodeRequired)
-		case len([]rune(b.FullName)) < minFullNameLength || len([]rune(b.FullName)) > maxFullNameLength || !hasLetter(b.FullName):
+		case len([]rune(b.FullName)) < minFullNameLength || len([]rune(b.FullName)) > maxFullNameLength || !hasLetter(b.FullName) ||
+			HasControl(b.FullName):
 			bad(at("full_name"), CodeInvalidFormat)
 		}
 		switch {
@@ -713,7 +715,7 @@ func validContactValue(member, v string) bool {
 	switch member {
 	case "address":
 		n := len([]rune(v))
-		return n >= minAddressLength && n <= maxAddressLength
+		return n >= minAddressLength && n <= maxAddressLength && !HasControl(v)
 	case "email":
 		return len(v) <= maxEmailLength && validEmail(v)
 	default:
@@ -726,6 +728,18 @@ func sameContactValue(member, a, b string) bool {
 		return a == b
 	}
 	return strings.EqualFold(a, b)
+}
+
+// HasControl tells whether s has a control character (a NUL, a line break, a
+// tab…): none belongs in a name, an address or an identifier, and the
+// database refuses a NUL in a text.
+func HasControl(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // dedupeFields keeps the first problem of each field.

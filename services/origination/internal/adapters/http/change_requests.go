@@ -165,9 +165,9 @@ func toCurrentTermsResponse(c endorsements.Current) currentTermsResponse {
 
 func getCurrentTerms(svc ChangeRequestService) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		id, ok := pathID(req, "policy_id")
+		id, ok := changePathID(req, "policy_id")
 		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars) is required")
+			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars, no control characters) is required")
 			return
 		}
 		c, err := svc.CurrentTerms(req.Context(), id)
@@ -177,6 +177,13 @@ func getCurrentTerms(svc ChangeRequestService) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, toCurrentTermsResponse(c))
 	}
+}
+
+// changePathID reads an id of the path: present, at most 128 characters and
+// without control characters (a NUL would reach the database as an error).
+func changePathID(req *http.Request, name string) (string, bool) {
+	id, ok := pathID(req, name)
+	return id, ok && !domain.HasControl(id)
 }
 
 // changeRequestInput is the body of POST /v1/policies/{policy_id}/change-requests:
@@ -232,9 +239,9 @@ func (in changeRequestInput) toDomain() domain.ChangeInput {
 
 func fileChangeRequest(svc ChangeRequestService) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		id, ok := pathID(req, "policy_id")
+		id, ok := changePathID(req, "policy_id")
 		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars) is required")
+			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars, no control characters) is required")
 			return
 		}
 		var in changeRequestInput
@@ -337,9 +344,9 @@ func toChangeRequestBody(r domain.ChangeRequest) changeRequestBody {
 
 func getChangeRequest(svc ChangeRequestService) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		id, ok := pathID(req, "request_id")
+		id, ok := changePathID(req, "request_id")
 		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request", "request_id (max 128 chars) is required")
+			writeError(w, http.StatusBadRequest, "invalid_request", "request_id (max 128 chars, no control characters) is required")
 			return
 		}
 		r, err := svc.Get(req.Context(), id)
@@ -434,7 +441,7 @@ func changeRequestFilterOf(req *http.Request) (domain.ChangeRequestFilter, []dom
 	}
 	f.Status = status
 	f.PolicyID = strings.TrimSpace(v.Get("policy_id"))
-	if len(f.PolicyID) > maxIDSize {
+	if len(f.PolicyID) > maxIDSize || domain.HasControl(f.PolicyID) {
 		bad("policy_id", domain.CodeInvalidFormat)
 	}
 	if raw := strings.TrimSpace(v.Get("filed_from")); raw != "" {

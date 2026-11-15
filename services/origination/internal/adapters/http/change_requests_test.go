@@ -329,3 +329,20 @@ func TestTheFixedSegmentDoesNotCoverTheRoutesOfAPolicy(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, call(http.MethodGet, "/v1/policies/pol-1/current-terms", "insured:sub-1"))
 	assert.Equal(t, "pol-1", changes.gotPolicy)
 }
+
+func TestIDsWithControlCharactersAreRejectedBeforeTheUseCase(t *testing.T) {
+	svc := &fakeChangeRequests{}
+	for _, r := range []struct{ method, path string }{
+		{http.MethodGet, "/v1/policies/%00/current-terms"},
+		{http.MethodPost, "/v1/policies/pol%0A1/change-requests"},
+		{http.MethodGet, "/v1/policies/change-requests/SOL%00"},
+	} {
+		rec := callChangeRequests(t, svc, r.method, r.path, "insured:sub-1", beneficiariesJSON)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, r.path)
+		assert.Equal(t, "invalid_request", decodeBody(t, rec)["error"])
+	}
+	rec := callChangeRequests(t, svc, http.MethodGet, "/v1/policies/change-requests?policy_id=pol%00", "insured:sub-1", "")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, []any{map[string]any{"field": "policy_id", "code": "invalid_format"}}, decodeBody(t, rec)["fields"])
+	assert.Zero(t, svc.calls)
+}

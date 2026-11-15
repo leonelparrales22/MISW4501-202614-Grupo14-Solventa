@@ -402,3 +402,14 @@ func TestTheFilterOfTheListSpeaksTheStatusOfTheInsured(t *testing.T) {
 	_, ok = domain.ParseChangeType("holder_name")
 	assert.False(t, ok)
 }
+
+func TestControlCharactersAreNotValidText(t *testing.T) {
+	in := beneficiariesInput(beneficiary("Mateo\x00 Pérez", "CC", "1140223001", 100))
+	assert.Equal(t, map[string]string{"beneficiaries[0].full_name": domain.CodeInvalidFormat}, changeFieldsOf(t, in, currentTerms()))
+
+	data := domain.ChangeInput{Type: "personal_data", Channel: "web", PersonalData: &domain.ContactInput{Address: ptr("Calle 10\x00 # 43-20")}}
+	assert.Equal(t, map[string]string{"personal_data.address": domain.CodeInvalidFormat}, changeFieldsOf(t, data, currentTerms()))
+
+	assert.True(t, domain.HasControl("pol\x00"))
+	assert.False(t, domain.HasControl("SOL-MOD-2026-0042"))
+}
