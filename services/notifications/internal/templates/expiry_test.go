@@ -49,3 +49,19 @@ func TestTheOtherDaysAndLines(t *testing.T) {
 	assert.Contains(t, templates.PolicyExpiry(alert("", "home", 1), domain.LocaleEnglish).Body, "expires tomorrow")
 	assert.Contains(t, templates.PolicyExpiry(alert("", "travel", 0), domain.LocaleSpanish).Body, "vence hoy")
 }
+
+// HU-W1.6-02: the push of a cancellation for non-payment.
+func TestThePushOfAPolicyCancelledForNonPayment(t *testing.T) {
+	due := time.Date(2026, 8, 12, 5, 0, 0, 0, time.UTC)
+	c := domain.PolicyCancellation{PolicyID: "VH-2026-004512", InstallmentSeq: 2, DueAt: due,
+		CancelledAt: time.Date(2026, 9, 12, 4, 30, 0, 0, time.UTC)}
+
+	es := templates.PolicyCancelled(c, domain.LocaleSpanish)
+	en := templates.PolicyCancelled(c, domain.LocaleEnglish)
+
+	assert.Equal(t, "Tu póliza fue cancelada por falta de pago", es.Title)
+	assert.Equal(t, "VH-2026-004512 se canceló el 11/09/2026: no recibimos el pago de la cuota 2 dentro del periodo de gracia. No hay reembolso. Toca para ver el detalle.", es.Body,
+		"the date is the one of Colombia")
+	assert.Contains(t, en.Body, "09/11/2026")
+	assert.Contains(t, en.Body, "There is no refund.")
+}

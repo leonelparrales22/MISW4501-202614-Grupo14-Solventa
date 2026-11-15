@@ -122,7 +122,7 @@ func TestValidateRefusesWhatTheListCannotAnswer(t *testing.T) {
 		"page too big":   {From: from, To: to, Page: 1 << 31, PageSize: 20},
 		"page size 0":    {From: from, To: to, Page: 1, PageSize: 0},
 		"page size 51":   {From: from, To: to, Page: 1, PageSize: 51},
-		"unknown status": {From: from, To: to, Page: 1, PageSize: 20, Status: "cancelled_non_payment"},
+		"unknown status": {From: from, To: to, Page: 1, PageSize: 20, Status: "cancelled"},
 	} {
 		assert.ErrorIs(t, q.Validate(), domain.ErrInvalidExpiringQuery, name)
 	}
@@ -141,7 +141,7 @@ func TestParseExpiringStatus(t *testing.T) {
 		require.NoError(t, err, raw)
 		assert.Equal(t, want, got, raw)
 	}
-	for _, raw := range []string{"renewed", "not_renewed", "EXPIRING", "cancelled_non_payment"} {
+	for _, raw := range []string{"renewed", "not_renewed", "EXPIRING", "cancelled"} {
 		_, err := domain.ParseExpiringStatus(raw)
 		assert.ErrorIs(t, err, domain.ErrInvalidExpiringQuery, raw)
 	}

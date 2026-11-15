@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/renewal"
 )
 
@@ -51,6 +52,6 @@ func (noVerifier) Verify(context.Context, string) (security.Claims, error) {
 }
 
 func TestWalletIsMountedOnlyWithASourceOfPolicies(t *testing.T) {
-	assert.Empty(t, walletOptions(nil, nil, noVerifier{}), "without the charge and the core there is nothing to list")
-	assert.Len(t, walletOptions(noRenewals{}, nil, noVerifier{}), 1)
+	assert.Empty(t, walletOptions(nil, nil, noVerifier{}, nil, domain.DefaultInstallmentRules), "without the charge and the core there is nothing to list")
+	assert.Len(t, walletOptions(noRenewals{}, nil, noVerifier{}, nil, domain.DefaultInstallmentRules), 1)
 }

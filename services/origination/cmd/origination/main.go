@@ -123,6 +123,8 @@ func main() {
 		var consentSender ports.ConsentCodeSender = formalization.UnavailableSender{}
 		// HU-W1.5-02: the not-renewed notice goes out through the same client.
 		var renewalNotifier ports.RenewalNotifier
+		// HU-W1.6-02: and so does the notice of a cancellation for non-payment.
+		var cancellationNotifier ports.CancellationNotifier
 		// HU-W1.5-03: so does the confirmation code of an assisted renewal.
 		var renewalCodeEmail emailadapter.Sender
 		// One repository for every document of the service: the contractual
@@ -147,6 +149,7 @@ func main() {
 			reviewNotifier = emailadapter.NewReviewNotifier(contract.emailClient)
 			consentSender = emailadapter.NewConsentNotifier(contract.emailClient)
 			renewalNotifier = emailadapter.NewRenewalNotifier(contract.emailClient)
+			cancellationNotifier = emailadapter.NewCancellationNotifier(contract.emailClient)
 			renewalCodeEmail = contract.emailClient
 			opts = append(opts, httpadapter.WithContractDocuments(contract.reader, verifier))
 		} else {
@@ -172,6 +175,12 @@ func main() {
 				log.Fatalf("could not set up the premium charge: %v", err)
 			}
 			starter = charges.starter
+			// HU-W1.6-02: the monthly instalments, charged with the same
+			// gateway, and the cancellation of the policies that do not pay.
+			if err := startInstallments(context.Background(), cfg.installments, st.db, charges.gateway,
+				cancellationNotifier); err != nil {
+				log.Fatalf("could not set up the instalments: %v", err)
+			}
 			opts = append(opts, httpadapter.WithCharges(charges.service, verifier))
 			renewals, err := newRenewalService(context.Background(), cfg.renewal, st.db, resolver, renewalNotifier, charges.wake)
 			if err != nil {
@@ -197,7 +206,7 @@ func main() {
 			log.Fatalf("could not set up the assisted renewal: %v", err)
 		}
 		opts = append(opts, assisted...)
-		opts = append(opts, walletOptions(issued, portfolio, verifier)...)
+		opts = append(opts, walletOptions(issued, portfolio, verifier, st.db, cfg.installments.rules)...)
 		// HU-W3.2-01: the commercial partner reads the summary of its
 		// integration (quotes, policies issued and conversion).
 		opts = append(opts, partnerMetricsOptions(st.db, verifier)...)
@@ -308,6 +317,9 @@ type config struct {
 
 	// Alerts before a policy expires (HU-M3.2-01).
 	expiryAlerts expiryAlertConfig
+	// installments are the monthly instalments and the cancellation for
+	// non-payment (HU-W1.6-02).
+	installments installmentConfig
 }
 
 // acceptanceConfig configures the offer acceptance (HU-W1.3-01). Its routes
@@ -634,6 +646,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadExpiryAlertConfig(getenv, &cfg.expiryAlerts); err != nil {
+		return config{}, err
+	}
+	if err := loadInstallmentConfig(getenv, &cfg.installments); err != nil {
 		return config{}, err
 	}
 	return cfg, nil

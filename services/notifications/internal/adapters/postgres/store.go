@@ -76,8 +76,27 @@ type expiryJSON struct {
 	DetectedAt    time.Time `json:"detected_at"`
 }
 
+// cancellationJSON is the payload of a cancellation for non-payment
+// (HU-W1.6-02).
+type cancellationJSON struct {
+	PolicyID       string    `json:"policy_id"`
+	Reason         string    `json:"reason"`
+	Line           string    `json:"line"`
+	InstallmentSeq int       `json:"installment_seq"`
+	DueAt          time.Time `json:"due_at"`
+	GraceEndsAt    time.Time `json:"grace_ends_at"`
+	CancelledAt    time.Time `json:"cancelled_at"`
+	AmountMinor    int64     `json:"amount_minor"`
+	Currency       string    `json:"currency"`
+}
+
 // encodePayload is the payload of a notification, by its kind.
 func encodePayload(n domain.Notification) ([]byte, error) {
+	if c := n.Cancellation; c != nil {
+		return json.Marshal(cancellationJSON{PolicyID: c.PolicyID, Reason: c.Reason, Line: c.Line,
+			InstallmentSeq: c.InstallmentSeq, DueAt: c.DueAt.UTC(), GraceEndsAt: c.GraceEndsAt.UTC(),
+			CancelledAt: c.CancelledAt.UTC(), AmountMinor: c.AmountMinor, Currency: c.Currency})
+	}
 	if e := n.Expiry; e != nil {
 		return json.Marshal(expiryJSON{PolicyID: e.PolicyID, Source: e.Source, Line: e.Line, Product: e.Product,
 			InsuredObject: e.InsuredObject, CoverageEnd: e.CoverageEnd.UTC(), MilestoneDays: e.MilestoneDays,
@@ -94,6 +113,16 @@ func encodePayload(n domain.Notification) ([]byte, error) {
 // decodePayload sets the payout, the change of stage or the expiry alert of a
 // notification, by its kind.
 func decodePayload(n *domain.Notification, raw []byte) error {
+	if n.Kind == domain.KindPolicyCancelled {
+		var j cancellationJSON
+		if err := json.Unmarshal(raw, &j); err != nil {
+			return fmt.Errorf("decode the cancellation: %w", err)
+		}
+		n.Cancellation = &domain.PolicyCancellation{PolicyID: j.PolicyID, Subject: n.Subject, Reason: j.Reason,
+			Line: j.Line, InstallmentSeq: j.InstallmentSeq, DueAt: j.DueAt.UTC(), GraceEndsAt: j.GraceEndsAt.UTC(),
+			CancelledAt: j.CancelledAt.UTC(), AmountMinor: j.AmountMinor, Currency: j.Currency}
+		return nil
+	}
 	if n.Kind == domain.KindPolicyExpiry {
 		var j expiryJSON
 		if err := json.Unmarshal(raw, &j); err != nil {

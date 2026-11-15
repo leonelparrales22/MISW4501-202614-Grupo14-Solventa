@@ -53,6 +53,10 @@ func (s *Sender) Send(ctx context.Context, d domain.Delivery) (idempotency.Outco
 	if e := d.Notification.Expiry; e != nil {
 		data[DataPolicyID] = e.PolicyID
 	}
+	// HU-W1.6-02: a cancellation for non-payment opens the policy too.
+	if c := d.Notification.Cancellation; c != nil {
+		data[DataPolicyID] = c.PolicyID
+	}
 	r, err := s.client.Send(ctx, pkgfcm.Message{Token: d.Token, Data: data, CollapseKey: d.NotificationID})
 	if err != nil {
 		return idempotency.Outcome{}, err

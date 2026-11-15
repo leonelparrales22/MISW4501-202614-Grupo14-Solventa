@@ -99,11 +99,13 @@ type Notification struct {
 	ReadAt *time.Time
 	// Payout is the payment of a parametric payout notification; Stage, the
 	// change of a claim stage notification (HU-M3.3-01); Expiry, the alert
-	// that a policy is about to expire (HU-M3.2-01). One of them is set, by
-	// Kind.
-	Payout *ParametricPayout
-	Stage  *ClaimStageChange
-	Expiry *ExpiryAlert
+	// that a policy is about to expire (HU-M3.2-01); Cancellation, the
+	// cancellation of a policy for non-payment (HU-W1.6-02). One of them is
+	// set, by Kind.
+	Payout       *ParametricPayout
+	Stage        *ClaimStageChange
+	Expiry       *ExpiryAlert
+	Cancellation *PolicyCancellation
 }
 
 // NotificationIDFor is the id of the notification of a payout: one per

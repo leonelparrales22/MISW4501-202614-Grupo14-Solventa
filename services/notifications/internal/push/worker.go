@@ -162,6 +162,10 @@ func (w *Worker) log(ctx context.Context, rep idempotency.Report[domain.Delivery
 		if e := d.Notification.Expiry; e != nil {
 			attrs = append(attrs, "latency_ms", w.now().Sub(e.DetectedAt).Milliseconds())
 		}
+		// HU-W1.6-02: from the cancellation to the provider accepting it.
+		if c := d.Notification.Cancellation; c != nil {
+			attrs = append(attrs, "latency_ms", w.now().Sub(c.CancelledAt).Milliseconds())
+		}
 		slog.InfoContext(ctx, "push delivered", append(attrs, "reference", d.Reference)...)
 	case idempotency.StatusFailed:
 		slog.WarnContext(ctx, "push not delivered; the notification stays in the center",

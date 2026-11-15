@@ -42,7 +42,12 @@ type assistedOption func(*renewal.AssistedConfig)
 
 func newAssistedRig(t *testing.T, opts ...assistedOption) *assistedRig {
 	t.Helper()
-	base := newRig(t)
+	return newAssistedRigOver(t, newRig(t), opts...)
+}
+
+// newAssistedRigOver builds the assisted renewal over the given online one.
+func newAssistedRigOver(t *testing.T, base *rig, opts ...assistedOption) *assistedRig {
+	t.Helper()
 	a := &assistedRig{rig: base, requotes: newFakeRequotes(), records: &fakeAssisted{renewals: base.renewals, rows: map[string]domain.RenewalFormalization{}},
 		profiles: &fakeFreshProfiles{res: domain.ProfileResolution{Profile: domain.RiskProfile{Score: 0.4}, Mode: domain.ModeNormal,
 			Source: domain.SourceExternal, Sources: []domain.SourceOutcome{{Source: "open_finance", Status: domain.SourceStatusOK, Latency: 96 * time.Millisecond}}}},

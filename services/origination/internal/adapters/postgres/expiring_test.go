@@ -58,7 +58,8 @@ func (f *expiringFixture) renewal(t *testing.T, p domain.Policy, status domain.R
 func (f *expiringFixture) list(t *testing.T, from, to string, status domain.ExpiringStatus, offset, limit int) ([]domain.ExpiringPolicy, int) {
 	t.Helper()
 	start, end := expiringQuery(t, from, to).Bounds()
-	items, total, err := f.store.ListExpiring(context.Background(), start, end, expiringNow, status, offset, limit)
+	items, total, err := f.store.ListExpiring(context.Background(), start, end, expiringNow,
+		expiringNow.AddDate(0, 0, -domain.CancelledListedDays), status, offset, limit)
 	require.NoError(t, err)
 	return items, total
 }
@@ -216,7 +217,8 @@ func TestExpiringStoreReportsADatabaseThatDoesNotAnswer(t *testing.T) {
 	f := newExpiringFixture(t)
 	require.NoError(t, f.db.Close())
 
-	_, _, err := f.store.ListExpiring(context.Background(), expiringNow, expiringNow.AddDate(0, 0, 30), expiringNow, "", 0, 20)
+	_, _, err := f.store.ListExpiring(context.Background(), expiringNow, expiringNow.AddDate(0, 0, 30), expiringNow,
+		expiringNow.AddDate(0, 0, -30), "", 0, 20)
 	assert.Error(t, err)
 	_, err = f.store.CountDueWithinWindow(context.Background(), expiringNow, expiringNow.AddDate(0, 0, 30))
 	assert.Error(t, err)
