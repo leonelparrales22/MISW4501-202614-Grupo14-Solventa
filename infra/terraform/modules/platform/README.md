@@ -212,6 +212,7 @@ aws secretsmanager create-secret --region us-east-2 --name solventa/fcm/service-
 | `OFFER_LINK_BASE_URL` | `portal_base_url`, solo si existe (T5, D-11) | Base de los enlaces de los correos de oferta hacia las pantallas del portal; sin portal, el servicio usa su valor por defecto (`http://localhost:4200`) |
 | `AWS_REGION` | Región del proveedor (`us-east-2`) | Región del SDK de AWS (S3, SNS) |
 | `EVENTS_TOPIC_ARN` | Tópico `origination` de `modules/messaging` | El relevo del *outbox* publica ahí `CustomerLinked` (HU-M1.3-01); el rol ya tenía `PublishItsEvents` sobre ese tópico (T4) |
+| `PARTNER_DISPLAY_NAMES` | `jsonencode(var.partner_display_names)`, el mismo catálogo de `audit` | Nombre del beneficiario oneroso (el aliado que otorgó el crédito) en la solicitud de modificación del asegurado (HU-W1.4-01, D-14 a); un código sin nombre se muestra tal cual |
 | `DATABASE_URL` (secreto) | `<nombre>/origination/database` | Base propia: cobro de la prima (HA-D02) y ofertas personalizadas (HU-W1.2-03) |
 | `DOCUMENT_LINK_SECRET` (secreto) | `<nombre>/origination/document-link`, 48 caracteres aleatorios (`random_password`) | Firma de los enlaces del documento; nunca va como variable en claro |
 
@@ -271,7 +272,7 @@ credenciales de quien lo corre) y la cola `claims` con su DLQ. El rol de la tare
 | `portal_partner` | `"portal-embebido"` | Socio cuya key recibe CloudFront (salida `portal_partner_api_key`, T5) |
 | `portal_base_url` | `null` | Origen `https://` del portal web; apunta los enlaces de los correos al portal (T5, D-11) |
 | `human_routes` | rutas de `origination` (con `policies` e `issuances` en `GET` y `POST`, raíz solo `GET`: HU-W1.5-02 y HU-W1.3-04), `claims` (`GET` y `POST`, HU-W2.1-01) y `consents` (`GET` y `POST` con `root_methods = ["GET"]`, HU-M1.3-01 y HU-M1.3-02) | Rutas detrás de Cognito; `offers` con `root_methods = []` (la raíz es del socio, T5) |
-| `partner_display_names` | `{ "aliado-banco-1" = "Banco Aliado" }` (el aliado de E1) | Catálogo de nombres visibles de las entidades para `audit` (`PARTNER_DISPLAY_NAMES`, HU-M1.3-01, D-2 a); claves `^[A-Za-z0-9_-]+$` y nombres no vacíos |
+| `partner_display_names` | `{ "aliado-banco-1" = "Banco Aliado" }` (el aliado de E1) | Catálogo de nombres visibles de las entidades para `audit` (`PARTNER_DISPLAY_NAMES`, HU-M1.3-01, D-2 a) y, desde HU-W1.4-01 (D-14 a), para `origination` (beneficiario oneroso); claves `^[A-Za-z0-9_-]+$` y nombres no vacíos |
 | `partner_routes` | `offers` (`POST`), `audit/consent-terms/current` (`GET`), `audit/consents` (`POST`) | Rutas de socio en rutas exactas, con API key (T5); `audit/consent-verifications` está prohibida |
 | `human_subroutes` | `audit/consents` (`GET` y `POST`; `root_methods` `GET`) y `audit/decisions` (`GET`) | Subrutas humanas (Cognito) bajo una ruta de socio: se crea su `{proxy+}` (HU-W4.2-02) y, con `root_methods`, métodos humanos en la ruta exacta (el listado de HU-W4.2-01); `audit/decisions` es hija de `audit` y solo publica `GET /v1/audit/decisions/{offer_id}` (HU-W4.1-01); `audit/consent-verifications` está prohibida |
 | `public_routes` | `documents` (`GET`, 10 req/s, ráfaga 20) | Rutas sin sesión ni API key (enlace firmado del documento, HA-D02) |
@@ -307,4 +308,5 @@ raíz de `/v1/offers` queda sin métodos humanos y sus subrutas con Cognito, y `
 volverse ruta de socio. Desde HU-W4.2-02: `/v1/audit/consents/{proxy+}` es la única subruta humana de `audit` (`human_subroutes`), `audit` no es ruta humana, y `audit/consent-verifications` no puede volverse subruta. Desde HU-W4.1-01: `audit/decisions` es subruta solo con `GET` (el `POST` interno se rechaza), y `policies` e `issuances` aceptan `POST` con la raíz solo `GET` (HU-W1.5-02 y HU-W1.3-04), con `/v1/issuances*` en el ALB (3 reglas para originación). Desde HU-W4.2-01: la subruta publica también el `GET` exacto (`root_methods = ["GET"]`) y el socio conserva solo su `POST`. Desde HU-M1.3-01: `consents` es ruta humana (desde HU-M1.3-02, `GET` y `POST` con la raíz solo `GET`), el ALB lleva `/v1/consents*` a `audit`, `audit`
 recibe `AUTH_*` del mismo pool, `AWS_REGION`, el catálogo JSON y `EVENTS_QUEUE_URL` de su cola, originación recibe `EVENTS_TOPIC_ARN`
 de su tópico, el catálogo se puede reemplazar y rechaza códigos inválidos, y `origination_environment` no puede fijar `EVENTS_TOPIC_ARN`.
-Desde HU-M1.3-02: `audit` recibe `OPEN_FINANCE_URL` (la misma dirección del stub que originación) y el plazo de 300 s.
+Desde HU-M1.3-02: `audit` recibe `OPEN_FINANCE_URL` (la misma dirección del stub que originación) y el plazo de 300 s. Desde HU-W1.4-01:
+originación recibe el mismo catálogo `PARTNER_DISPLAY_NAMES` que `audit`, y los dos siguen a `partner_display_names` cuando se reemplaza.

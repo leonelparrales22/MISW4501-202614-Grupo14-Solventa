@@ -498,6 +498,10 @@ locals {
       # Domain events (HU-M1.3-01): the outbox relay publishes CustomerLinked
       # to the topic of origination; the audit queue is subscribed to it.
       EVENTS_TOPIC_ARN = module.messaging.topic_arns["origination"]
+      # The change requests of the insured (HU-W1.4-01) show the onerous
+      # beneficiary by the name of the lender: the same catalog audit gets
+      # (decision D-14 a).
+      PARTNER_DISPLAY_NAMES = jsonencode(var.partner_display_names)
       },
       # Links of the offer e-mails to the screens of the portal (T5, D-11);
       # without a portal the service keeps its own default.
