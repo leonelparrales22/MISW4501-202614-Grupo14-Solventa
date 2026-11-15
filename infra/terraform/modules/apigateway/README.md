@@ -53,6 +53,9 @@ module "apigateway" {
 | `registration_route` | `null` | Ruta pública `POST /v1/registrations` del registro del asegurado, con `backend_path` (`/v1/registrations`), `rate_limit` (2) y `burst_limit` (5) (HU-M1.1-01) |
 | `partner_routes` | `{}` | Rutas de socio en rutas exactas bajo `/v1` (1 a 3 segmentos), con API key y sin authorizer (T5) |
 | `human_subroutes` | `{}` | Subrutas humanas bajo una ruta de socio: la llave es la de una `partner_routes` (p. ej. `audit/consents`) y solo se crea su `{proxy+}`, con Cognito y *preflight* (HU-W4.2-02). Desde HU-W4.1-01 la llave también puede ser hija de una ruta de socio o de uno de sus prefijos (p. ej. `audit/decisions`): se crea ese recurso sin métodos y su `{proxy+}`. `root_methods` (opcional, `[]` por defecto, HU-W4.2-01) agrega métodos humanos en la ruta exacta de esa ruta de socio, junto a sus métodos con API key |
+| `slo_alarms` | `{ enabled = false }` | Alarmas de CloudWatch del SLO de la API de socios (HU-W3.2-03): por cada ruta de socio, latencia p95 > `latency_p95_ms` (400) y 5XX ≥ `error_rate` (0,05). Ver «Alarmas del SLO» |
+
+Salidas de HU-W3.2-03: `slo_alarm_prefix` (vacío sin `slo_alarms`) y `slo_alarm_names`.
 
 Salidas: `rest_api_id`, `stage_name`, `invoke_url`, `usage_plan_ids`, `api_key_ids`, `api_key_values` (sensible; claves de
 prueba para los guiones k6 de la ventana), `public_paths` (HA-D02), `cognito_authorizer_id` (HA-S01; `null` sin user pool) y
@@ -187,6 +190,22 @@ conviven en `/v1/offers` el `POST` del aliado (API key) y `GET /v1/offers/{id}`,
 
 Con `partner_routes = {}` y sin `root_methods` (los valores por defecto) no se crea nada nuevo, la API queda igual y el *hash* de
 redespliegue no cambia: `staging/ha-l01` y `staging/ha-s01` no se ven afectados.
+
+## Alarmas del SLO de la API de socios (HU-W3.2-03)
+
+El tablero del socio muestra el estado, la disponibilidad, el p95 y los incidentes de la API que usa su integración, medidos igual que
+el SLO de la plataforma: p95 ≤ 400 ms (HA-L01) y disponibilidad ≥ 99,9 % (RC-02), en CloudWatch. Con `slo_alarms = { enabled = true }`,
+cada ruta de socio (las dos de `risk-profiles` y cada método de `partner_routes`) recibe dos alarmas sobre sus métricas del API
+Gateway (las métricas por método ya están activas en el *stage*):
+
+| Alarma | Métrica | Condición | Significa |
+|---|---|---|---|
+| `<name>-slo-latency-<método>-<ruta>` | `Latency`, p95 | > `latency_p95_ms` en 2 periodos seguidos de 5 min | Degradado |
+| `<name>-slo-errors-<método>-<ruta>` | `5XXError`, promedio (proporción de 5XX) | ≥ `error_rate` en 3 periodos seguidos de 1 min | No disponible |
+
+Sin peticiones no se dispara ninguna (`notBreaching`). Las dimensiones de cada alarma (`ApiName`, `Stage`, `Resource`, `Method`) son
+las de su ruta: `partners` las lee para consultar las mismas métricas. Están apagadas por defecto, así que `staging/ha-l01` y
+`staging/ha-s01` no cambian; `modules/platform` las enciende.
 
 ## Subrutas humanas bajo una ruta de socio (HU-W4.2-02)
 
