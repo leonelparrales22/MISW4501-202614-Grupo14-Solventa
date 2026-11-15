@@ -1,8 +1,15 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.15.0
+  version: 0.16.0
   description: >-
+    0.16.0 (HU-W1.4-02): GET /internal/policies/{policy_id}/open-claims
+    counts the claims of a policy that are in progress (every status but paid
+    and rejected), for origination to check before an operations analyst
+    applies an endorsement. It is internal: it carries no token, lives outside
+    /v1/claims so neither the API Gateway nor the load balancer route it, and
+    only the services inside the VPC reach it through Cloud Map. It names no
+    claim nor who filed it. Compatible with 0.15.0 (it only adds a route).
     0.15.0 (HU-M2.4-01): the claims the parametric engine resolves by itself.
     The list, the detail and the history of a claim gain
     automatic_resolution (null for a claim evaluated by an analyst): when it
@@ -115,6 +122,46 @@ paths:
       responses:
         "200":
           description: OK
+  /internal/policies/{policy_id}/open-claims:
+    get:
+      summary: Count the claims in progress of a policy (HU-W1.4-02, internal)
+      description: >-
+        Internal route for origination, reached only inside the VPC through
+        Cloud Map (neither the API Gateway nor the load balancer route it).
+        In progress is every status but paid and rejected (domain.Closed):
+        active, returned, in_evaluation, approved and payment_exception.
+      security: []
+      parameters:
+        - name: policy_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      responses:
+        "200":
+          description: The count of the claims in progress of the policy (0 for a policy without claims).
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenClaims"
+        "400":
+          description: The policy id is not valid (invalid_policy_id).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The claims cannot be counted now (unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/claims:
     post:
       summary: File a claim (HU-M2.2-01)
@@ -2557,6 +2604,15 @@ components:
           allOf:
             - $ref: "#/components/schemas/EstimatedAmountMinor"
           description: What the insured declared; absent when it was not.
+    OpenClaims:
+      type: object
+      required: [policy_id, open_claims]
+      properties:
+        policy_id:
+          type: string
+        open_claims:
+          type: integer
+          minimum: 0
     Error:
       type: object
       required: [error, message]
