@@ -221,6 +221,10 @@ variable "human_routes" {
     # .../{acceptance_id}/actions, and POST .../{acceptance_id}/retry. The root
     # /v1/issuances stays read-only.
     issuances = { methods = ["GET", "POST"], root_methods = ["GET"] }
+    # Dashboard of the commercial partner (HU-W3.2-01): GET
+    # /v1/partner-metrics/summary for the users of the partner portal. The
+    # root has no method.
+    partner-metrics = { methods = ["GET"], root_methods = [] }
     # Filing of the claim from the guided assistant of the mobile app
     # (HU-M2.2-01) and from the web portal (HU-W2.1-01). GET reads the list of
     # claims (/v1/claims), the filing options, the detail and the filing

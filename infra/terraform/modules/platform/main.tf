@@ -45,6 +45,8 @@ locals {
         # somewhere: without this rule it answers 404 and the mobile sign-up
         # never reaches the service.
         "/v1/registrations*",
+        # Summary of the dashboard of the commercial partner (HU-W3.2-01).
+        "/v1/partner-metrics*",
       ]
       buckets   = ["documents"]
       publishes = ["origination"]
