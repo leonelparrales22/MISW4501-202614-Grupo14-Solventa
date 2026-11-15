@@ -196,6 +196,14 @@ func main() {
 			log.Fatalf("could not set up the change requests: %v", err)
 		}
 		opts = append(opts, changes...)
+		// HU-W1.4-02: the operations analyst reviews and applies them, and the
+		// insured is told the decision through the shared e-mail client.
+		review, err := endorsementReviewOptions(context.Background(), cfg.billing.enabled, cfg.endorsements, st.db, st.offers,
+			renewalCodeEmail, verifier)
+		if err != nil {
+			log.Fatalf("could not set up the review of the endorsements: %v", err)
+		}
+		opts = append(opts, review...)
 		// HU-W1.5-03: the advisor requotes and formalizes the renewal of a
 		// policy about to expire, with the consent verifier of the offers.
 		assisted, err := assistedRenewalOptions(assistedRenewalWiring{renewals: onlineRenewals, db: st.db, resolver: resolver,
