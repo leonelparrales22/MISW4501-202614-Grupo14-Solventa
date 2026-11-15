@@ -34,8 +34,9 @@ CREATE TABLE IF NOT EXISTS change_request (
     status             TEXT        NOT NULL CHECK (status IN ('filed', 'in_review', 'applied', 'rejected', 'not_applied')),
     status_changed_at  TIMESTAMPTZ NOT NULL,
     -- What the analyst tells the insured when rejecting or returning the
-    -- request (HU-W1.4-02); NULL otherwise.
-    decision_reason    TEXT,
+    -- request (HU-W1.4-02); NULL otherwise, never an empty text, so "no
+    -- reason" has a single shape in the open index below.
+    decision_reason    TEXT        CHECK (decision_reason IS NULL OR btrim(decision_reason) <> ''),
     recorded_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
