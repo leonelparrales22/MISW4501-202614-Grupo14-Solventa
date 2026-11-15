@@ -7,7 +7,10 @@ package integration_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -56,15 +59,48 @@ func (e *endorsementEnv) file(t *testing.T, policyID, body string) domain.Change
 // with the premium priced by the caller.
 func (e *endorsementEnv) applyWithStore(t *testing.T, r domain.ChangeRequest, premium float64) (domain.Endorsement, error) {
 	t.Helper()
+	return e.store.Apply(context.Background(), e.applicationOf(t, r, premium))
+}
+
+// applicationOf is what the analyst applies: the resulting terms over the
+// current version of the policy, read now.
+func (e *endorsementEnv) applicationOf(t *testing.T, r domain.ChangeRequest, premium float64) ports.AppliedEndorsement {
+	t.Helper()
 	ctx := context.Background()
 	p, err := e.policies.Get(ctx, r.PolicyID)
 	require.NoError(t, err)
 	current, version, err := e.terms.Current(ctx, p)
 	require.NoError(t, err)
 	rated := domain.Rating{Premium: premium, Coverages: []domain.Coverage{{Code: domain.CoverageDeath, InsuredAmount: r.Requested.InsuredAmount}}}
-	return e.store.Apply(ctx, ports.AppliedEndorsement{Request: r, BaseVersion: version, Terms: domain.ApplyChange(domain.TermsOf(p, current), r, rated),
+	return ports.AppliedEndorsement{Request: r, BaseVersion: version, Terms: domain.ApplyChange(domain.TermsOf(p, current), r, rated),
 		PreviousPremium: p.Premium, By: operationsAnalyst, At: e.clock.Now().UTC(),
-		Validations: domain.Validations{{Code: domain.ValidationRequesterIsHolder, Outcome: domain.ValidationPassed}}})
+		Validations: domain.Validations{{Code: domain.ValidationRequesterIsHolder, Outcome: domain.ValidationPassed}}}
+}
+
+// count runs a count query of the test.
+func (e *endorsementEnv) count(t *testing.T, query string, args ...any) int {
+	t.Helper()
+	var n int
+	require.NoError(t, e.db.QueryRowContext(context.Background(), query, args...).Scan(&n))
+	return n
+}
+
+// atOnce releases n calls of do at the same instant and returns their errors.
+func atOnce(n int, do func() error) []error {
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs[i] = do()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	return errs
 }
 
 // CA-3: the photo of the last endorsement is the current state of the policy:
@@ -141,4 +177,82 @@ func TestWalletRenewalExpiringAndCurrentTermsReadEndorsedTerms(t *testing.T) {
 	code, terms := e.call(t, http.MethodGet, "/v1/policies/"+p.ID+"/current-terms", carolina, "")
 	require.Equal(t, http.StatusOK, code)
 	assert.InDelta(t, 120_000_000, terms["terms"].(map[string]any)["insured_amount"], 0.001, "the terms of the insured")
+}
+
+// CA-3 (plan §7.1): the claim of the request (EC-D02) and the version of the
+// policy (D-3 a) hold under real concurrency, so the analysts never leave two
+// endorsements of one request nor two endorsements built on the same terms.
+// Each round uses a policy of its own; the counter of END-<year>-<number>
+// keeps no number of a loser.
+func TestConcurrentApplications(t *testing.T) {
+	const rounds = 10
+	e := newEndorsementEnv(t)
+	ctx := context.Background()
+
+	t.Run("twenty applications of the same request leave one endorsement", func(t *testing.T) {
+		for round := range rounds {
+			p := e.inForce(t, fmt.Sprintf("pol-race-%d", round))
+			r := e.file(t, p.ID, newContact)
+			application := e.applicationOf(t, r, 0)
+
+			errs := atOnce(20, func() error {
+				_, err := e.store.Apply(ctx, application)
+				return err
+			})
+
+			won := 0
+			for _, err := range errs {
+				if err == nil {
+					won++
+					continue
+				}
+				assert.ErrorIs(t, err, ports.ErrRequestAlreadyDecided, "round %d: a loser finds the request decided", round)
+			}
+			assert.Equal(t, 1, won, "round %d: exactly one application wins", round)
+			assert.Equal(t, 1, e.count(t, `SELECT count(*) FROM endorsement WHERE request_id = $1`, r.ID), "round %d", round)
+			assert.Equal(t, 1, e.count(t, `SELECT count(*) FROM endorsement_attempt WHERE request_id = $1`, r.ID), "round %d", round)
+			assert.Equal(t, 1, e.count(t, `SELECT count(*) FROM endorsement_notice WHERE request_id = $1`, r.ID),
+				"round %d: one notice to the insured", round)
+			stored, err := e.requests.Get(ctx, r.ID)
+			require.NoError(t, err)
+			assert.Equal(t, domain.ChangeRequestApplied, stored.Status, "round %d", round)
+			assert.Equal(t, e.count(t, `SELECT count(*) FROM endorsement`), e.count(t, `SELECT max(last_number) FROM endorsement_counter`),
+				"round %d: the losers give their number back", round)
+		}
+	})
+
+	t.Run("two types of one policy from the same version: one wins, the other policy_changed", func(t *testing.T) {
+		for round := range rounds {
+			p := e.inForce(t, fmt.Sprintf("pol-version-%d", round))
+			amount := e.file(t, p.ID, `{"change_type":"insured_amount","channel":"web","insured_amount":120000000}`)
+			contact := e.file(t, p.ID, newContact)
+			applications := []ports.AppliedEndorsement{e.applicationOf(t, amount, 250_900), e.applicationOf(t, contact, 0)}
+			require.Equal(t, applications[0].BaseVersion, applications[1].BaseVersion, "both start from the same terms")
+
+			var next atomic.Int32
+			errs := atOnce(2, func() error {
+				_, err := e.store.Apply(ctx, applications[next.Add(1)-1])
+				return err
+			})
+
+			won := 0
+			for _, err := range errs {
+				if err == nil {
+					won++
+					continue
+				}
+				assert.ErrorIs(t, err, ports.ErrPolicyChanged, "round %d: the other answers policy_changed (409)", round)
+			}
+			assert.Equal(t, 1, won, "round %d: exactly one wins the version", round)
+			assert.Equal(t, 1, e.count(t, `SELECT count(*) FROM endorsement WHERE policy_id = $1`, p.ID), "round %d", round)
+			var statuses []domain.ChangeRequestStatus
+			for _, id := range []string{amount.ID, contact.ID} {
+				stored, err := e.requests.Get(ctx, id)
+				require.NoError(t, err)
+				statuses = append(statuses, stored.Status)
+			}
+			assert.ElementsMatch(t, []domain.ChangeRequestStatus{domain.ChangeRequestApplied, domain.ChangeRequestFiled}, statuses,
+				"round %d: the loser keeps its status, nothing of it was written", round)
+		}
+	})
 }
