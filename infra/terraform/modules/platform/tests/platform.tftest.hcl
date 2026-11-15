@@ -1086,6 +1086,11 @@ run "audit_gets_the_queue_the_user_pool_and_the_catalog" {
   }
 
   assert {
+    condition     = local.service_environment.origination.PARTNER_DISPLAY_NAMES == local.service_environment.audit.PARTNER_DISPLAY_NAMES
+    error_message = "origination gets the same catalog for the onerous beneficiary of the change requests (HU-W1.4-01, D-14 a)."
+  }
+
+  assert {
     condition     = local.service_environment.audit.EVENTS_QUEUE_URL == module.messaging.queue_urls["audit"]
     error_message = "audit consumes CustomerLinked from its own queue."
   }
@@ -1170,8 +1175,11 @@ run "partner_display_names_can_be_replaced" {
   }
 
   assert {
-    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A"
-    error_message = "The catalog follows partner_display_names."
+    condition = (
+      jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A" &&
+      jsondecode(local.service_environment.origination.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A"
+    )
+    error_message = "The catalog of audit and of origination follows partner_display_names."
   }
 }
 

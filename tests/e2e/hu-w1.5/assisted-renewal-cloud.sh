@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # The single seed and the API checks of the renewal stories (HU-W1.5-01 and
-# HU-W1.5-03) for the cloud window (staging), always through the portal of
+# HU-W1.5-03) for the cloud window (staging); the seed also buys the policies
+# of the change request of the insured (HU-W1.4-01, decision V-2 a). Always
+# through the portal of
 # CloudFront, as the browser calls it, and only with the permanent users of
 # bootstrap/identity. It never creates users and never prints a password or a
 # token: every seeded datum lives in the ephemeral platform and disappears with
 # down.sh.
 #
 # Usage:
-#   assisted-renewal-cloud.sh --seed           buys P1..P7 through the real journey and writes SEED_FILE
+#   assisted-renewal-cloud.sh --seed           buys P1..P10 through the real journey and writes SEED_FILE
 #   assisted-renewal-cloud.sh verify           buys its own policies and checks CA-1..CA-4, D-8, D-9, roles
 #                                              and concurrency by API (the seeded P1..P7 stay for the demo)
 #   assisted-renewal-cloud.sh code <policy_id> reads from CloudWatch Logs (read only) the last confirmation
@@ -22,6 +24,13 @@
 #   P2 12 months  degraded mode (CA-5)           P6 12 months  confirmation code (D-9)
 #   P3 12 months  renewed online by the insured  P7 24 months  outside the window
 #   P4 12 months  failed payment (01·D-3 a+)
+# and, for the change request of the insured (HU-W1.4-01):
+#   P8  12 months  demonstration (§6.5 of its plan)
+#   P9  12 months  verification by API (tests/e2e/hu-w1.4/change-request-cloud.sh)
+#   P10 12 months  owned by the second insured (asegurado2@example.com, adjustment
+#                  A-6): another insured's policy for CA-4. It is bought only when
+#                  that permanent user exists (chore/T4-second-insured-user);
+#                  otherwise the seed says so and goes on without it.
 # A policy without a payment method cannot be produced through the real journey
 # (every policy is born of a confirmed charge with a captured method), nor one
 # born in the assisted channel without creating a user: both are local only.
@@ -34,6 +43,7 @@
 #   INSURED_USER         default asegurado@example.com
 #   ADVISOR_USER         default asesor@example.com
 #   OPERATIONS_USER      default operaciones@example.com
+#   INSURED2_USER        default asegurado2@example.com (the owner of P10; same password)
 #   OUTPUT_FILE          optional: a copy of the output (for the evidence)
 #   RUN_ID               suffix of the fictitious customers (default r<epoch seconds>)
 #   COGNITO_ENDPOINT     default https://cognito-idp.<region of config.json>.amazonaws.com/
@@ -137,6 +147,7 @@ PORTAL_URL="${PORTAL_URL%/}"
 INSURED_USER="${INSURED_USER:-asegurado@example.com}"
 ADVISOR_USER="${ADVISOR_USER:-asesor@example.com}"
 OPERATIONS_USER="${OPERATIONS_USER:-operaciones@example.com}"
+INSURED2_USER="${INSURED2_USER:-asegurado2@example.com}"
 json_escape() { local s=${1//\\/\\\\}; printf '%s' "${s//\"/\\\"}"; }
 
 # call <method> <path> [token] [json body] [extra header]: sets STATUS and BODY. The
@@ -189,10 +200,12 @@ call GET /v1/audit/consent-terms/current
 TERMS_VERSION="$(field .version)"
 TERMS_SOURCES="$(field '[.sources[].code] | map("\"" + . + "\"") | join(",")')"
 
-# buy <tag> <holder name> <document> <term months>: buys a policy through the real
-# journey for the insured; sets POLICY, CONSENT and HOLDER (the fictitious e-mail).
+# buy <tag> <holder name> <document> <term months> [buyer token]: buys a policy
+# through the real journey for the insured (or for the owner of the buyer token,
+# who claims the offer by opening it); sets POLICY, CONSENT and HOLDER (the
+# fictitious e-mail).
 buy() {
-  local customer="cliente-$1-$RUN_ID" app="app-$1-$RUN_ID" offer acceptance tok brand last4 i
+  local customer="cliente-$1-$RUN_ID" app="app-$1-$RUN_ID" offer acceptance tok brand last4 i buyer="${5:-$INSURED_TOKEN}"
   HOLDER="titular.$1.$RUN_ID@example.com"
   call POST /v1/audit/consents "" "{\"customer_id\":\"$customer\",\"document_id\":\"$3\",\"full_name\":\"$2\",
     \"terms_version\":\"$TERMS_VERSION\",\"accepted_sources\":[$TERMS_SOURCES],\"accepted_data_policy\":true,
@@ -204,24 +217,24 @@ buy() {
     \"insured_amount\":68000000,\"term_months\":$4}"
   [[ "$STATUS" == 201 ]] || { echo "the offer of $1 answered $STATUS: $(field .error)" >&2; return 1; }
   offer="$(field .offer_id)"
-  call GET "/v1/offers/$offer" "$INSURED_TOKEN"
-  call POST "/v1/offers/$offer/acceptance" "$INSURED_TOKEN" '{"channel":"web"}'
+  call GET "/v1/offers/$offer" "$buyer"
+  call POST "/v1/offers/$offer/acceptance" "$buyer" '{"channel":"web"}'
   [[ "$STATUS" == 202 ]] || { echo "the acceptance of $1 answered $STATUS: $(field .error)" >&2; return 1; }
   acceptance="$(field .acceptance_id)"
   for i in $(seq 1 60); do
-    call GET "/v1/acceptances/$acceptance/charge" "$INSURED_TOKEN"
+    call GET "/v1/acceptances/$acceptance/charge" "$buyer"
     [[ "$STATUS" == 200 ]] && break
     sleep 2
   done
   [[ "$STATUS" == 200 ]] || { echo "the charge of $1 was not created ($STATUS)" >&2; return 1; }
   call POST /pasarela/tokens "" '{"number":"4111111111111111","holder":"Prueba Renovacion"}'
   tok="$(field .token)" brand="$(field .brand)" last4="$(field .last4)"
-  call POST "/v1/acceptances/$acceptance/charge/payment-method" "$INSURED_TOKEN" \
+  call POST "/v1/acceptances/$acceptance/charge/payment-method" "$buyer" \
     "{\"method\":\"card\",\"payment_token\":\"$tok\",\"brand\":\"$brand\",\"last4\":\"$last4\",\"installments\":1}"
   [[ "$STATUS" == 202 ]] || { echo "the card of $1 answered $STATUS: $(field .error)" >&2; return 1; }
   POLICY=""
   for i in $(seq 1 60); do
-    call GET "/v1/acceptances/$acceptance/charge" "$INSURED_TOKEN"
+    call GET "/v1/acceptances/$acceptance/charge" "$buyer"
     if [[ "$(field .status)" == confirmed && "$(field '.policy_id // empty')" != "" ]]; then
       POLICY="$(field .policy_id)"
       break
@@ -249,6 +262,8 @@ if [[ "$COMMAND" == --seed ]]; then
     "P5|Lucia Vega Rey|1060789012|12|consent revoked (D-8)"
     "P6|Sofia Duarte Leon|1070890123|12|confirmation code (D-9)"
     "P7|Jorge Molina Castro|1080901234|24|outside the window"
+    "P8|Camila Ortiz Nieto|1081012345|12|change request: demonstration (HU-W1.4-01)"
+    "P9|Daniel Pardo Suarez|1081123456|12|change request: verification by API (HU-W1.4-01)"
   )
   for seed in "${SEEDS[@]}"; do
     IFS='|' read -r tag name document months purpose <<<"$seed"
@@ -256,10 +271,23 @@ if [[ "$COMMAND" == --seed ]]; then
     printf '%s=%s\nCONSENT_%s=%s\nEMAIL_%s=%s\n' "$tag" "$POLICY" "$tag" "$CONSENT" "${POLICY//[^A-Za-z0-9]/_}" "$HOLDER" >>"$SEED_FILE"
     echo "  $tag  $POLICY  $months months  $name ($HOLDER) · $purpose"
   done
+  # P10 (HU-W1.4-01, adjustment A-6): a policy of the second insured, for the
+  # check of another insured's policy. Only when that permanent user exists.
+  INSURED2_TOKEN="$(token "$INSURED2_USER" || true)"
+  if [[ -n "$INSURED2_TOKEN" ]]; then
+    buy p10 "Esteban Quintero Mejia" 1081234567 12 "$INSURED2_TOKEN"
+    printf 'P10=%s\nCONSENT_P10=%s\nEMAIL_%s=%s\n' "$POLICY" "$CONSENT" "${POLICY//[^A-Za-z0-9]/_}" "$HOLDER" >>"$SEED_FILE"
+    echo "  P10 $POLICY  12 months  Esteban Quintero Mejia ($HOLDER) · change request: another insured ($INSURED2_USER, A-6)"
+  else
+    echo "  P10 not seeded: $INSURED2_USER cannot sign in (it comes with chore/T4-second-insured-user); the CA-4 check with"
+    echo "      another insured keeps its local evidence (services/origination/tests/integration/change_request_test.go)"
+  fi
   echo
   echo "== Seeded. The ids are in $SEED_FILE"
   echo "   HU-W1.5-01: RENEW_ONLINE_POLICY_ID=$(sed -n 's/^P3=//p' "$SEED_FILE") ./tests/e2e/hu-w1.5/expiring-cloud.sh"
   echo "   Renovar:    $PORTAL_URL/originacion/renovaciones/$(sed -n 's/^P1=//p' "$SEED_FILE")"
+  echo "   HU-W1.4-01: SEED_FILE=$SEED_FILE ./tests/e2e/hu-w1.4/change-request-cloud.sh verify"
+  echo "   Modificar:  $PORTAL_URL/originacion/polizas/$(sed -n 's/^P8=//p' "$SEED_FILE")/modificar"
   exit 0
 fi
 

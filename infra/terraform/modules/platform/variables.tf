@@ -178,7 +178,7 @@ variable "portal_partner" {
 }
 
 variable "partner_display_names" {
-  description = "Display names of the financial entities the consents authorize, by partner code (HU-M1.3-01, decision D-2 a); audit receives them as PARTNER_DISPLAY_NAMES. A code without a name is shown as it is. Default: the partner of screen E1 of the portal."
+  description = "Display names of the financial entities the consents authorize, by partner code (HU-M1.3-01, decision D-2 a); audit receives them as PARTNER_DISPLAY_NAMES, and so does origination for the onerous beneficiary of the change requests (HU-W1.4-01, decision D-14 a). A code without a name is shown as it is. Default: the partner of screen E1 of the portal."
   type        = map(string)
   default     = { "aliado-banco-1" = "Banco Aliado" }
 

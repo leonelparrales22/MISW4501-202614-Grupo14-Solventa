@@ -74,8 +74,10 @@ OUTPUT_FILE=<carpeta de evidencia>/expiring-cloud.txt \
 
 ## HU-W1.5-01 y HU-W1.5-03 · Siembra única y verificación en la nube (`assisted-renewal-cloud.sh`)
 
-Es **el único guion de siembra de las dos historias** (decisión V-2 a). Todo va por el portal de CloudFront y solo con los usuarios
-permanentes; **no crea usuarios** y nada de lo que siembra sobrevive al `down.sh` (la plataforma de staging es efímera).
+Es **el único guion de siembra de las dos historias** (decisión V-2 a) y, desde HU-W1.4-01, **de la ventana única de las cuatro
+historias** (HU-W1.5-01, HU-W1.5-03, HU-W1.4-01 y HU-W1.4-02): `--seed` compra además las pólizas de la solicitud de modificación del
+asegurado (P8, P9 y P10, abajo). Todo va por el portal de CloudFront y solo con los usuarios permanentes; **no crea usuarios** y nada
+de lo que siembra sobrevive al `down.sh` (la plataforma de staging es efímera).
 
 ```
 PORTAL_URL=https://<distribución>.cloudfront.net SEED_USER_PASSWORD=… SEED_FILE=<carpeta de evidencia>/semilla.env \
@@ -88,7 +90,11 @@ SEED_FILE=<carpeta de evidencia>/semilla.env ./tests/e2e/hu-w1.5/assisted-renewa
 
 | Subcomando | Qué hace |
 |---|---|
-| `--seed` | Compra por el recorrido real (consentimiento del titular en `audit` por la ruta del aliado —CloudFront agrega la llave—, `POST /v1/offers`, el asegurado abre y acepta la oferta, tokeniza la tarjeta 4111 en `/pasarela/tokens` y la entrega, y el cobro se confirma) siete pólizas de `asegurado@example.com` con titulares ficticios distintos (`@example.com`): P1 camino feliz (CA-1…CA-4), P2 modo degradado (CA-5), P3 renovada en línea por el asegurado (solo lectura y concurrencia; es la `RENEW_ONLINE_POLICY_ID` de `expiring-cloud.sh`), P4 pago fallido (01·D-3 a+), P5 consentimiento revocado (D-8), P6 código de confirmación (D-9), todas de 12 meses, y P7 de 24 meses, fuera de la ventana. Escribe sus ids, el consentimiento de cada una y el correo de su titular en `SEED_FILE` |
+| `--seed` | Compra por el recorrido real (consentimiento del titular en `audit` por la ruta del aliado —CloudFront agrega la llave—, `POST /v1/offers`, el asegurado abre y acepta la oferta, tokeniza la tarjeta 4111 en `/pasarela/tokens` y la entrega, y el cobro se confirma) siete pólizas de `asegurado@example.com` con titulares ficticios distintos (`@example.com`): P1 camino feliz (CA-1…CA-4), P2 modo degradado (CA-5), P3 renovada en línea por el asegurado (solo lectura y concurrencia; es la `RENEW_ONLINE_POLICY_ID` de `expiring-cloud.sh`), P4 pago fallido (01·D-3 a+), P5 consentimiento revocado (D-8), P6 código de confirmación (D-9), todas de 12 meses, y P7 de 24 meses, fuera de la ventana. Para HU-W1.4-01 compra P8 (demostración, «Solicitar modificación») y P9 (verificación por
+API de [`tests/e2e/hu-w1.4/change-request-cloud.sh`](../hu-w1.4/README.md)), de 12 meses y del asegurado, y P10 de 12 meses **de
+`asegurado2@example.com`** (`INSURED2_USER`, misma contraseña; la otra póliza del CA-4, ajuste A-6) solo si ese usuario permanente ya
+existe (rama `chore/T4-second-insured-user`); si no, lo dice y sigue sin ella. Escribe sus ids, el consentimiento de cada una y el
+correo de su titular en `SEED_FILE` |
 | `verify` | Compra **sus propias** cuatro pólizas (P1…P7 quedan para la demostración) y comprueba por API: CA-1 (motor `v1`, descuento, factores, sin `score`), CA-2 (`422` por campo, nada guardado), CA-3 (renovada, cobro confirmado, certificado emitido, la póliza nueva en «Mis pólizas» con la prima recotizada), CA-4 (asesor, medio, referencia y recotización aplicada), D-9 (el código enmascarado y, con `LOG_GROUP` y la AWS CLI, el código leído del registro: errado `422`, correcto `201`; si no puede leerlo lo marca `SKIP`), D-8 (operaciones revoca por el portal → `422 consent_required`), roles (`401`, `403` del asegurado y de operaciones) y concurrencia (dos formalizaciones del asesor y la del asegurado a la vez → una renovación y un solo cobro) |
 | `code <policy_id>` | Lee de CloudWatch Logs, **solo lectura** (`logs filter-log-events` del *stream* `email`), el último código de renovación enviado al titular de una póliza sembrada y lo muestra en la terminal, para dictárselo al asesor en la demostración (aprobado por Nicolás) |
 
