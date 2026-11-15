@@ -9,6 +9,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -98,4 +99,46 @@ func TestPolicyCurrentOverlaysLatestEndorsement(t *testing.T) {
 		got["personal_data"], "the second keeps the contact data of the first, and the insured reads them")
 	assert.InDelta(t, 120_000_000, got["insured_amount"], 0.001)
 	assert.Equal(t, []any{}, terms["open_requests"], "both requests are applied")
+}
+
+// CA-3: every reader of the policy sees the endorsed terms in the same COMMIT:
+// the wallet of the web and the phone, the renewal (priced with the new
+// insured value), the list of the advisor, the alerts of expiry and the terms
+// of the insured.
+func TestWalletRenewalExpiringAndCurrentTermsReadEndorsedTerms(t *testing.T) {
+	e := newEndorsementEnv(t)
+	ctx := context.Background()
+	p := e.sold(t, "pol-end2", "carolina", "aliado-banco-1", 355*24*time.Hour, 10*24*time.Hour)
+	amount := e.file(t, p.ID, `{"change_type":"insured_amount","channel":"web","insured_amount":120000000}`)
+
+	_, err := e.applyWithStore(t, amount, 250_900)
+	require.NoError(t, err)
+
+	code, list := e.do(t, http.MethodGet, "/v1/policies", carolina, "")
+	require.Equal(t, http.StatusOK, code, "%v", list)
+	item := list["items"].([]any)[0].(map[string]any)
+	assert.InDelta(t, 120_000_000, item["insured_amount"], 0.001, "the wallet of the web and the phone")
+	assert.InDelta(t, 250_900, item["premium"], 0.001)
+
+	code, renewalOffer := e.do(t, http.MethodGet, "/v1/policies/"+p.ID+"/renewal", carolina, "")
+	require.Equal(t, http.StatusOK, code, "%v", renewalOffer)
+	current := renewalOffer["current"].(map[string]any)
+	assert.InDelta(t, 250_900, current["premium"], 0.001, "the renewal starts from the endorsed premium")
+	assert.InDelta(t, 120_000_000, renewalOffer["renewal"].(map[string]any)["insured_amount"], 0.001,
+		"and renews the endorsed insured value")
+
+	now := e.clock.Now()
+	expiring, _, err := postgres.NewExpiringPolicyStore(e.db).ListExpiring(ctx, now, now.AddDate(0, 0, 30), now, "", 0, 10)
+	require.NoError(t, err)
+	require.Len(t, expiring, 1)
+	assert.InDelta(t, 120_000_000, expiring[0].Policy.InsuredAmount, 0.001, "the list of the advisor")
+
+	alerts, err := e.policies.ListExpiringUnrenewed(ctx, now, now.AddDate(0, 0, 30))
+	require.NoError(t, err)
+	require.Len(t, alerts, 1)
+	assert.InDelta(t, 250_900, alerts[0].Premium, 0.001, "the alerts read the same view, though only dates matter to them")
+
+	code, terms := e.call(t, http.MethodGet, "/v1/policies/"+p.ID+"/current-terms", carolina, "")
+	require.Equal(t, http.StatusOK, code)
+	assert.InDelta(t, 120_000_000, terms["terms"].(map[string]any)["insured_amount"], 0.001, "the terms of the insured")
 }

@@ -22,7 +22,7 @@ var (
 // before) with no renewal row for that period, whatever its status, and no
 // policy that renews them.
 func (s *PolicyStore) ListExpiringUnrenewed(ctx context.Context, after, before time.Time) ([]domain.Policy, error) {
-	return s.list(ctx, `SELECT `+prefixed("p", policyColumns)+` FROM policy p
+	return s.list(ctx, `SELECT `+prefixed("p", policyColumns)+` FROM policy_current p
 		WHERE p.coverage_end > $1 AND p.coverage_end < $2
 		  AND NOT EXISTS (SELECT 1 FROM renewal r WHERE r.policy_id = p.policy_id AND r.period_end = p.coverage_end)
 		  AND NOT EXISTS (SELECT 1 FROM policy n WHERE n.renewal_of = p.policy_id)
