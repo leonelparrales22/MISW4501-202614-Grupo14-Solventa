@@ -11,7 +11,7 @@ import (
 var _ ports.OpenClaimsReader = (*ClaimRecordStore)(nil)
 
 // OpenClaims counts the claims of the policy that are not closed (HU-W1.4-02).
-// The database counts them by status (index claim_policy_status_idx, 0013) and
+// The database counts them by status (index claim_policy_status_idx, 0014) and
 // the rule of the service tells which statuses are closed, so a new status
 // counts as in progress without touching this query.
 func (s *ClaimRecordStore) OpenClaims(ctx context.Context, policyID string) (int, error) {

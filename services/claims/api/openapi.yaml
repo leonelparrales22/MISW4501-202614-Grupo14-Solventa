@@ -1,15 +1,15 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.16.0
+  version: 0.17.0
   description: >-
-    0.16.0 (HU-W1.4-02): GET /internal/policies/{policy_id}/open-claims
+    0.17.0 (HU-W1.4-02): GET /internal/policies/{policy_id}/open-claims
     counts the claims of a policy that are in progress (every status but paid
     and rejected), for origination to check before an operations analyst
     applies an endorsement. It is internal: it carries no token, lives outside
     /v1/claims so neither the API Gateway nor the load balancer route it, and
     only the services inside the VPC reach it through Cloud Map. It names no
-    claim nor who filed it. Compatible with 0.15.0 (it only adds a route).
+    claim nor who filed it. Compatible with 0.16.0 (it only adds a route).
     0.16.0 (HU-M2.3-01): the request for on-site assistance from the phone.
     POST /v1/claims/assistance-requests records, for one active policy of
     the insured (checked against the policy core), the location the phone

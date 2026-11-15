@@ -16,7 +16,7 @@ import (
 // (HU-W1.5-02, migration 0012). A policy is written once, from the activation
 // of its coverage, and never changes.
 //
-// HU-W1.4-02: it reads the view policy_current (migration 0017), the policy
+// HU-W1.4-02: it reads the view policy_current (migration 0018), the policy
 // with its last endorsement laid over it, so the wallet, the renewals and the
 // alerts see the current contractual terms in the same COMMIT that applies an
 // endorsement. It writes the policy table, which never changes.

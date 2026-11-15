@@ -1,5 +1,5 @@
 -- HU-W1.4-02: an operations analyst reviews the change requests of HU-W1.4-01
--- (0016) and applies or rejects them. What the analyst does lives in tables of
+-- (0017) and applies or rejects them. What the analyst does lives in tables of
 -- its own that only receive rows; of change_request it only writes status,
 -- status_changed_at and decision_reason (the three columns its trigger lets
 -- change).
