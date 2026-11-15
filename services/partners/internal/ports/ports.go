@@ -89,3 +89,15 @@ type Gateway interface {
 	// of the plan.
 	UsedOn(ctx context.Context, planID, day string) (map[string]int64, error)
 }
+
+// Telemetry reads the SLO of the partner API from CloudWatch (HU-W3.2-03):
+// its alarms, their history and the metrics of the routes they watch. Every
+// error wraps domain.ErrTelemetryUnavailable.
+type Telemetry interface {
+	// Alarms returns the SLO alarms with their current state.
+	Alarms(ctx context.Context) ([]domain.SLOAlarm, error)
+	// History returns the changes of state of the alarms since since.
+	History(ctx context.Context, alarms []domain.SLOAlarm, since time.Time) ([]domain.AlarmTransition, error)
+	// Traffic returns what the routes of the alarms served in [start, end).
+	Traffic(ctx context.Context, alarms []domain.SLOAlarm, start, end time.Time) (domain.Traffic, error)
+}

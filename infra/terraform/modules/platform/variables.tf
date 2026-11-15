@@ -243,6 +243,9 @@ variable "human_routes" {
     # .../credential-rotations. partners has no internal route, so the whole
     # prefix is human.
     partners = { methods = ["GET", "POST"] }
+    # Technical performance of the partner API for the partner portal
+    # (HU-W3.2-03): GET /v1/partner-performance, served by partners. Only GET.
+    partner-performance = { methods = ["GET"] }
     # The notification center of the mobile app (HU-M3.1-01): GET
     # /v1/notifications and GET /v1/notifications/{notification_id}, POST
     # .../{notification_id}/read and POST /v1/notifications/read-all; the root

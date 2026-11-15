@@ -1317,6 +1317,45 @@ run "partners_manages_the_credentials_and_publishes_to_audit" {
   }
 }
 
+# HU-W3.2-03: the dashboard of the partner reads the SLO alarms of the partner
+# API from partners, with read-only CloudWatch permissions.
+run "partners_reads_the_slo_of_the_partner_api" {
+  command = plan
+
+  assert {
+    condition     = local.service_environment.partners.SLO_ALARM_PREFIX == "solventa-test-slo-"
+    error_message = "partners receives the prefix of the SLO alarms (the platform turns them on)."
+  }
+
+  assert {
+    condition = (
+      contains([for st in local.task_role_statements.partners : st.sid], "ReadTheSloMetricsAndAlarms") &&
+      contains([for st in local.task_role_statements.partners : st.sid], "ReadTheHistoryOfTheSloAlarms") &&
+      alltrue([for st in local.task_role_statements.partners : alltrue([for a in st.actions : !startswith(a, "cloudwatch:") || contains(["cloudwatch:DescribeAlarms", "cloudwatch:GetMetricData", "cloudwatch:DescribeAlarmHistory"], a)])])
+    )
+    error_message = "partners only reads CloudWatch: the alarms, their history and the metrics."
+  }
+
+  assert {
+    condition = alltrue([
+      for k, sts in local.task_role_statements : k == "partners" || alltrue([
+        for st in sts : !contains(["ReadTheSloMetricsAndAlarms", "ReadTheHistoryOfTheSloAlarms"], st.sid)
+      ])
+    ])
+    error_message = "Only partners reads the SLO alarms."
+  }
+
+  assert {
+    condition = (
+      var.human_routes["partner-metrics"].methods == tolist(["GET"]) &&
+      var.human_routes["partner-performance"].methods == tolist(["GET"]) &&
+      contains(local.services.partners.paths, "/v1/partner-performance*") &&
+      !contains(local.services.origination.paths, "/v1/partner-performance*")
+    )
+    error_message = "GET /v1/partner-performance (HU-W3.2-03) is a human route that the ALB sends to partners."
+  }
+}
+
 # HU-M3.3-01: with FCM the pushes leave for Firebase with the permanent secret,
 # and the stub is no longer the provider; without it nothing changes.
 run "notifications_pushes_through_fcm" {
