@@ -135,6 +135,8 @@ El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/
 | Salida `portal_partner_api_key` | Key del socio `portal_partner` (sensible); solo la lee la composición `web` para el encabezado de origen de CloudFront |
 | `audit` en Cloud Map | `audit` se registra también en Cloud Map (`local.discoverable_services`) sin dejar el ALB, para que originación verifique el consentimiento dentro de la VPC (`AUDIT_URL`, D-21 a de T5); el módulo `ecs` abre el 8080 entre las tareas. Desde HU-M1.3-01 `audit` recibe `AUTH_*` (para `GET /v1/consents*`); con ellas monta también la evidencia de HU-W1.2-01 y la revocación del portal de cumplimiento (HU-W4.2-02), que el gateway publica solo bajo `/v1/audit/consents/{proxy+}` con Cognito (D-23 c; `audit` nunca es ruta humana entera) |
 | Salida `audit_url` | El `AUDIT_URL` de la definición de tarea de originación (`http://audit.<nombre>.local:8080`); lo comprueban las pruebas de las composiciones |
+| `claims` en Cloud Map | Desde HU-W1.4-02 `claims` también se registra en Cloud Map sin dejar el ALB, para que originación pregunte los siniestros en curso de una póliza antes de aplicar un endoso (`CLAIMS_URL`, D-6 a) por su ruta interna `GET /internal/policies/{policy_id}/open-claims`, que ni el gateway ni el ALB enrutan; el módulo `ecs` ya abre el 8080 entre las tareas |
+| Salida `claims_url` | El `CLAIMS_URL` de la definición de tarea de originación (`http://claims.<nombre>.local:8080`) |
 | Variable `portal_base_url` | Origen del portal (`https://<distribución>.cloudfront.net`). Con ella, los dos enlaces de los correos de originación apuntan al portal (D-11 de T5). La composición del ambiente la toma del parámetro SSM `/solventa/<ambiente>/web/url` |
 | CORS del *bucket* de evidencia | Con `portal_base_url`, el *bucket* `evidence` acepta `PUT` y `GET` desde ese origen (módulo `s3`, `cors_allowed_origins`): el portal sube los soportes de la radicación web directo al *bucket* con URL firmada (HU-W2.1-01). El *bucket* `documents` no recibe CORS; sin portal tampoco hay orígenes que permitir |
 
@@ -213,6 +215,7 @@ aws secretsmanager create-secret --region us-east-2 --name solventa/fcm/service-
 | `AWS_REGION` | Región del proveedor (`us-east-2`) | Región del SDK de AWS (S3, SNS) |
 | `EVENTS_TOPIC_ARN` | Tópico `origination` de `modules/messaging` | El relevo del *outbox* publica ahí `CustomerLinked` (HU-M1.3-01); el rol ya tenía `PublishItsEvents` sobre ese tópico (T4) |
 | `PARTNER_DISPLAY_NAMES` | `jsonencode(var.partner_display_names)`, el mismo catálogo de `audit` | Nombre del beneficiario oneroso (el aliado que otorgó el crédito) en la solicitud de modificación del asegurado (HU-W1.4-01, D-14 a); un código sin nombre se muestra tal cual |
+| `CLAIMS_URL` | `claims` por Cloud Map: `http://claims.<nombre>.local:8080` (HU-W1.4-02, D-6 a) | Siniestros en curso de una póliza antes de aplicar un endoso de beneficiarios o de suma asegurada. Si `claims` no responde en `CLAIMS_TIMEOUT_MS` (300 ms por defecto, no se cambia) la validación queda no verificable y no se aplica nada (falla cerrada) |
 | `DATABASE_URL` (secreto) | `<nombre>/origination/database` | Base propia: cobro de la prima (HA-D02) y ofertas personalizadas (HU-W1.2-03) |
 | `DOCUMENT_LINK_SECRET` (secreto) | `<nombre>/origination/document-link`, 48 caracteres aleatorios (`random_password`) | Firma de los enlaces del documento; nunca va como variable en claro |
 
@@ -310,3 +313,5 @@ recibe `AUTH_*` del mismo pool, `AWS_REGION`, el catálogo JSON y `EVENTS_QUEUE_
 de su tópico, el catálogo se puede reemplazar y rechaza códigos inválidos, y `origination_environment` no puede fijar `EVENTS_TOPIC_ARN`.
 Desde HU-M1.3-02: `audit` recibe `OPEN_FINANCE_URL` (la misma dirección del stub que originación) y el plazo de 300 s. Desde HU-W1.4-01:
 originación recibe el mismo catálogo `PARTNER_DISPLAY_NAMES` que `audit`, y los dos siguen a `partner_display_names` cuando se reemplaza.
+Desde HU-W1.4-02: `audit` y `claims` son los servicios registrados en Cloud Map, originación recibe `CLAIMS_URL` sin
+`CLAIMS_TIMEOUT_MS`, la salida `claims_url` coincide, y `origination_environment` no puede reemplazar `CLAIMS_URL`.
