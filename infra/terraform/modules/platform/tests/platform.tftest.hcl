@@ -312,6 +312,22 @@ run "inbox_and_exceptions_are_routed" {
   }
 }
 
+# HU-W3.2-01: the partner portal reads the summary of its dashboard from
+# origination, behind the Cognito authorizer, and the root has no method.
+run "the_partner_dashboard_is_a_human_route_of_origination" {
+  command = plan
+
+  assert {
+    condition = (
+      var.human_routes["partner-metrics"].methods == tolist(["GET"]) &&
+      length(var.human_routes["partner-metrics"].root_methods) == 0 &&
+      contains(local.services.origination.paths, "/v1/partner-metrics*") &&
+      !contains(local.services.partners.paths, "/v1/partner-metrics*")
+    )
+    error_message = "GET /v1/partner-metrics/summary (HU-W3.2-01) is a human route that the ALB sends to origination; its root has no method."
+  }
+}
+
 # HU-W1.3-04 and HU-W1.5-02: the issuance monitor of operations and the online
 # renewal of the insured write through the gateway, so their routes take POST
 # under the root while the root stays read-only.
@@ -830,10 +846,10 @@ run "offers_root_is_partner_and_sub_paths_are_human" {
   }
 
   # consents (HU-M1.3-02), issuances (HU-W1.3-04) and policies (HU-W1.5-02)
-  # set their root to GET only, and notifications and devices (HU-M3.1-01)
-  # set theirs too; they have their own tests.
+  # set their root to GET only, notifications and devices (HU-M3.1-01) and
+  # partner-metrics (HU-W3.2-01) set theirs too; they have their own tests.
   assert {
-    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents", "issuances", "policies", "notifications", "devices"], k)])
+    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents", "issuances", "policies", "notifications", "devices", "partner-metrics"], k)])
     error_message = "Every other human route keeps its root as before."
   }
 }

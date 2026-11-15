@@ -7,7 +7,7 @@ operaciones (rol `operations`) lista los socios con su cuota y el consumo de hoy
 aprobación (`POST /v1/partners`), consulta su detalle (`GET /v1/partners/{partner_id}`), lo aprueba generando sus credenciales
 (`POST …/approval`) y las rota con periodo de transición (`POST …/credential-rotations`). Las credenciales son API keys de Amazon API
 Gateway en un usage plan propio por socio (cuota diaria y ráfaga), que crea el servicio con `GATEWAY_REST_API_ID`; cada emisión, rotación
-y revocación llega a `audit` por el tópico `partners`. El módulo `dashboard` sigue reservado (HU-W3.2). Contrato:
+y revocación llega a `audit` por el tópico `partners`. El módulo `dashboard` sigue reservado: el resumen del tablero del socio (HU-W3.2-01) lo calcula `origination`, dueño de las ofertas y las pólizas (`GET /v1/partner-metrics/summary`, decisión del equipo). Contrato:
 [`docs/contratos/HU-W3.1-01-api.md`](../../docs/contratos/HU-W3.1-01-api.md).
 
 ## Responsabilidades
@@ -16,7 +16,7 @@ y revocación llega a `audit` por el tópico `partners`. El módulo `dashboard` 
 |---|---|
 | `onboarding` | Incorporación de nuevos socios (objetivo: integrar un socio en ≤ 1 semana sin tocar el núcleo). **HU-W3.1-01:** `onboarding.Service` registra el socio en `pending_approval` (validación de todos los campos a la vez, `code` único), lo aprueba (crea el usage plan y la primera credencial y, en una transacción, deja el socio `active`, la credencial, la entrada del historial y el evento `PartnerCredentialsIssued` en el *outbox*; si algo falla borra lo creado en el gateway), y lo muestra con el consumo de hoy leído del gateway (en paralelo, 2 s como máximo; sin dato, `usage = null`) y los indicadores del listado |
 | `credentials` | Generación y rotación de credenciales/tokens y asignación de límites de consumo. **HU-W3.1-01:** `credentials.Issuer` genera el `client_id` (`sol_…`) y el secreto (32 bytes de `crypto/rand`, 43 caracteres base64url), crea la API key con ese valor y la asocia al usage plan; el secreto se devuelve una sola vez y solo se guardan sus 4 últimos caracteres. `credentials.Service.Rotate` emite una key nueva en el mismo plan y deja la anterior `retiring` hasta `expires_at` (`CREDENTIAL_GRACE_PERIOD_HOURS`, 1–168 h; una sola rotación en curso por socio). `credentials.Worker` revoca las vencidas: las quita del plan, las elimina y registra `credentials_revoked` con actor `system` y el evento `PartnerCredentialsRevoked` |
-| `dashboard` | Volumen de cotizaciones, pólizas emitidas, conversión, disponibilidad y tiempos de respuesta por socio (reservado, HU-W3.2) |
+| `dashboard` | Disponibilidad y tiempos de respuesta por socio (reservado, HU-W3.2-03). El volumen de cotizaciones, las pólizas emitidas y la conversión (HU-W3.2-01) los sirve `origination` con `GET /v1/partner-metrics/summary` |
 
 El aislamiento y las cuotas por socio se aplican en Amazon API Gateway (*usage plans* y *API keys*, HA-01); este servicio administra su ciclo de vida.
 
@@ -61,7 +61,7 @@ Gateway lleva la cuota de cada una por separado (riesgo aceptado, acotado al per
 ## Historias asociadas
 
 Épica web 3 (F3.1, F3.2) y HA-01. **Fuera de HU-W3.1-01:** la baja del socio (HU-W3.1-02, estado `offboarded` reservado), la pantalla de
-credenciales vista por el socio (B4), el alta del usuario del portal del socio en Cognito y las métricas de uso reciente (HU-W3.2-01).
+credenciales vista por el socio (B4), el alta del usuario del portal del socio en Cognito y las métricas de uso reciente (el resumen de HU-W3.2-01 está en `origination`).
 
 ## Desarrollo
 

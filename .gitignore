@@ -25,3 +25,6 @@ crash.log
 # Binario del stub de la pasarela de pagos
 stubs/payment-gateway/pasarela-pagos.exe
 stubs/payment-gateway/pasarela-pagos
+
+# Mockups de las historias: se comparten fuera del repositorio
+mockups-*/
