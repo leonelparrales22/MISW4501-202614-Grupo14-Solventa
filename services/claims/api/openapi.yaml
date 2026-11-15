@@ -10,6 +10,19 @@ info:
     /v1/claims so neither the API Gateway nor the load balancer route it, and
     only the services inside the VPC reach it through Cloud Map. It names no
     claim nor who filed it. Compatible with 0.15.0 (it only adds a route).
+    0.16.0 (HU-M2.3-01): the request for on-site assistance from the phone.
+    POST /v1/claims/assistance-requests records, for one active policy of
+    the insured (checked against the policy core), the location the phone
+    could share (coordinates, accuracy and the instant of the fix) or why it
+    could not (permission denied, location disabled, no fix), with the UTC
+    instant of the server; it answers the request with its number
+    AST-<year>-<4 digits or more> and status new. It is identified by
+    Idempotency-Key, as the filing. GET
+    /v1/claims/assistance-requests/{request_id} reads it back, only for its
+    owner. A request is not a claim: it is not listed by GET /v1/claims. The
+    call line lives in the app, which dials it whatever this answers. Only the
+    insured; mounted with the policy core (POLICY_CORE_URL). Compatible with
+    0.15.0 (it only adds routes).
     0.15.0 (HU-M2.4-01): the claims the parametric engine resolves by itself.
     The list, the detail and the history of a claim gain
     automatic_resolution (null for a claim evaluated by an analyst): when it
@@ -666,6 +679,181 @@ paths:
           description: >-
             policy_directory_unavailable (the policy core did not answer; no
             case was created) or filing_unavailable - retry with the same key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-requests:
+    post:
+      summary: Request on-site assistance with the location of the phone (HU-M2.3-01)
+      description: >-
+        Records the request for on-site assistance of the insured, for one of
+        their own active policies, with the result of the location: the
+        coordinates, accuracy and instant of the fix the phone shared (status
+        sent), or the reason it could not share one (status unavailable). The
+        body is checked first and every invalid field is reported at once;
+        then the policy is looked up among the insured's own in the policy
+        core: a policy of another insured answers as one that does not exist.
+        If the core does not answer nothing is recorded (503
+        policy_directory_unavailable) and the app may retry with the same
+        key. requested_at is the clock of the server, in UTC. The request is
+        identified by Idempotency-Key: the same key and the same body answer
+        200 with the request that already exists. The app dials the call line
+        whatever this answers; it never waits for it. Mounted only when the
+        policy core is configured (POLICY_CORE_URL).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: >-
+            Identifier of the request; the app sends a new one each time the
+            insured taps "Solicitar asistencia" and the same one on a retry.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistanceRequestInput"
+            examples:
+              withLocation:
+                summary: The phone shared its location (M14)
+                value:
+                  policy_id: AU-2025-118204
+                  location:
+                    status: sent
+                    latitude: 4.7712
+                    longitude: -74.0452
+                    accuracy_m: 8
+                    captured_at: "2026-11-14T21:31:02Z"
+                  place: Autopista Norte km 12, Bogotá
+              permissionDenied:
+                summary: The insured denied the permission or the location is off (M14b)
+                value:
+                  policy_id: AU-2025-118204
+                  location:
+                    status: unavailable
+                    unavailable_reason: permission_denied
+              noFix:
+                summary: No satellite fix in time (M14c)
+                value:
+                  policy_id: AU-2025-118204
+                  location:
+                    status: unavailable
+                    unavailable_reason: no_fix
+      responses:
+        "201":
+          description: The request was recorded
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceRequest"
+        "200":
+          description: The same key had already recorded this request
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceRequest"
+        "400":
+          description: >-
+            invalid_request - the body is not a JSON object, has an unknown
+            field or a field of the wrong type, is larger than 16 KB, or the
+            key is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            validation_failed or idempotency_key_reused (WebValidationError),
+            or policy_not_eligible with reason policy_not_found or
+            policy_not_active (PolicyNotEligible). Nothing is recorded.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/WebValidationError"
+                  - $ref: "#/components/schemas/PolicyNotEligible"
+        "503":
+          description: >-
+            policy_directory_unavailable (the policy core did not answer;
+            nothing was recorded) or assistance_unavailable - retry with the
+            same key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-requests/{request_id}:
+    get:
+      summary: Read one own request for assistance (HU-M2.3-01)
+      description: >-
+        The request as it was recorded, with its current status. Only its
+        owner reads it: a request of another insured answers as one that
+        does not exist.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      responses:
+        "200":
+          description: The request
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceRequest"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >-
+            assistance_request_not_found - it does not exist, it is not the
+            insured's or the id is not a UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: assistance_unavailable - retry
           content:
             application/json:
               schema:
@@ -2511,6 +2699,14 @@ components:
         type: string
         pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
         example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
+    AssistanceRequestID:
+      name: request_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        example: 3b8e2f6a-1c4d-4e7f-9a2b-6c5d8e0f1a2b
     ProviderID:
       name: provider_id
       in: path
@@ -3377,6 +3573,153 @@ components:
           type: string
           format: date-time
           nullable: true
+    AssistanceStatus:
+      type: string
+      description: >-
+        new is the only status HU-M2.3-01 writes. in_call, dispatched and
+        closed belong to the inbox of operations (HU-W2.3-03) and are listed
+        so the app does not break when they arrive.
+      enum: [new, in_call, dispatched, closed]
+    LocationStatus:
+      type: string
+      description: sent when the phone shared a fix; unavailable when it could not.
+      enum: [sent, unavailable]
+    LocationUnavailableReason:
+      type: string
+      description: >-
+        Why the phone shared no location: the insured denied the permission
+        (permission_denied), the location service is off
+        (location_disabled), or no fix came in time or the last one is older
+        than 60 seconds (no_fix).
+      enum: [permission_denied, location_disabled, no_fix]
+    AssistanceLocationInput:
+      type: object
+      additionalProperties: false
+      required: [status]
+      description: >-
+        With status sent, latitude, longitude, accuracy_m and captured_at are
+        required and unavailable_reason is not allowed; with status
+        unavailable, unavailable_reason is required and the other four are
+        not allowed (field code not_applicable).
+      properties:
+        status:
+          $ref: "#/components/schemas/LocationStatus"
+        latitude:
+          type: number
+          minimum: -90
+          maximum: 90
+          example: 4.7712
+        longitude:
+          type: number
+          minimum: -180
+          maximum: 180
+          example: -74.0452
+        accuracy_m:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 10000
+          description: Radius of the fix in meters, as the phone reports it.
+          example: 8
+        captured_at:
+          type: string
+          format: date-time
+          description: >-
+            Instant of the fix on the phone. Not more than 5 minutes in the
+            future (clock skew of the phone).
+        unavailable_reason:
+          $ref: "#/components/schemas/LocationUnavailableReason"
+    AssistanceRequestInput:
+      type: object
+      additionalProperties: false
+      required: [policy_id, location]
+      description: >-
+        Who requests is the subject of the token; the body does not say it.
+      properties:
+        policy_id:
+          type: string
+          pattern: '^[A-Za-z0-9-]{3,40}$'
+          example: AU-2025-118204
+        location:
+          $ref: "#/components/schemas/AssistanceLocationInput"
+        place:
+          type: string
+          minLength: 3
+          maxLength: 160
+          description: >-
+            Optional. The readable address the phone got from its own
+            geocoder; the service does not geocode. Kept as text, trimmed.
+          example: Autopista Norte km 12, Bogotá
+    AssistanceLocation:
+      type: object
+      required: [status, latitude, longitude, accuracy_m, captured_at, unavailable_reason]
+      description: >-
+        The result of the location as it was recorded. The fields that do
+        not apply to the status are null.
+      properties:
+        status:
+          $ref: "#/components/schemas/LocationStatus"
+        latitude:
+          type: number
+          nullable: true
+        longitude:
+          type: number
+          nullable: true
+        accuracy_m:
+          type: number
+          nullable: true
+        captured_at:
+          type: string
+          format: date-time
+          nullable: true
+        unavailable_reason:
+          allOf:
+            - $ref: "#/components/schemas/LocationUnavailableReason"
+          nullable: true
+    AssistancePolicy:
+      type: object
+      required: [policy_id, line, product, insured_object]
+      description: The policy as the policy core described it when the request was recorded.
+      properties:
+        policy_id:
+          type: string
+          example: AU-2025-118204
+        line:
+          type: string
+          description: Any line takes a request; the coverage of the assistance is confirmed on the call.
+          enum: [auto, home, travel]
+        product:
+          type: string
+          example: Autos
+        insured_object:
+          type: string
+          example: KJT-482
+    AssistanceRequest:
+      type: object
+      required: [request_id, request_number, status, policy, location, place, requested_at]
+      properties:
+        request_id:
+          type: string
+          example: 3b8e2f6a-1c4d-4e7f-9a2b-6c5d8e0f1a2b
+        request_number:
+          type: string
+          pattern: '^AST-[0-9]{4}-[0-9]{4,}$'
+          description: AST-<year>-<4 digits or more>, unique in the platform. The one the insured sees.
+          example: AST-2026-0912
+        status:
+          $ref: "#/components/schemas/AssistanceStatus"
+        policy:
+          $ref: "#/components/schemas/AssistancePolicy"
+        location:
+          $ref: "#/components/schemas/AssistanceLocation"
+        place:
+          type: string
+          nullable: true
+          description: The address the app sent; null when it sent none.
+        requested_at:
+          type: string
+          format: date-time
+          description: When the service recorded the request, in UTC (its own clock).
     TriageLevel:
       type: integer
       enum: [1, 2, 3]
