@@ -38,6 +38,6 @@ output "group_names" {
 }
 
 output "test_users" {
-  description = "E-mail of the permanent test user of each role group."
-  value       = { for u in values(local.test_users) : u.group => u.email }
+  description = "E-mail of each permanent test user by key: its role group, or insured2 for the second insured."
+  value       = { for k, u in local.test_users : k => u.email }
 }

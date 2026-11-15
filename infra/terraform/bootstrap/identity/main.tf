@@ -23,12 +23,15 @@ locals {
     Purpose = "identity"
   }
 
-  # Permanent test users, one per role group. The addresses are fictitious
+  # Permanent test users: one per role group, plus a second insured
+  # (insured2) to show in the cloud that an insured never reaches the
+  # policies of another one (HU-W1.4-01). The addresses are fictitious
   # (@example.com); socio-a is the default partner of the usage plans
   # (modules/platform). They share one password, set only through
   # TF_VAR_seed_user_password.
   test_users = {
     insured    = { email = "asegurado@example.com", group = "insured" }
+    insured2   = { email = "asegurado2@example.com", group = "insured" }
     advisor    = { email = "asesor@example.com", group = "advisor" }
     operations = { email = "operaciones@example.com", group = "operations" }
     partner    = { email = "socio@example.com", group = "partner", partner_id = "socio-a" }
