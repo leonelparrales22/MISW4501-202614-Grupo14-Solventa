@@ -41,6 +41,10 @@ type Config struct {
 	// PartnerNames are the display names of the partners (decision D-14 a);
 	// optional: without a name the onerous beneficiary shows its code.
 	PartnerNames map[string]string
+	// Endorsements reads the last applied endorsement of a policy
+	// (HU-W1.4-02); optional: without it the terms are the ones of the
+	// policy and its origin.
+	Endorsements EndorsedTermsReader
 	Clock        ports.Clock
 }
 
@@ -49,7 +53,11 @@ func NewService(c Config) (*Service, error) {
 	if c.Policies == nil || c.Requests == nil || c.Origins == nil || c.Clock == nil {
 		return nil, errors.New("endorsements: policies, requests, origins and clock are required")
 	}
-	return &Service{policies: c.Policies, requests: c.Requests, terms: NewTerms(c.Origins, c.PartnerNames), clock: c.Clock}, nil
+	terms := NewTerms(c.Origins, c.PartnerNames)
+	if c.Endorsements != nil {
+		terms.WithEndorsements(c.Endorsements)
+	}
+	return &Service{policies: c.Policies, requests: c.Requests, terms: terms, clock: c.Clock}, nil
 }
 
 // Terms returns the builder of the current terms, for the analyst of

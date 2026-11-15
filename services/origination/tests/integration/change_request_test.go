@@ -46,6 +46,8 @@ func newChangeEnv(t *testing.T) *changeEnv {
 		Origins: renewal.OriginFinder{Policies: e.policies, Charges: e.charges, Offers: e.offers, BySubject: customers,
 			ByDocument: customers},
 		PartnerNames: map[string]string{"aliado-banco-1": "Banco Aliado"}, Clock: e.clock,
+		// HU-W1.4-02: the terms show the last endorsement applied, as in cmd.
+		Endorsements: postgres.NewEndorsementStore(e.db),
 	})
 	require.NoError(t, err)
 	srv := httptest.NewServer(httpadapter.NewRouter(profiling.NewResolver(nil, nil, e.clock),
