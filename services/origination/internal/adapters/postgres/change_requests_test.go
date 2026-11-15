@@ -339,3 +339,21 @@ func TestTheListOfAnInsuredWithoutRequestsIsEmpty(t *testing.T) {
 	assert.Equal(t, domain.ChangeRequestIndicators{}, page.Indicators)
 	assert.Equal(t, []string{}, page.Policies)
 }
+
+func TestChangeRequestStoreReportsTheFailuresOfTheDatabase(t *testing.T) {
+	f := newChangeRequestFixture(t)
+	ctx := context.Background()
+	_, err := f.store.Create(ctx, changeRequest("pol-1", "unknown", filedAt))
+	assert.ErrorContains(t, err, "unknown type", "a change of an unknown type is not stored")
+
+	require.NoError(t, f.db.Close())
+	_, err = f.store.Create(ctx, changeRequest("pol-1", domain.ChangeInsuredAmount, filedAt))
+	assert.Error(t, err)
+	_, err = f.store.Get(ctx, "SOL-MOD-2026-0001")
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, ports.ErrChangeRequestNotFound)
+	_, err = f.store.ListOpen(ctx, "pol-1")
+	assert.Error(t, err)
+	_, err = f.store.ListByCustomer(ctx, "sub-carolina", domain.ChangeRequestFilter{Now: filedAt}.WithDefaults())
+	assert.Error(t, err)
+}
