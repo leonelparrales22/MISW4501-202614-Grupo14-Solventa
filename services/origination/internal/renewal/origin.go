@@ -16,7 +16,9 @@ const maxRenewalChain = 50
 
 // Origin is where a policy came from (HU-W1.5-03, decision D-6): the customer
 // its risk profile and its consent are keyed by, the birth date its renewal
-// is priced with and the channel its original offer was sold in.
+// is priced with, the channel its original offer was sold in and the partner
+// that sold it (HU-W1.4-01, decision D-14: the lender of the credit, the
+// onerous beneficiary of the policy).
 type Origin struct {
 	// CustomerID keys the cached profile and the consent in audit: the id the
 	// partner or the advisor gave the customer when the offer was quoted.
@@ -29,6 +31,9 @@ type Origin struct {
 	Channel domain.OfferChannel
 	// OfferID is the original offer, empty when it is unknown.
 	OfferID string
+	// PartnerID is the partner of the original offer (AdvisorPartnerID for
+	// an advisor sale), empty when the offer is unknown.
+	PartnerID string
 }
 
 // OriginFinder follows a policy back to the offer it was bought from: policy
@@ -89,7 +94,7 @@ func (f OriginFinder) offerOf(ctx context.Context, p domain.Policy) (Origin, boo
 	if err != nil {
 		return Origin{}, false, fmt.Errorf("read the offer of policy %s: %w", p.ID, err)
 	}
-	return Origin{CustomerID: o.CustomerID, BirthDate: o.BirthDate, Channel: o.Channel, OfferID: o.ID}, true, nil
+	return Origin{CustomerID: o.CustomerID, BirthDate: o.BirthDate, Channel: o.Channel, OfferID: o.ID, PartnerID: o.PartnerID}, true, nil
 }
 
 func (f OriginFinder) fallback(ctx context.Context, p domain.Policy) (Origin, error) {
