@@ -348,7 +348,7 @@ func (s *EndorsementStore) StartReview(ctx context.Context, requestID string, by
 	return true, nil
 }
 
-func insertAttempt(ctx context.Context, tx *sql.Tx, a domain.EndorsementAttempt) (int64, error) {
+func insertEndorsementAttempt(ctx context.Context, tx *sql.Tx, a domain.EndorsementAttempt) (int64, error) {
 	validations, err := encodeValidations(a.Validations)
 	if err != nil {
 		return 0, err
@@ -397,7 +397,7 @@ func (s *EndorsementStore) Apply(ctx context.Context, a ports.AppliedEndorsement
 	}
 	attempt := domain.EndorsementAttempt{RequestID: r.ID, PolicyID: r.PolicyID, Outcome: domain.OutcomeApplied,
 		Validations: a.Validations, By: a.By, At: a.At}
-	attemptID, err := insertAttempt(ctx, tx, attempt)
+	attemptID, err := insertEndorsementAttempt(ctx, tx, attempt)
 	if err != nil {
 		return domain.Endorsement{}, err
 	}
@@ -445,7 +445,7 @@ func (s *EndorsementStore) RecordNotApplied(ctx context.Context, a domain.Endors
 		return domain.EndorsementAttempt{}, ports.ErrRequestAlreadyDecided
 	}
 	a.Outcome = domain.OutcomeNotApplied
-	id, err := insertAttempt(ctx, tx, a)
+	id, err := insertEndorsementAttempt(ctx, tx, a)
 	if err != nil {
 		return domain.EndorsementAttempt{}, err
 	}

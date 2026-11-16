@@ -14,7 +14,7 @@ import (
 
 // ChangeRequestStore is the ports.ChangeRequestRepository over the
 // change_request and change_request_counter tables (HU-W1.4-01, migration
-// 0017). A request is numbered and stored in one transaction; the unique
+// 0018). A request is numbered and stored in one transaction; the unique
 // partial index change_request_one_open decides between two requests of the
 // same policy and type filed at once, without locks (pattern of EC-D02).
 type ChangeRequestStore struct {

@@ -1,20 +1,20 @@
 # `bootstrap/identity` — user pool permanente de los canales humanos (T4)
 
 User pool de Amazon Cognito **permanente y compartido** del portal web y de la app móvil: el pool `solventa-users`, con los cuatro
-grupos de rol, los clientes `web` y `mobile` y **un usuario de prueba permanente por rol**. Lo leen las dos composiciones de la
+grupos de rol, los clientes `web` y `mobile` y **un usuario de prueba permanente por rol, más un segundo asegurado**. Lo leen las dos composiciones de la
 plataforma, [`production-demo/platform`](../../environments/production-demo/platform/README.md) y
 [`staging/platform`](../../environments/staging/platform/README.md), que no crean pool propio.
 
 Es permanente porque un pool que nace y muere con cada ventana de staging estrena identificadores cada vez: el portal y la APK
 tendrían que reconfigurarse y recompilarse, la app móvil no tendría un pool estable contra el cual conectarse y los usuarios de prueba
 desaparecerían con el `destroy`. Con este pool, región, ID del pool y clientes se configuran **una sola vez** y las ventanas de
-staging usan siempre los mismos cuatro usuarios.
+staging usan siempre los mismos cinco usuarios.
 
 > **Estado:** **aplicado el 2026-10-18** en `us-east-2` (15 recursos; un `plan` posterior da «No changes»). User pool
 > `solventa-users` con ID `us-east-2_EWwg8NL2C` y candado de borrado `ACTIVE`; clientes `solventa-users-web`
 > (`v16a9q5ba8hhh5keo76fjd4e1`) y `solventa-users-mobile` (`6dri40bi3sk74cr0jb5djq43c0`); emisor
 > `https://cognito-idp.us-east-2.amazonaws.com/us-east-2_EWwg8NL2C`. Ninguno de estos valores es secreto. No se vuelve a aplicar
-> salvo para cambiar la contraseña de los usuarios de prueba (ver «Aplicación única» y el runbook).
+> salvo para cambiar la contraseña o dar de alta o de baja un usuario de prueba (ver «Aplicación única» y el runbook).
 
 Se aplica una vez y no se destruye, como [`remote-state`](../remote-state/README.md) y [`cd-ecr`](../cd-ecr/README.md).
 
@@ -26,7 +26,7 @@ Se aplica una vez y no se destruye, como [`remote-state`](../remote-state/README
 | Grupos | `insured`, `advisor`, `operations`, `partner` | Son los roles de `pkg/security` (claim `cognito:groups`) |
 | Clientes | `solventa-users-web` y `solventa-users-mobile` (claves `web` y `mobile`), públicos, sin secreto, `ALLOW_USER_PASSWORD_AUTH` + `ALLOW_REFRESH_TOKEN_AUTH`, con revocación | Valores por defecto del módulo `cognito` |
 | Vigencias | ID y access token: 5 min · renovación web: 12 h · renovación móvil: 30 días | Valores por defecto del módulo `cognito` (HA-S01) |
-| Usuarios de prueba | Cuatro, uno por grupo (tabla siguiente), con contraseña permanente y sin invitación | Pruebas y demostraciones en todos los ambientes |
+| Usuarios de prueba | Cinco: uno por grupo y un segundo asegurado (tabla siguiente), con contraseña permanente y sin invitación | Pruebas y demostraciones en todos los ambientes |
 | Estado | `bootstrap/identity/terraform.tfstate` en `solventa-tfstate-368083581678`, bloqueo nativo de S3, cifrado, desde el primer `init` | Convención de claves de T4 |
 | Etiquetas | `Project=solventa`, `Owner=nicolas`, `Env=shared`, `Task=T4`, `Purpose=identity`, **sin `TTL` ni `Story`** | Recurso compartido y permanente, no de una ventana |
 | Proveedor | `region = "us-east-2"` (validada) y `allowed_account_ids = ["368083581678"]` | Terraform se niega a planear o aplicar en otra región o en otra cuenta |
@@ -36,15 +36,17 @@ Se aplica una vez y no se destruye, como [`remote-state`](../remote-state/README
 | Rol (grupo) | Usuario | `custom:partner_id` |
 |---|---|---|
 | Asegurado (`insured`) | `asegurado@example.com` | — |
+| Segundo asegurado (`insured`) | `asegurado2@example.com` | — |
 | Asesor (`advisor`) | `asesor@example.com` | — |
 | Operaciones (`operations`) | `operaciones@example.com` | — |
 | Socio (`partner`) | `socio@example.com` | `socio-a` (el socio por defecto de los usage plans) |
 
-Los correos son ficticios (dominio reservado `example.com`). Se declaran en `local.test_users` de `main.tf`; el alta, la baja, el
+El segundo asegurado existe para comprobar en la nube que un asegurado no llega a las pólizas de otro (HU-W1.4-01). Los correos son
+ficticios (dominio reservado `example.com`). Se declaran en `local.test_users` de `main.tf`; el alta, la baja, el
 cambio de contraseña y la verificación están en el runbook
 [«Usuarios de prueba permanentes»](../../../../docs/runbooks/README.md#5-usuarios-de-prueba-permanentes-bootstrapidentity).
 
-**Contraseña.** Los cuatro comparten una contraseña permanente que entra **solo** por la variable de entorno
+**Contraseña.** Los cinco comparten una contraseña permanente que entra **solo** por la variable de entorno
 `TF_VAR_seed_user_password` (12 o más caracteres, con minúsculas, mayúsculas, números y símbolos; la variable no tiene valor por
 defecto, así que un `plan` sin ella falla). Nunca va en un `.tfvars`, en el código ni en un mensaje. Como cualquier argumento de un
 recurso, queda en el **estado cifrado** del bucket de T4 y en el archivo de un `plan -out`: por eso el plan guardado se escribe
@@ -52,7 +54,7 @@ recurso, queda en el **estado cifrado** del bucket de T4 y en el archivo de un `
 prueba ficticios.
 
 Salidas (ninguna es secreta): `region`, `user_pool_id`, `user_pool_arn`, `issuer`, `jwks_url`, `client_ids` (`web`, `mobile`),
-`group_names` y `test_users` (rol → correo).
+`group_names` y `test_users` (clave → correo: el grupo de rol, o `insured2` para el segundo asegurado).
 
 ## Aplicación única
 

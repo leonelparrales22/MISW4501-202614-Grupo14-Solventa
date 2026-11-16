@@ -21,9 +21,18 @@ import (
 type fakeWallet struct {
 	wallet wallet.Wallet
 	err    error
+	// detail and asked are the policy detail (HU-W1.6-02) and the id it was
+	// asked for.
+	detail wallet.Detail
+	asked  string
 }
 
 func (f *fakeWallet) List(context.Context) (wallet.Wallet, error) { return f.wallet, f.err }
+
+func (f *fakeWallet) Get(_ context.Context, id string) (wallet.Detail, error) {
+	f.asked = id
+	return f.detail, f.err
+}
 
 func callWallet(t *testing.T, svc *fakeWallet, token string) *httptest.ResponseRecorder {
 	t.Helper()

@@ -13,6 +13,7 @@ Los servicios publican hechos de negocio en Amazon SNS (un tópico por dominio) 
 | `ParametricTriggerObserved` | `ParametroObservado` | iot (telemetría; hoy `tests/e2e/hu-m2.4/nube.sh` y `app-local.sh`) | claims (HU-M2.4-01) | La telemetría observó el parámetro de una póliza paramétrica (el retraso del vuelo de un asegurado), ya asociado a la póliza. El motor paramétrico de `claims` radica, resuelve y paga el siniestro si el valor alcanza el umbral |
 | `ClaimStageChanged` | `EtapaDelSiniestroCambiada` | claims | notifications (HU-M3.3-01) | Un siniestro llegó a una etapa que el asegurado espera: en evaluación, aprobado o pagado. `notifications` registra la notificación y envía el *push* en ≤ 60 s. Lo escribe en el *outbox* `claims/internal/stages` a partir del historial de estados |
 | `PolicyExpiryApproaching` | `VencimientoDePolizaProximo` | origination | notifications (HU-M3.2-01) | Una póliza activa del asegurado (de originación o del núcleo de pólizas) llegó a 30, 15 o 5 días de su vencimiento. `notifications` registra la notificación con la fecha exacta de vencimiento y envía el *push*. Lo escribe en el *outbox* `origination/internal/expiryalert`, un barrido horario |
+| `PolicyCancelledForNonPayment` | `PolizaCanceladaPorNoPago` | origination | notifications (HU-W1.6-02) | Una póliza de originación se canceló porque una cuota de su prima no se pagó en el periodo de gracia (30 días, 3 cobros). Sin reembolso. `notifications` registra la notificación y envía el *push*; el correo lo envía origination. Lo escribe en el *outbox* `origination/internal/installments`, un barrido horario |
 | `CustomerLinked` | `ClienteVinculado` | origination | audit | La cuenta del asegurado (`sub` de Cognito) quedó vinculada a su documento al terminar el registro (HU-M1.1-01); `audit` lo usa para reconocer al titular de sus consentimientos (HU-M1.3-01). **Primer evento publicado con *outbox*** |
 | `PartnerCredentialsIssued`, `PartnerCredentialsRotated`, `PartnerCredentialsRevoked` | `CredencialesSocioEmitidas`, `CredencialesSocioRotadas`, `CredencialesSocioRevocadas` | partners | audit | Se generaron las credenciales de un socio al aprobarlo, se rotaron o se revocó la anterior al vencer la transición (HU-W3.1-01); `audit` las guarda en el registro de auditoría de suscripción con la fecha y el emisor. **Primer evento del tópico `partners`** |
 
@@ -256,5 +257,33 @@ reintenta en el siguiente barrido.
 `policy_expiry`). La notificación y una entrega por cada dispositivo con permiso se escriben en una transacción; el *push* va en el grupo
 `policy_expiry` con `policy_id` en `data`. Un *payload* inválido o la base caída no borran el mensaje: reaparece y termina en la DLQ.
 Contrato para el móvil: [`docs/contratos/HU-M3.2-01-api.md`](../contratos/HU-M3.2-01-api.md).
+
+## `PolicyCancelledForNonPayment` (HU-W1.6-02)
+
+Lo publica `origination` en su tópico, con *outbox*. El barrido de las cuotas (`internal/installments`, cada
+`INSTALLMENT_SWEEP_INTERVAL_MS`, por omisión 1 h) cancela la póliza cuando una cuota mensual sigue sin pagar al día siguiente del fin de su
+gracia (30 días, `INSTALLMENT_GRACE_DAYS`), tras los cobros de los días 1, 8 y 15. La fila de `policy_cancellation` y el evento se escriben
+en una transacción; la clave primaria cancela la póliza una sola vez aunque barran varias tareas. Lo consume `notifications` desde su
+cola. Reglas completas: [`docs/contratos/HU-W1.6-02-api.md`](../contratos/HU-W1.6-02-api.md).
+
+**Sobre:** `event_id` = `policy-cancelled-non-payment-<policy_id>`, `event_type` = `PolicyCancelledForNonPayment`, `event_version` = `1`,
+`source` = `origination` y `occurred_at` = `cancelled_at`.
+
+**Payload:**
+
+| Campo | Descripción |
+|---|---|
+| `policy_id`, `subject` | Póliza de originación y `sub` de la cuenta del asegurado (el destinatario) |
+| `reason` | Siempre `non_payment` |
+| `line` | Siempre `life`: originación solo emite vida |
+| `installment_seq` | El mes de la prima que no se pagó (2 o más; el 1 es la emisión) |
+| `due_at`, `grace_ends_at` | Cuándo venció esa cuota y cuándo terminó su gracia (UTC) |
+| `cancelled_at` | Cuándo se canceló (UTC) |
+| `amount_minor`, `currency` | Lo que se dejó de pagar, en centavos |
+| `refund` | Siempre `not_applicable` |
+
+**Cómo se consume:** idempotente por póliza (notificación `ntf-cancelled-<policy_id>`, de tipo `policy_cancelled`). La notificación y una
+entrega por cada dispositivo con permiso se escriben en una transacción; el *push* va en el grupo `policy_cancelled` con `policy_id` en
+`data`. Un *payload* inválido o la base caída no borran el mensaje: reaparece y termina en la DLQ.
 
 Los esquemas de los demás eventos se agregarán aquí al implementarlos. Los consumidores exactos pueden cambiar; confirmar en la Wiki ([Arquitectura final](https://github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/wiki/Arquitectura_final)).

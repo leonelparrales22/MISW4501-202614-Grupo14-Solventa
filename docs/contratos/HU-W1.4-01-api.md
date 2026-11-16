@@ -2,8 +2,8 @@
 
 > **Fuente para el front (Angular).** Describe lo que implementa el servicio `origination`
 > (`internal/adapters/http/change_requests.go`, `internal/endorsements/`, `internal/adapters/postgres/change_requests.go`,
-> `internal/domain/change_request.go`, migración `0017_change_request.sql`). Contrato formal: `services/origination/api/openapi.yaml`
-> (0.17.0). Alimenta las pantallas del portal del asegurado **A3 «Solicitar una modificación»** (`/originacion/polizas/:id/modificar`),
+> `internal/domain/change_request.go`, migración `0018_change_request.sql`). Contrato formal: `services/origination/api/openapi.yaml`
+> (0.18.0). Alimenta las pantallas del portal del asegurado **A3 «Solicitar una modificación»** (`/originacion/polizas/:id/modificar`),
 > **A3b «Solicitud radicada»** (`/originacion/solicitudes/:id`) y **A11 «Mis solicitudes»** (`/originacion/solicitudes`).
 > Revisar y aplicar la solicitud es de HU-W1.4-02, que reutiliza este modelo.
 
@@ -206,7 +206,7 @@ Mientras una participación sea inválida no se reporta además `share_total_not
 
 ## 4. Datos
 
-- Tablas `change_request_counter` (consecutivo por año) y `change_request` (migración `0017`). El número y la solicitud se escriben en
+- Tablas `change_request_counter` (consecutivo por año) y `change_request` (migración `0018`). El número y la solicitud se escriben en
   **una** transacción: si choca con una abierta, se revierte también el número.
 - El índice único parcial `change_request_one_open` (póliza, tipo) decide entre dos radicaciones simultáneas, sin bloqueos.
 - El contenido (todo salvo `status`, `status_changed_at` y `decision_reason`) no cambia; sin borrado (disparador). `decision_reason` es

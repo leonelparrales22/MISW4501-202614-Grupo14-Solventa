@@ -86,3 +86,18 @@ func TestAnExpiryAlertTellsWhichPolicyToOpen(t *testing.T) {
 		Data: map[string]string{fcm.DataNotificationID: "ntf-expiry-AU-2025-118204-20261130-30",
 			fcm.DataKind: domain.KindPolicyExpiry, fcm.DataPolicyID: "AU-2025-118204"}}, client.got)
 }
+
+// HU-W1.6-02: a cancellation for non-payment opens the policy too.
+func TestACancellationTellsWhichPolicyToOpen(t *testing.T) {
+	client := &fakeClient{}
+	c := domain.PolicyCancellation{PolicyID: "VH-2026-004512", Subject: "sub-a", Reason: domain.ReasonNonPayment,
+		InstallmentSeq: 2, DueAt: at.AddDate(0, 0, -31), CancelledAt: at, AmountMinor: 1, Currency: "COP"}
+	d := domain.NewDelivery(domain.NewCancellationNotification(c, at), device(), at)
+
+	_, err := fcm.NewSender(client).Send(context.Background(), d)
+
+	require.NoError(t, err)
+	assert.Equal(t, pkgfcm.Message{Token: "tok-fcm-1", CollapseKey: "ntf-cancelled-VH-2026-004512",
+		Data: map[string]string{fcm.DataNotificationID: "ntf-cancelled-VH-2026-004512",
+			fcm.DataKind: domain.KindPolicyCancelled, fcm.DataPolicyID: "VH-2026-004512"}}, client.got)
+}

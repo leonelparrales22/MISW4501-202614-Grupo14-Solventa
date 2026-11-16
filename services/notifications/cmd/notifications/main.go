@@ -200,8 +200,9 @@ func newEventConsumer(ctx context.Context, cfg config, svc eventRecorder) (*sqsc
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("domain events: consuming %s, %s and %s from %s", messaging.EventTypeParametricPayoutCompleted,
-		messaging.EventTypeClaimStageChanged, messaging.EventTypePolicyExpiryApproaching, cfg.eventsQueueURL)
+	log.Printf("domain events: consuming %s, %s, %s and %s from %s", messaging.EventTypeParametricPayoutCompleted,
+		messaging.EventTypeClaimStageChanged, messaging.EventTypePolicyExpiryApproaching,
+		messaging.EventTypePolicyCancelledForNonPayment, cfg.eventsQueueURL)
 	return consumer, nil
 }
 
@@ -212,6 +213,7 @@ type eventRecorder interface {
 	messaging.PayoutRecorder
 	messaging.StageRecorder
 	messaging.ExpiryRecorder
+	messaging.CancellationRecorder
 }
 
 // eventRouter routes the events of the notifications queue to their handlers.
@@ -225,6 +227,11 @@ func eventRouter(svc eventRecorder) (*events.Router, error) {
 	}
 	if err := router.Register(messaging.EventTypePolicyExpiryApproaching,
 		messaging.NewPolicyExpiryApproachingHandler(svc)); err != nil {
+		return nil, err
+	}
+	// HU-W1.6-02: the cancellation of a policy for non-payment.
+	if err := router.Register(messaging.EventTypePolicyCancelledForNonPayment,
+		messaging.NewPolicyCancelledHandler(svc)); err != nil {
 		return nil, err
 	}
 	return router, nil

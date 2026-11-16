@@ -61,6 +61,8 @@ type Service struct {
 	rules     domain.RenewalPolicy
 	clock     ports.Clock
 	wake      func()
+	// cancellations is nil when nothing cancels policies (HU-W1.6-02).
+	cancellations ports.CancellationChecker
 }
 
 // Config is what the service needs to be built.
@@ -80,6 +82,9 @@ type Config struct {
 	Clock    ports.Clock
 	// Wake, when set, wakes the charge worker after a renewal is stored.
 	Wake func()
+	// Cancellations, when set, keeps a policy cancelled for non-payment
+	// (HU-W1.6-02) from being renewed.
+	Cancellations ports.CancellationChecker
 }
 
 // NewService builds a Service.
@@ -98,7 +103,7 @@ func NewService(c Config) (*Service, error) {
 	}
 	return &Service{policies: c.Policies, renewals: c.Renewals, charges: c.Charges, customers: c.Customers,
 		profiles: c.Profiles, rater: c.Rater, claims: c.Claims, notifier: c.Notifier, rules: c.Rules,
-		clock: c.Clock, wake: c.Wake}, nil
+		clock: c.Clock, wake: c.Wake, cancellations: c.Cancellations}, nil
 }
 
 // Rules returns the renewal rules the service applies.
@@ -144,9 +149,44 @@ func (s *Service) ListPolicies(ctx context.Context) ([]PolicyView, error) {
 			v.Renewal = &r
 		}
 		v.CanRenew = v.Renewal == nil && s.rules.InWindow(p, now)
+		if v.CanRenew {
+			cancelled, err := s.isCancelled(ctx, p.ID)
+			if err != nil {
+				return nil, err
+			}
+			v.CanRenew = !cancelled
+		}
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// isCancelled tells whether the policy was cancelled for non-payment
+// (HU-W1.6-02): it cannot be renewed, the insured quotes again.
+func (s *Service) isCancelled(ctx context.Context, policyID string) (bool, error) {
+	if s.cancellations == nil {
+		return false, nil
+	}
+	return s.cancellations.IsCancelled(ctx, policyID)
+}
+
+// renewable tells whether the policy can be renewed at now: inside its
+// window and not cancelled for non-payment (HU-W1.6-02).
+func (s *Service) renewable(ctx context.Context, p domain.Policy, now time.Time) (bool, error) {
+	if !s.rules.InWindow(p, now) {
+		return false, nil
+	}
+	cancelled, err := s.isCancelled(ctx, p.ID)
+	return !cancelled, err
+}
+
+// notAvailableIf is ErrRenewalNotAvailable for a cancelled policy, nil
+// otherwise.
+func notAvailableIf(cancelled bool) error {
+	if cancelled {
+		return domain.ErrRenewalNotAvailable
+	}
+	return nil
 }
 
 // Conditions is what the insured sees before accepting a renewal.
@@ -174,6 +214,9 @@ func (s *Service) Conditions(ctx context.Context, policyID string) (Conditions, 
 	}
 	if !s.rules.InWindow(p, now) {
 		return Conditions{}, domain.ErrRenewalNotAvailable
+	}
+	if cancelled, err := s.isCancelled(ctx, p.ID); err != nil || cancelled {
+		return Conditions{}, errors.Join(err, notAvailableIf(cancelled))
 	}
 	q := s.requote(ctx, p, now)
 	return Conditions{RenewalConditions: s.conditionsOf(p, q), PaymentMethod: s.registeredMethod(ctx, p)}, nil
@@ -286,6 +329,9 @@ func (s *Service) Accept(ctx context.Context, policyID string) (Accepted, error)
 	}
 	if !s.rules.InWindow(p, now) {
 		return Accepted{}, domain.ErrRenewalNotAvailable
+	}
+	if cancelled, err := s.isCancelled(ctx, p.ID); err != nil || cancelled {
+		return Accepted{}, errors.Join(err, notAvailableIf(cancelled))
 	}
 	q := s.requote(ctx, p, now)
 	id := domain.RenewalID(p.ID, p.CoverageEnd)

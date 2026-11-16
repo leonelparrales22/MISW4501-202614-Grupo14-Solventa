@@ -47,7 +47,15 @@ const (
 	// ExpiringStatusRenewalInProgress: the renewal of the current period was
 	// accepted and its premium is being charged ("Renovación en curso").
 	ExpiringStatusRenewalInProgress ExpiringStatus = "renewal_in_progress"
+	// ExpiringStatusCancelledNonPayment: the policy was cancelled for
+	// non-payment in the last CancelledListedDays days (HU-W1.6-02). It is
+	// listed for the commercial follow-up of the advisor, whatever the range.
+	ExpiringStatusCancelledNonPayment ExpiringStatus = "cancelled_non_payment"
 )
+
+// CancelledListedDays is how long a policy cancelled for non-payment stays in
+// the list of the advisor, and the period of its indicator.
+const CancelledListedDays = 30
 
 // Errors of the query of the list.
 var (
@@ -61,11 +69,11 @@ var (
 // ParseExpiringStatus reads the status of the filter: empty is every status.
 func ParseExpiringStatus(raw string) (ExpiringStatus, error) {
 	switch s := ExpiringStatus(strings.TrimSpace(raw)); s {
-	case "", ExpiringStatusExpiring, ExpiringStatusRenewalInProgress:
+	case "", ExpiringStatusExpiring, ExpiringStatusRenewalInProgress, ExpiringStatusCancelledNonPayment:
 		return s, nil
 	default:
-		return "", fmt.Errorf("%w: status must be %s or %s", ErrInvalidExpiringQuery,
-			ExpiringStatusExpiring, ExpiringStatusRenewalInProgress)
+		return "", fmt.Errorf("%w: status must be %s, %s or %s", ErrInvalidExpiringQuery,
+			ExpiringStatusExpiring, ExpiringStatusRenewalInProgress, ExpiringStatusCancelledNonPayment)
 	}
 }
 
@@ -187,8 +195,11 @@ func (q ExpiringQuery) Offset() int { return (q.Page - 1) * q.PageSize }
 // the window are what the advisor can do with it now (decision D-5 a: only
 // inside the renewal window of HU-W1.5-02).
 type ExpiringPolicy struct {
-	Policy         Policy
-	Renewal        *Renewal
+	Policy  Policy
+	Renewal *Renewal
+	// CancelledAt is when the policy was cancelled for non-payment; zero
+	// when it was not (HU-W1.6-02).
+	CancelledAt    time.Time
 	Status         ExpiringStatus
 	CanRenew       bool
 	WindowOpensAt  time.Time
@@ -203,9 +214,12 @@ type ExpiringPage struct {
 	Items           []ExpiringPolicy
 	Total           int
 	DueWithinWindow int
-	From            time.Time
-	To              time.Time
-	WindowDays      int
-	Page            int
-	PageSize        int
+	// CancelledNonPayment counts the policies cancelled for non-payment in
+	// the last CancelledListedDays days, whatever the filter (HU-W1.6-02).
+	CancelledNonPayment int
+	From                time.Time
+	To                  time.Time
+	WindowDays          int
+	Page                int
+	PageSize            int
 }

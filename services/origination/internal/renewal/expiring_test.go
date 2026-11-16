@@ -27,17 +27,27 @@ type fakeExpiring struct {
 	status          domain.ExpiringStatus
 	offset, limit   int
 	dueNow, dueTill time.Time
+	// cancelledSince and cancelled are the cancellations for non-payment
+	// (HU-W1.6-02).
+	cancelledSince time.Time
+	cancelled      int
 }
 
-func (f *fakeExpiring) ListExpiring(_ context.Context, start, end, now time.Time, status domain.ExpiringStatus,
-	offset, limit int) ([]domain.ExpiringPolicy, int, error) {
+func (f *fakeExpiring) ListExpiring(_ context.Context, start, end, now, cancelledSince time.Time,
+	status domain.ExpiringStatus, offset, limit int) ([]domain.ExpiringPolicy, int, error) {
 	f.start, f.end, f.now, f.status, f.offset, f.limit = start, end, now, status, offset, limit
+	f.cancelledSince = cancelledSince
 	return f.items, f.total, f.err
 }
 
 func (f *fakeExpiring) CountDueWithinWindow(_ context.Context, now, until time.Time) (int, error) {
 	f.dueNow, f.dueTill = now, until
 	return f.due, f.countErr
+}
+
+func (f *fakeExpiring) CountCancelledSince(_ context.Context, since time.Time) (int, error) {
+	f.cancelledSince = since
+	return f.cancelled, nil
 }
 
 func advisor(sub string) context.Context {

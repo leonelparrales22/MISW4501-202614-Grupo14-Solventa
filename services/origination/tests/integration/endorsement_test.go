@@ -164,7 +164,8 @@ func TestWalletRenewalExpiringAndCurrentTermsReadEndorsedTerms(t *testing.T) {
 		"and renews the endorsed insured value")
 
 	now := e.clock.Now()
-	expiring, _, err := postgres.NewExpiringPolicyStore(e.db).ListExpiring(ctx, now, now.AddDate(0, 0, 30), now, "", 0, 10)
+	expiring, _, err := postgres.NewExpiringPolicyStore(e.db).ListExpiring(ctx, now, now.AddDate(0, 0, 30), now,
+		now.AddDate(0, 0, -domain.CancelledListedDays), "", 0, 10)
 	require.NoError(t, err)
 	require.Len(t, expiring, 1)
 	assert.InDelta(t, 120_000_000, expiring[0].Policy.InsuredAmount, 0.001, "the list of the advisor")

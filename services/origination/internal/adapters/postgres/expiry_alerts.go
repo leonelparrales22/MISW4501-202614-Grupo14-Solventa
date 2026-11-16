@@ -19,13 +19,14 @@ var (
 )
 
 // ListExpiringUnrenewed returns the policies whose coverage ends in (after,
-// before) with no renewal row for that period, whatever its status, and no
-// policy that renews them.
+// before) with no renewal row for that period, whatever its status, no policy
+// that renews them and no cancellation for non-payment (HU-W1.6-02).
 func (s *PolicyStore) ListExpiringUnrenewed(ctx context.Context, after, before time.Time) ([]domain.Policy, error) {
 	return s.list(ctx, `SELECT `+prefixed("p", policyColumns)+` FROM policy_current p
 		WHERE p.coverage_end > $1 AND p.coverage_end < $2
 		  AND NOT EXISTS (SELECT 1 FROM renewal r WHERE r.policy_id = p.policy_id AND r.period_end = p.coverage_end)
 		  AND NOT EXISTS (SELECT 1 FROM policy n WHERE n.renewal_of = p.policy_id)
+		  AND NOT EXISTS (SELECT 1 FROM policy_cancellation c WHERE c.policy_id = p.policy_id)
 		ORDER BY p.coverage_end, p.policy_id`, after.UTC(), before.UTC())
 }
 

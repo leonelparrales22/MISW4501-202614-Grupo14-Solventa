@@ -406,7 +406,7 @@ type appliedEndorsementBody struct {
 	By            actorBody `json:"by"`
 }
 
-type attemptBody struct {
+type endorsementAttemptBody struct {
 	At     time.Time `json:"at"`
 	By     actorBody `json:"by"`
 	Failed []string  `json:"failed"`
@@ -416,7 +416,7 @@ type applicationResponse struct {
 	Outcome     string                  `json:"outcome"`
 	Request     endorsementRequestBody  `json:"request"`
 	Endorsement *appliedEndorsementBody `json:"endorsement"`
-	Attempt     *attemptBody            `json:"attempt"`
+	Attempt     *endorsementAttemptBody `json:"attempt"`
 	Validations []validationBody        `json:"validations"`
 }
 
@@ -437,7 +437,7 @@ func applyEndorsementRequest(svc EndorsementReviewService) http.HandlerFunc {
 			out.Endorsement = &appliedEndorsementBody{EndorsementID: e.ID, Version: e.Version, AppliedAt: e.At.UTC(), By: toActorBody(e.By)}
 		}
 		if a := res.Attempt; a != nil {
-			out.Attempt = &attemptBody{At: a.At.UTC(), By: toActorBody(a.By), Failed: codesOf(a.Validations.Of(domain.ValidationFailed))}
+			out.Attempt = &endorsementAttemptBody{At: a.At.UTC(), By: toActorBody(a.By), Failed: codesOf(a.Validations.Of(domain.ValidationFailed))}
 		}
 		writeJSON(w, http.StatusOK, out)
 	}

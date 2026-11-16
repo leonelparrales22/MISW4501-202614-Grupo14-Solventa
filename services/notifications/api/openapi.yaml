@@ -1,8 +1,17 @@
 openapi: 3.0.3
 info:
   title: Solventa - notifications service
-  version: 0.4.0
+  version: 0.5.0
   description: >
+    0.5.0 (HU-W1.6-02): the cancellation of a policy of the insured for
+    non-payment (event PolicyCancelledForNonPayment of the origination
+    service): kind policy_cancelled with cancellation, the policy, the month
+    of the premium that was not paid, its due date, the end of its grace
+    period, the cancellation, the unpaid amount and refund not_applicable. One
+    per policy. Its push goes in its own thread and carries policy_id.
+    Compatible with 0.4.0 (it adds a kind and the cancellation field, null for
+    the other kinds). Guide: docs/contratos/HU-W1.6-02-api.md.
+
     0.4.0 (HU-M3.2-01): the alerts 30, 15 and 5 days before a policy of the
     insured expires (event PolicyExpiryApproaching of the origination
     service): kind policy_expiry with expiry, the policy (policy_id, line,
@@ -251,7 +260,7 @@ components:
           minimum: 0
     Notification:
       type: object
-      required: [notification_id, kind, occurred_at, created_at, read_at, payout, stage, expiry]
+      required: [notification_id, kind, occurred_at, created_at, read_at, payout, stage, expiry, cancellation]
       properties:
         notification_id:
           type: string
@@ -259,10 +268,10 @@ components:
             ntf-<payout_id>, one per payout; ntf-stage-<change_id>, one per
             change of stage; ntf-expiry-<policy_id>-<YYYYMMDD>-<milestone_days>,
             one per policy, period and milestone (the date is the end of the
-            coverage in Colombia).
+            coverage in Colombia); ntf-cancelled-<policy_id>, one per policy.
         kind:
           type: string
-          enum: [parametric_payout, claim_stage_changed, policy_expiry]
+          enum: [parametric_payout, claim_stage_changed, policy_expiry, policy_cancelled]
           description: The app writes the texts of each kind in its own language.
         occurred_at:
           type: string
@@ -291,6 +300,46 @@ components:
           description: The alert that a policy is about to expire, for kind policy_expiry (HU-M3.2-01).
           allOf:
             - $ref: "#/components/schemas/ExpiryAlert"
+        cancellation:
+          type: object
+          nullable: true
+          description: The cancellation of a policy for non-payment, for kind policy_cancelled (HU-W1.6-02).
+          allOf:
+            - $ref: "#/components/schemas/PolicyCancellation"
+    PolicyCancellation:
+      type: object
+      required: [policy_id, reason, line, installment_seq, due_at, grace_ends_at, cancelled_at, amount, currency, refund]
+      properties:
+        policy_id:
+          type: string
+          description: The policy, to open it (GET /v1/policies/{policy_id} of origination).
+        reason:
+          type: string
+          enum: [non_payment]
+        line:
+          type: string
+          description: Always life; origination only issues life policies.
+        installment_seq:
+          type: integer
+          minimum: 2
+          description: The month of the premium that was not paid (1 is the issuance).
+        due_at:
+          type: string
+          format: date-time
+        grace_ends_at:
+          type: string
+          format: date-time
+        cancelled_at:
+          type: string
+          format: date-time
+        amount:
+          type: number
+          description: The unpaid premium, in units of the currency.
+        currency:
+          type: string
+        refund:
+          type: string
+          enum: [not_applicable]
     ExpiryAlert:
       type: object
       required: [policy_id, line, product, insured_object, coverage_end, milestone_days, days_left]
