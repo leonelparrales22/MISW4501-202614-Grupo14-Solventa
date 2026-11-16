@@ -34,9 +34,10 @@ type EndorsementReviewService interface {
 // operations analyst (HU-W1.4-02, screens O2, O3, O3b and O4): the inbox, the
 // detail, taking a request, applying, rejecting and returning it, and the
 // history of the endorsements of a policy. They are human routes for the
-// operations role only. The fixed segment "endorsement-requests" never covers
-// the routes of a policy, which always have a segment after the id. Register
-// it after WithObservability.
+// operations role only. The router matches the fixed segment
+// "endorsement-requests" before the id of a policy, so GET
+// /v1/policies/{policy_id} (HU-W1.6-02) never takes these routes. Register it
+// after WithObservability.
 func WithEndorsementReview(svc EndorsementReviewService, verifier security.Verifier) Option {
 	return func(r chi.Router) {
 		r.Group(func(r chi.Router) {
