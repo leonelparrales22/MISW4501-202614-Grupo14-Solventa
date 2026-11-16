@@ -178,6 +178,14 @@ func TestWalletRenewalExpiringAndCurrentTermsReadEndorsedTerms(t *testing.T) {
 	require.Len(t, alerts, 1)
 	assert.InDelta(t, 250_900, alerts[0].Premium, 0.001, "the alerts read the same view, though only dates matter to them")
 
+	// A-10: the monthly instalments of HU-W1.6-02 read the same view, so the
+	// next month is billed with the endorsed premium.
+	billable, err := postgres.NewInstallmentStore(e.db).ListBillable(ctx, now)
+	require.NoError(t, err)
+	require.Len(t, billable, 1)
+	next := domain.NewInstallment(billable[0], 12, domain.DefaultInstallmentRules, now)
+	assert.Equal(t, domain.ToMinorUnits(250_900), next.AmountMinor, "the next instalment carries the endorsed premium")
+
 	code, terms := e.call(t, http.MethodGet, "/v1/policies/"+p.ID+"/current-terms", carolina, "")
 	require.Equal(t, http.StatusOK, code)
 	assert.InDelta(t, 120_000_000, terms["terms"].(map[string]any)["insured_amount"], 0.001, "the terms of the insured")
