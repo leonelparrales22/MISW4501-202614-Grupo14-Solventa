@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.17.0
+  version: 0.18.0
 paths:
   /health:
     get:

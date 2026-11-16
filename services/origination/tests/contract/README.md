@@ -29,7 +29,7 @@ Corre tres veces: dos para las rutas de perfil (HU-W1.2-01) y una para las de of
 
 **Solicitud de modificación del asegurado (HU-W1.4-01), aparte:** [`run-change-requests.sh`](run-change-requests.sh) sobre el mismo
 [`docker-compose.assisted-renewals.yml`](docker-compose.assisted-renewals.yml) (proyecto y puertos propios: originación 8297, Moto 5123),
-porque las rutas también se montan con el cobro. Schemathesis recorre con el token del asegurado las cuatro rutas (contrato 0.17.0):
+porque las rutas también se montan con el cobro. Schemathesis recorre con el token del asegurado las cuatro rutas (contrato 0.18.0):
 `GET /v1/policies/{policy_id}/current-terms`, `POST /v1/policies/{policy_id}/change-requests`, `GET /v1/policies/change-requests` y su
 detalle; los ids generados no existen (`404`), la lista responde `200` y los cuerpos y consultas malformados reciben `400`. Al final
 comprueba que el asesor y el analista de operaciones reciben `403` en las cuatro. Se corre solo:
