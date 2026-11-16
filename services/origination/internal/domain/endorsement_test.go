@@ -38,8 +38,8 @@ func personalDataRequest(t *testing.T) domain.ChangeRequest {
 // allPass are the facts under which every validation holds.
 func allPass(r domain.ChangeRequest) domain.EndorsementFacts {
 	zero := 0
-	f := domain.EndorsementFacts{Policy: policyInForce(), Current: currentTerms(), Now: changeNow, OpenClaims: &zero,
-		PremiumPriced: true}
+	f := domain.EndorsementFacts{Policy: policyInForce(), Current: currentTerms(), Now: changeNow, InForce: true,
+		OpenClaims: &zero, PremiumPriced: true}
 	for _, b := range domain.BeneficiariesToCheck(r, f.Current) {
 		f.Documents = append(f.Documents, domain.DocumentCheck{Beneficiary: b, Status: domain.DocumentValid})
 	}
@@ -201,7 +201,9 @@ func TestOnlyTheHolderCanHaveTheirRequestApplied(t *testing.T) {
 }
 
 func TestTheGuardsAreListedWhenTheyFail(t *testing.T) {
-	expired := func(f *domain.EndorsementFacts) { f.Now = f.Policy.CoverageEnd }
+	// endorsements.Terms.InForce says it: the coverage ended or the policy
+	// was cancelled for non-payment (adjustment A-9).
+	expired := func(f *domain.EndorsementFacts) { f.InForce = false }
 	for _, tc := range []struct {
 		name   string
 		r      domain.ChangeRequest

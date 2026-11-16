@@ -55,7 +55,7 @@ O3 «Endosos previos» / «Ver historial» ──GET /v1/policies/{policy_id}/en
 | `requester_is_holder` | Solicitante = tomador autenticado | los tres | `requester` (nombre, si lo hay), `channel` |
 | `insured_amount_within_limits` | Suma asegurada dentro de los límites del producto | suma | `requested`, `min`, `max` |
 | `personal_data_valid` | Datos de contacto con formato válido | datos personales | `fields` (los inválidos, `"\|"`) |
-| `policy_in_force` | Póliza vigente (guardia) | los tres | `coverage_end` |
+| `policy_in_force` | Póliza vigente (guardia): cobertura en curso y sin cancelación por no pago (HU-W1.6-02); el `in_force` del detalle sigue la misma regla | los tres | `coverage_end` |
 | `previous_values_current` | Los valores anteriores siguen vigentes (guardia) | los tres | — |
 | `no_renewal_in_progress` | Sin renovación aceptada pendiente (guardia) | suma | — |
 | `premium_recalculated` | La prima nueva se pudo calcular (guardia) | suma | — |

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/endorsements"
@@ -42,6 +43,8 @@ func newEndorsementEnv(t *testing.T) *endorsementEnv {
 	customers := postgres.NewCustomerStore(e.db)
 	e.terms = endorsements.NewTerms(renewal.OriginFinder{Policies: e.policies, Charges: e.charges, Offers: e.offers,
 		BySubject: customers, ByDocument: customers}, map[string]string{"aliado-banco-1": "Banco Aliado"}).WithEndorsements(e.store)
+	// As in cmd: a policy cancelled for non-payment is not in force (A-9).
+	e.terms.WithCancellations(postgres.NewInstallmentStore(e.db))
 	return e
 }
 
@@ -256,4 +259,37 @@ func TestConcurrentApplications(t *testing.T) {
 				"round %d: the loser keeps its status, nothing of it was written", round)
 		}
 	})
+}
+
+// A-9: a policy cancelled for non-payment (HU-W1.6-02) within its dates is
+// not in force for the analyst either: the detail says so, and applying the
+// request records the attempt with policy_in_force failed and leaves the
+// policy as it was, with the review over the stores of PostgreSQL.
+func TestACancelledPolicyGetsNoEndorsement(t *testing.T) {
+	e := newEndorsementEnv(t)
+	ctx := context.Background()
+	// Three months into its year, so its second month is past its grace, as
+	// in the case of HU-W1.4-01.
+	p := e.sold(t, "pol-end-cancelled", "carolina", "aliado-banco-1", 90*24*time.Hour, 275*24*time.Hour)
+	r := e.file(t, p.ID, newContact)
+	e.cancel(t, p)
+	review, err := endorsements.NewReview(endorsements.ReviewConfig{Policies: e.policies, Requests: e.requests,
+		Store: e.store, Terms: e.terms, Renewals: postgres.NewRenewalStore(e.db), Clock: e.clock})
+	require.NoError(t, err)
+	analyst := security.WithClaims(ctx, security.Claims{Subject: operationsAnalyst.Subject, Name: operationsAnalyst.Name,
+		Email: operationsAnalyst.Email, Roles: []security.Role{security.RoleOperations}})
+
+	d, err := review.Detail(analyst, r.ID)
+	require.NoError(t, err)
+	assert.False(t, d.InForce, "the detail shows it not in force")
+
+	got, err := review.Apply(analyst, r.ID)
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.OutcomeNotApplied, got.Outcome)
+	require.NotNil(t, got.Attempt)
+	assert.Equal(t, domain.ValidationPolicyInForce, got.Attempt.Validations.FirstFailed(), "the reason is recorded")
+	assert.Equal(t, domain.ChangeRequestNotApplied, got.Request.Status)
+	assert.Zero(t, e.count(t, `SELECT count(*) FROM endorsement WHERE policy_id = $1`, p.ID), "the policy keeps its terms")
+	assert.Equal(t, 1, e.count(t, `SELECT count(*) FROM endorsement_attempt WHERE request_id = $1`, r.ID))
 }

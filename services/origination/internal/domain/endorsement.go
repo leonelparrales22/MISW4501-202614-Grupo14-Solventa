@@ -144,6 +144,11 @@ type EndorsementFacts struct {
 	Current PolicyTerms
 	// Now is the instant of the evaluation.
 	Now time.Time
+	// InForce tells whether the policy can change at Now: its coverage is
+	// running and it was not cancelled for non-payment (HU-W1.6-02). The
+	// caller reads it from endorsements.Terms.InForce, the rule of every
+	// change of a policy (adjustment A-9).
+	InForce bool
 	// RenewalInProgress tells that the current period has an accepted
 	// renewal not yet active (guard of a change of insured value).
 	RenewalInProgress bool
@@ -210,7 +215,7 @@ func EvaluateEndorsement(r ChangeRequest, f EndorsementFacts) Validations {
 			requesterIsHolder(r, f.Policy),
 		}
 	}
-	out = append(out, policyInForce(f.Policy, f.Now), previousValuesCurrent(r, f.Current))
+	out = append(out, policyInForce(f.Policy, f.InForce), previousValuesCurrent(r, f.Current))
 	if r.Type == ChangeInsuredAmount {
 		out = append(out, noRenewalInProgress(f.RenewalInProgress), premiumRecalculated(f.PremiumPriced))
 	}
@@ -336,8 +341,10 @@ func personalDataValid(problems []FieldError) ValidationResult {
 	return res
 }
 
-func policyInForce(p Policy, now time.Time) ValidationResult {
-	return ValidationResult{Code: ValidationPolicyInForce, Guard: true, Outcome: passIf(p.InForceAt(now)),
+// policyInForce fails for a policy that cannot change: its coverage ended or
+// has not started, or it was cancelled for non-payment (adjustment A-9).
+func policyInForce(p Policy, inForce bool) ValidationResult {
+	return ValidationResult{Code: ValidationPolicyInForce, Guard: true, Outcome: passIf(inForce),
 		Params: map[string]string{"coverage_end": p.CoverageEnd.UTC().Format(time.RFC3339)}}
 }
 

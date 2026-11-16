@@ -53,7 +53,8 @@ func newReviewEnv() *reviewEnv {
 
 func (e *reviewEnv) review(t *testing.T) *endorsements.Review {
 	t.Helper()
-	terms := endorsements.NewTerms(e.origins, map[string]string{"aliado-banco-1": "Banco Aliado"}).WithEndorsements(e.store)
+	terms := endorsements.NewTerms(e.origins, map[string]string{"aliado-banco-1": "Banco Aliado"}).WithEndorsements(e.store).
+		WithCancellations(e.cancellations)
 	r, err := endorsements.NewReview(endorsements.ReviewConfig{Policies: e.policies, Requests: e.requests, Store: e.store,
 		Terms: terms, Documents: e.documents, Claims: e.claims, Renewals: e.renewals,
 		Pricer: endorsements.Pricer{Origins: e.origins, Offers: e.offers, Rater: rating.New()},
@@ -298,6 +299,29 @@ func TestApplyNotAppliedRecordsAttemptAndKeepsPolicy(t *testing.T) {
 	assert.ErrorAs(t, err, &decided, "a returned request is closed")
 }
 
+// A-9: a policy cancelled for non-payment within its dates is not in force,
+// as one whose coverage ended: the detail says so and applying records the
+// attempt with policy_in_force failed and leaves the policy as it was.
+func TestACancelledPolicyIsNotAppliedAsOneNotInForce(t *testing.T) {
+	e := newReviewEnv()
+	review := e.review(t)
+	r := e.file(t, contactData())
+	e.cancellations.cancelled["pol-carolina"] = true
+
+	d, err := review.Detail(operations(), r.ID)
+	require.NoError(t, err)
+	assert.False(t, d.InForce, "the detail shows it not in force")
+	assert.Contains(t, listedCodes(d.Validations), domain.ValidationPolicyInForce)
+
+	got, err := review.Apply(operations(), r.ID)
+
+	require.NoError(t, err)
+	assert.Equal(t, domain.OutcomeNotApplied, got.Outcome)
+	require.NotNil(t, got.Attempt)
+	assert.Equal(t, domain.ValidationPolicyInForce, got.Attempt.Validations.FirstFailed())
+	assert.Empty(t, e.store.endorsements, "the policy keeps its terms")
+}
+
 func TestApplyUnverifiableChangesNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -468,6 +492,8 @@ func TestTheFailuresOfTheStoresAreReturned(t *testing.T) {
 		"renewals": func(e *reviewEnv) { e.renewals.err = down },
 		"offers":   func(e *reviewEnv) { e.offers.err = down },
 		"store":    func(e *reviewEnv) { e.store.err = down },
+		// A-9: not knowing whether the policy was cancelled applies nothing.
+		"cancellations": func(e *reviewEnv) { e.cancellations.err = down },
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := newReviewEnv()

@@ -246,7 +246,12 @@ func (s *Review) Detail(ctx context.Context, requestID string) (Detail, error) {
 	if err != nil {
 		return Detail{}, err
 	}
-	d := Detail{Request: r, Policy: p, InForce: p.InForceAt(s.clock.Now().UTC()), Terms: current}
+	// A policy cancelled for non-payment shows as not in force (A-9).
+	inForce, err := s.terms.InForce(ctx, p, s.clock.Now().UTC())
+	if err != nil {
+		return Detail{}, err
+	}
+	d := Detail{Request: r, Policy: p, InForce: inForce, Terms: current}
 	if d.Endorsements, err = s.store.Endorsements(ctx, p.ID); err != nil {
 		return Detail{}, err
 	}
@@ -291,11 +296,19 @@ func premiumOf(r domain.ChangeRequest, p domain.Policy, rated domain.Rating, pri
 	return out
 }
 
-// evaluate gathers the facts of the validations (KYC, claims, the renewal of
-// the period and the price of a new insured value) and runs them.
+// evaluate gathers the facts of the validations (whether the policy is in
+// force, KYC, claims, the renewal of the period and the price of a new
+// insured value) and runs them.
 func (s *Review) evaluate(ctx context.Context, r domain.ChangeRequest, p domain.Policy, current domain.PolicyTerms) (
 	domain.Validations, domain.Rating, bool, error) {
-	f := domain.EndorsementFacts{Policy: p, Current: current, Now: s.clock.Now().UTC()}
+	now := s.clock.Now().UTC()
+	// Terms.InForce: a policy cancelled for non-payment fails policy_in_force
+	// as one whose coverage ended (adjustment A-9).
+	inForce, err := s.terms.InForce(ctx, p, now)
+	if err != nil {
+		return nil, domain.Rating{}, false, err
+	}
+	f := domain.EndorsementFacts{Policy: p, Current: current, Now: now, InForce: inForce}
 	for _, b := range domain.BeneficiariesToCheck(r, current) {
 		status := domain.DocumentUnverifiable
 		if s.documents != nil {

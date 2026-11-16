@@ -164,7 +164,10 @@ func endorsementReviewOptions(ctx context.Context, billing bool, cfg endorsement
 		BySubject: customers, ByDocument: customers}
 	review := endorsements.ReviewConfig{
 		Policies: policies, Requests: postgres.NewChangeRequestStore(db), Store: store,
-		Terms:    endorsements.NewTerms(origins, cfg.partnerNames).WithEndorsements(store),
+		// HU-W1.6-02: a policy cancelled for non-payment is not in force, so
+		// no endorsement is applied to it (adjustment A-9).
+		Terms: endorsements.NewTerms(origins, cfg.partnerNames).WithEndorsements(store).
+			WithCancellations(postgres.NewInstallmentStore(db)),
 		Renewals: postgres.NewRenewalStore(db), Pricer: endorsements.Pricer{Origins: origins, Offers: offers, Rater: rating.New()},
 		Clock: systemClock{},
 	}
