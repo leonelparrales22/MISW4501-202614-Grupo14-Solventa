@@ -85,13 +85,16 @@ skip() { echo "  SKIP  $1"; SKIPS=$((SKIPS + 1)); }
 json_escape() { local s=${1//\\/\\\\}; printf '%s' "${s//\"/\\\"}"; }
 
 # call <method> <path> [token] [json body]: sets STATUS and BODY. The token goes
-# through a private header file, never through the command line.
+# through a private header file, never through the command line. A GET never
+# carries the body: CloudFront answers its own 403 to a GET with a body before
+# it reaches the gateway, so a role check that reuses one body for every route
+# would read that 403 instead of the answer of the service.
 call() {
   : >"$WORK/header"
   [[ -n "${3:-}" ]] && printf 'Authorization: Bearer %s\n' "$3" >>"$WORK/header"
   printf 'User-Agent: hu-w1.4-01 change-request-cloud.sh\n' >>"$WORK/header"
   : >"$WORK/body"
-  if [[ -n "${4:-}" ]]; then
+  if [[ -n "${4:-}" && "$1" != GET ]]; then
     printf 'Content-Type: application/json\n' >>"$WORK/header"
     STATUS="$(printf '%s' "$4" | curl -s --max-time 30 -o "$WORK/body" -w '%{http_code}' -X "$1" -H @"$WORK/header" \
       --data-binary @- "$PORTAL_URL$2" || true)"
