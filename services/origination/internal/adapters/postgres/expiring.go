@@ -29,19 +29,31 @@ var _ ports.ExpiringPolicyQuery = (*ExpiringPolicyStore)(nil)
 // NewExpiringPolicyStore builds an ExpiringPolicyStore over db (already migrated).
 func NewExpiringPolicyStore(db *sql.DB) *ExpiringPolicyStore { return &ExpiringPolicyStore{db: db} }
 
-// expiringFrom is the join and the condition of an open period shared by the
-// list, its total and the indicator.
-const expiringFrom = ` FROM policy p
+// expiringJoin joins each policy with the renewal of its current period and
+// its cancellation for non-payment (HU-W1.6-02).
+const expiringJoin = ` FROM policy p
 	LEFT JOIN renewal r ON r.policy_id = p.policy_id AND r.period_end = p.coverage_end
-	WHERE (r.renewal_id IS NULL OR r.status = 'accepted')`
+	LEFT JOIN policy_cancellation c ON c.policy_id = p.policy_id`
 
-// expiringFilter adds the range [$1, $2), the policies still in force at $3
-// and the status $4 (an empty status for both).
-const expiringFilter = expiringFrom + `
-	  AND p.coverage_end >= $1 AND p.coverage_end < $2 AND p.coverage_end > $3
-	  AND ($4::text = ''
-	       OR ($4::text = 'expiring' AND r.renewal_id IS NULL)
-	       OR ($4::text = 'renewal_in_progress' AND r.renewal_id IS NOT NULL))`
+// expiringOpen is the condition of an open period of a policy that was not
+// cancelled.
+const expiringOpen = `c.policy_id IS NULL AND (r.renewal_id IS NULL OR r.status = 'accepted')`
+
+// expiringFrom is the join and the condition of an open period, which the
+// indicator counts.
+const expiringFrom = expiringJoin + ` WHERE ` + expiringOpen
+
+// expiringFilter is the open periods in the range [$1, $2) still in force at
+// $3, and the policies cancelled for non-payment after $5, narrowed by the
+// status $4 (empty for all).
+const expiringFilter = expiringJoin + `
+	WHERE ((` + expiringOpen + `
+	        AND p.coverage_end >= $1 AND p.coverage_end < $2 AND p.coverage_end > $3
+	        AND ($4::text = ''
+	             OR ($4::text = 'expiring' AND r.renewal_id IS NULL)
+	             OR ($4::text = 'renewal_in_progress' AND r.renewal_id IS NOT NULL)))
+	    OR (c.policy_id IS NOT NULL AND c.cancelled_at > $5
+	        AND $4::text IN ('', 'cancelled_non_payment')))`
 
 // expiringRenewalColumns are the columns of the renewal that the list shows
 // (its summary), NULL when the period has no renewal.
@@ -49,10 +61,12 @@ const expiringRenewalColumns = `r.renewal_id, r.customer_id, r.period_end, r.sta
 	r.new_policy_id, r.accepted_at, r.retry_until, r.closed_at`
 
 // expiringListQuery is the page of the list: the policy columns that
-// scanPolicy reads followed by the renewal summary.
-var expiringListQuery = `SELECT ` + prefixed("p", policyColumns) + `, ` + expiringRenewalColumns + expiringFilter + `
-	ORDER BY p.coverage_end, p.policy_id
-	LIMIT $5 OFFSET $6`
+// scanPolicy reads followed by the renewal summary and the cancellation. The
+// cancelled policies come after the open periods, the latest first.
+var expiringListQuery = `SELECT ` + prefixed("p", policyColumns) + `, ` + expiringRenewalColumns + `, c.cancelled_at` +
+	expiringFilter + `
+	ORDER BY (c.policy_id IS NOT NULL), c.cancelled_at DESC NULLS FIRST, p.coverage_end, p.policy_id
+	LIMIT $6 OFFSET $7`
 
 // withColumns is a scanner that appends more destinations to the ones of the
 // scanner it wraps, so scanPolicy reads the policy columns of a row that has
@@ -66,15 +80,15 @@ func (w withColumns) Scan(dest ...any) error { return w.row.Scan(append(dest, w.
 
 // ListExpiring returns the page of open periods ending in [start, end) and
 // after now, and the total that match, read in one snapshot so they agree.
-func (s *ExpiringPolicyStore) ListExpiring(ctx context.Context, start, end, now time.Time, status domain.ExpiringStatus,
-	offset, limit int) ([]domain.ExpiringPolicy, int, error) {
+func (s *ExpiringPolicyStore) ListExpiring(ctx context.Context, start, end, now, cancelledSince time.Time,
+	status domain.ExpiringStatus, offset, limit int) ([]domain.ExpiringPolicy, int, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, 0, fmt.Errorf("list the expiring policies: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	args := []any{start.UTC(), end.UTC(), now.UTC(), string(status)}
+	args := []any{start.UTC(), end.UTC(), now.UTC(), string(status), cancelledSince.UTC()}
 	rows, err := tx.QueryContext(ctx, expiringListQuery, append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list the expiring policies: %w", err)
@@ -100,10 +114,10 @@ func scanExpiring(rows *sql.Rows) ([]domain.ExpiringPolicy, error) {
 	for rows.Next() {
 		var (
 			renewalID, customerID, status, reason, chargeID, newPolicy sql.NullString
-			periodEnd, accepted, retryUntil, closed                    sql.NullTime
+			periodEnd, accepted, retryUntil, closed, cancelled         sql.NullTime
 		)
 		p, err := scanPolicy(withColumns{row: rows, extra: []any{&renewalID, &customerID, &periodEnd, &status, &reason,
-			&chargeID, &newPolicy, &accepted, &retryUntil, &closed}})
+			&chargeID, &newPolicy, &accepted, &retryUntil, &closed, &cancelled}})
 		if err != nil {
 			return nil, fmt.Errorf("read an expiring policy: %w", err)
 		}
@@ -116,6 +130,11 @@ func scanExpiring(rows *sql.Rows) ([]domain.ExpiringPolicy, error) {
 				AcceptedAt: utc(accepted), RetryUntil: utc(retryUntil), ClosedAt: utc(closed),
 			}
 		}
+		if cancelled.Valid {
+			item.Status, item.CancelledAt = domain.ExpiringStatusCancelledNonPayment, cancelled.Time.UTC()
+			out = append(out, item)
+			continue
+		}
 		var listed bool
 		if item.Status, listed = domain.ExpiringStatusOf(item.Renewal); !listed {
 			return nil, fmt.Errorf("read an expiring policy: policy %s has a closed period", p.ID)
@@ -123,6 +142,17 @@ func scanExpiring(rows *sql.Rows) ([]domain.ExpiringPolicy, error) {
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+// CountCancelledSince counts the policies cancelled for non-payment after
+// since (HU-W1.6-02).
+func (s *ExpiringPolicyStore) CountCancelledSince(ctx context.Context, since time.Time) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM policy_cancellation WHERE cancelled_at > $1`,
+		since.UTC()).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count the policies cancelled for non-payment: %w", err)
+	}
+	return n, nil
 }
 
 // CountDueWithinWindow counts the open periods ending in (now, until].

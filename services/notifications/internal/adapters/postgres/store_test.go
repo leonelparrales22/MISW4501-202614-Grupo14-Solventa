@@ -349,3 +349,36 @@ func TestAnExpiryAlertIsRecordedWithItsPushesAndReadBack(t *testing.T) {
 	require.NotNil(t, d.Notification.Expiry)
 	assert.Equal(t, 30, d.Notification.Expiry.MilestoneDays)
 }
+
+// HU-W1.6-02: a cancellation for non-payment is a notification like the
+// others: its pushes, its round trip and its place in the center.
+func TestACancellationIsRecordedWithItsPushesAndReadBack(t *testing.T) {
+	store, _ := newStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.SaveDevice(ctx, device("inst-1", true)))
+	due := time.Date(2026, 8, 12, 5, 0, 0, 0, time.UTC)
+	c := domain.PolicyCancellation{PolicyID: "VH-2026-004512", Subject: "sub-a", Reason: domain.ReasonNonPayment,
+		Line: "life", InstallmentSeq: 2, DueAt: due, GraceEndsAt: due.AddDate(0, 0, 30), CancelledAt: paidAt,
+		AmountMinor: 14_230_000, Currency: "COP"}
+	n := domain.NewCancellationNotification(c, paidAt.Add(2*time.Second))
+
+	created, ids, err := store.Record(ctx, n, paidAt.Add(2*time.Second))
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, []string{"ntf-cancelled-VH-2026-004512:inst-1"}, ids)
+	again, _, err := store.Record(ctx, n, paidAt.Add(3*time.Second))
+	require.NoError(t, err)
+	assert.False(t, again, "a redelivered cancellation changes nothing")
+
+	got, err := store.Get(ctx, "sub-a", n.ID)
+	require.NoError(t, err)
+	assert.Equal(t, domain.KindPolicyCancelled, got.Kind)
+	assert.Equal(t, n.Cancellation, got.Cancellation, "the cancellation survives the round trip")
+	assert.Nil(t, got.Expiry)
+
+	d, ok, err := store.Claim(ctx, ids[0], paidAt.Add(3*time.Second), time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotNil(t, d.Notification.Cancellation)
+	assert.Equal(t, 2, d.Notification.Cancellation.InstallmentSeq)
+}

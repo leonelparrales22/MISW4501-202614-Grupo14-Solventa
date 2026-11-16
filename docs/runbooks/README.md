@@ -79,17 +79,18 @@ La ventana de verificación de HA-S01 lo comprueba con [`tests/security/ha-s01/v
 
 ### 5. Usuarios de prueba permanentes (`bootstrap/identity`)
 
-El pool permanente `solventa-users` (`us-east-2`) tiene un usuario de prueba por rol, declarados en `local.test_users` de
+El pool permanente `solventa-users` (`us-east-2`) tiene un usuario de prueba por rol y un segundo asegurado, declarados en `local.test_users` de
 [`bootstrap/identity/main.tf`](../../infra/terraform/bootstrap/identity/main.tf):
 
 | Rol (grupo) | Usuario |
 |---|---|
 | Asegurado (`insured`) | `asegurado@example.com` |
+| Segundo asegurado (`insured`) | `asegurado2@example.com` |
 | Asesor (`advisor`) | `asesor@example.com` |
 | Operaciones (`operations`) | `operaciones@example.com` |
 | Socio (`partner`, `custom:partner_id = socio-a`) | `socio@example.com` |
 
-Los cuatro comparten una contraseña permanente (sin invitación ni correo). La tiene Nicolás en su variable de usuario de Windows
+Los cinco comparten una contraseña permanente (sin invitación ni correo). La tiene Nicolás en su variable de usuario de Windows
 `SOLVENTA_IDENTITY_SEED_PASSWORD` y la comparte en privado con quien la necesite; nunca va en un archivo, en el código ni en un
 mensaje del grupo. Terraform la recibe solo por `TF_VAR_seed_user_password` y los guiones de prueba por su propia variable de
 entorno (p. ej. `SEED_USER_PASSWORD` del humo de HA-D02).
@@ -99,7 +100,7 @@ abrir el PR y, una vez integrado, `plan` y `apply` de `bootstrap/identity` con l
 mostrar solo el usuario y su pertenencia al grupo (`aws_cognito_user.seed` y `aws_cognito_user_in_group.seed`), nunca el pool.
 
 **Cambio de contraseña.** Crear la contraseña nueva (12 o más caracteres, con minúsculas, mayúsculas, números y símbolos), pasarla
-en `TF_VAR_seed_user_password` y aplicar `bootstrap/identity`: Terraform cambia la de los cuatro usuarios. Avisar en privado a
+en `TF_VAR_seed_user_password` y aplicar `bootstrap/identity`: Terraform cambia la de los cinco usuarios. Avisar en privado a
 quienes la usen.
 
 **Verificación de lectura** (perfil de la cuenta `368083581678`, solo lectura):

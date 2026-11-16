@@ -100,11 +100,14 @@ func (s *PolicyStore) ListByCustomer(ctx context.Context, customerID string) ([]
 	return s.list(ctx, `SELECT `+policyColumns+` FROM policy WHERE customer_id = $1 ORDER BY coverage_end DESC, policy_id`, customerID)
 }
 
-// ListLapsed returns the policies that ended with no renewal row for their period.
+// ListLapsed returns the policies that ended with no renewal row for their
+// period. A policy cancelled for non-payment (HU-W1.6-02) is left out: it
+// ended with its cancellation and was told so then.
 func (s *PolicyStore) ListLapsed(ctx context.Context, since, now time.Time, limit int) ([]domain.Policy, error) {
 	return s.list(ctx, `SELECT `+prefixed("p", policyColumns)+` FROM policy p
 		WHERE p.coverage_end BETWEEN $1 AND $2
 		  AND NOT EXISTS (SELECT 1 FROM renewal r WHERE r.policy_id = p.policy_id AND r.period_end = p.coverage_end)
+		  AND NOT EXISTS (SELECT 1 FROM policy_cancellation c WHERE c.policy_id = p.policy_id)
 		ORDER BY p.coverage_end LIMIT $3`, since.UTC(), now.UTC(), limit)
 }
 

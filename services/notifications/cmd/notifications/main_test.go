@@ -119,6 +119,8 @@ type recorder struct {
 	got      []domain.ParametricPayout
 	stages   []domain.ClaimStageChange
 	expiries []domain.ExpiryAlert
+	// cancelled are the cancellations for non-payment (HU-W1.6-02).
+	cancelled []domain.PolicyCancellation
 }
 
 func (r *recorder) RecordPayout(_ context.Context, p domain.ParametricPayout) error {
@@ -134,6 +136,29 @@ func (r *recorder) RecordStageChange(_ context.Context, c domain.ClaimStageChang
 func (r *recorder) RecordExpiryAlert(_ context.Context, e domain.ExpiryAlert) error {
 	r.expiries = append(r.expiries, e)
 	return nil
+}
+
+func (r *recorder) RecordCancellation(_ context.Context, c domain.PolicyCancellation) error {
+	r.cancelled = append(r.cancelled, c)
+	return nil
+}
+
+func TestTheRouterHandlesTheCancellationsForNonPayment(t *testing.T) {
+	rec := &recorder{}
+	router, err := eventRouter(rec)
+	require.NoError(t, err)
+	e, err := events.New("policy-cancelled-non-payment-VH-2026-004512", "PolicyCancelledForNonPayment",
+		"origination", 1, time.Now(), map[string]any{
+			"policy_id": "VH-2026-004512", "subject": "sub-a", "reason": "non_payment", "line": "life",
+			"installment_seq": 2, "due_at": "2026-08-12T05:00:00Z", "cancelled_at": "2026-09-12T05:00:00Z",
+			"amount_minor": 14230000, "currency": "COP",
+		})
+	require.NoError(t, err)
+
+	require.NoError(t, router.Handle(context.Background(), e))
+
+	require.Len(t, rec.cancelled, 1)
+	assert.Equal(t, "VH-2026-004512", rec.cancelled[0].PolicyID)
 }
 
 func TestTheRouterHandlesTheAutomaticPayments(t *testing.T) {

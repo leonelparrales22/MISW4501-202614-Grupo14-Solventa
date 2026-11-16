@@ -152,7 +152,7 @@ func TestExpiringTheQueryOfTheListReachesTheUseCase(t *testing.T) {
 
 func TestExpiringABadParameterIsAnInvalidRequest(t *testing.T) {
 	for _, query := range []string{
-		"expires_from=16/09/2026", "expires_to=2026-13-01", "status=renewed", "status=cancelled_non_payment",
+		"expires_from=16/09/2026", "expires_to=2026-13-01", "status=renewed", "status=cancelled",
 		"page=0", "page=two", "page_size=-1",
 	} {
 		svc := &fakeExpiringPolicies{page: expiringPage(t)}

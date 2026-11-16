@@ -53,3 +53,13 @@ output "partner_paths" {
   description = "Paths of the partner routes on explicit paths, with API key (T5)."
   value       = [for k in sort(keys(var.partner_routes)) : "/v1/${k}"]
 }
+
+output "slo_alarm_prefix" {
+  description = "Name prefix of the SLO alarms of the partner API (HU-W3.2-03); empty when slo_alarms is off."
+  value       = var.slo_alarms.enabled ? local.slo_alarm_prefix : ""
+}
+
+output "slo_alarm_names" {
+  description = "Names of the SLO alarms of the partner API (HU-W3.2-03), latency and errors per partner route."
+  value       = sort(concat([for a in aws_cloudwatch_metric_alarm.slo_latency : a.alarm_name], [for a in aws_cloudwatch_metric_alarm.slo_errors : a.alarm_name]))
+}

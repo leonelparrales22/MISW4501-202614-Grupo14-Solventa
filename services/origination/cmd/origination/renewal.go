@@ -67,6 +67,8 @@ func newRenewalService(ctx context.Context, cfg renewalConfig, db *sql.DB, resol
 		Policies: postgres.NewPolicyStore(db), Renewals: postgres.NewRenewalStore(db), Charges: postgres.NewChargeStore(db),
 		Customers: postgres.NewCustomerStore(db), Profiles: resolver, Rater: rating.New(),
 		Notifier: notifier, Rules: cfg.rules, Clock: systemClock{}, Wake: wake,
+		// HU-W1.6-02: a policy cancelled for non-payment is not renewed.
+		Cancellations: postgres.NewInstallmentStore(db),
 	})
 	if err != nil {
 		return nil, err

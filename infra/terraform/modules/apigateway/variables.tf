@@ -285,3 +285,18 @@ variable "payment_tokenization" {
     error_message = "payment_tokenization.rate_limit and burst_limit must be greater than 0."
   }
 }
+
+variable "slo_alarms" {
+  description = "CloudWatch alarms of the SLO of the partner API (HU-W3.2-03), one pair per partner route (the quoting journey and partner_routes): degraded when the p95 latency of the route is over latency_p95_ms in two 5-minute periods in a row (the budget of HA-L01, p95 <= 400 ms), unavailable when 5XX answers are error_rate or more of its requests in three 1-minute periods in a row (RC-02). A period without requests never alarms. The partners service reads their state and history as the incidents of the dashboard. Off by default (the experiments do not need them)."
+  type = object({
+    enabled        = bool
+    latency_p95_ms = optional(number, 400)
+    error_rate     = optional(number, 0.05)
+  })
+  default = { enabled = false }
+
+  validation {
+    condition     = var.slo_alarms.latency_p95_ms > 0 && var.slo_alarms.error_rate > 0 && var.slo_alarms.error_rate <= 1
+    error_message = "slo_alarms.latency_p95_ms must be positive and slo_alarms.error_rate a fraction in (0, 1]."
+  }
+}

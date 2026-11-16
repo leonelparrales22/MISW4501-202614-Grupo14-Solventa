@@ -60,6 +60,12 @@ func (s *Sender) Send(ctx context.Context, d domain.Delivery) (idempotency.Outco
 		m.Group, m.Title, m.Body = domain.GroupPolicyExpiry, text.Title, text.Body
 		m.Data[DataPolicyID] = e.PolicyID
 	}
+	// HU-W1.6-02: a cancellation for non-payment opens the policy too.
+	if c := d.Notification.Cancellation; c != nil {
+		text := templates.PolicyCancelled(*c, d.Locale)
+		m.Group, m.Title, m.Body = domain.GroupPolicyCancelled, text.Title, text.Body
+		m.Data[DataPolicyID] = c.PolicyID
+	}
 	r, err := s.client.Send(ctx, m)
 	if err != nil {
 		return idempotency.Outcome{}, err

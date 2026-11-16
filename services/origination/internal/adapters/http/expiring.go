@@ -52,6 +52,9 @@ type expiringPolicyBody struct {
 	CanRenew      bool                `json:"can_renew"`
 	RenewalWindow windowBody          `json:"renewal_window"`
 	Renewal       *renewalSummaryBody `json:"renewal"`
+	// CancelledAt is when the policy was cancelled for non-payment; null for
+	// the others (HU-W1.6-02).
+	CancelledAt *time.Time `json:"cancelled_at"`
 }
 
 type expiringPoliciesResponse struct {
@@ -64,9 +67,12 @@ type expiringPoliciesResponse struct {
 	// DueWithinWindow counts the policies with an open period that end
 	// within the renewal window, whatever the filter.
 	DueWithinWindow int `json:"due_within_window"`
-	Total           int `json:"total"`
-	Page            int `json:"page"`
-	PageSize        int `json:"page_size"`
+	// CancelledNonPayment counts the policies cancelled for non-payment in
+	// the last 30 days, whatever the filter (HU-W1.6-02).
+	CancelledNonPayment int `json:"cancelled_non_payment_last_30_days"`
+	Total               int `json:"total"`
+	Page                int `json:"page"`
+	PageSize            int `json:"page_size"`
 }
 
 func toExpiringPolicyBody(e domain.ExpiringPolicy) expiringPolicyBody {
@@ -77,6 +83,7 @@ func toExpiringPolicyBody(e domain.ExpiringPolicy) expiringPolicyBody {
 		Premium: p.Premium, Currency: p.Currency, CoverageEnd: p.CoverageEnd.UTC(),
 		Status: string(e.Status), CanRenew: e.CanRenew,
 		RenewalWindow: windowBody{OpensAt: e.WindowOpensAt.UTC(), ClosesAt: e.WindowClosesAt.UTC()},
+		CancelledAt:   timePtr(e.CancelledAt),
 	}
 	if e.Renewal != nil {
 		s := toRenewalSummary(*e.Renewal)
@@ -104,7 +111,7 @@ func expiringQueryOf(req *http.Request) (domain.ExpiringQuery, string) {
 	}
 	status, err := domain.ParseExpiringStatus(v.Get("status"))
 	if err != nil {
-		return domain.ExpiringQuery{}, "status must be expiring or renewal_in_progress"
+		return domain.ExpiringQuery{}, "status must be expiring, renewal_in_progress or cancelled_non_payment"
 	}
 	q.Status = status
 	for _, n := range []struct {
@@ -150,7 +157,7 @@ func listExpiringPolicies(svc ExpiringPoliciesService) http.HandlerFunc {
 			Items:       make([]expiringPolicyBody, 0, len(page.Items)),
 			ExpiresFrom: page.From.Format(domain.CivilDayLayout), ExpiresTo: page.To.Format(domain.CivilDayLayout),
 			WindowDays: page.WindowDays, DueWithinWindow: page.DueWithinWindow, Total: page.Total,
-			Page: page.Page, PageSize: page.PageSize,
+			CancelledNonPayment: page.CancelledNonPayment, Page: page.Page, PageSize: page.PageSize,
 		}
 		for _, it := range page.Items {
 			out.Items = append(out.Items, toExpiringPolicyBody(it))

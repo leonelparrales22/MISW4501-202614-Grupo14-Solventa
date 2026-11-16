@@ -1180,6 +1180,14 @@ paths:
         had instead of taking the missing ones as cancelled. Mounted when at
         least one source is configured (the premium charge with PostgreSQL, or
         the policy core). Only the insured.
+
+        HU-W1.6-02: a policy origination issued also says where its monthly
+        premium stands (payment): up_to_date with the next due date,
+        payment_pending while an instalment fell due unpaid (the grace period:
+        the policy keeps its coverage and status active), or cancelled. A
+        policy cancelled for non-payment has status cancelled, can_renew false
+        and its cancellation (refund not_applicable). Both are null for the
+        policies of the core.
       security:
         - cognitoJwt: []
       responses:
@@ -1243,10 +1251,13 @@ paths:
         - name: status
           in: query
           required: false
-          description: Only the policies with this status; both when absent.
+          description: >
+            Only the policies with this status; all when absent.
+            cancelled_non_payment lists the policies cancelled for non-payment
+            in the last 30 days, whatever the range (HU-W1.6-02).
           schema:
             type: string
-            enum: [expiring, renewal_in_progress]
+            enum: [expiring, renewal_in_progress, cancelled_non_payment]
         - name: page
           in: query
           required: false
@@ -1594,6 +1605,43 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/policies/{policy_id}:
+    get:
+      summary: Read one policy of the insured, with every month of its premium (HU-W1.6-02)
+      description: >
+        Screens A2 and A2b of the portal. The policy as GET /v1/policies lists
+        it, with the payment method of its issuance (without its token) and
+        payments, every month billed the newest first: month 1 is the charge of
+        the issuance and every later month an instalment, due on the day of the
+        month the coverage started, charged on days 1, 8 and 15 of its grace
+        period (INSTALLMENT_ATTEMPT_DAYS) with the card of the issuance and
+        cancelling the policy, with no refund, on the day after the grace
+        (INSTALLMENT_GRACE_DAYS, 30). Each instalment lists the attempts the
+        gateway answered. For a policy of the policy core, payment_method is
+        null and payments is empty: the core keeps no premiums. A policy the
+        caller does not own is 404, like one that does not exist. Only the
+        insured; no answer is cached.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyDetail"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
   /v1/policies/{policy_id}/assisted-renewal:
     get:
       summary: Read where the assisted renewal of a policy stands, for the advisor (HU-W1.5-03)
@@ -3824,7 +3872,8 @@ components:
     PolicyListItem:
       type: object
       required: [policy_id, source, line, product, insured_object, status, holder_name, holder, premium, currency,
-        insured_amount, coverages, coverage_start, coverage_end, renewal_of, renewal_window, can_renew, renewal]
+        insured_amount, coverages, coverage_start, coverage_end, renewal_of, renewal_window, can_renew, renewal,
+        payment, cancellation]
       properties:
         policy_id:
           type: string
@@ -3847,7 +3896,10 @@ components:
         status:
           type: string
           enum: [active, expired, cancelled]
-          description: Origination's are active until their coverage ends and expired afterwards.
+          description: >
+            Origination's are active until their coverage ends and expired
+            afterwards, or cancelled when an instalment was not paid within its
+            grace period (HU-W1.6-02).
         holder_name:
           type: string
           description: The main insured's name. Kept from 0.12.0; holder carries it too.
@@ -3888,6 +3940,175 @@ components:
           nullable: true
           allOf:
             - $ref: "#/components/schemas/RenewalSummary"
+        payment:
+          type: object
+          nullable: true
+          description: Where the monthly premium stands (HU-W1.6-02); null for a policy of the core.
+          allOf:
+            - $ref: "#/components/schemas/PolicyPayment"
+        cancellation:
+          type: object
+          nullable: true
+          description: The cancellation for non-payment (HU-W1.6-02); null when the policy was not cancelled.
+          allOf:
+            - $ref: "#/components/schemas/PolicyCancellation"
+    PolicyPayment:
+      type: object
+      required: [status, next_due_at, pending]
+      properties:
+        status:
+          type: string
+          enum: [up_to_date, payment_pending, cancelled]
+          description: >
+            payment_pending: an instalment fell due unpaid and the policy is in
+            its grace period, with its coverage.
+        next_due_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the next month falls due, while up to date and the coverage has months left.
+        pending:
+          type: object
+          nullable: true
+          description: The instalment that fell due unpaid, while payment_pending.
+          allOf:
+            - $ref: "#/components/schemas/PendingInstallment"
+    PendingInstallment:
+      type: object
+      required: [month, due_at, grace_ends_at, cancels_at, amount, currency, attempts, next_attempt_at]
+      properties:
+        month:
+          type: integer
+          minimum: 2
+          description: The month of the premium (1 is the issuance).
+        due_at:
+          type: string
+          format: date-time
+        grace_ends_at:
+          type: string
+          format: date-time
+          description: The last day the policy keeps its coverage without the payment.
+        cancels_at:
+          type: string
+          format: date-time
+          description: When the policy is cancelled if the instalment is still unpaid.
+        amount:
+          type: number
+        currency:
+          type: string
+        attempts:
+          type: integer
+          minimum: 0
+          description: The attempts the gateway declined.
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When it is charged again; null when no attempt is left.
+    PolicyCancellation:
+      type: object
+      required: [reason, cancelled_at, refund, month, due_at, grace_ends_at, amount, currency, attempts, email_sent_at]
+      properties:
+        reason:
+          type: string
+          enum: [non_payment]
+        cancelled_at:
+          type: string
+          format: date-time
+        refund:
+          type: string
+          enum: [not_applicable]
+          description: A cancellation for non-payment returns nothing.
+        month:
+          type: integer
+          minimum: 2
+          description: The instalment that was not paid.
+        due_at:
+          type: string
+          format: date-time
+        grace_ends_at:
+          type: string
+          format: date-time
+        amount:
+          type: number
+        currency:
+          type: string
+        attempts:
+          type: integer
+          minimum: 0
+          description: How many times it was charged.
+        email_sent_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the e-mail to the insured went out; null until then. The push goes out from the event.
+    PaymentAttempt:
+      type: object
+      required: [attempt, outcome, decline_code, attempted_at]
+      properties:
+        attempt:
+          type: integer
+          minimum: 1
+        outcome:
+          type: string
+          enum: [approved, declined]
+        decline_code:
+          type: string
+          nullable: true
+          description: >
+            The issuer's reason (51 is insufficient funds), or
+            no_payment_method when the issuance was paid by PSE and there is
+            no card to charge.
+        attempted_at:
+          type: string
+          format: date-time
+    PaymentRecord:
+      type: object
+      required: [month, kind, status, due_at, amount, currency, paid_at, attempts]
+      properties:
+        month:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          enum: [issuance, installment]
+        status:
+          type: string
+          enum: [paid, pending, unpaid]
+        due_at:
+          type: string
+          format: date-time
+        amount:
+          type: number
+        currency:
+          type: string
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        attempts:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/PaymentAttempt"
+    PolicyDetail:
+      allOf:
+        - $ref: "#/components/schemas/PolicyListItem"
+        - type: object
+          required: [payment_method, payments]
+          properties:
+            payment_method:
+              type: object
+              nullable: true
+              description: The payment method of the issuance, without its token; null for a policy of the core.
+              allOf:
+                - $ref: "#/components/schemas/PaymentMethod"
+            payments:
+              type: array
+              maxItems: 700
+              description: Every month billed, the newest first; empty for a policy of the core.
+              items:
+                $ref: "#/components/schemas/PaymentRecord"
     PolicyList:
       type: object
       required: [items, partial]
@@ -3902,7 +4123,8 @@ components:
           description: True when the policy core did not answer and its policies are missing from items.
     ExpiringPolicy:
       type: object
-      required: [policy_id, line, product, holder, premium, currency, coverage_end, status, can_renew, renewal_window, renewal]
+      required: [policy_id, line, product, holder, premium, currency, coverage_end, status, can_renew, renewal_window, renewal,
+        cancelled_at]
       description: One policy about to expire (HU-W1.5-01). Its policy_id is the id of the assisted renewal (HU-W1.5-03).
       properties:
         policy_id:
@@ -3927,11 +4149,12 @@ components:
           format: date-time
         status:
           type: string
-          enum: [expiring, renewal_in_progress]
+          enum: [expiring, renewal_in_progress, cancelled_non_payment]
           description: >
             expiring: the current period has no renewal; renewal_in_progress: its
-            renewal was accepted and the premium is being charged. More values
-            may come (HU-W1.6-02).
+            renewal was accepted and the premium is being charged;
+            cancelled_non_payment: the policy was cancelled for non-payment in
+            the last 30 days (HU-W1.6-02), listed after the others.
         can_renew:
           type: boolean
           description: True inside the renewal window while the period has no renewal (HU-W1.5-02).
@@ -3942,6 +4165,11 @@ components:
           description: The renewal of the current period, null when it has none.
           allOf:
             - $ref: "#/components/schemas/RenewalSummary"
+        cancelled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the policy was cancelled for non-payment; null for the others (HU-W1.6-02).
     PartnerSummary:
       type: object
       description: Summary of the integration of the partner in a range (HU-W3.2-01).
@@ -3972,7 +4200,8 @@ components:
           description: policies_issued / quotes_requested x 100, one decimal; 0 without quotes.
     ExpiringPolicyList:
       type: object
-      required: [items, expires_from, expires_to, window_days, due_within_window, total, page, page_size]
+      required: [items, expires_from, expires_to, window_days, due_within_window, cancelled_non_payment_last_30_days,
+        total, page, page_size]
       properties:
         items:
           type: array
@@ -3993,6 +4222,10 @@ components:
         due_within_window:
           type: integer
           description: Policies with an open period that end within the renewal window from now, whatever the filter.
+        cancelled_non_payment_last_30_days:
+          type: integer
+          minimum: 0
+          description: Policies cancelled for non-payment in the last 30 days, whatever the filter (HU-W1.6-02).
         total:
           type: integer
           description: Policies that match the query, whatever the page.

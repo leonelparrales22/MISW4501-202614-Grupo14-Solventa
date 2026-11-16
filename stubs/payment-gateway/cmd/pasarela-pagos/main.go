@@ -28,6 +28,10 @@
 // it: the conventional test card 4111 1111 1111 1111 is approved and anything
 // ending in 0002 is declined for insufficient funds, which is what makes
 // screen E4c reachable in a demo. A charge without a token behaves as before.
+// The card 4000 0000 0000 0010 pays the issuance and declines, for
+// insufficient funds, every monthly instalment (a charge whose reference starts
+// with "cuota-"), which is what lets a demo reach the cancellation of a policy
+// for non-payment (HU-W1.6-02, screen A2b).
 //
 // POST /payouts pays an indemnity to a bank account (HU-W2.2-03) with the same
 // idempotency rules: a key pays once, and a retry gets the same payout. Two
@@ -62,9 +66,13 @@ const (
 	// what lets a demo walk both branches of screen E4 without touching code.
 	approvedTestCard   = "4111111111111111"
 	declinedCardSuffix = "0002"
-	insufficientFunds  = "insufficient_funds"
-	tokenPrefix        = "tok_"
-	maxTokenLength     = 128
+	// installmentsDeclinedCard pays the issuance and declines the instalments
+	// (HU-W1.6-02); installmentPrefix starts their reference.
+	installmentsDeclinedCard = "4000000000000010"
+	installmentPrefix        = "cuota-"
+	insufficientFunds        = "insufficient_funds"
+	tokenPrefix              = "tok_"
+	maxTokenLength           = 128
 
 	// The account ending that the stub rejects as an invalid destination, the
 	// one screen O6b shows (0123-4567-89).
@@ -135,6 +143,9 @@ type tokenInfo struct {
 	Brand    string
 	Last4    string
 	Declines bool
+	// DeclinesInstallments: the card pays the issuance and declines the
+	// monthly instalments (HU-W1.6-02).
+	DeclinesInstallments bool
 }
 
 type charge struct {
@@ -245,7 +256,8 @@ func (g *gateway) tokenise(w http.ResponseWriter, r *http.Request) {
 		Last4: last4,
 		// The decision is fixed when the card is tokenised, not when it is
 		// charged: the number is gone by then, which is the whole point.
-		Declines: number != approvedTestCard && strings.HasSuffix(number, declinedCardSuffix),
+		Declines:             number != approvedTestCard && strings.HasSuffix(number, declinedCardSuffix),
+		DeclinesInstallments: number == installmentsDeclinedCard,
 	}
 
 	g.mu.Lock()
@@ -377,6 +389,9 @@ func (g *gateway) decide(in chargeRequest) (declined bool, reason string) {
 		}
 		if info.Declines {
 			return true, "the issuer declined the charge: " + insufficientFunds
+		}
+		if info.DeclinesInstallments && strings.HasPrefix(in.Reference, installmentPrefix) {
+			return true, "the issuer declined the instalment: " + insufficientFunds
 		}
 		return false, ""
 	}

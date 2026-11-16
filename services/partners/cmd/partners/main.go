@@ -5,7 +5,9 @@
 // register and approve the commercial partners and rotate their credentials.
 // The credentials are API keys in a usage plan per partner of the API
 // Gateway (GATEWAY_REST_API_ID, GATEWAY_STAGE_NAME); the credential events go
-// to the partners topic through the outbox (EVENTS_TOPIC_ARN).
+// to the partners topic through the outbox (EVENTS_TOPIC_ARN). HU-W3.2-03:
+// with SLO_ALARM_PREFIX and AUTH_* it mounts the technical performance of the
+// partner API for the partner portal, read from the SLO alarms in CloudWatch.
 package main
 
 import (
@@ -20,6 +22,7 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	sdkapigateway "github.com/aws/aws-sdk-go-v2/service/apigateway"
+	sdkcloudwatch "github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/events/snspublisher"
@@ -27,9 +30,11 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/outbox"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners/internal/adapters/apigateway"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners/internal/adapters/cloudwatch"
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners/internal/adapters/http"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners/internal/adapters/postgres"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners/internal/credentials"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners/internal/dashboard"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners/internal/onboarding"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/partners/internal/ports"
 )
@@ -49,6 +54,8 @@ const (
 	envGracePeriodHours   = "CREDENTIAL_GRACE_PERIOD_HOURS"
 	envRevocationPollMS   = "CREDENTIAL_REVOCATION_POLL_INTERVAL_MS"
 	envEnvironment        = "ENVIRONMENT"
+	envSLOAlarmPrefix     = "SLO_ALARM_PREFIX"
+	envSLOObjective       = "SLO_AVAILABILITY_OBJECTIVE_PERCENT"
 )
 
 // Defaults.
@@ -69,6 +76,8 @@ type config struct {
 	graceHours     int
 	revocationPoll time.Duration
 	environment    string
+	sloPrefix      string
+	sloObjective   float64
 }
 
 // loadConfig reads the configuration from environment variables. Everything
@@ -77,6 +86,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	cfg := config{
 		port: getenv("PORT"), databaseURL: getenv(envDatabaseURL), topicARN: getenv(envEventsTopicARN),
 		gatewayAPIID: getenv(envGatewayRestAPIID), gatewayStage: getenv(envGatewayStageName), environment: getenv(envEnvironment),
+		sloPrefix: getenv(envSLOAlarmPrefix),
 	}
 	if cfg.port == "" {
 		cfg.port = "8080"
@@ -107,6 +117,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	cfg.revocationPoll = time.Duration(ms) * time.Millisecond
+	if raw := getenv(envSLOObjective); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || v <= 0 || v > 100 {
+			return config{}, fmt.Errorf("%s must be a percentage in (0, 100], got %q", envSLOObjective, raw)
+		}
+		cfg.sloObjective = v
+	}
 	return cfg, nil
 }
 
@@ -135,6 +152,10 @@ func main() {
 	defer cancel()
 
 	opts := []httpadapter.Option{httpadapter.WithObservability(serviceName)}
+	verifier, err := newVerifier(ctx, cfg)
+	if err != nil {
+		log.Fatalf("could not load the user pool keys: %v", err)
+	}
 	if cfg.databaseURL != "" {
 		db, err := postgres.Open(ctx, cfg.databaseURL)
 		if err != nil {
@@ -144,7 +165,7 @@ func main() {
 		if err := postgres.Migrate(ctx, db); err != nil {
 			log.Fatalf("could not migrate the database: %v", err)
 		}
-		partnerOpts, err := wire(ctx, cfg, db)
+		partnerOpts, err := wire(ctx, cfg, db, verifier)
 		if err != nil {
 			log.Fatalf("could not set up the partners: %v", err)
 		}
@@ -152,6 +173,11 @@ func main() {
 	} else {
 		log.Printf("%s is not set: the partner routes (HU-W3.1-01) are not mounted", envDatabaseURL)
 	}
+	perfOpts, err := performanceOptions(ctx, cfg, verifier)
+	if err != nil {
+		log.Fatalf("could not set up the performance of the partner API: %v", err)
+	}
+	opts = append(opts, perfOpts...)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
@@ -170,7 +196,7 @@ func main() {
 
 // wire builds the use cases over the database and starts the background work
 // (outbox relay and revocation worker). It returns the routes to mount.
-func wire(ctx context.Context, cfg config, db *sql.DB) ([]httpadapter.Option, error) {
+func wire(ctx context.Context, cfg config, db *sql.DB, verifier security.Verifier) ([]httpadapter.Option, error) {
 	gateway, err := newGateway(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -181,14 +207,6 @@ func wire(ctx context.Context, cfg config, db *sql.DB) ([]httpadapter.Option, er
 	}
 	if relay != nil {
 		go relay.Run(ctx)
-	}
-	var verifier security.Verifier
-	if cfg.auth != nil {
-		jwks, err := security.NewJWKSVerifier(ctx, *cfg.auth)
-		if err != nil {
-			return nil, fmt.Errorf("load the user pool keys: %w", err)
-		}
-		verifier = jwks
 	}
 	return partnerOptions(ctx, cfg, postgres.NewPartnerStore(db), gateway, verifier)
 }
@@ -264,6 +282,50 @@ func newEventRelay(ctx context.Context, cfg config, store outbox.Store) (*outbox
 	}
 	log.Printf("domain events: outbox relay to %s every %s", cfg.topicARN, cfg.outboxPoll)
 	return relay, nil
+}
+
+// newVerifier loads the keys of the user pool; without AUTH_ISSUER it returns
+// nil and no human route is mounted.
+func newVerifier(ctx context.Context, cfg config) (security.Verifier, error) {
+	if cfg.auth == nil {
+		return nil, nil
+	}
+	return security.NewJWKSVerifier(ctx, *cfg.auth)
+}
+
+// performanceOptions mounts the technical performance of the partner API
+// (HU-W3.2-03): it reads the SLO alarms with the prefix SLO_ALARM_PREFIX and
+// their metrics from CloudWatch, with the credentials and region of the
+// environment (AWS_ENDPOINT_URL_CLOUDWATCH can point to LocalStack). Without
+// the prefix or AUTH_ISSUER it is not mounted.
+func performanceOptions(ctx context.Context, cfg config, verifier security.Verifier) ([]httpadapter.Option, error) {
+	if cfg.sloPrefix == "" {
+		log.Printf("%s is not set: the performance of the partner API (HU-W3.2-03) is not mounted", envSLOAlarmPrefix)
+		return nil, nil
+	}
+	if verifier == nil {
+		log.Printf("%s is not set: the performance of the partner API (HU-W3.2-03) is not mounted", security.EnvIssuer)
+		return nil, nil
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load the AWS configuration for %s: %w", envSLOAlarmPrefix, err)
+	}
+	return performanceRoutes(sdkcloudwatch.NewFromConfig(awsCfg), cfg, verifier)
+}
+
+// performanceRoutes builds the routes over a CloudWatch client.
+func performanceRoutes(api cloudwatch.API, cfg config, verifier security.Verifier) ([]httpadapter.Option, error) {
+	telemetry, err := cloudwatch.New(api, cfg.sloPrefix)
+	if err != nil {
+		return nil, err
+	}
+	svc, err := dashboard.NewService(telemetry, systemClock{}, cfg.sloObjective)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("partner performance (HU-W3.2-03): GET /v1/partner-performance from the SLO alarms %s*", cfg.sloPrefix)
+	return []httpadapter.Option{httpadapter.WithPerformance(svc, verifier, time.Now)}, nil
 }
 
 type systemClock struct{}

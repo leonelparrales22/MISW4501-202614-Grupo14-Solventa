@@ -47,7 +47,8 @@ func (s *ExpiringService) List(ctx context.Context, q domain.ExpiringQuery) (dom
 		return domain.ExpiringPage{}, err
 	}
 	start, end := q.Bounds()
-	items, total, err := s.query.ListExpiring(ctx, start, end, now, q.Status, q.Offset(), q.PageSize)
+	cancelledSince := now.AddDate(0, 0, -domain.CancelledListedDays)
+	items, total, err := s.query.ListExpiring(ctx, start, end, now, cancelledSince, q.Status, q.Offset(), q.PageSize)
 	if err != nil {
 		return domain.ExpiringPage{}, err
 	}
@@ -55,16 +56,20 @@ func (s *ExpiringService) List(ctx context.Context, q domain.ExpiringQuery) (dom
 	if err != nil {
 		return domain.ExpiringPage{}, err
 	}
+	cancelled, err := s.query.CountCancelledSince(ctx, cancelledSince)
+	if err != nil {
+		return domain.ExpiringPage{}, err
+	}
 	for i := range items {
 		p := items[i].Policy
-		items[i].CanRenew = items[i].Renewal == nil && s.rules.InWindow(p, now)
+		items[i].CanRenew = items[i].Renewal == nil && items[i].CancelledAt.IsZero() && s.rules.InWindow(p, now)
 		items[i].WindowOpensAt, items[i].WindowClosesAt = s.rules.WindowOpensAt(p), p.CoverageEnd
 	}
 	if items == nil {
 		items = []domain.ExpiringPolicy{}
 	}
 	return domain.ExpiringPage{
-		Items: items, Total: total, DueWithinWindow: due,
+		Items: items, Total: total, DueWithinWindow: due, CancelledNonPayment: cancelled,
 		From: domain.CivilDayOf(q.From), To: domain.CivilDayOf(q.To), WindowDays: s.rules.WindowDays,
 		Page: q.Page, PageSize: q.PageSize,
 	}, nil
