@@ -425,7 +425,9 @@ type ContactInput struct {
 var ErrPolicyNotInForce = errors.New("the policy is not in force")
 
 // InForceAt tells whether the coverage of the policy is running at now: from
-// its start (included) to its end (excluded).
+// its start (included) to its end (excluded). A cancellation for non-payment
+// (HU-W1.6-02) keeps these dates: whether a policy can change also needs that
+// it was not cancelled, which endorsements.Terms.InForce checks.
 func (p Policy) InForceAt(now time.Time) bool {
 	return !now.Before(p.CoverageStart) && now.Before(p.CoverageEnd)
 }

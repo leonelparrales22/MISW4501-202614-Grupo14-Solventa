@@ -3,8 +3,10 @@ package endorsements
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/renewal"
 )
 
@@ -27,6 +29,9 @@ type Terms struct {
 	// endorsed reads the last applied endorsement (HU-W1.4-02); nil before
 	// any endorsement can be applied.
 	endorsed EndorsedTermsReader
+	// cancellations tells whether a policy was cancelled for non-payment
+	// (HU-W1.6-02); nil when nothing cancels policies.
+	cancellations ports.CancellationChecker
 }
 
 // EndorsedTermsReader reads the terms of the last endorsement that governs a
@@ -46,6 +51,33 @@ func NewTerms(origins Origins, partnerNames map[string]string) *Terms {
 func (t *Terms) WithEndorsements(r EndorsedTermsReader) *Terms {
 	t.endorsed = r
 	return t
+}
+
+// WithCancellations makes InForce read whether the policy was cancelled for
+// non-payment (HU-W1.6-02). c may be nil: then nothing is cancelled.
+func (t *Terms) WithCancellations(c ports.CancellationChecker) *Terms {
+	t.cancellations = c
+	return t
+}
+
+// InForce tells whether the policy can change at now (adjustment A-9 of
+// HU-W1.4-01): its coverage is running (domain.Policy.InForceAt) and it was
+// not cancelled for non-payment (HU-W1.6-02), the same check the renewal
+// makes. A cancellation keeps the dates of the coverage, so the dates alone
+// are not enough. It is the rule of every change of a policy: the insured
+// filing it here and the analyst of HU-W1.4-02 applying it.
+func (t *Terms) InForce(ctx context.Context, p domain.Policy, now time.Time) (bool, error) {
+	if !p.InForceAt(now) {
+		return false, nil
+	}
+	if t.cancellations == nil {
+		return true, nil
+	}
+	cancelled, err := t.cancellations.IsCancelled(ctx, p.ID)
+	if err != nil {
+		return false, err
+	}
+	return !cancelled, nil
 }
 
 // Of returns the current terms of the policy: its insured value, the

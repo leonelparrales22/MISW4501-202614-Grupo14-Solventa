@@ -126,6 +126,17 @@ func (f *fakeRequests) ListByCustomer(_ context.Context, customerID string, filt
 	return page, nil
 }
 
+// fakeCancellations is the set of the policies cancelled for non-payment
+// (HU-W1.6-02).
+type fakeCancellations struct {
+	cancelled map[string]bool
+	err       error
+}
+
+func (f *fakeCancellations) IsCancelled(_ context.Context, policyID string) (bool, error) {
+	return f.cancelled[policyID], f.err
+}
+
 // fakeOrigins answers the origin of each policy.
 type fakeOrigins struct {
 	rows map[string]renewal.Origin

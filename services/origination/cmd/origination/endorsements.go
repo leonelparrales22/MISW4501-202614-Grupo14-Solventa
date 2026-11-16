@@ -101,8 +101,8 @@ func parsePartnerNames(raw string) (map[string]string, error) {
 }
 
 // newEndorsementService wires the change requests over origination's
-// database: the policies, the requests and the origin of each policy (its
-// charge and its offer), to know the lender.
+// database: the policies, the requests, the origin of each policy (its
+// charge and its offer), to know the lender, and its cancellation.
 func newEndorsementService(cfg endorsementConfig, db *sql.DB, offers ports.OfferReader) (*endorsements.Service, error) {
 	if db == nil {
 		return nil, fmt.Errorf("the change requests need origination's database (%s)", envDatabaseURL)
@@ -117,6 +117,9 @@ func newEndorsementService(cfg endorsementConfig, db *sql.DB, offers ports.Offer
 		// HU-W1.4-02: the terms the insured sees show the last endorsement.
 		Endorsements: postgres.NewEndorsementStore(db),
 		Clock:        systemClock{},
+		// HU-W1.6-02: a policy cancelled for non-payment is not in force, as
+		// for the renewal (adjustment A-9).
+		Cancellations: postgres.NewInstallmentStore(db),
 	})
 }
 
