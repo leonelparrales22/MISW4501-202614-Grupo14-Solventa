@@ -2,8 +2,8 @@
 
 > **Fuente para el front (Angular).** Describe lo que implementa el servicio `origination`
 > (`internal/adapters/http/endorsements.go`, `internal/endorsements/review.go`, `internal/adapters/postgres/endorsements.go`,
-> `internal/domain/endorsement.go`, migración `0018_endorsement.sql`). Contrato formal: `services/origination/api/openapi.yaml`
-> (0.18.0). Alimenta las pantallas del portal del analista de operaciones **O2 «Endosos»** (`/originacion/endosos`), **O3/O3b «Detalle
+> `internal/domain/endorsement.go`, migración `0019_endorsement.sql`). Contrato formal: `services/origination/api/openapi.yaml`
+> (0.19.0). Alimenta las pantallas del portal del analista de operaciones **O2 «Endosos»** (`/originacion/endosos`), **O3/O3b «Detalle
 > del endoso»** (`/originacion/endosos/:id`) y **O4 «Historial de endosos»** (`/originacion/polizas/:id/endosos`). Las solicitudes las
 > radica el asegurado con las rutas de HU-W1.4-01 ([`HU-W1.4-01-api.md`](HU-W1.4-01-api.md)), donde también ve el estado que deja el
 > analista.

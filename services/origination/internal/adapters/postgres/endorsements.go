@@ -17,7 +17,7 @@ import (
 )
 
 // EndorsementStore is the ports.EndorsementStore and the
-// ports.EndorsementNoticeStore over the tables of migration 0018 (HU-W1.4-02)
+// ports.EndorsementNoticeStore over the tables of migration 0019 (HU-W1.4-02)
 // and the three columns of change_request that can change. Every decision is
 // one short transaction that first claims the request with a conditional
 // UPDATE (EC-D02): no lock is held while the validations call KYC or claims,
