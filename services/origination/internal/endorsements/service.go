@@ -42,6 +42,9 @@ type Config struct {
 	// optional: without a name the onerous beneficiary shows its code.
 	PartnerNames map[string]string
 	Clock        ports.Clock
+	// Cancellations, when set, makes a policy cancelled for non-payment
+	// (HU-W1.6-02) not in force, so it cannot change (adjustment A-9).
+	Cancellations ports.CancellationChecker
 }
 
 // NewService builds a Service.
@@ -49,15 +52,17 @@ func NewService(c Config) (*Service, error) {
 	if c.Policies == nil || c.Requests == nil || c.Origins == nil || c.Clock == nil {
 		return nil, errors.New("endorsements: policies, requests, origins and clock are required")
 	}
-	return &Service{policies: c.Policies, requests: c.Requests, terms: NewTerms(c.Origins, c.PartnerNames), clock: c.Clock}, nil
+	return &Service{policies: c.Policies, requests: c.Requests,
+		terms: NewTerms(c.Origins, c.PartnerNames).WithCancellations(c.Cancellations), clock: c.Clock}, nil
 }
 
 // Terms returns the builder of the current terms, for the analyst of
 // HU-W1.4-02.
 func (s *Service) Terms() *Terms { return s.terms }
 
-// Current is a policy with its current terms, whether it is in force now and
-// its open requests (at most one per type).
+// Current is a policy with its current terms, whether it is in force now
+// (Terms.InForce: its coverage is running and it was not cancelled for
+// non-payment) and its open requests (at most one per type).
 type Current struct {
 	Policy  domain.Policy
 	InForce bool
@@ -99,11 +104,16 @@ func (s *Service) CurrentTerms(ctx context.Context, policyID string) (Current, e
 	if err != nil {
 		return Current{}, err
 	}
-	return Current{Policy: p, InForce: p.InForceAt(s.clock.Now().UTC()), Terms: terms, Open: open}, nil
+	inForce, err := s.terms.InForce(ctx, p, s.clock.Now().UTC())
+	if err != nil {
+		return Current{}, err
+	}
+	return Current{Policy: p, InForce: inForce, Terms: terms, Open: open}, nil
 }
 
 // File files a change request of the policy for its owner (CA-1, CA-2). It
-// returns domain.ErrPolicyNotInForce for a policy that is not in force, a
+// returns domain.ErrPolicyNotInForce for a policy that is not in force (its
+// coverage is not running or it was cancelled for non-payment), a
 // *ports.ChangeRequestOpenError when the policy already has an open request
 // of the same type, or a *domain.ValidationError naming every invalid field
 // (CA-3); in those cases nothing is stored.
@@ -116,7 +126,11 @@ func (s *Service) File(ctx context.Context, policyID string, in domain.ChangeInp
 		return domain.ChangeRequest{}, err
 	}
 	now := s.clock.Now().UTC()
-	if !p.InForceAt(now) {
+	inForce, err := s.terms.InForce(ctx, p, now)
+	if err != nil {
+		return domain.ChangeRequest{}, failed(span, err)
+	}
+	if !inForce {
 		return domain.ChangeRequest{}, domain.ErrPolicyNotInForce
 	}
 	terms, err := s.terms.Of(ctx, p)

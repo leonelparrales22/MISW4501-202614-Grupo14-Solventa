@@ -24,10 +24,11 @@ var now = time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 func ptr[T any](v T) *T { return &v }
 
 type env struct {
-	policies *fakePolicies
-	requests *fakeRequests
-	origins  fakeOrigins
-	clock    *fakeClock
+	policies      *fakePolicies
+	requests      *fakeRequests
+	origins       fakeOrigins
+	cancellations *fakeCancellations
+	clock         *fakeClock
 }
 
 func newEnv() *env {
@@ -50,14 +51,15 @@ func newEnv() *env {
 			"pol-advisor":  {PartnerID: domain.AdvisorPartnerID},
 			"pol-diego":    {PartnerID: "aliado-banco-2"},
 		}},
-		clock: &fakeClock{now: now},
+		cancellations: &fakeCancellations{cancelled: map[string]bool{}},
+		clock:         &fakeClock{now: now},
 	}
 }
 
 func (e *env) service(t *testing.T) *endorsements.Service {
 	t.Helper()
 	svc, err := endorsements.NewService(endorsements.Config{Policies: e.policies, Requests: e.requests, Origins: e.origins,
-		PartnerNames: map[string]string{"aliado-banco-1": "Banco Aliado"}, Clock: e.clock})
+		PartnerNames: map[string]string{"aliado-banco-1": "Banco Aliado"}, Clock: e.clock, Cancellations: e.cancellations})
 	require.NoError(t, err)
 	return svc
 }
@@ -198,6 +200,17 @@ func TestAPolicyNotInForceIsNotChanged(t *testing.T) {
 
 	assert.ErrorIs(t, err, domain.ErrPolicyNotInForce)
 	assert.Zero(t, e.requests.creates)
+
+	// Adjustment A-9: cancelled for non-payment (HU-W1.6-02) before the end of
+	// its coverage, the policy keeps its dates but is not in force.
+	e.cancellations.cancelled["pol-carolina"] = true
+	ctx := insured("sub-carolina", "")
+	_, err = e.service(t).File(ctx, "pol-carolina", insuredAmount(80_000_000))
+	assert.ErrorIs(t, err, domain.ErrPolicyNotInForce)
+	current, err := e.service(t).CurrentTerms(ctx, "pol-carolina")
+	require.NoError(t, err)
+	assert.False(t, current.InForce, "screen A3 shows the policy is not in force")
+	assert.Zero(t, e.requests.creates)
 }
 
 func TestAnOpenRequestOfTheSameTypeAnswersFirst(t *testing.T) {
@@ -268,6 +281,14 @@ func TestInfrastructureFailuresArePropagated(t *testing.T) {
 	e.policies.err = boom
 	_, err = e.service(t).File(ctx, "pol-carolina", insuredAmount(80_000_000))
 	assert.ErrorIs(t, err, boom)
+
+	e = newEnv()
+	e.cancellations.err = boom
+	_, err = e.service(t).File(ctx, "pol-carolina", insuredAmount(80_000_000))
+	assert.ErrorIs(t, err, boom, "not knowing whether it was cancelled files nothing")
+	_, err = e.service(t).CurrentTerms(ctx, "pol-carolina")
+	assert.ErrorIs(t, err, boom)
+	assert.Zero(t, e.requests.creates)
 }
 
 func TestTheLogOfAFilingCarriesNoPersonalData(t *testing.T) {

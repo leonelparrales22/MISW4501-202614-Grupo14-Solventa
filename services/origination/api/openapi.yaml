@@ -1517,8 +1517,9 @@ paths:
           $ref: "#/components/responses/PolicyNotFound"
         "409":
           description: >
-            The policy is not in force (policy_not_in_force), or it already has
-            an open request of the same type (change_request_open, with its
+            The policy is not in force (policy_not_in_force: its coverage is not
+            running or it was cancelled for non-payment), or it already has an
+            open request of the same type (change_request_open, with its
             request_id)
           content:
             application/json:
@@ -4793,7 +4794,9 @@ components:
               format: date-time
             in_force:
               type: boolean
-              description: The coverage is running now; a change can be filed only then.
+              description: >
+                The coverage is running now and the policy was not cancelled
+                for non-payment; a change can be filed only then.
         terms:
           type: object
           required: [insured_amount, currency, beneficiaries, onerous_beneficiary, personal_data]

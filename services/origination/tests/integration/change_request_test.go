@@ -46,6 +46,7 @@ func newChangeEnv(t *testing.T) *changeEnv {
 		Origins: renewal.OriginFinder{Policies: e.policies, Charges: e.charges, Offers: e.offers, BySubject: customers,
 			ByDocument: customers},
 		PartnerNames: map[string]string{"aliado-banco-1": "Banco Aliado"}, Clock: e.clock,
+		Cancellations: postgres.NewInstallmentStore(e.db),
 	})
 	require.NoError(t, err)
 	srv := httptest.NewServer(httpadapter.NewRouter(profiling.NewResolver(nil, nil, e.clock),
@@ -95,6 +96,22 @@ func (e *changeEnv) sold(t *testing.T, id, owner, partner string, started, endsI
 func (e *changeEnv) inForce(t *testing.T, id string) domain.Policy {
 	t.Helper()
 	return e.sold(t, id, "carolina", "aliado-banco-1", 60*24*time.Hour, 300*24*time.Hour)
+}
+
+// cancel does what the instalments of HU-W1.6-02 do with a month not paid in
+// time: its second month falls unpaid and the policy is cancelled for
+// non-payment, keeping the dates of its coverage.
+func (e *changeEnv) cancel(t *testing.T, p domain.Policy) {
+	t.Helper()
+	ctx := context.Background()
+	now := e.clock.Now().UTC()
+	store := postgres.NewInstallmentStore(e.db)
+	i := domain.NewInstallment(p, 2, domain.DefaultInstallmentRules, now)
+	_, err := store.CreateInstallment(ctx, i)
+	require.NoError(t, err)
+	created, err := store.Cancel(ctx, p, i, now)
+	require.NoError(t, err)
+	require.True(t, created)
 }
 
 // decide does what HU-W1.4-02 will do: it changes the status of a request.
@@ -375,6 +392,17 @@ func TestChangeRequestOnlyAPolicyOfOriginationInForce(t *testing.T) {
 	code, body = e.call(t, http.MethodPost, "/v1/policies/AU-2025-118204/change-requests", carolina, newInsuredAmount)
 	assert.Equal(t, http.StatusNotFound, code, "a policy of the policy core is not origination's")
 	assert.Equal(t, "policy_not_found", body["error"])
+
+	// Adjustment A-9: cancelled for non-payment (HU-W1.6-02) before the end of
+	// its coverage, the policy is not in force either.
+	cancelled := e.sold(t, "pol-cr-cancelled", "carolina", "aliado-banco-1", 90*24*time.Hour, 275*24*time.Hour)
+	e.cancel(t, cancelled)
+	code, body = e.call(t, http.MethodPost, "/v1/policies/"+cancelled.ID+"/change-requests", carolina, newInsuredAmount)
+	assert.Equal(t, http.StatusConflict, code)
+	assert.Equal(t, "policy_not_in_force", body["error"])
+	code, terms = e.call(t, http.MethodGet, "/v1/policies/"+cancelled.ID+"/current-terms", carolina, "")
+	require.Equal(t, http.StatusOK, code)
+	assert.Equal(t, false, terms["policy"].(map[string]any)["in_force"])
 	assert.Zero(t, e.requests(t))
 
 	advisorSale := e.sold(t, "pol-cr-advisor", "carolina", domain.AdvisorPartnerID, 10*24*time.Hour, 300*24*time.Hour)

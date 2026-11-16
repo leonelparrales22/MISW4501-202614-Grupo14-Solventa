@@ -19,7 +19,8 @@ HU-W1.4-02 (analista) ──▶ in_review ──▶ applied | rejected | not_app
 ```
 
 - **Qué pólizas (D-2 a).** Solo las que emite originación (vida hipotecario) y están **vigentes** (`coverage_start ≤ ahora <
-  coverage_end`). Una póliza del núcleo (Autos, Hogar, Viaje) responde `404 policy_not_found`.
+  coverage_end` **y sin cancelación por no pago** de HU-W1.6-02, la misma comprobación de la renovación; la cancelación no cambia las
+  fechas de la cobertura). Una póliza del núcleo (Autos, Hogar, Viaje) responde `404 policy_not_found`.
 - **Quién (D-11 a, CA-4).** Solo el asegurado dueño (`sub` del token = dueño de la póliza), con el rol `insured`. Otro rol responde `403`
   sin leer nada; otro asegurado, `403` sin radicar nada. Nadie radica en nombre del asegurado.
 - **Tipos (CA-1).** `beneficiaries` (los beneficiarios del remanente, que **reemplazan** a los designados), `insured_amount` (valor
@@ -77,7 +78,7 @@ infraestructura de rutas, D-15 a). El segmento fijo `change-requests` no tapa la
   `PARTNER_DISPLAY_NAMES` (D-14 a); `null` si el aliado no tiene nombre (la pantalla muestra el código). En una venta del asesor no hay
   aliado: `partner_id` y `name` son `null` y la pantalla muestra una etiqueta genérica («Entidad que otorgó el crédito»). No hay NIT.
 - `personal_data`: `address` y `phone` son `null` mientras no estén registrados («No registrado»).
-- `in_force: false` → la pantalla muestra la póliza como no vigente y no deja radicar.
+- `in_force: false` → la pantalla muestra la póliza como no vigente y no deja radicar (también con una póliza cancelada por no pago).
 - `open_requests`: la abierta de cada tipo que tenga una; ese tipo queda deshabilitado con su enlace.
 
 ### `POST /v1/policies/{policy_id}/change-requests` → `201`
@@ -180,7 +181,7 @@ La misma forma de la respuesta del `POST`. Otro asegurado: `403`. Un id que no t
 | `403` | `forbidden` | El rol no es `insured`, o la póliza o la solicitud son de otro asegurado |
 | `404` | `policy_not_found` | La póliza no existe en originación (o es del núcleo de pólizas) |
 | `404` | `change_request_not_found` | La solicitud no existe |
-| `409` | `policy_not_in_force` | La póliza no está vigente |
+| `409` | `policy_not_in_force` | La póliza no está vigente: su cobertura no está en curso o fue cancelada por no pago (HU-W1.6-02) |
 | `409` | `change_request_open` | Ya hay una abierta del mismo tipo: `{"error":"change_request_open","message":"…","request_id":"SOL-MOD-2026-0041"}` |
 | `422` | `validation_failed` | Todos los campos inválidos a la vez (§3) |
 | `503` | `change_request_unavailable` | La base de originación no respondió; reintentar |
