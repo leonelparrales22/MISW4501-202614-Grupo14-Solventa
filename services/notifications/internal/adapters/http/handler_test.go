@@ -108,7 +108,7 @@ func TestTheListCarriesEverythingTheCenterAndTheDetailShow(t *testing.T) {
 	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 	assert.Equal(t, 20, svc.limit)
 	assert.JSONEq(t, `{"unread_count":1,"items":[{"notification_id":"ntf-ppo-1","kind":"parametric_payout",
-		"occurred_at":"2026-09-11T21:40:00Z","created_at":"2026-09-11T21:40:02Z","read_at":null,"stage":null,"expiry":null,
+		"occurred_at":"2026-09-11T21:40:00Z","created_at":"2026-09-11T21:40:02Z","read_at":null,"stage":null,"expiry":null,"cancellation":null,
 		"payout":{"payout_id":"ppo-1","claim_id":"SIN-2026-01702","policy_id":"VJ-2026-000931","amount":180000,
 		"currency":"COP","trigger":{"parameter":"flight_delay","event_reference":"AV-8421","threshold":180,"observed":215,
 		"unit":"minutes","observed_at":"2026-09-11T21:39:00Z"},"payment_method":{"brand":"visa","last4":"1111"},
@@ -218,7 +218,7 @@ func TestAChangeOfStageCarriesItsStageItsClaimAndItsAmount(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.JSONEq(t, `{"unread_count":1,"items":[{"notification_id":"ntf-stage-42","kind":"claim_stage_changed",
-		"occurred_at":"2026-09-20T14:40:05Z","created_at":"2026-09-20T14:40:05Z","read_at":null,"payout":null,"expiry":null,
+		"occurred_at":"2026-09-20T14:40:05Z","created_at":"2026-09-20T14:40:05Z","read_at":null,"payout":null,"expiry":null,"cancellation":null,
 		"stage":{"change_id":42,"claim_id":"cl-1","filing_number":"SIN-2026-01655","policy_id":"HG-2025-880231",
 		"stage":"approved","changed_at":"2026-09-20T14:40:05Z","amount":4132500,"currency":"COP","paid_at":null}}]}`,
 		rec.Body.String())
@@ -244,13 +244,34 @@ func TestAnExpiryAlertCarriesThePolicyItsDateAndTheDaysLeft(t *testing.T) {
 		{"notification_id":"ntf-expiry-AU-2025-118204-20261130-30","kind":"policy_expiry",
 		"occurred_at":"2026-11-14T15:00:00Z","created_at":"2026-11-14T15:00:00Z","read_at":null,"payout":null,"stage":null,
 		"expiry":{"policy_id":"AU-2025-118204","line":"auto","product":"Autos","insured_object":"KJT-482",
-		"coverage_end":"2026-11-30T05:00:00Z","milestone_days":30,"days_left":16}},
+		"coverage_end":"2026-11-30T05:00:00Z","milestone_days":30,"days_left":16},"cancellation":null},
 		{"notification_id":"ntf-expiry-pol-acc-1-20261118-5","kind":"policy_expiry",
 		"occurred_at":"2026-11-14T15:00:00Z","created_at":"2026-11-14T15:00:00Z","read_at":null,"payout":null,"stage":null,
 		"expiry":{"policy_id":"pol-acc-1","line":"life","product":null,"insured_object":null,
-		"coverage_end":"2026-11-19T04:59:59Z","milestone_days":5,"days_left":4}}]}`, rec.Body.String())
+		"coverage_end":"2026-11-19T04:59:59Z","milestone_days":5,"days_left":4},"cancellation":null}]}`, rec.Body.String())
 
 	one := call(t, svc, http.MethodGet, "/v1/notifications/ntf-expiry-AU-2025-118204-20261130-30", "insured:sub-a", "")
 	require.Equal(t, http.StatusOK, one.Code)
 	assert.Contains(t, one.Body.String(), `"milestone_days":30`)
+}
+
+// HU-W1.6-02: a cancellation for non-payment carries the unpaid month, its
+// amount and that there is no refund.
+func TestACancellationCarriesTheMonthItsAmountAndNoRefund(t *testing.T) {
+	due := time.Date(2026, 8, 12, 5, 0, 0, 0, time.UTC)
+	c := domain.PolicyCancellation{PolicyID: "VH-2026-004512", Subject: "sub-a", Reason: domain.ReasonNonPayment,
+		Line: "life", InstallmentSeq: 2, DueAt: due, GraceEndsAt: due.AddDate(0, 0, 30), CancelledAt: due.AddDate(0, 0, 31),
+		AmountMinor: 14_230_000, Currency: "COP"}
+	svc := &fakeCenter{items: []domain.Notification{domain.NewCancellationNotification(c, c.CancelledAt)}}
+
+	rec := call(t, svc, http.MethodGet, "/v1/notifications", "insured:sub-a", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"unread_count":1,"items":[
+		{"notification_id":"ntf-cancelled-VH-2026-004512","kind":"policy_cancelled",
+		"occurred_at":"2026-09-12T05:00:00Z","created_at":"2026-09-12T05:00:00Z","read_at":null,"payout":null,"stage":null,
+		"expiry":null,"cancellation":{"policy_id":"VH-2026-004512","reason":"non_payment","line":"life",
+		"installment_seq":2,"due_at":"2026-08-12T05:00:00Z","grace_ends_at":"2026-09-11T05:00:00Z",
+		"cancelled_at":"2026-09-12T05:00:00Z","amount":142300,"currency":"COP","refund":"not_applicable"}}]}`,
+		rec.Body.String())
 }

@@ -14,7 +14,10 @@ registra una notificación por cada cambio de etapa del siniestro (en evaluació
 [`docs/contratos/HU-M3.3-01-api.md`](../../docs/contratos/HU-M3.3-01-api.md). **HU-M3.2-01:** consume `PolicyExpiryApproaching` de
 `origination` y registra una notificación por póliza, periodo e hito (30, 15 o 5 días antes del vencimiento), con la fecha exacta de
 vencimiento, su *push* en el grupo `policy_expiry` y el `policy_id` para abrir la póliza. Guía:
-[`docs/contratos/HU-M3.2-01-api.md`](../../docs/contratos/HU-M3.2-01-api.md).
+[`docs/contratos/HU-M3.2-01-api.md`](../../docs/contratos/HU-M3.2-01-api.md). **HU-W1.6-02:** consume `PolicyCancelledForNonPayment` de
+`origination` y registra una notificación por póliza cancelada por no pago (`policy_cancelled`, con el mes no pagado, su monto y
+`refund: not_applicable`), con su *push* en el grupo `policy_cancelled` y el `policy_id` para abrir la póliza. Guía:
+[`docs/contratos/HU-W1.6-02-api.md`](../../docs/contratos/HU-W1.6-02-api.md).
 
 ## Responsabilidades
 
@@ -30,7 +33,7 @@ vencimiento, su *push* en el grupo `policy_expiry` y el `policy_id` para abrir l
 | Adaptador | Qué hace |
 |---|---|
 | `http` | Router `chi`: `GET /health` y, con `AUTH_ISSUER`, las rutas humanas del centro (rol `insured`, `Cache-Control: no-store`; la notificación de otro asegurado responde 404) |
-| `messaging` | Consumidores de `ParametricPayoutCompleted`, desde HU-M3.3-01 de `ClaimStageChanged` y desde HU-M3.2-01 de `PolicyExpiryApproaching` (`pkg/events`): traduce el *payload* al dominio; un *payload* inválido o una base caída es un error, así que el mensaje reaparece y termina en la DLQ |
+| `messaging` | Consumidores de `ParametricPayoutCompleted`, desde HU-M3.3-01 de `ClaimStageChanged` y desde HU-M3.2-01 de `PolicyExpiryApproaching` y desde HU-W1.6-02 de `PolicyCancelledForNonPayment` (`pkg/events`): traduce el *payload* al dominio; un *payload* inválido o una base caída es un error, así que el mensaje reaparece y termina en la DLQ |
 | `postgres` | Base propia (`database/sql` + `pgx` v5), migraciones embebidas con `pg_advisory_lock`. `Store`: tablas `notification`, `device` y `push_delivery`; la notificación y sus entregas se escriben en una transacción y el protocolo de reclamo de `pkg/idempotency` es una sentencia condicional por paso |
 | `pushprovider` | Puente entre `pkg/adapters/push` (corte de 2 s, circuit breaker, clasificación rechazado/ambiguo/no enviado) y el puerto `PushSender`: escribe el *push* en el idioma del dispositivo, lo agrupa en `parametric_payouts` (o en `claim_stages`, HU-M3.3-01, o en `policy_expiry`, HU-M3.2-01) y le pone en `data` qué abrir (`notification_id`, `kind`, `claim_id` o, en un vencimiento, `policy_id`) |
 | `fcm` | **HU-M3.3-01:** puente entre `pkg/adapters/fcm` y el puerto `PushSender`: un mensaje de solo datos (`notification_id`, `kind`, `claim_id`; `policy_id` en un vencimiento, HU-M3.2-01) por entrega, con `collapse_key` = la notificación; el texto lo escribe la app. Es el proveedor en AWS; `pushprovider` (el simulador) queda para local y las e2e |
@@ -54,7 +57,7 @@ vencimiento, su *push* en el grupo `policy_expiry` y el `policy_id` para abrir l
 - **BD propia:** PostgreSQL (notificaciones): `notification`, `device` y `push_delivery` (migración `0001`).
 - **Consume:** `ParametricPayoutCompleted` (HU-M3.1-01) y `ClaimStageChanged` (HU-M3.3-01) de `claims`, y `PolicyExpiryApproaching`
   (HU-M3.2-01) de `origination`, mediante una cola SQS propia (con DLQ), con consumidores idempotentes por pago, por cambio de etapa y por
-  póliza, periodo e hito. Ver [catálogo de eventos](../../docs/events/README.md). Los demás tipos de evento se borran sin efecto.
+  póliza, periodo e hito, y `PolicyCancelledForNonPayment` (HU-W1.6-02), idempotente por póliza. Ver [catálogo de eventos](../../docs/events/README.md). Los demás tipos de evento se borran sin efecto.
 - **Salida:** HTTPS hacia el proveedor de *push* (asíncrona); hoy `stubs/push`.
 
 ## Lo que queda fuera de HU-M3.1-01

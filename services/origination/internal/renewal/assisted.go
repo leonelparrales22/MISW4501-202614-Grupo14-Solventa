@@ -196,8 +196,14 @@ func (a *AssistedService) View(ctx context.Context, policyID string) (AssistedVi
 func (a *AssistedService) view(ctx context.Context, p domain.Policy) (AssistedView, error) {
 	now := a.svc.clock.Now().UTC()
 	rules := a.svc.rules
+	// HU-W1.6-02: a policy cancelled for non-payment reads as outside its
+	// window: there is nothing to renew.
+	open, err := a.svc.renewable(ctx, p, now)
+	if err != nil {
+		return AssistedView{}, err
+	}
 	v := AssistedView{Policy: p, WindowOpensAt: rules.WindowOpensAt(p), WindowClosesAt: p.CoverageEnd,
-		WindowOpen: rules.InWindow(p, now), PaymentMethod: a.svc.registeredMethod(ctx, p), ConsentMode: ConsentModeAudit}
+		WindowOpen: open, PaymentMethod: a.svc.registeredMethod(ctx, p), ConsentMode: ConsentModeAudit}
 
 	switch r, err := a.svc.renewals.Get(ctx, p.ID, p.CoverageEnd); {
 	case err == nil:
@@ -262,8 +268,8 @@ func (a *AssistedService) openPeriod(ctx context.Context, p domain.Policy, now t
 	case !errors.Is(err, ports.ErrRenewalNotFound):
 		return err
 	}
-	if !a.svc.rules.InWindow(p, now) {
-		return domain.ErrRenewalNotAvailable
+	if open, err := a.svc.renewable(ctx, p, now); err != nil || !open {
+		return errors.Join(err, notAvailableIf(err == nil))
 	}
 	return nil
 }
@@ -528,8 +534,8 @@ func (a *AssistedService) Formalize(ctx context.Context, policyID string, in For
 	case !errors.Is(err, ports.ErrRenewalNotFound):
 		return AssistedView{}, false, err
 	}
-	if !a.svc.rules.InWindow(p, now) {
-		return AssistedView{}, false, domain.ErrRenewalNotAvailable
+	if open, err := a.svc.renewable(ctx, p, now); err != nil || !open {
+		return AssistedView{}, false, errors.Join(err, notAvailableIf(err == nil))
 	}
 
 	acceptance := in.Acceptance

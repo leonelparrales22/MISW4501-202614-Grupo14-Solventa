@@ -15,6 +15,8 @@ import (
 // (HU-M1.2-01).
 type WalletService interface {
 	List(ctx context.Context) (wallet.Wallet, error)
+	// Get returns one policy of the caller (HU-W1.6-02, screens A2 and A2b).
+	Get(ctx context.Context, policyID string) (wallet.Detail, error)
 }
 
 // WithPolicyWallet mounts GET /v1/policies: every policy of the insured, the
@@ -28,6 +30,7 @@ func WithPolicyWallet(svc WalletService, verifier security.Verifier) Option {
 		r.Group(func(r chi.Router) {
 			r.Use(noStore, security.Authenticate(verifier), security.RequireRole(security.RoleInsured))
 			r.Get("/v1/policies", listWallet(svc))
+			r.Get("/v1/policies/{policy_id}", getPolicyDetail(svc))
 		})
 	}
 }
@@ -60,6 +63,10 @@ type walletItemBody struct {
 	RenewalWindow *windowBody         `json:"renewal_window"`
 	CanRenew      bool                `json:"can_renew"`
 	Renewal       *renewalSummaryBody `json:"renewal"`
+	// Payment and Cancellation are where the premium of a policy origination
+	// issued stands (HU-W1.6-02); null for the policy core's.
+	Payment      *paymentBody      `json:"payment"`
+	Cancellation *cancellationBody `json:"cancellation"`
 }
 
 type walletResponse struct {
@@ -79,6 +86,7 @@ func toWalletItem(it wallet.Item) walletItemBody {
 		Premium: p.Premium, Currency: p.Currency, InsuredAmount: p.InsuredAmount,
 		Coverages: toCoverageBodies(p.Coverages), CoverageStart: p.CoverageStart.UTC(), CoverageEnd: p.CoverageEnd.UTC(),
 		RenewalOf: optionalString(p.RenewalOf),
+		Payment:   toPaymentBody(it.Billing), Cancellation: toCancellationBody(it.Billing),
 	}
 	if v := it.Renewal; v != nil {
 		out.RenewalWindow = &windowBody{OpensAt: v.WindowOpensAt.UTC(), ClosesAt: v.WindowClosesAt.UTC()}

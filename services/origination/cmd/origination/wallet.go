@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"log"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/security"
 	httpadapter "github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/http"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/policycore"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/adapters/postgres"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/wallet"
 )
@@ -53,16 +56,22 @@ func newPolicyPortfolio(cfg policyCoreConfig) ports.PolicyPortfolio {
 	}))
 }
 
-// walletOptions mounts GET /v1/policies over the sources that are configured:
-// the policies origination issued (renewals, nil without the premium charge)
-// and the policy core (portfolio, nil without POLICY_CORE_URL). Without either
-// nothing is mounted.
-func walletOptions(renewals wallet.RenewalLister, portfolio ports.PolicyPortfolio,
-	verifier security.Verifier) []httpadapter.Option {
+// walletOptions mounts GET /v1/policies and GET /v1/policies/{policy_id}
+// over the sources that are configured: the policies origination issued
+// (renewals, nil without the premium charge) and the policy core (portfolio,
+// nil without POLICY_CORE_URL). Without either nothing is mounted. With the
+// database, the policies origination issued say where their premium stands
+// (HU-W1.6-02).
+func walletOptions(renewals wallet.RenewalLister, portfolio ports.PolicyPortfolio, verifier security.Verifier,
+	db *sql.DB, rules domain.InstallmentRules) []httpadapter.Option {
 	svc, err := wallet.NewService(renewals, portfolio, systemClock{})
 	if err != nil {
 		log.Printf("the wallet (HU-M1.2-01) is not mounted: %v", err)
 		return nil
+	}
+	if renewals != nil && db != nil {
+		store := postgres.NewInstallmentStore(db)
+		svc = svc.WithBilling(store, store, rules)
 	}
 	return []httpadapter.Option{httpadapter.WithPolicyWallet(svc, verifier)}
 }

@@ -302,6 +302,30 @@ func TestTheDeclinedTestCardIsDeclined(t *testing.T) {
 	assert.Zero(t, debug(t, h).RealCharges["cobro-acc-1"], "a declined card is not charged")
 }
 
+// HU-W1.6-02: without this card the cancellation for non-payment (screen
+// A2b) is unreachable in a demo: it pays the issuance and declines the
+// instalments.
+func TestTheInstalmentsTestCardPaysTheIssuanceAndDeclinesTheInstalments(t *testing.T) {
+	h := newHandler(0, true)
+	tok := tokenOf(t, h, "4000 0000 0000 0010")
+	assert.Equal(t, "0010", tok.Last4)
+
+	issuance := chargeWith(t, h, "cobro-acc-1", tok.Token)
+	instalment := post(t, h, "cuota-VH-1-2-1", `{"reference":"cuota-VH-1-2-1","customer_id":"cust-1",`+
+		`"amount_minor":6850000,"currency":"COP","payment_token":"`+tok.Token+`"}`)
+
+	require.Equal(t, http.StatusCreated, issuance.Code, "the issuance goes through")
+	require.Equal(t, http.StatusPaymentRequired, instalment.Code)
+	assert.Contains(t, instalment.Body.String(), "insufficient_funds")
+	assert.Contains(t, instalment.Body.String(), `"decline_code":"51"`)
+	assert.Zero(t, debug(t, h).RealCharges["cuota-VH-1-2-1"])
+
+	approved := tokenOf(t, h, approvedCard)
+	other := post(t, h, "cuota-VH-2-2-1", `{"reference":"cuota-VH-2-2-1","customer_id":"cust-1",`+
+		`"amount_minor":6850000,"currency":"COP","payment_token":"`+approved.Token+`"}`)
+	assert.Equal(t, http.StatusCreated, other.Code, "the approved card pays its instalments")
+}
+
 func TestAnUnknownTokenIsDeclined(t *testing.T) {
 	h := newHandler(0, true)
 

@@ -101,3 +101,30 @@ func TestThePushOfAnExpiryAlertOpensThePolicy(t *testing.T) {
 	assert.Equal(t, map[string]string{pushprovider.DataNotificationID: "ntf-expiry-AU-2025-118204-20261130-30",
 		pushprovider.DataKind: domain.KindPolicyExpiry, pushprovider.DataPolicyID: "AU-2025-118204"}, client.got.Data)
 }
+
+// HU-W1.6-02: the push of a cancellation for non-payment says there is no
+// refund and opens the policy.
+func TestThePushOfACancellationOpensThePolicy(t *testing.T) {
+	client := &fakeClient{}
+	due := time.Date(2026, 8, 12, 5, 0, 0, 0, time.UTC)
+	c := domain.PolicyCancellation{PolicyID: "VH-2026-004512", Subject: "sub-a", Reason: domain.ReasonNonPayment,
+		Line: "life", InstallmentSeq: 2, DueAt: due, CancelledAt: due.AddDate(0, 0, 31), AmountMinor: 14_230_000,
+		Currency: "COP"}
+	for locale, want := range map[string][2]string{
+		domain.LocaleSpanish: {"Tu póliza fue cancelada por falta de pago", "VH-2026-004512 se canceló el 12/09/2026"},
+		domain.LocaleEnglish: {"Your policy was cancelled for non-payment", "VH-2026-004512 was cancelled on 09/12/2026"},
+	} {
+		d := domain.NewDelivery(domain.NewCancellationNotification(c, c.CancelledAt),
+			domain.Device{InstallationID: "inst-1", Token: "tok-1", Locale: locale}, c.CancelledAt)
+
+		_, err := pushprovider.NewSender(client).Send(context.Background(), d)
+
+		require.NoError(t, err)
+		assert.Equal(t, domain.GroupPolicyCancelled, client.got.Group)
+		assert.Equal(t, want[0], client.got.Title, locale)
+		assert.Contains(t, client.got.Body, want[1], locale)
+		assert.Contains(t, client.got.Body, "2", locale)
+		assert.Equal(t, map[string]string{pushprovider.DataNotificationID: "ntf-cancelled-VH-2026-004512",
+			pushprovider.DataKind: domain.KindPolicyCancelled, pushprovider.DataPolicyID: "VH-2026-004512"}, client.got.Data)
+	}
+}

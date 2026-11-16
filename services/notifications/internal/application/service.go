@@ -119,6 +119,32 @@ func (s *Service) RecordExpiryAlert(ctx context.Context, e domain.ExpiryAlert) e
 	return nil
 }
 
+// RecordCancellation records the notification that a policy was cancelled
+// for non-payment and the push to every device of the insured that accepts
+// it (HU-W1.6-02). It is stored even without such a device, and a redelivered
+// event changes nothing: a policy is cancelled once.
+func (s *Service) RecordCancellation(ctx context.Context, c domain.PolicyCancellation) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	now := s.clock.Now().UTC()
+	n := domain.NewCancellationNotification(c, now)
+	created, deliveries, err := s.store.Record(ctx, n, now)
+	if err != nil {
+		return err
+	}
+	if !created {
+		slog.InfoContext(ctx, "policy cancellation already notified", "notification_id", n.ID, "policy_id", c.PolicyID)
+		return nil
+	}
+	slog.InfoContext(ctx, "policy cancellation notification recorded", "notification_id", n.ID, "policy_id", c.PolicyID,
+		"deliveries", len(deliveries), "received_after_ms", now.Sub(c.CancelledAt).Milliseconds())
+	if len(deliveries) > 0 {
+		s.wake()
+	}
+	return nil
+}
+
 // List returns the notifications of the caller, the newest first, and how
 // many are unread. A limit outside 1..MaxListLimit takes DefaultListLimit.
 func (s *Service) List(ctx context.Context, limit int) ([]domain.Notification, int, error) {
