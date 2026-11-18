@@ -19,7 +19,9 @@ import (
 // when that row does not exist (expiring) or is accepted (renewal in
 // progress); renewed and not_renewed periods leave the list (decision D-3 a).
 // It needs no index of its own: policy_coverage_end_idx serves the range and
-// the unique index of renewal the join.
+// the unique index of renewal the join. HU-W1.4-02: the policies are read from the view
+// policy_current, with the insured value and the premium of their last
+// endorsement.
 type ExpiringPolicyStore struct {
 	db *sql.DB
 }
@@ -31,7 +33,7 @@ func NewExpiringPolicyStore(db *sql.DB) *ExpiringPolicyStore { return &ExpiringP
 
 // expiringJoin joins each policy with the renewal of its current period and
 // its cancellation for non-payment (HU-W1.6-02).
-const expiringJoin = ` FROM policy p
+const expiringJoin = ` FROM policy_current p
 	LEFT JOIN renewal r ON r.policy_id = p.policy_id AND r.period_end = p.coverage_end
 	LEFT JOIN policy_cancellation c ON c.policy_id = p.policy_id`
 

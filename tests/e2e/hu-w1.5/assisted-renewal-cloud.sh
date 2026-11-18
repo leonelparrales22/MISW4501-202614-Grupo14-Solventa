@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # The single seed and the API checks of the renewal stories (HU-W1.5-01 and
 # HU-W1.5-03) for the cloud window (staging); the seed also buys the policies
-# of the change request of the insured (HU-W1.4-01, decision V-2 a). Always
+# of the change request of the insured (HU-W1.4-01, decision V-2 a) and the
+# ones of the endorsements of the analyst, with their requests filed by the
+# insured (HU-W1.4-02, decision D-15 a). Always
 # through the portal of
 # CloudFront, as the browser calls it, and only with the permanent users of
 # bootstrap/identity. It never creates users and never prints a password or a
@@ -9,7 +11,7 @@
 # down.sh.
 #
 # Usage:
-#   assisted-renewal-cloud.sh --seed           buys P1..P10 through the real journey and writes SEED_FILE
+#   assisted-renewal-cloud.sh --seed           buys P1..P10 and E1..E6 through the real journey and writes SEED_FILE
 #   assisted-renewal-cloud.sh verify           buys its own policies and checks CA-1..CA-4, D-8, D-9, roles
 #                                              and concurrency by API (the seeded P1..P7 stay for the demo)
 #   assisted-renewal-cloud.sh code <policy_id> reads from CloudWatch Logs (read only) the last confirmation
@@ -31,6 +33,14 @@
 #                  A-6): another insured's policy for CA-4. It is bought only when
 #                  that permanent user exists (chore/T4-second-insured-user);
 #                  otherwise the seed says so and goes on without it.
+# and, for the endorsements of the analyst (HU-W1.4-02), each with the request
+# the insured files on it through POST /v1/policies/{id}/change-requests:
+#   E1  beneficiaries 60 % / 40 %, valid documents   CA-1, CA-2 (all pass), CA-3, CA-4, CA-5 applied
+#   E2  insured value 68 -> 120 millions               CA-3 in the web, the phone and the panel
+#   E3  personal data (phone and address)             CA-1 and CA-4 with the third type
+#   E4  beneficiaries, a document ending in 000       CA-2 not applied -> returned -> CA-5 rejected
+#   E5  insured value                                 rejected with observations (CA-5)
+#   E6  beneficiaries                                 KYC down (W7): 503 and nothing changes; applied in W8
 # A policy without a payment method cannot be produced through the real journey
 # (every policy is born of a confirmed charge with a captured method), nor one
 # born in the assisted channel without creating a user: both are local only.
@@ -282,12 +292,37 @@ if [[ "$COMMAND" == --seed ]]; then
     echo "  P10 not seeded: $INSURED2_USER cannot sign in (it comes with chore/T4-second-insured-user); the CA-4 check with"
     echo "      another insured keeps its local evidence (services/origination/tests/integration/change_request_test.go)"
   fi
+  # E1..E6 (HU-W1.4-02, decision D-15 a): the insured files one request on
+  # each, which the analyst decides in the demonstration (§7.5 of its plan).
+  beneficiaries_body() { # <document of the second beneficiary>
+    printf '{"change_type":"beneficiaries","channel":"web","beneficiaries":[%s,%s]}' \
+      '{"full_name":"Mateo Perez Gomez","relationship":"child","document_type":"TI","document_number":"1140223001","share_percent":60}' \
+      "{\"full_name\":\"Lucia Perez Gomez\",\"relationship\":\"child\",\"document_type\":\"TI\",\"document_number\":\"$1\",\"share_percent\":40}"
+  }
+  ENDORSEMENTS=(
+    "E1|Mariana Lopez Duque|1082012345|$(beneficiaries_body 1142998310)|beneficiaries, valid documents (all pass)"
+    "E2|Felipe Arango Rojas|1082123456|{\"change_type\":\"insured_amount\",\"channel\":\"web\",\"insured_amount\":120000000}|insured value 68 -> 120 millions (CA-3)"
+    "E3|Natalia Ruiz Pardo|1082234567|{\"change_type\":\"personal_data\",\"channel\":\"web\",\"personal_data\":{\"address\":\"Calle 100 # 15-20, Bogota\",\"phone\":\"3012345678\"}}|personal data"
+    "E4|Julian Mesa Ortiz|1082345678|$(beneficiaries_body 1142998000)|beneficiaries, a document not in the registry (not applied, returned)"
+    "E5|Paula Rincon Vela|1082456789|{\"change_type\":\"insured_amount\",\"channel\":\"web\",\"insured_amount\":90000000}|insured value, to reject"
+    "E6|Ricardo Cano Lugo|1082567890|$(beneficiaries_body 1142998310)|beneficiaries, KYC down in W7 (503), applied in W8"
+  )
+  for seed in "${ENDORSEMENTS[@]}"; do
+    IFS='|' read -r tag name document body purpose <<<"$seed"
+    buy "$(tr '[:upper:]' '[:lower:]' <<<"$tag")" "$name" "$document" 12
+    call POST "/v1/policies/$POLICY/change-requests" "$INSURED_TOKEN" "$body"
+    [[ "$STATUS" == 201 ]] || { echo "the request on $tag answered $STATUS: $(field .error)" >&2; exit 1; }
+    printf '%s=%s\nREQ_%s=%s\nEMAIL_%s=%s\n' "$tag" "$POLICY" "$tag" "$(field .request_id)" "${POLICY//[^A-Za-z0-9]/_}" "$HOLDER" >>"$SEED_FILE"
+    echo "  $tag  $POLICY  $(field .request_id)  $name ($HOLDER) · $purpose"
+  done
   echo
   echo "== Seeded. The ids are in $SEED_FILE"
   echo "   HU-W1.5-01: RENEW_ONLINE_POLICY_ID=$(sed -n 's/^P3=//p' "$SEED_FILE") ./tests/e2e/hu-w1.5/expiring-cloud.sh"
   echo "   Renovar:    $PORTAL_URL/originacion/renovaciones/$(sed -n 's/^P1=//p' "$SEED_FILE")"
   echo "   HU-W1.4-01: SEED_FILE=$SEED_FILE ./tests/e2e/hu-w1.4/change-request-cloud.sh verify"
   echo "   Modificar:  $PORTAL_URL/originacion/polizas/$(sed -n 's/^P8=//p' "$SEED_FILE")/modificar"
+  echo "   HU-W1.4-02: ./tests/e2e/hu-w1.4/endorsement-cloud.sh verify (its own policies; E1..E6 stay for the demo)"
+  echo "   Endosos:    $PORTAL_URL/originacion/endosos"
   exit 0
 fi
 

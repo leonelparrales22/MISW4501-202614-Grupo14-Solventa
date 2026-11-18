@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.18.0
+  version: 0.19.0
 paths:
   /health:
     get:
@@ -1420,6 +1420,332 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/ChangeRequestUnavailable"
+  /v1/policies/endorsement-requests:
+    get:
+      summary: Inbox of the change requests for the operations analyst (HU-W1.4-02)
+      description: >
+        Screen O2 of the portal of the operations analyst: the change requests
+        the insured filed (HU-W1.4-01), the latest filed first, with the holder
+        of each policy (name and document, without its type). status is
+        pending by default (filed, in review, and not applied and not returned
+        yet); returned tells a not applied request that the analyst returned
+        to the insured. filed_from is a civil day of Colombia (UTC-5), included.
+        The indicators ignore the filter: the pending requests and how many
+        wait more than 24 h; the endorsements applied in the civil day of
+        Colombia and the mean time from filing to applying them; the requests
+        rejected or not applied in the last 7 days and the most frequent reason
+        (the code of the validation that failed most, or analyst_rejection).
+        Never the subject nor the e-mail of the insured. Mounted with the
+        premium charge (PostgreSQL). Only operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: change_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [beneficiaries, insured_amount, personal_data]
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, filed, in_review, applied, rejected, not_applied, all]
+            default: pending
+        - name: filed_from
+          in: query
+          required: false
+          description: Only the requests filed from this civil day (AAAA-MM-DD, Colombia), included.
+          schema:
+            type: string
+            format: date
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: The page of the requests and the indicators
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementInboxPage"
+        "400":
+          description: Every query parameter that cannot be read (validation_failed), or a filter out of range (out_of_range)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/endorsement-requests/{request_id}:
+    get:
+      summary: Detail of a change request for the operations analyst (HU-W1.4-02)
+      description: >
+        Screens O3 and O3b: the request, the change field by field (and the
+        premium before and after for a new insured value, priced by the rating
+        engine with the inputs of the issuance), the policy with its current
+        terms and its endorsements, the business validations of the type of
+        the change and what was decided. While the request can still be applied
+        (filed or in review) the validations are a preview computed now: KYC and
+        claims are asked and nothing is written (validations_source preview);
+        otherwise they are the ones of the last attempt (attempt), or none for
+        a request rejected before anybody tried to apply it (none). A guard
+        (policy_in_force, previous_values_current, no_renewal_in_progress,
+        premium_recalculated) is listed only when it does not pass. An id that
+        is not SOL-MOD-<year>-<number> is not found. Only operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/EndorsementRequestID"
+      responses:
+        "200":
+          description: The detail of the request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementDetail"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/endorsement-requests/{request_id}/review:
+    post:
+      summary: Take a change request (HU-W1.4-02)
+      description: >
+        The first analyst who opens a filed request takes it: it moves to
+        in_review and the insured sees it so. Taking a request already in review
+        changes nothing (200, idempotent); any other status is 409
+        request_already_decided with the status it has now. No body. Only
+        operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/EndorsementRequestID"
+      responses:
+        "200":
+          description: The request in review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementRequestResult"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "409":
+          $ref: "#/components/responses/EndorsementConflict"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/endorsement-requests/{request_id}/application:
+    post:
+      summary: Apply a change request as an endorsement (HU-W1.4-02)
+      description: >
+        Runs the business validations of the type of the change, asking KYC
+        (identity documents of the new beneficiaries) and claims (claims in
+        progress of the policy) before any transaction. When every validation
+        holds, the endorsement END-<year>-<number> is stored with the
+        contractual terms that result, which every channel reads from then on,
+        the insured sees the request applied and receives an e-mail (outcome
+        applied). When one fails, the attempt is recorded with its
+        validations, the policy keeps its terms and the request is not_applied:
+        the insured still sees it in review until the analyst returns it
+        (outcome not_applied). When one cannot be verified nothing changes (503
+        validation_unverifiable, naming them). Applying a request already
+        applied answers its endorsement, and one not applied and not returned
+        its attempt (a double click never creates two). 409 policy_changed when
+        another endorsement of the same policy was applied while this one was
+        validated (nothing changed; applying it again decides against the new
+        terms); 409 request_already_decided for a rejected or returned request.
+        No body. Only operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/EndorsementRequestID"
+      responses:
+        "200":
+          description: The endorsement applied, or the attempt not applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementApplication"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "409":
+          description: The request was already decided (request_already_decided) or another endorsement of the policy won (policy_changed)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/DecidedConflict"
+                  - $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            A validation could not be verified (validation_unverifiable, with
+            the codes) or the endorsement could not be processed
+            (endorsement_unavailable); nothing changed
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationUnverifiable"
+                  - $ref: "#/components/schemas/Error"
+  /v1/policies/endorsement-requests/{request_id}/rejection:
+    post:
+      summary: Reject a change request (HU-W1.4-02)
+      description: >
+        Rejects a filed or in review request with observations of 10 to 500
+        characters (trimmed) that the insured reads with the rejected status,
+        and that reach them by e-mail. Any other status is 409
+        request_already_decided. Only operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/EndorsementRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ObservationsInput"
+      responses:
+        "200":
+          description: The request rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementRequestResult"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "409":
+          $ref: "#/components/responses/EndorsementConflict"
+        "422":
+          $ref: "#/components/responses/ObservationsRequired"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/endorsement-requests/{request_id}/return:
+    post:
+      summary: Return a change request not applied to the insured (HU-W1.4-02)
+      description: >
+        Returns a not applied request with observations of 10 to 500 characters
+        (trimmed): the status stays not_applied, the analyst sees it returned
+        and the insured sees it rejected with the observations, by e-mail too,
+        and can file a new one. Any other request is 409 not_returnable. Only
+        operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/EndorsementRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ObservationsInput"
+      responses:
+        "200":
+          description: The request returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementRequestResult"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "409":
+          $ref: "#/components/responses/EndorsementConflict"
+        "422":
+          $ref: "#/components/responses/ObservationsRequired"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/{policy_id}/endorsements:
+    get:
+      summary: History of the endorsements of a policy (HU-W1.4-02)
+      description: >
+        Screen O4, read only: the endorsements applied and the attempts not
+        applied of the policy, the newest first, each with the request it came
+        from, what changed (previous and requested values, and the premium
+        before and after a new insured value), the validations that failed and
+        who did it. The records cannot be edited nor deleted. A policy without
+        endorsements answers an empty list. Only operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: policy_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The history of the policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementHistory"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
   /v1/policies/{policy_id}/current-terms:
     get:
       summary: Read the terms of a policy the insured can change (HU-W1.4-01)
@@ -2353,6 +2679,15 @@ components:
         minLength: 1
         maxLength: 128
         pattern: "^[A-Za-z0-9_-]+$"
+    EndorsementRequestID:
+      name: request_id
+      in: path
+      required: true
+      description: SOL-MOD-<year>-<number>; any other id is not found.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
   responses:
     ContractPDF:
       description: The contractual document
@@ -2413,6 +2748,30 @@ components:
         The policy is not inside its renewal window, or the window closed with no
         renewal (renewal_not_available); or the period was already accepted or
         renewed and the conditions are no longer offered (renewal_closed)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    EndorsementNotFound:
+      description: The change request (change_request_not_found) or the policy (policy_not_found) does not exist
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    EndorsementConflict:
+      description: The request is no longer where the action needs it (request_already_decided or not_returnable), with its status now
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DecidedConflict"
+    ObservationsRequired:
+      description: Observations of 10 to 500 characters are required (observations_required)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    EndorsementUnavailable:
+      description: The endorsement could not be processed (endorsement_unavailable); retry later
       content:
         application/json:
           schema:
@@ -5085,6 +5444,381 @@ components:
           type: string
           nullable: true
           description: The open request of the same type; null only if it closed before it could be read.
+    EndorsementRequest:
+      type: object
+      description: >
+        A change request as the analyst reads it: never the subject nor the
+        e-mail of the insured. returned tells a not applied request returned to
+        the insured with decision_reason.
+      required: [request_id, policy_id, change_type, channel, filed_at, status, status_changed_at, returned, decision_reason,
+        requester_name]
+      properties:
+        request_id:
+          type: string
+        policy_id:
+          type: string
+        change_type:
+          type: string
+          enum: [beneficiaries, insured_amount, personal_data]
+        channel:
+          type: string
+          enum: [web, mobile]
+        filed_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [filed, in_review, applied, rejected, not_applied]
+        status_changed_at:
+          type: string
+          format: date-time
+        returned:
+          type: boolean
+        decision_reason:
+          type: string
+          nullable: true
+        requester_name:
+          type: string
+          nullable: true
+    Holder:
+      type: object
+      required: [full_name, document_id]
+      properties:
+        full_name:
+          type: string
+        document_id:
+          type: string
+    EndorsementInboxItem:
+      allOf:
+        - $ref: "#/components/schemas/EndorsementRequest"
+        - type: object
+          required: [holder]
+          properties:
+            holder:
+              $ref: "#/components/schemas/Holder"
+    EndorsementInboxPage:
+      type: object
+      required: [items, page, page_size, total_items, total_pages, indicators]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EndorsementInboxItem"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total_items:
+          type: integer
+        total_pages:
+          type: integer
+        indicators:
+          type: object
+          required: [pending, applied_today, rejected_last_7_days]
+          properties:
+            pending:
+              type: object
+              required: [count, overdue]
+              properties:
+                count:
+                  type: integer
+                overdue:
+                  type: integer
+                  description: The pending requests filed more than 24 h ago.
+            applied_today:
+              type: object
+              required: [count, mean_time_to_apply_seconds]
+              properties:
+                count:
+                  type: integer
+                mean_time_to_apply_seconds:
+                  type: number
+                  nullable: true
+            rejected_last_7_days:
+              type: object
+              required: [count, top_reason]
+              properties:
+                count:
+                  type: integer
+                top_reason:
+                  type: string
+                  nullable: true
+                  description: The code of the validation that failed most often, or analyst_rejection.
+    EndorsementValidation:
+      type: object
+      required: [code, outcome, params]
+      description: >
+        One business validation (decision D-4 a) with the values its text shows
+        (shares as "60|40" and total; checks and not_found of the registry;
+        open_claims; requester and channel; requested, min and max; fields;
+        coverage_end; lender and basis).
+      properties:
+        code:
+          type: string
+          enum: [shares_total_100, onerous_beneficiary_intact, identity_documents_valid, no_open_claim, requester_is_holder,
+            insured_amount_within_limits, personal_data_valid, policy_in_force, previous_values_current, no_renewal_in_progress,
+            premium_recalculated]
+        outcome:
+          type: string
+          enum: [passed, failed, unverifiable]
+        params:
+          type: object
+          additionalProperties:
+            type: string
+    EndorsementActor:
+      type: object
+      required: [name, role]
+      properties:
+        name:
+          type: string
+          description: The name of the analyst (or their e-mail when the account has none).
+        role:
+          type: string
+          enum: [operations]
+    EndorsementDecision:
+      type: object
+      required: [outcome, by, at, observations, endorsement_id, failed]
+      properties:
+        outcome:
+          type: string
+          enum: [applied, not_applied, rejected, returned]
+        by:
+          allOf:
+            - $ref: "#/components/schemas/EndorsementActor"
+          nullable: true
+        at:
+          type: string
+          format: date-time
+        observations:
+          type: string
+          nullable: true
+        endorsement_id:
+          type: string
+          nullable: true
+        failed:
+          type: array
+          items:
+            type: string
+    EndorsementDetail:
+      type: object
+      required: [request, changes, premium, policy, validations, validations_source, decision]
+      properties:
+        request:
+          $ref: "#/components/schemas/EndorsementRequest"
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldChange"
+        premium:
+          type: object
+          nullable: true
+          description: Only for a new insured value; new is null when the engine could not price it.
+          required: [previous, new, currency, rating_version]
+          properties:
+            previous:
+              type: number
+            new:
+              type: number
+              nullable: true
+            currency:
+              type: string
+            rating_version:
+              type: string
+              nullable: true
+        policy:
+          type: object
+          required: [policy_id, line, holder, in_force, coverage_start, coverage_end, insured_amount, premium, currency,
+            onerous_beneficiary, endorsements]
+          properties:
+            policy_id:
+              type: string
+            line:
+              type: string
+              enum: [life]
+            holder:
+              $ref: "#/components/schemas/Holder"
+            in_force:
+              type: boolean
+            coverage_start:
+              type: string
+              format: date-time
+            coverage_end:
+              type: string
+              format: date-time
+            insured_amount:
+              type: number
+            premium:
+              type: number
+            currency:
+              type: string
+            onerous_beneficiary:
+              allOf:
+                - $ref: "#/components/schemas/OnerousBeneficiary"
+              nullable: true
+            endorsements:
+              type: object
+              required: [count, last]
+              properties:
+                count:
+                  type: integer
+                last:
+                  type: object
+                  nullable: true
+                  required: [endorsement_id, change_type, applied_at]
+                  properties:
+                    endorsement_id:
+                      type: string
+                    change_type:
+                      type: string
+                    applied_at:
+                      type: string
+                      format: date-time
+        validations:
+          type: array
+          items:
+            $ref: "#/components/schemas/EndorsementValidation"
+        validations_source:
+          type: string
+          enum: [preview, attempt, none]
+        decision:
+          allOf:
+            - $ref: "#/components/schemas/EndorsementDecision"
+          nullable: true
+    EndorsementRequestResult:
+      type: object
+      required: [request]
+      properties:
+        request:
+          $ref: "#/components/schemas/EndorsementRequest"
+    EndorsementApplication:
+      type: object
+      required: [outcome, request, endorsement, attempt, validations]
+      properties:
+        outcome:
+          type: string
+          enum: [applied, not_applied]
+        request:
+          $ref: "#/components/schemas/EndorsementRequest"
+        endorsement:
+          type: object
+          nullable: true
+          required: [endorsement_id, version, applied_at, by]
+          properties:
+            endorsement_id:
+              type: string
+            version:
+              type: integer
+            applied_at:
+              type: string
+              format: date-time
+            by:
+              $ref: "#/components/schemas/EndorsementActor"
+        attempt:
+          type: object
+          nullable: true
+          required: [at, by, failed]
+          properties:
+            at:
+              type: string
+              format: date-time
+            by:
+              $ref: "#/components/schemas/EndorsementActor"
+            failed:
+              type: array
+              items:
+                type: string
+        validations:
+          type: array
+          items:
+            $ref: "#/components/schemas/EndorsementValidation"
+    ObservationsInput:
+      type: object
+      required: [observations]
+      additionalProperties: false
+      properties:
+        observations:
+          type: string
+          description: 10 to 500 characters once trimmed; the insured reads them.
+    EndorsementHistoryEntry:
+      type: object
+      required: [outcome, at, endorsement_id, request_id, change_type, changes, premium, failed, by]
+      properties:
+        outcome:
+          type: string
+          enum: [applied, not_applied]
+        at:
+          type: string
+          format: date-time
+        endorsement_id:
+          type: string
+          nullable: true
+        request_id:
+          type: string
+        change_type:
+          type: string
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldChange"
+        premium:
+          type: object
+          nullable: true
+          required: [previous, new, currency]
+          properties:
+            previous:
+              type: number
+            new:
+              type: number
+            currency:
+              type: string
+        failed:
+          type: array
+          items:
+            type: string
+        by:
+          $ref: "#/components/schemas/EndorsementActor"
+    EndorsementHistory:
+      type: object
+      required: [policy_id, holder, entries]
+      properties:
+        policy_id:
+          type: string
+        holder:
+          $ref: "#/components/schemas/Holder"
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/EndorsementHistoryEntry"
+    DecidedConflict:
+      type: object
+      required: [error, message, status, returned, decision_reason]
+      properties:
+        error:
+          type: string
+          enum: [request_already_decided, not_returnable]
+        message:
+          type: string
+        status:
+          type: string
+          enum: [filed, in_review, applied, rejected, not_applied]
+        returned:
+          type: boolean
+        decision_reason:
+          type: string
+          nullable: true
+    ValidationUnverifiable:
+      type: object
+      required: [error, message, unverifiable]
+      properties:
+        error:
+          type: string
+          enum: [validation_unverifiable]
+        message:
+          type: string
+        unverifiable:
+          type: array
+          items:
+            type: string
     Error:
       type: object
       required: [error, message]
@@ -5137,6 +5871,9 @@ components:
             - policy_not_in_force
             - change_request_not_found
             - change_request_unavailable
+            - not_returnable
+            - policy_changed
+            - endorsement_unavailable
             - range_too_long
             - metrics_unavailable
         message:

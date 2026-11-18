@@ -884,10 +884,10 @@ run "audit_is_discoverable_by_origination" {
 
   assert {
     condition = (
-      local.discoverable_services == ["audit"] &&
-      contains(keys(local.services), "audit")
+      local.discoverable_services == ["audit", "claims"] &&
+      contains(keys(local.services), "audit") && contains(keys(local.services), "claims")
     )
-    error_message = "audit is registered in Cloud Map (and stays behind the ALB); no other service is."
+    error_message = "audit and claims (HU-W1.4-02) are registered in Cloud Map (and stay behind the ALB); no other service is."
   }
 
   assert {
@@ -1029,6 +1029,35 @@ run "origination_environment_cannot_override_audit_url" {
 
   variables {
     origination_environment = { AUDIT_URL = "http://elsewhere:8080" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
+
+# --- HU-W1.4-02: origination asks claims for the claims in progress, inside the VPC ---
+
+run "origination_reaches_claims_through_cloud_map" {
+  command = plan
+
+  assert {
+    condition = (
+      local.service_environment.origination.CLAIMS_URL == "http://claims.solventa-test.local:8080" &&
+      output.claims_url == local.service_environment.origination.CLAIMS_URL
+    )
+    error_message = "Origination asks the claims in progress at http://claims.<name>.local:8080, inside the VPC (HU-W1.4-02, D-6 a)."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_environment.origination), "CLAIMS_TIMEOUT_MS")
+    error_message = "The cut of the claims query keeps its default of 300 ms (EC-D01)."
+  }
+}
+
+run "origination_environment_cannot_override_claims_url" {
+  command = plan
+
+  variables {
+    origination_environment = { CLAIMS_URL = "http://elsewhere:8080" }
   }
 
   expect_failures = [var.origination_environment]

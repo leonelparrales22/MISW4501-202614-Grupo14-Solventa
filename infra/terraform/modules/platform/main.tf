@@ -119,10 +119,12 @@ locals {
   }
 
   # Services that another service calls directly inside the VPC, so they are
-  # also registered in Cloud Map without leaving the ALB: only audit, whose
+  # also registered in Cloud Map without leaving the ALB: audit, whose
   # consent verification origination asks before profiling (HU-W1.2-01) and
-  # before a personalized offer (HU-W1.2-03). T5, decision D-21 (a).
-  discoverable_services = ["audit"]
+  # before a personalized offer (HU-W1.2-03), T5 decision D-21 (a); and claims,
+  # whose claims in progress of a policy origination asks before an
+  # endorsement is applied (HU-W1.4-02, decision D-6 a).
+  discoverable_services = ["audit", "claims"]
 
   images = setunion(keys(local.services), keys(local.stubs))
 
@@ -521,6 +523,13 @@ locals {
       # beneficiary by the name of the lender: the same catalog audit gets
       # (decision D-14 a).
       PARTNER_DISPLAY_NAMES = jsonencode(var.partner_display_names)
+      # The claims in progress of a policy, before an endorsement is applied
+      # (HU-W1.4-02, decision D-6 a): claims through Cloud Map, on its internal
+      # route GET /internal/policies/{policy_id}/open-claims, which neither the
+      # API Gateway nor the ALB route. Without an answer within
+      # CLAIMS_TIMEOUT_MS (300 ms by default) the validation is unverifiable
+      # and nothing is applied.
+      CLAIMS_URL = "http://claims.${local.namespace}:${local.service_port}"
       },
       # Links of the offer e-mails to the screens of the portal (T5, D-11);
       # without a portal the service keeps its own default.

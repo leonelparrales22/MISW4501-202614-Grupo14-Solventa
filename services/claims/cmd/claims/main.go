@@ -113,6 +113,11 @@ func main() {
 				httpadapter.WithEvidence(evidence.NewService(evidences, systemClock{}), verifier))
 		}
 		opts = append(opts, webFilings(records, supports, evidences, verifier)...)
+		// HU-W1.4-02: origination asks, inside the VPC, how many claims of a
+		// policy are in progress before an analyst applies an endorsement.
+		if open, ok := records.(ports.OpenClaimsReader); ok {
+			opts = append(opts, httpadapter.WithOpenClaims(open))
+		}
 		// HU-W2.2-01: the triage gives every claim in evaluation its priority
 		// from a sweep of the claims, and its routes read it.
 		priorities, interval, err := startTriage(context.Background(), records, os.Getenv)

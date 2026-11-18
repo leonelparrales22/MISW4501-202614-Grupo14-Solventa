@@ -66,10 +66,12 @@ func (s *InstallmentStore) BillingStart(ctx context.Context) (time.Time, error) 
 }
 
 // ListBillable returns the policies in force at now that are not cancelled
-// and have no month pending.
+// and have no month pending. HU-W1.4-02: it reads the view policy_current, so
+// the next month is billed with the premium of the last endorsement
+// (adjustment A-10); the months already billed keep theirs.
 func (s *InstallmentStore) ListBillable(ctx context.Context, now time.Time) ([]domain.Policy, error) {
 	ps := &PolicyStore{db: s.db}
-	return ps.list(ctx, `SELECT `+prefixed("p", policyColumns)+` FROM policy p
+	return ps.list(ctx, `SELECT `+prefixed("p", policyColumns)+` FROM policy_current p
 		WHERE p.coverage_start <= $1 AND p.coverage_end > $1
 		  AND NOT EXISTS (SELECT 1 FROM policy_cancellation c WHERE c.policy_id = p.policy_id)
 		  AND NOT EXISTS (SELECT 1 FROM premium_installment i WHERE i.policy_id = p.policy_id AND i.status = 'pending')
