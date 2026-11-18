@@ -198,6 +198,13 @@ func main() {
 			log.Fatalf("could not set up the list of the policies about to expire: %v", err)
 		}
 		opts = append(opts, expiring...)
+		// HU-W1.4-01: the insured asks for a change of a policy the charge
+		// activated (beneficiaries, insured value or contact data).
+		changes, err := endorsementOptions(cfg.billing.enabled, cfg.endorsements, st.db, st.offers, verifier)
+		if err != nil {
+			log.Fatalf("could not set up the change requests: %v", err)
+		}
+		opts = append(opts, changes...)
 		// HU-W1.5-03: the advisor requotes and formalizes the renewal of a
 		// policy about to expire, with the consent verifier of the offers.
 		assisted, err := assistedRenewalOptions(assistedRenewalWiring{renewals: onlineRenewals, db: st.db, resolver: resolver,
@@ -317,6 +324,10 @@ type config struct {
 
 	// Alerts before a policy expires (HU-M3.2-01).
 	expiryAlerts expiryAlertConfig
+
+	// Change requests of the insured (HU-W1.4-01).
+	endorsements endorsementConfig
+
 	// installments are the monthly instalments and the cancellation for
 	// non-payment (HU-W1.6-02).
 	installments installmentConfig
@@ -646,6 +657,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadExpiryAlertConfig(getenv, &cfg.expiryAlerts); err != nil {
+		return config{}, err
+	}
+	if err := loadEndorsementConfig(getenv, &cfg.endorsements); err != nil {
 		return config{}, err
 	}
 	if err := loadInstallmentConfig(getenv, &cfg.installments); err != nil {

@@ -176,3 +176,23 @@ type failingPolicies struct{ ports.PolicyRepository }
 func (failingPolicies) Get(context.Context, string) (domain.Policy, error) {
 	return domain.Policy{}, errBoom
 }
+
+func TestTheOriginKeepsThePartnerThatSoldThePolicy(t *testing.T) {
+	e := newOriginEnv()
+	e.offers.rows["off-partner"] = domain.PersonalizedOffer{ID: "off-partner", CustomerID: "partner-cust-2",
+		Channel: domain.OfferChannelEmbedded, PartnerID: "aliado-banco-1", BirthDate: embeddedBirth}
+	e.charges.rows["acc-partner"] = domain.Charge{AcceptanceID: "acc-partner", OfferID: "off-partner"}
+	first := policyBoughtWith("pol-1", "acc-partner")
+	renewed := policyBoughtWith("pol-2", "ren-pol-1-20261201")
+	renewed.RenewalOf = "pol-1"
+	require.NoError(t, e.policies.Create(context.Background(), first))
+
+	got, err := e.finder().Find(context.Background(), renewed)
+
+	require.NoError(t, err)
+	assert.Equal(t, "aliado-banco-1", got.PartnerID, "the lender of the onerous beneficiary (HU-W1.4-01)")
+
+	demo, err := e.finder().Find(context.Background(), policyBoughtWith("pol-3", "acc-demo"))
+	require.NoError(t, err)
+	assert.Empty(t, demo.PartnerID, "unknown without the offer")
+}

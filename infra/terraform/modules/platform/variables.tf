@@ -178,9 +178,9 @@ variable "portal_partner" {
 }
 
 variable "partner_display_names" {
-  description = "Display names of the financial entities the consents authorize, by partner code (HU-M1.3-01, decision D-2 a); audit receives them as PARTNER_DISPLAY_NAMES. A code without a name is shown as it is. Default: the partner of screen E1 of the portal."
+  description = "Display names of the financial entities the consents authorize, by partner code (HU-M1.3-01, decision D-2 a); audit receives them as PARTNER_DISPLAY_NAMES, and so does origination for the onerous beneficiary of the change requests (HU-W1.4-01, decision D-14 a). A code without a name is shown as it is. Default: the partner of screen E1 of the portal and the demonstration partner of the portal (portal-embebido), the one the staging seed buys with (HU-W1.4-01)."
   type        = map(string)
-  default     = { "aliado-banco-1" = "Banco Aliado" }
+  default     = { "aliado-banco-1" = "Banco Aliado", "portal-embebido" = "Banco Aliado" }
 
   validation {
     condition     = alltrue([for k, v in var.partner_display_names : can(regex("^[A-Za-z0-9_-]+$", k)) && length(trimspace(v)) > 0])

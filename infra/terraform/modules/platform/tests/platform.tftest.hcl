@@ -1097,8 +1097,13 @@ run "audit_gets_the_queue_the_user_pool_and_the_catalog" {
   }
 
   assert {
-    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES) == { "aliado-banco-1" = "Banco Aliado" }
+    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES) == { "aliado-banco-1" = "Banco Aliado", "portal-embebido" = "Banco Aliado" }
     error_message = "audit gets the catalog of entity names as JSON (decision D-2 a)."
+  }
+
+  assert {
+    condition     = local.service_environment.origination.PARTNER_DISPLAY_NAMES == local.service_environment.audit.PARTNER_DISPLAY_NAMES
+    error_message = "origination gets the same catalog for the onerous beneficiary of the change requests (HU-W1.4-01, D-14 a)."
   }
 
   assert {
@@ -1186,8 +1191,11 @@ run "partner_display_names_can_be_replaced" {
   }
 
   assert {
-    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A"
-    error_message = "The catalog follows partner_display_names."
+    condition = (
+      jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A" &&
+      jsondecode(local.service_environment.origination.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A"
+    )
+    error_message = "The catalog of audit and of origination follows partner_display_names."
   }
 }
 

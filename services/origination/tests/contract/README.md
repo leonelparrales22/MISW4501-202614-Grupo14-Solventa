@@ -27,6 +27,16 @@ Corre tres veces: dos para las rutas de perfil (HU-W1.2-01) y una para las de of
 [`../integration/assisted_renewal_test.go`](../integration/assisted_renewal_test.go) y el recorrido de punta a punta en
 [`tests/e2e/hu-w1.5`](../../../../tests/e2e/hu-w1.5/README.md).
 
+**Solicitud de modificación del asegurado (HU-W1.4-01), aparte:** [`run-change-requests.sh`](run-change-requests.sh) sobre el mismo
+[`docker-compose.assisted-renewals.yml`](docker-compose.assisted-renewals.yml) (proyecto y puertos propios: originación 8297, Moto 5123),
+porque las rutas también se montan con el cobro. Schemathesis recorre con el token del asegurado las cuatro rutas (contrato 0.18.0):
+`GET /v1/policies/{policy_id}/current-terms`, `POST /v1/policies/{policy_id}/change-requests`, `GET /v1/policies/change-requests` y su
+detalle; los ids generados no existen (`404`), la lista responde `200` y los cuerpos y consultas malformados reciben `400`. Al final
+comprueba que el asesor y el analista de operaciones reciben `403` en las cuatro. Se corre solo:
+`./services/origination/tests/contract/run-change-requests.sh` (también requiere `jq` y la AWS CLI). Las pruebas por criterio están en
+[`../integration/change_request_test.go`](../integration/change_request_test.go) y la verificación en la nube en
+[`tests/e2e/hu-w1.4`](../../../../tests/e2e/hu-w1.4/README.md).
+
 Requiere Docker (compose v2) y `curl`. Los secretos (PostgreSQL y usuarios de Moto) son aleatorios y no se imprimen; el entorno se elimina al terminar y el
 script termina con un código distinto de cero si algo falla. Las pruebas por criterio de aceptación están en [`../integration/consent_test.go`](../integration/consent_test.go) y [`../integration/offer_test.go`](../integration/offer_test.go), y la
 integración con `audit` en [`tests/e2e/hu-w1.2`](../../../../tests/e2e/hu-w1.2/README.md).
