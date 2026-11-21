@@ -28,6 +28,14 @@ mock_provider "aws" {
     }
   }
 
+  # The FCM service account secret (HU-M3.3-01) exists outside Terraform; the
+  # platform validates that it gets a Secrets Manager ARN.
+  mock_data "aws_secretsmanager_secret" {
+    defaults = {
+      arn = "arn:aws:secretsmanager:us-east-2:368083581678:secret:solventa/fcm/service-account-AbCdEf"
+    }
+  }
+
   mock_data "aws_ecr_repository" {
     defaults = {
       repository_url = "368083581678.dkr.ecr.us-east-2.amazonaws.com/solventa/image"
