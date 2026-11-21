@@ -63,3 +63,32 @@ func TestChargeKeepsTheClassificationOfTheClient(t *testing.T) {
 	done()
 	assert.ErrorIs(t, err, idempotency.ErrAmbiguous)
 }
+
+// HU-W1.6-01: the refund of a cancellation goes back from the charge that
+// paid the month, with its deterministic key.
+func TestRefundSendsTheChargeOfTheMonthWithItsKey(t *testing.T) {
+	var key, body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key = r.Header.Get("Idempotency-Key")
+		buf := make([]byte, 512)
+		n, _ := r.Body.Read(buf)
+		body = string(buf[:n])
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"refund_id":"re-4","status":"succeeded"}`))
+	}))
+	defer srv.Close()
+	g := payments.NewRefundGateway(sharedpayments.NewClient(sharedpayments.Config{BaseURL: srv.URL}))
+	r := domain.Refund{PolicyID: "VH-2026-000101", Reference: "REF-2026-00001", AmountMinor: 13_755_600, Currency: "COP",
+		IdempotencyKey: "reembolso-VH-2026-000101", Paid: domain.PaidMonth{Seq: 1, ChargeReference: "ch-1"}}
+
+	ref, err := g.Refund(context.Background(), r)
+
+	require.NoError(t, err)
+	assert.Equal(t, "re-4", ref)
+	assert.Equal(t, "reembolso-VH-2026-000101", key)
+	assert.JSONEq(t, `{"charge_id":"ch-1","reference":"REF-2026-00001","amount_minor":13755600,"currency":"COP"}`, body)
+
+	r.Paid.ChargeReference = ""
+	_, err = g.Refund(context.Background(), r)
+	assert.ErrorIs(t, err, idempotency.ErrRejected, "without its charge it can never be sent: final, not retried")
+}

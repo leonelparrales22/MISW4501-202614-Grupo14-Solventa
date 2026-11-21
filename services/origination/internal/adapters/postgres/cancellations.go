@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/idempotency"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/ports"
 )
@@ -278,4 +279,93 @@ func (d *refundDest) refund() domain.Refund {
 		ClaimedUntil: utc(d.claimed), RetryUntil: utc(d.retry), ProviderReference: d.provider.String,
 		CompletedAt: utc(d.completed), FailureReason: d.failure.String, LastError: d.lastErr.String,
 	}
+}
+
+// --- The processing of the refunds (decision D-5 b, EC-D02) -------------------
+
+var _ ports.RefundStore = (*CancellationStore)(nil)
+
+// ListDue returns the refunds in process that are due and no worker holds.
+func (s *CancellationStore) ListDue(ctx context.Context, now time.Time, limit int) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT policy_id FROM policy_refund
+		WHERE status = 'in_process' AND next_attempt_at <= $1 AND (claimed_until IS NULL OR claimed_until < $1)
+		ORDER BY next_attempt_at, policy_id LIMIT $2`, now.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list the refunds due: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// oneRefund runs a statement that returns at most one refund.
+func (s *CancellationStore) oneRefund(ctx context.Context, query string, args ...any) (domain.Refund, bool, error) {
+	var d refundDest
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(d.ptrs()...)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Refund{}, false, nil
+	}
+	if err != nil {
+		return domain.Refund{}, false, err
+	}
+	return d.refund(), true, nil
+}
+
+// Claim holds the refund until now+lease, in one conditional statement: it
+// is in process and due, and no worker holds it (or its lease ended).
+func (s *CancellationStore) Claim(ctx context.Context, policyID string, now time.Time, lease time.Duration) (domain.Refund, bool, error) {
+	now = now.UTC()
+	r, claimed, err := s.oneRefund(ctx, `UPDATE policy_refund AS r SET claimed_until = $3, updated_at = $2
+		WHERE r.policy_id = $1 AND r.status = 'in_process' AND r.next_attempt_at <= $2
+		  AND (r.claimed_until IS NULL OR r.claimed_until < $2)
+		RETURNING `+refundColumns, policyID, now, now.Add(lease))
+	if err != nil {
+		return domain.Refund{}, false, fmt.Errorf("claim the refund of policy %s: %w", policyID, err)
+	}
+	return r, claimed, nil
+}
+
+// heldRefund runs a conditional update of a refund the worker still holds.
+func (s *CancellationStore) heldRefund(ctx context.Context, query string, args ...any) (domain.Refund, error) {
+	r, found, err := s.oneRefund(ctx, query, args...)
+	if err != nil {
+		return domain.Refund{}, fmt.Errorf("record the refund of policy %v: %w", args[0], err)
+	}
+	if !found {
+		return domain.Refund{}, idempotency.ErrClaimLost
+	}
+	return r, nil
+}
+
+// heldBy is the condition of the refund $1 held with the lease $2.
+const heldBy = ` WHERE r.policy_id = $1 AND r.status = 'in_process' AND r.claimed_until = $2 RETURNING ` + refundColumns
+
+// Confirm records the refund the gateway confirmed.
+func (s *CancellationStore) Confirm(ctx context.Context, r domain.Refund, now time.Time, out idempotency.Outcome) (domain.Refund, error) {
+	return s.heldRefund(ctx, `UPDATE policy_refund AS r SET status = 'completed', provider_reference = $3,
+			completed_at = $4, next_attempt_at = NULL, claimed_until = NULL, updated_at = $4`+heldBy,
+		r.PolicyID, r.ClaimedUntil.UTC(), nullString(out.Reference), now.UTC())
+}
+
+// Reschedule counts a failed attempt and makes the refund due again at next,
+// with the same key.
+func (s *CancellationStore) Reschedule(ctx context.Context, r domain.Refund, now, next time.Time, cause string) (domain.Refund, error) {
+	return s.heldRefund(ctx, `UPDATE policy_refund AS r SET attempts = r.attempts + 1, next_attempt_at = $3,
+			claimed_until = NULL, last_error = $4, updated_at = $5`+heldBy,
+		r.PolicyID, r.ClaimedUntil.UTC(), next.UTC(), cause, now.UTC())
+}
+
+// Fail counts a failed attempt and marks the refund failed for the reason.
+func (s *CancellationStore) Fail(ctx context.Context, r domain.Refund, now time.Time, reason idempotency.FailureReason,
+	cause string) (domain.Refund, error) {
+	return s.heldRefund(ctx, `UPDATE policy_refund AS r SET status = 'failed', attempts = r.attempts + 1,
+			failure_reason = $3, last_error = $4, next_attempt_at = NULL, claimed_until = NULL, updated_at = $5`+heldBy,
+		r.PolicyID, r.ClaimedUntil.UTC(), string(reason), cause, now.UTC())
 }

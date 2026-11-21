@@ -261,3 +261,55 @@ func TestMigration0020KeepsTheCancellationsForNonPayment(t *testing.T) {
 	_, err = db.ExecContext(ctx, `UPDATE policy_cancellation SET event_id = NULL WHERE policy_id = $1`, p.ID)
 	assert.ErrorContains(t, err, "policy_cancellation_reason_columns", "a cancellation for non-payment keeps its event")
 }
+
+func TestARefundIsHeldByOneWorkerAndEndsCompletedOrFailed(t *testing.T) {
+	requireOfferDocker(t)
+	db := newDB(t)
+	ctx := context.Background()
+	start := time.Date(2026, 11, 18, 15, 0, 0, 0, time.UTC)
+	store := postgres.NewCancellationStore(db)
+	now := start.Add(time.Hour)
+	for _, id := range []string{"VH-2026-000201", "VH-2026-000202"} {
+		p := paidPolicy(t, db, id, start)
+		_, err := store.Cancel(ctx, p.ID, now, decideAt(now, nil))
+		require.NoError(t, err)
+	}
+
+	due, err := store.ListDue(ctx, now, 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"VH-2026-000201", "VH-2026-000202"}, due)
+	held, claimed, err := store.Claim(ctx, "VH-2026-000201", now, time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	_, again, err := store.Claim(ctx, "VH-2026-000201", now.Add(time.Second), time.Minute)
+	require.NoError(t, err)
+	assert.False(t, again, "held by one worker at a time")
+
+	later, err := store.Reschedule(ctx, held, now, now.Add(time.Second), "connection refused")
+	require.NoError(t, err)
+	assert.Equal(t, 1, later.Attempts)
+	assert.Equal(t, domain.RefundInProcess, later.Status)
+	_, err = store.Confirm(ctx, held, now, idempotency.Outcome{Reference: "re-1"})
+	assert.ErrorIs(t, err, idempotency.ErrClaimLost, "a worker that lost its claim records nothing")
+
+	held, claimed, err = store.Claim(ctx, "VH-2026-000201", now.Add(time.Second), time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	done, err := store.Confirm(ctx, held, now.Add(2*time.Second), idempotency.Outcome{Reference: "re-1"})
+	require.NoError(t, err)
+	assert.Equal(t, domain.RefundCompleted, done.Status)
+	assert.Equal(t, "re-1", done.ProviderReference)
+	assert.Equal(t, now.Add(2*time.Second), done.CompletedAt)
+
+	other, claimed, err := store.Claim(ctx, "VH-2026-000202", now, time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	failed, err := store.Fail(ctx, other, now, idempotency.ReasonWindowExpired, "timeout")
+	require.NoError(t, err)
+	assert.Equal(t, domain.RefundFailed, failed.Status)
+	assert.Equal(t, string(idempotency.ReasonWindowExpired), failed.FailureReason)
+
+	due, err = store.ListDue(ctx, now.Add(time.Hour), 10)
+	require.NoError(t, err)
+	assert.Empty(t, due, "completed and failed are terminal")
+}

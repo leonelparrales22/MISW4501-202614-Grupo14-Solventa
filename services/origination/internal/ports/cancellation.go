@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/pkg/idempotency"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/origination/internal/domain"
 )
 
@@ -64,4 +65,23 @@ type CancellationStore interface {
 	// ErrPolicyNotFound, ErrPolicyAlreadyCancelled when another one won, or
 	// the error of decide.
 	Cancel(ctx context.Context, policyID string, now time.Time, decide CancellationDecision) (domain.PolicyCancellation, error)
+}
+
+// RefundStore keeps the processing of the refunds in process (decision D-5
+// b): the idempotent mechanism of pkg/idempotency (EC-D02) over
+// policy_refund, by policy id. Every method that records a result is
+// conditional on the claim (idempotency.ErrClaimLost otherwise).
+type RefundStore interface {
+	idempotency.Store[domain.Refund]
+	// ListDue returns up to limit policy ids whose refund is in process and
+	// due at now, and that no worker holds.
+	ListDue(ctx context.Context, now time.Time, limit int) ([]string, error)
+}
+
+// RefundGateway sends a refund to the payment gateway with its idempotency
+// key and returns the gateway's id of the refund. Its errors wrap
+// idempotency.ErrRejected (final), idempotency.ErrAmbiguous (try again with the
+// same key) or idempotency.ErrNotSent.
+type RefundGateway interface {
+	Refund(ctx context.Context, r domain.Refund) (providerReference string, err error)
 }
