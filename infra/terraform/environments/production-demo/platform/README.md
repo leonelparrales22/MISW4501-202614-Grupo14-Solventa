@@ -173,3 +173,17 @@ terraform test
 
 Las pruebas reemplazan el estado remoto de `bootstrap/identity` con `override_data` (un pool simulado): no leen S3 ni necesitan
 credenciales. Comprueban el tamaño de ADR-02, los interruptores de la demo final y que la plataforma usa el pool permanente.
+
+## Reloj de las cuotas para la sustentación (HU-W1.6-02)
+
+Con los plazos reales, una póliza que no paga se cancela 61 días después de vencer su cuota. Para mostrarlo en la sustentación,
+`origination_environment` acorta el «día» de las cuotas sin cambiar las reglas (30 días de gracia, cobros en los días 1, 8 y 15,
+cancelación el día 31). `up.sh` no recibe archivos de variables; se exporta antes de encender:
+
+```bash
+export TF_VAR_origination_environment='{INSTALLMENT_DAY_MS="2000",INSTALLMENT_SWEEP_INTERVAL_MS="2000",INSTALLMENT_UNKNOWN_RETRY_MS="5000"}'
+```
+
+Con un día de 2 s, desde que se paga la póliza (con la tarjeta 4000 0000 0000 0010, que rechaza las cuotas): la cuota 2 vence al
+minuto, se cobra a los 62, 76 y 90 s, y la póliza queda cancelada a los **122 s**. Sin la variable, production-demo usa los plazos
+reales. Para volver a ellos en una ventana ya encendida: `unset TF_VAR_origination_environment` y aplicar de nuevo.

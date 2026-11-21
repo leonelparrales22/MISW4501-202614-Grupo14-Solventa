@@ -72,6 +72,25 @@ func TestADemoDayShortensTheWholeCalendar(t *testing.T) {
 	require.NoError(t, r.Validate())
 }
 
+// The clock of the defence (production-demo, INSTALLMENT_DAY_MS=2000): from
+// the issuance to the cancellation in about two minutes.
+func TestTheDefenceClockCancelsAboutTwoMinutesAfterTheIssuance(t *testing.T) {
+	r := domain.DefaultInstallmentRules
+	r.Day = 2 * time.Second
+	require.NoError(t, r.Validate())
+	issued := time.Date(2026, 12, 1, 15, 0, 0, 0, time.UTC)
+	p := lifePolicy(issued, 12)
+
+	due := r.DueAt(p, 2)
+	first, _ := r.AttemptAt(due, 1)
+	last, _ := r.AttemptAt(due, 3)
+
+	assert.Equal(t, issued.Add(time.Minute), due, "the second month falls due a minute after the issuance")
+	assert.Equal(t, issued.Add(62*time.Second), first)
+	assert.Equal(t, issued.Add(90*time.Second), last)
+	assert.Equal(t, issued.Add(122*time.Second), r.CancelsAt(due), "cancelled about two minutes after the issuance")
+}
+
 func TestOnlyTheMonthsDueSinceTheBillingStartedAreBilled(t *testing.T) {
 	r := domain.DefaultInstallmentRules
 	p := lifePolicy(colombia(2026, 5, 10, 8, 0), 12)

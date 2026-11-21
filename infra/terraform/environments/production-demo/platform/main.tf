@@ -41,6 +41,10 @@ module "platform" {
   image_tag_overrides = var.image_tag_overrides
   services_enabled    = var.services_enabled
 
+  # The demonstration clock of the instalments (HU-W1.6-02): see
+  # «Reloj de las cuotas para la sustentación» in the README.
+  origination_environment = var.origination_environment
+
   service_sizing = {
     # EXP-L01: 0.5 vCPU / 1 GB. Temporary deviation from ADR-02 (3 tasks,
     # decided in HA-D02, #54): one task until acceptances, offers and the

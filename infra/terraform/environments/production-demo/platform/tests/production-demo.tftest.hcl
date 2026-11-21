@@ -28,6 +28,14 @@ mock_provider "aws" {
     }
   }
 
+  # The FCM service account secret (HU-M3.3-01) exists outside Terraform; the
+  # platform validates that it gets a Secrets Manager ARN.
+  mock_data "aws_secretsmanager_secret" {
+    defaults = {
+      arn = "arn:aws:secretsmanager:us-east-2:368083581678:secret:solventa/fcm/service-account-AbCdEf"
+    }
+  }
+
   mock_data "aws_ecr_repository" {
     defaults = {
       repository_url = "368083581678.dkr.ecr.us-east-2.amazonaws.com/solventa/image"
@@ -253,4 +261,44 @@ run "origination_reaches_audit_through_cloud_map" {
     condition     = module.platform.audit_url == "http://audit.solventa-demo.local:8080"
     error_message = "The origination task definition carries AUDIT_URL=http://audit.solventa-demo.local:8080 (HU-W1.2-01)."
   }
+}
+
+# HU-W1.6-02: without variables production-demo keeps the real deadlines of
+# the instalments; the demonstration clock is opt-in.
+run "the_instalments_keep_their_real_deadlines_by_default" {
+  command = plan
+
+  assert {
+    condition     = length(var.origination_environment) == 0
+    error_message = "Without the demonstration clock, origination gets no extra variables."
+  }
+}
+
+# HU-W1.6-02: the clock of the defence, a 2-second day, is accepted.
+run "the_defence_clock_of_the_instalments_is_accepted" {
+  command = plan
+
+  variables {
+    origination_environment = {
+      INSTALLMENT_DAY_MS            = "2000"
+      INSTALLMENT_SWEEP_INTERVAL_MS = "2000"
+      INSTALLMENT_UNKNOWN_RETRY_MS  = "5000"
+    }
+  }
+
+  assert {
+    condition     = var.origination_environment["INSTALLMENT_DAY_MS"] == "2000"
+    error_message = "The demonstration clock reaches the platform."
+  }
+}
+
+# A demonstration variable cannot replace what the platform sets.
+run "the_clock_cannot_replace_a_value_of_the_platform" {
+  command = plan
+
+  variables {
+    origination_environment = { DATABASE_URL = "postgres://otra" }
+  }
+
+  expect_failures = [var.origination_environment]
 }
