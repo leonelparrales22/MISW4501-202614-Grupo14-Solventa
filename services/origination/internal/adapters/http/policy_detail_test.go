@@ -74,6 +74,11 @@ func TestTheWalletSaysAPolicyIsCancelledForNonPaymentWithNoRefund(t *testing.T) 
 	assert.Equal(t, 3.0, c["attempts"])
 	assert.Equal(t, 142_300.0, c["amount"])
 	assert.NotNil(t, c["email_sent_at"])
+	// HU-W1.6-01: a cancellation for non-payment keeps its members and has
+	// none of the ones of a cancellation at the request of the insured.
+	assert.Equal(t, c["cancelled_at"], c["effective_at"], "it takes effect when it is made")
+	assert.Nil(t, c["refund_detail"])
+	assert.Nil(t, c["insured_reason"])
 	assert.Nil(t, items[1]["payment"], "the policy core keeps no premiums")
 	assert.Nil(t, items[1]["cancellation"])
 }
