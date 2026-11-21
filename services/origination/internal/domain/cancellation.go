@@ -115,6 +115,13 @@ func EndOfDayColombia(t time.Time) time.Time {
 	return time.Date(y, m, d, 23, 59, 59, 0, ColombiaTime).UTC()
 }
 
+// RefundMethodOf is what is kept of the payment method a refund goes back to:
+// its kind, the brand and last four digits of a card or the bank of a PSE.
+// Never its token.
+func RefundMethodOf(m PaymentMethod) PaymentMethod {
+	return PaymentMethod{Kind: m.Kind, Brand: m.Brand, Last4: m.Last4, BankCode: m.BankCode}
+}
+
 // PaidPeriodKind is how a month of the premium was paid.
 type PaidPeriodKind string
 
@@ -237,9 +244,8 @@ func QuoteCancellation(p Policy, r InstallmentRules, paid PaidMonth, method Paym
 			paid.Kind = PaidByIssuance
 		}
 	}
-	method.Token = ""
 	q := CancellationQuote{PolicyID: p.ID, Paid: paid, PeriodStart: start, PeriodEnd: end, Currency: p.Currency,
-		Method: method, PaymentStatus: status}
+		Method: RefundMethodOf(method), PaymentStatus: status}
 	if paid.Currency != "" {
 		q.Currency = paid.Currency
 	}
@@ -339,7 +345,7 @@ func NewRefund(q CancellationQuote, now, retryUntil time.Time) Refund {
 		PeriodStart: q.PeriodStart, PeriodEnd: q.PeriodEnd, PeriodDays: q.PeriodDays, UnusedDays: q.UnusedDays,
 		Status: q.RefundStatus(), RegisteredAt: now.UTC(),
 	}
-	r.Method.Token = ""
+	r.Method = RefundMethodOf(r.Method)
 	if r.Status == RefundInProcess {
 		r.IdempotencyKey, r.NextAttemptAt, r.RetryUntil = RefundIdempotencyKey(q.PolicyID), now.UTC(), retryUntil.UTC()
 	}

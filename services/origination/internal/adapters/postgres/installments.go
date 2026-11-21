@@ -103,6 +103,8 @@ func (s *InstallmentStore) ClaimDueAttempts(ctx context.Context, now time.Time, 
 	rows, err := s.db.QueryContext(ctx, `WITH due AS (
 			SELECT i.policy_id, i.seq FROM premium_installment i
 			WHERE i.status = 'pending' AND i.next_attempt_at <= $1 AND `+notHeld+`
+			  -- HU-W1.6-01: never charge a month of a policy already cancelled.
+			  AND NOT EXISTS (SELECT 1 FROM policy_cancellation c WHERE c.policy_id = i.policy_id)
 			ORDER BY i.next_attempt_at, i.policy_id, i.seq
 			LIMIT $3
 			FOR UPDATE SKIP LOCKED)
@@ -251,9 +253,10 @@ func (s *InstallmentStore) Cancel(ctx context.Context, p domain.Policy, i domain
 	if n, err := res.RowsAffected(); err != nil || n == 0 {
 		return false, err
 	}
+	// HU-W1.6-01: a cancellation for non-payment takes effect when it is made.
 	res, err = tx.ExecContext(ctx, `INSERT INTO policy_cancellation
-			(policy_id, reason, installment_seq, cancelled_at, event_id)
-		VALUES ($1, $2, $3, $4, $5)
+			(policy_id, reason, installment_seq, cancelled_at, event_id, effective_at)
+		VALUES ($1, $2, $3, $4, $5, $4)
 		ON CONFLICT (policy_id) DO NOTHING`,
 		p.ID, string(domain.CancellationNonPayment), i.Seq, now.UTC(), env.EventID)
 	if err != nil {
@@ -276,12 +279,12 @@ func (s *InstallmentStore) Cancel(ctx context.Context, p domain.Policy, i domain
 	return true, nil
 }
 
-const cancellationColumns = `c.policy_id, c.reason, c.cancelled_at, c.event_id, c.email_sent_at`
-
-// ListUnnotified returns the cancellations whose e-mail is still due.
+// ListUnnotified returns the cancellations for non-payment whose e-mail is
+// still due. HU-W1.6-01: a cancellation at the request of the insured has no
+// such e-mail (it says "cancelled for non-payment, with no refund").
 func (s *InstallmentStore) ListUnnotified(ctx context.Context, maxAttempts, limit int) ([]ports.CancellationNotice, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT c.policy_id FROM policy_cancellation c
-		WHERE c.email_sent_at IS NULL AND c.email_attempts < $1
+		WHERE c.reason = 'non_payment' AND c.email_sent_at IS NULL AND c.email_attempts < $1
 		ORDER BY c.cancelled_at, c.policy_id
 		LIMIT $2`, maxAttempts, limit)
 	if err != nil {
@@ -417,33 +420,25 @@ func readAttempts(ctx context.Context, tx *sql.Tx, ids []string, out map[string]
 	return rows.Err()
 }
 
+// readCancellations reads the cancellations of the policies: for non-payment
+// with their unpaid instalment, at the request of the insured (HU-W1.6-01)
+// with their refund.
 func readCancellations(ctx context.Context, tx *sql.Tx, ids []string, out map[string]ports.BillingRecord,
 	index map[string]map[int]int) error {
-	rows, err := tx.QueryContext(ctx, `SELECT `+cancellationColumns+`, c.installment_seq
-		FROM policy_cancellation c WHERE c.policy_id = ANY($1)`, ids)
+	stored, err := readCancellationRows(ctx, tx, ids)
 	if err != nil {
-		return fmt.Errorf("read the cancellations of the policies: %w", err)
+		return err
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var (
-			c      domain.PolicyCancellation
-			reason string
-			sent   sql.NullTime
-			seq    int
-		)
-		if err := rows.Scan(&c.PolicyID, &reason, &c.CancelledAt, &c.EventID, &sent, &seq); err != nil {
-			return fmt.Errorf("read a cancellation: %w", err)
-		}
-		c.Reason, c.CancelledAt, c.EmailSentAt = domain.CancellationReason(reason), c.CancelledAt.UTC(), utc(sent)
-		rec := out[c.PolicyID]
-		if k, ok := index[c.PolicyID][seq]; ok {
+	for id, sc := range stored {
+		c := sc.PolicyCancellation
+		rec := out[id]
+		if k, ok := index[id][sc.seq]; ok && sc.seq > 0 {
 			c.Installment = rec.Installments[k]
 		}
 		rec.Cancellation = &c
-		out[c.PolicyID] = rec
+		out[id] = rec
 	}
-	return rows.Err()
+	return nil
 }
 
 var _ ports.CancellationChecker = (*InstallmentStore)(nil)
