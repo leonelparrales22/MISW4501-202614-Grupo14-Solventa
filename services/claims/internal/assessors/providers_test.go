@@ -123,7 +123,7 @@ func TestTheListOfProvidersIsFilteredAndByName(t *testing.T) {
 	svc, _, _ := newRegistry(t, memory.ReferenceProviders()...)
 	all, err := svc.List(context.Background(), ports.ProviderFilter{})
 	require.NoError(t, err)
-	require.Len(t, all, 8)
+	require.Len(t, all, len(memory.ReferenceProviders()))
 	for i := 1; i < len(all); i++ {
 		assert.Less(t, all[i-1].Name, all[i].Name)
 	}
