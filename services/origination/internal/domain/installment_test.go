@@ -91,6 +91,37 @@ func TestTheDefenceClockCancelsAboutTwoMinutesAfterTheIssuance(t *testing.T) {
 	assert.Equal(t, issued.Add(122*time.Second), r.CancelsAt(due), "cancelled about two minutes after the issuance")
 }
 
+// With the defence clock a 12-month coverage has 525,600 demo months. Counting
+// them one by one, again in every turn of the loops, kept origination at 97 %
+// of CPU in staging (21/11) and the wallet stopped answering.
+func TestTheDefenceClockCountsTheMonthsWithoutWalkingThem(t *testing.T) {
+	r := domain.DefaultInstallmentRules
+	r.Day = 2 * time.Second
+	issued := time.Date(2026, 12, 1, 15, 0, 0, 0, time.UTC)
+
+	for _, months := range []int{1, 12, 24} {
+		p := lifePolicy(issued, months)
+		n := r.Months(p)
+		assert.True(t, r.DueAt(p, n).Before(p.CoverageEnd), "month %d falls due within a coverage of %d months", n, months)
+		assert.False(t, r.DueAt(p, n+1).Before(p.CoverageEnd), "and there is no month %d (%d months)", n+1, months)
+	}
+	assert.Equal(t, 525_600, r.Months(lifePolicy(issued, 12)), "365 days of 30 demo days of 2 s")
+	assert.Equal(t, 1, r.Months(domain.Policy{CoverageStart: issued, CoverageEnd: issued.Add(time.Minute)}),
+		"a coverage no longer than a demo month has one month")
+
+	// 16 policies three hours into the demonstration, as in staging: the
+	// sweep and the wallet must stay far below the sweep interval.
+	started := time.Now()
+	now := issued.Add(3 * time.Hour)
+	for range 16 {
+		p := lifePolicy(issued, 12)
+		_, ok := r.NextDueAt(p, now)
+		require.True(t, ok)
+		require.Len(t, r.DueInstallments(p, issued, now), 180)
+	}
+	assert.Less(t, time.Since(started), 200*time.Millisecond)
+}
+
 func TestOnlyTheMonthsDueSinceTheBillingStartedAreBilled(t *testing.T) {
 	r := domain.DefaultInstallmentRules
 	p := lifePolicy(colombia(2026, 5, 10, 8, 0), 12)
