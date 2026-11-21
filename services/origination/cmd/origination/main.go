@@ -213,6 +213,13 @@ func main() {
 			log.Fatalf("could not set up the review of the endorsements: %v", err)
 		}
 		opts = append(opts, review...)
+		// HU-W1.6-01: the insured cancels a policy the charge activated and
+		// gets back the part of the current month not used.
+		cancellations, err := cancellationOptions(context.Background(), cfg.billing, cfg.installments.rules, st.db, verifier)
+		if err != nil {
+			log.Fatalf("could not set up the cancellation: %v", err)
+		}
+		opts = append(opts, cancellations...)
 		// HU-W1.5-03: the advisor requotes and formalizes the renewal of a
 		// policy about to expire, with the consent verifier of the offers.
 		assisted, err := assistedRenewalOptions(assistedRenewalWiring{renewals: onlineRenewals, db: st.db, resolver: resolver,
