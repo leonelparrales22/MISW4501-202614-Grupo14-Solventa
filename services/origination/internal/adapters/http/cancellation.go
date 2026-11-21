@@ -70,9 +70,9 @@ func toCancellationQuoteBody(q domain.CancellationQuote) cancellationQuoteBody {
 
 func getCancellationQuote(svc CancellationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		id, ok := pathID(req, "policy_id")
+		id, ok := changePathID(req, "policy_id")
 		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars) is required")
+			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars, no control characters) is required")
 			return
 		}
 		q, err := svc.Quote(req.Context(), id)
@@ -102,9 +102,9 @@ type cancelledPolicyBody struct {
 
 func cancelPolicy(svc CancellationService) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		id, ok := pathID(req, "policy_id")
+		id, ok := changePathID(req, "policy_id")
 		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars) is required")
+			writeError(w, http.StatusBadRequest, "invalid_request", "policy_id (max 128 chars, no control characters) is required")
 			return
 		}
 		var in cancellationInput

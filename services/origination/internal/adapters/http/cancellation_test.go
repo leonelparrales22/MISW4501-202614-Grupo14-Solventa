@@ -171,9 +171,10 @@ func TestOnlyTheInsuredWithAWellFormedConfirmationReachesTheService(t *testing.T
 	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 	assert.Equal(t, "invalid_request", body["error"])
 	assert.Len(t, body["fields"], 2, "refund_amount and accept_terms are required")
-	rec, _ = callCancellation(t, svc, http.MethodGet, "/v1/policies/"+strings.Repeat("x", 129)+"/cancellation/quote",
-		"insured:sub-1", "")
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	for _, id := range []string{strings.Repeat("x", 129), "%00"} {
+		rec, _ = callCancellation(t, svc, http.MethodGet, "/v1/policies/"+id+"/cancellation/quote", "insured:sub-1", "")
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "a NUL never reaches the database")
+	}
 	assert.Zero(t, svc.calls)
 
 	svc.err = &domain.ValidationError{Fields: []domain.FieldError{{Field: "accept_terms", Code: "required"}}}
