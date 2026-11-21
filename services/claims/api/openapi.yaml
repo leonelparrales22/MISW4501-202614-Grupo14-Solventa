@@ -1,8 +1,29 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.17.0
+  version: 0.18.0
   description: >-
+    0.18.0 (HU-W2.3-03): operations attends the requests for assistance. GET
+    /v1/claims/assistance-inbox lists the requests the phone sent, the latest
+    first, as soon as they are recorded, with the policy, the UTC instant and
+    the result of the location, and the indicators of the inbox (new, in
+    call, dispatched today and the mean time to dispatch). GET
+    /v1/claims/assistance-inbox/{request_id} reads one with the suggestion of
+    provider, computed with the search of HU-W2.3-01 (distance, availability
+    and specialty, radii 5, 10 and 20 km) and the estimated arrival. The
+    analyst attends it (new to in_call), records what the insured needs
+    (which gives the specialty) and, without GPS, the address given by voice
+    with the pin of the map; then dispatches an eligible provider, who
+    receives the location by e-mail (dispatched), or closes it with a
+    required reason (closed). Every decision keeps its analyst and its time.
+    GET /v1/claims/assistance-policy reads the needs, the estimate of arrival
+    and the reasons to close. The specialties gain towing and
+    roadside_assistance. Only operations. The free texts of the registry and
+    of the assignment (name, address) and of the inbox (address given by
+    voice, note of a closing) with a control character other than a line
+    break, a carriage return or a tab are now 422 invalid_format, instead of
+    503. Compatible with 0.17.0 (it only adds routes and enum values of the
+    registry).
     0.17.0 (HU-W1.4-02): GET /internal/policies/{policy_id}/open-claims
     counts the claims of a policy that are in progress (every status but paid
     and rejected), for origination to check before an operations analyst
@@ -854,6 +875,532 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox:
+    get:
+      summary: The inbox of requests for assistance (HU-W2.3-03)
+      description: >-
+        The requests for on-site assistance the phone sent (HU-M2.3-01), the
+        latest first, with the policy, the UTC instant, the result of the
+        location (coordinates and accuracy for the map, or why there were
+        none and the location the analyst recorded by voice) and who handles
+        each one. A request is listed as soon as it is recorded: the inbox
+        reads the same database, without events, and the portal polls it
+        every 30 seconds. summary carries the indicators of the screen,
+        whatever the filters. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Repeatable. Absent - every status.
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 4
+            uniqueItems: true
+            items:
+              $ref: "#/components/schemas/AssistanceStatus"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: The inbox, the latest request first
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceInbox"
+        "400":
+          description: invalid_request - an unknown status or a limit out of 1-100
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}:
+    get:
+      summary: One request for assistance, as operations attends it (HU-W2.3-03)
+      description: >-
+        Everything the screen "Detalle de la asistencia" shows: the request,
+        the need the analyst chose, the location in force, the suggestion of
+        provider and, once decided, the dispatch or the closing, with the
+        history of every decision. The suggestion is computed on every read
+        with the search of HU-W2.3-01 (distance, availability today and
+        specialty, radii 5, 10 and 20 km); it is not recorded. Reading does
+        not change the status. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      responses:
+        "200":
+          description: The request
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found - it does not exist or the id is not a UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}/attend:
+    post:
+      summary: Attend a request (HU-W2.3-03)
+      description: >-
+        "Atender" and "Continuar": a new request becomes in_call and the
+        analyst handles it. On a request in_call of another analyst, the
+        analyst takes it over; of the same analyst, nothing changes. Every
+        change is recorded in the history. No body. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      responses:
+        "200":
+          description: Attended
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: assistance_not_open - the request is already dispatched or closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}/need:
+    post:
+      summary: Record the need of a request (HU-W2.3-03)
+      description: >-
+        The analyst chooses, during the call, what the insured needs from the
+        needs of the line of the policy (GET /v1/claims/assistance-policy);
+        the need gives the specialty of the suggestion. It may change until
+        the request is dispatched; the last one is in force. The request
+        must be in_call. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistanceNeedRequest"
+      responses:
+        "200":
+          description: Recorded, with the suggestion of the new specialty
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            assistance_not_attended - the request is new: attend it first;
+            assistance_not_open - it is already dispatched or closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            need_not_for_line - the need is not one of the line of the policy;
+            validation_failed - need is missing or unknown
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}/voice-location:
+    post:
+      summary: Record the location the insured gives by voice (HU-W2.3-03)
+      description: >-
+        For a request without coordinates from the phone: the address the
+        insured dictates and the coordinates of the pin the analyst puts on
+        the map (the portal resolves the address; the service does not
+        geocode). It may be corrected until the request is dispatched; the
+        last one is in force. The request must be in_call. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistanceVoiceLocationRequest"
+      responses:
+        "200":
+          description: Recorded, with the suggestion from that point
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            location_from_app - the phone shared its coordinates;
+            assistance_not_attended - the request is new: attend it first;
+            assistance_not_open - it is already dispatched or closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every invalid field at once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}/dispatch:
+    post:
+      summary: Dispatch a provider to a request (HU-W2.3-03)
+      description: >-
+        Sends one of the eligible providers (the suggested one or another
+        eligible) to the location in force. The suggestion is computed again
+        at this moment: a provider that stopped being eligible since the
+        detail was read is refused, and the portal reads the detail again.
+        The request becomes dispatched with the date and time and the
+        provider; the provider receives the request and the location by
+        e-mail (dispatch.notice.status tells whether it left). The provider
+        does not become busy. Once per request; the request must be in_call.
+        Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistanceDispatchRequest"
+      responses:
+        "200":
+          description: Dispatched
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            assistance_not_attended - the request is new: attend it first;
+            assistance_not_open - it is already dispatched or closed (another
+            analyst may have done it)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            need_missing - no need recorded; location_missing - no coordinates
+            from the phone nor by voice; provider_not_eligible - the provider is
+            not eligible now (unknown, unavailable, without the specialty or out
+            of the radius); validation_failed - provider_id is missing or has
+            not the form of an id
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}/close:
+    post:
+      summary: Close a request without dispatching (HU-W2.3-03)
+      description: >-
+        "Cerrar por otro medio": the request was resolved during the call,
+        repeated, cancelled or cannot be served. The reason is required, and
+        the note too when the reason is other. Nobody is dispatched and no
+        provider is notified. From new or in_call. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistanceCloseRequest"
+      responses:
+        "200":
+          description: Closed
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: assistance_not_open - the request is already dispatched or closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every invalid field at once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-policy:
+    get:
+      summary: The assistance policy in force (HU-W2.3-03)
+      description: >-
+        The needs of each line of policy and the specialty each one asks for,
+        the radii of the search (those of the assignment policy of
+        HU-W2.3-01), how the estimated arrival is computed, the reasons to
+        close a request and the target time of a dispatch. The policy is
+        provisional until the business validates it; its version changes
+        when it does. Only operations.
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The policy in force
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceInboxPolicy"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
           content:
             application/json:
               schema:
@@ -3720,6 +4267,495 @@ components:
           type: string
           format: date-time
           description: When the service recorded the request, in UTC (its own clock).
+    AssistanceNeedCode:
+      type: string
+      description: >-
+        What the insured needs, chosen by the analyst on the call
+        (HU-W2.3-03, assistance-policy-v1, provisional). auto: towing (tow
+        truck), battery, flat_tire, fuel and vehicle_lockout (keys locked
+        inside). home: plumbing_emergency. travel has no on-site assistance.
+      enum: [towing, battery, flat_tire, fuel, vehicle_lockout, plumbing_emergency]
+    AssistanceCloseReason:
+      type: string
+      description: >-
+        Why a request was closed without a dispatch. resolved_by_phone:
+        solved on the call; duplicate: another request of the same event;
+        cancelled_by_insured; not_covered: the policy does not cover it;
+        no_provider_available: no eligible provider within the maximum
+        radius; other: the note says why.
+      enum: [resolved_by_phone, duplicate, cancelled_by_insured, not_covered, no_provider_available, other]
+    AssistanceActionCode:
+      type: string
+      description: >-
+        A decision on a request. attended: new to in_call; taken_over:
+        another analyst took a request in_call; need_recorded;
+        voice_location_recorded; dispatched; closed.
+      enum: [attended, taken_over, need_recorded, voice_location_recorded, dispatched, closed]
+    AssistanceVoiceLocation:
+      type: object
+      required: [address, latitude, longitude, recorded_by, recorded_at]
+      description: The location the insured gave by voice, with the pin the analyst put on the map.
+      properties:
+        address:
+          type: string
+          example: Vía Cali–Palmira km 4
+        latitude:
+          type: number
+          format: double
+          example: 3.4921
+        longitude:
+          type: number
+          format: double
+          example: -76.4203
+        recorded_by:
+          $ref: "#/components/schemas/Actor"
+        recorded_at:
+          type: string
+          format: date-time
+    AssistanceInboxLocation:
+      allOf:
+        - $ref: "#/components/schemas/AssistanceLocation"
+        - type: object
+          required: [place, voice]
+          properties:
+            place:
+              type: string
+              nullable: true
+              description: The address the app sent; null when it sent none.
+              example: Autopista Norte km 12, Bogotá
+            voice:
+              allOf:
+                - $ref: "#/components/schemas/AssistanceVoiceLocation"
+              nullable: true
+              description: >-
+                The last location recorded by voice; null when there is none
+                (always null when the phone shared its coordinates).
+    AssistanceInboxItem:
+      type: object
+      required: [request_id, request_number, status, requester_name, policy, location, requested_at, handled_by,
+        dispatched_at, closed_at]
+      properties:
+        request_id:
+          type: string
+          example: 3b8e2f6a-1c4d-4e7f-9a2b-6c5d8e0f1a2b
+        request_number:
+          type: string
+          pattern: '^AST-[0-9]{4}-[0-9]{4,}$'
+          example: AST-2026-0912
+        status:
+          $ref: "#/components/schemas/AssistanceStatus"
+        requester_name:
+          type: string
+          nullable: true
+          description: The name of the insured as the token said it; null when it had none. Their phone is not known.
+          example: Carolina Pérez Ruiz
+        policy:
+          $ref: "#/components/schemas/AssistancePolicy"
+        location:
+          $ref: "#/components/schemas/AssistanceInboxLocation"
+        requested_at:
+          type: string
+          format: date-time
+          description: When the service recorded the request, in UTC.
+        handled_by:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: The last analyst who attended it; null while new.
+        dispatched_at:
+          type: string
+          format: date-time
+          nullable: true
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+    AssistanceInboxSummary:
+      type: object
+      required: [new_count, in_call_count, dispatched_today, mean_dispatch_seconds_today, dispatch_target_seconds]
+      description: >-
+        The indicators of the inbox, whatever the filters. Today is the
+        calendar day of Colombia (UTC-5).
+      properties:
+        new_count:
+          type: integer
+          minimum: 0
+          example: 2
+        in_call_count:
+          type: integer
+          minimum: 0
+          example: 1
+        dispatched_today:
+          type: integer
+          minimum: 0
+          example: 6
+        mean_dispatch_seconds_today:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >-
+            Mean seconds from the request to its dispatch, of the requests
+            dispatched today; null when none was.
+          example: 220
+        dispatch_target_seconds:
+          type: integer
+          description: The target of a dispatch ("objetivo menos de 5 min").
+          example: 300
+    AssistanceInbox:
+      type: object
+      required: [summary, items]
+      properties:
+        summary:
+          $ref: "#/components/schemas/AssistanceInboxSummary"
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/AssistanceInboxItem"
+    AssistanceNeed:
+      type: object
+      required: [code, specialty, recorded_by, recorded_at]
+      description: The need in force, the last one the analyst recorded.
+      properties:
+        code:
+          $ref: "#/components/schemas/AssistanceNeedCode"
+        specialty:
+          $ref: "#/components/schemas/Specialty"
+        recorded_by:
+          $ref: "#/components/schemas/Actor"
+        recorded_at:
+          type: string
+          format: date-time
+    AssistanceCandidate:
+      allOf:
+        - $ref: "#/components/schemas/ProviderCandidate"
+        - type: object
+          required: [eta_minutes, dispatched_today]
+          properties:
+            eta_minutes:
+              type: integer
+              minimum: 0
+              description: >-
+                Estimated arrival in minutes: the preparation time plus the
+                straight-line distance at the average speed of the policy,
+                rounded up. An estimate, not a route.
+              example: 12
+            dispatched_today:
+              type: integer
+              minimum: 0
+              description: >-
+                Assistances dispatched to this provider today (Colombia).
+                Informative: a dispatch does not make a provider busy.
+    AssistanceSuggestion:
+      type: object
+      required: [state, specialty, location_source, from_radius_km, radius_km, reason, policy_version, attempts,
+        candidates]
+      description: >-
+        The search of HU-W2.3-01 from the location in force, computed on every
+        read and not recorded. need_missing: no need yet; location_missing: no
+        coordinates from the phone nor by voice; found: a radius had eligible
+        providers; exhausted: none up to the maximum radius; not_applicable:
+        the request is dispatched or closed. Only found and exhausted carry a
+        search.
+      properties:
+        state:
+          type: string
+          enum: [need_missing, location_missing, found, exhausted, not_applicable]
+        specialty:
+          allOf:
+            - $ref: "#/components/schemas/Specialty"
+          nullable: true
+        location_source:
+          type: string
+          nullable: true
+          description: app - the coordinates of the phone; voice - the pin of the analyst.
+          enum: [app, voice]
+        from_radius_km:
+          type: number
+          nullable: true
+          example: 5
+        radius_km:
+          type: number
+          nullable: true
+          description: The radius of the last attempt (where it found, or the maximum).
+          example: 5
+        reason:
+          type: string
+          nullable: true
+          enum: [no_eligible_provider_within_max_radius]
+        policy_version:
+          type: string
+          description: The assignment policy whose radii were used.
+          example: assignment-policy-v1
+        attempts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchAttempt"
+        candidates:
+          type: array
+          description: >-
+            The providers with the specialty, nearest first, up to 20, eligible
+            or not. Only eligible ones can be dispatched.
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/AssistanceCandidate"
+    AssistanceDispatch:
+      type: object
+      required: [provider, need, specialty, distance_km, eta_minutes, location_shared, suggested_provider_id,
+        dispatched_by, dispatched_at, policy_versions, notice]
+      properties:
+        provider:
+          type: object
+          required: [id, name, contact_email, contact_phone]
+          description: The provider as it was when dispatched.
+          properties:
+            id:
+              type: string
+              example: prv-gruas-autopista-norte
+            name:
+              type: string
+              example: Grúas Autopista Norte
+            contact_email:
+              type: string
+              format: email
+            contact_phone:
+              type: string
+              nullable: true
+        need:
+          $ref: "#/components/schemas/AssistanceNeedCode"
+        specialty:
+          $ref: "#/components/schemas/Specialty"
+        distance_km:
+          type: number
+          description: Straight-line distance, rounded to 0.1 km.
+          example: 0.9
+        eta_minutes:
+          type: integer
+          minimum: 0
+          example: 12
+        location_shared:
+          type: object
+          required: [source, latitude, longitude, accuracy_m, address, place]
+          description: What the provider received.
+          properties:
+            source:
+              type: string
+              enum: [app, voice]
+            latitude:
+              type: number
+              format: double
+            longitude:
+              type: number
+              format: double
+            accuracy_m:
+              type: number
+              nullable: true
+              description: The accuracy of the phone; null for a location by voice.
+            address:
+              type: string
+              nullable: true
+              description: The address given by voice; null for the phone.
+            place:
+              type: string
+              nullable: true
+              description: The address the app sent, if any.
+        suggested_provider_id:
+          type: string
+          description: The provider the system suggested at the dispatch; it may differ from provider.id.
+        dispatched_by:
+          $ref: "#/components/schemas/Actor"
+        dispatched_at:
+          type: string
+          format: date-time
+        policy_versions:
+          type: object
+          required: [assistance, assignment]
+          properties:
+            assistance:
+              type: string
+              example: assistance-policy-v1
+            assignment:
+              type: string
+              example: assignment-policy-v1
+        notice:
+          type: object
+          required: [status, attempts, sent_at]
+          description: The e-mail to the provider. pending - not sent yet (it is retried); sent.
+          properties:
+            status:
+              type: string
+              enum: [pending, sent]
+            attempts:
+              type: integer
+              minimum: 0
+            sent_at:
+              type: string
+              format: date-time
+              nullable: true
+    AssistanceClosure:
+      type: object
+      required: [reason, note, closed_by, closed_at]
+      properties:
+        reason:
+          $ref: "#/components/schemas/AssistanceCloseReason"
+        note:
+          type: string
+          nullable: true
+        closed_by:
+          $ref: "#/components/schemas/Actor"
+        closed_at:
+          type: string
+          format: date-time
+    AssistanceHistoryEntry:
+      type: object
+      required: [action, by, at, detail]
+      properties:
+        action:
+          $ref: "#/components/schemas/AssistanceActionCode"
+        by:
+          $ref: "#/components/schemas/Actor"
+        at:
+          type: string
+          format: date-time
+        detail:
+          type: object
+          nullable: true
+          description: >-
+            need_recorded - need; dispatched - provider_id; closed - reason;
+            taken_over - from (the e-mail of the previous analyst); null for the
+            rest.
+          properties:
+            need:
+              $ref: "#/components/schemas/AssistanceNeedCode"
+            provider_id:
+              type: string
+            reason:
+              $ref: "#/components/schemas/AssistanceCloseReason"
+            from:
+              type: string
+    AssistanceCase:
+      allOf:
+        - $ref: "#/components/schemas/AssistanceInboxItem"
+        - type: object
+          required: [need, suggestion, dispatch, closure, history]
+          properties:
+            need:
+              allOf:
+                - $ref: "#/components/schemas/AssistanceNeed"
+              nullable: true
+            suggestion:
+              $ref: "#/components/schemas/AssistanceSuggestion"
+            dispatch:
+              allOf:
+                - $ref: "#/components/schemas/AssistanceDispatch"
+              nullable: true
+            closure:
+              allOf:
+                - $ref: "#/components/schemas/AssistanceClosure"
+              nullable: true
+            history:
+              type: array
+              description: Every decision, oldest first.
+              items:
+                $ref: "#/components/schemas/AssistanceHistoryEntry"
+    AssistanceNeedRequest:
+      type: object
+      additionalProperties: false
+      required: [need]
+      properties:
+        need:
+          $ref: "#/components/schemas/AssistanceNeedCode"
+    AssistanceVoiceLocationRequest:
+      type: object
+      additionalProperties: false
+      required: [address, latitude, longitude]
+      properties:
+        address:
+          type: string
+          minLength: 5
+          maxLength: 200
+          example: Vía Cali–Palmira km 4
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+          example: 3.4921
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          example: -76.4203
+    AssistanceDispatchRequest:
+      type: object
+      additionalProperties: false
+      required: [provider_id]
+      properties:
+        provider_id:
+          type: string
+          pattern: '^prv-[a-z0-9-]{3,40}$'
+          example: prv-gruas-autopista-norte
+    AssistanceCloseRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          $ref: "#/components/schemas/AssistanceCloseReason"
+        note:
+          type: string
+          minLength: 3
+          maxLength: 500
+          description: Required when reason is other. Trimmed.
+          example: El asegurado consiguió quien le pasara corriente
+    AssistanceInboxPolicy:
+      type: object
+      required: [version, needs, radii_km, assignment_policy_version, eta, close_reasons, dispatch_target_seconds]
+      properties:
+        version:
+          type: string
+          example: assistance-policy-v1
+        needs:
+          type: array
+          description: The needs of each line and the specialty each one asks for. travel has none.
+          items:
+            type: object
+            required: [line, code, specialty]
+            properties:
+              line:
+                $ref: "#/components/schemas/PolicyLine"
+              code:
+                $ref: "#/components/schemas/AssistanceNeedCode"
+              specialty:
+                $ref: "#/components/schemas/Specialty"
+        radii_km:
+          type: array
+          description: The radii of the search, those of the assignment policy.
+          items:
+            type: number
+          example: [5, 10, 20]
+        assignment_policy_version:
+          type: string
+          example: assignment-policy-v1
+        eta:
+          type: object
+          required: [preparation_minutes, average_speed_kmh]
+          description: eta_minutes = preparation_minutes + ceil(distance_km / average_speed_kmh * 60).
+          properties:
+            preparation_minutes:
+              type: integer
+              example: 10
+            average_speed_kmh:
+              type: number
+              example: 30
+        close_reasons:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssistanceCloseReason"
+        dispatch_target_seconds:
+          type: integer
+          example: 300
     TriageLevel:
       type: integer
       enum: [1, 2, 3]
@@ -4726,7 +5762,9 @@ components:
         The trade of a provider (HU-W2.3-01). vehicle_assessment: vehicle
         assessor; auto_glass: vehicle glass; plumbing: plumbing and damp;
         damp_proofing, painting and bodywork: trades a provider may add.
-      enum: [vehicle_assessment, auto_glass, plumbing, damp_proofing, painting, bodywork]
+        towing (tow truck) and roadside_assistance (battery, tire, fuel,
+        locked keys): the on-site assistance of HU-W2.3-03.
+      enum: [vehicle_assessment, auto_glass, plumbing, damp_proofing, painting, bodywork, towing, roadside_assistance]
     ProviderAvailability:
       type: string
       description: >-
