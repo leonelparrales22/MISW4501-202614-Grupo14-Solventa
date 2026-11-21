@@ -33,6 +33,7 @@ var referenceDataLoadedAt = time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)
 
 // ReferenceProviders are the providers of the migration 0009_provider_seed
 // (assumption S13), so the service without a database has the same registry.
+// HU-W2.3-03 appends those of 0015_assistance_provider_seed.
 func ReferenceProviders() []domain.Provider {
 	phone := func(s string) *string { return &s }
 	provider := func(id, name string, lat, lon float64, address, email string, tel *string,
@@ -42,7 +43,7 @@ func ReferenceProviders() []domain.Provider {
 			ContactPhone: tel, Availability: domain.AvailabilityAvailable, UpdatedBy: domain.ReferenceDataAuthor,
 			UpdatedAt: referenceDataLoadedAt}
 	}
-	return []domain.Provider{
+	return append([]domain.Provider{
 		provider("prv-servicios-hogar-norte", "Servicios Hogar Norte", 4.694, -74.0364, "Calle 116 # 9-72, Bogotá",
 			"despachos@hogarnorte.example.com", phone("+576015550102"),
 			domain.SpecialtyPlumbing, domain.SpecialtyDampProofing),
@@ -65,6 +66,39 @@ func ReferenceProviders() []domain.Provider {
 		provider("prv-humedades-y-acabados", "Humedades y Acabados", 4.71, -74.03, "Calle 140 # 11-45, Bogotá",
 			"contacto@humedadesyacabados.example.com", phone("+576015550108"),
 			domain.SpecialtyDampProofing, domain.SpecialtyPainting),
+	}, assistanceProviders()...)
+}
+
+// assistanceDataLoadedAt is when the reference providers of the assistance
+// were loaded.
+var assistanceDataLoadedAt = time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
+
+// assistanceProviders are the providers of the migration
+// 0015_assistance_provider_seed (HU-W2.3-03, assumption S14): tow trucks and
+// roadside assistance, without plumbing.
+func assistanceProviders() []domain.Provider {
+	phone := func(s string) *string { return &s }
+	provider := func(id, name string, lat, lon float64, address, email string, tel *string,
+		specialties ...domain.Specialty) domain.Provider {
+		return domain.Provider{ID: id, Name: name, Specialties: specialties,
+			Location: domain.Coordinates{Latitude: lat, Longitude: lon}, Address: address, ContactEmail: email,
+			ContactPhone: tel, Availability: domain.AvailabilityAvailable, UpdatedBy: domain.ReferenceDataAuthor,
+			UpdatedAt: assistanceDataLoadedAt}
+	}
+	return []domain.Provider{
+		provider("prv-gruas-autopista-norte", "Grúas Autopista Norte", 4.7793, -74.0452,
+			"Autopista Norte # 174-30, Bogotá", "despachos@gruasautopistanorte.example.com", phone("+576015550301"),
+			domain.SpecialtyTowing),
+		provider("prv-auxilio-vial-norte", "Auxilio Vial Norte", 4.7514, -74.0452, "Autopista Norte # 145-20, Bogotá",
+			"operaciones@auxiliovialnorte.example.com", phone("+576015550302"),
+			domain.SpecialtyRoadsideAssistance, domain.SpecialtyTowing),
+		provider("prv-gruas-calle-80", "Grúas Calle 80", 4.6822, -74.0452, "Calle 80 # 11-20, Bogotá",
+			"servicio@gruascalle80.example.com", nil, domain.SpecialtyTowing),
+		provider("prv-asistencia-vial-sur", "Asistencia Vial Sur", 4.58, -74.14, "Autopista Sur # 60-51, Bogotá",
+			"turnos@asistenciavialsur.example.com", phone("+576015550304"), domain.SpecialtyRoadsideAssistance),
+		provider("prv-gruas-del-valle", "Grúas del Valle", 3.506, -76.41, "Vía Cali–Palmira km 6, Palmira",
+			"despachos@gruasdelvalle.example.com", phone("+576025550305"),
+			domain.SpecialtyTowing, domain.SpecialtyRoadsideAssistance),
 	}
 }
 

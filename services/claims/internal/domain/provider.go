@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Specialty is the trade of a provider (HU-W2.3-01). A claim type needs one
@@ -22,15 +23,33 @@ const (
 	SpecialtyBodywork     Specialty = "bodywork"
 )
 
-// Specialties is every specialty of the registry. The assistance of
+// The trades of the on-site assistance (HU-W2.3-03, decision D12).
+const (
+	// SpecialtyTowing is a tow truck ("grúa").
+	SpecialtyTowing Specialty = "towing"
+	// SpecialtyRoadsideAssistance is battery, tire, fuel and locked keys
+	// ("asistencia vial").
+	SpecialtyRoadsideAssistance Specialty = "roadside_assistance"
+)
+
+// Specialties is every specialty the claims ask for. The assistance of
 // HU-W2.3-03 adds its own here.
 func Specialties() []Specialty {
 	return []Specialty{SpecialtyVehicleAssessment, SpecialtyAutoGlass, SpecialtyPlumbing, SpecialtyDampProofing,
 		SpecialtyPainting, SpecialtyBodywork}
 }
 
-// Valid reports whether s is a specialty of the registry.
-func (s Specialty) Valid() bool { return contains(Specialties(), s) }
+// AssistanceSpecialties is the specialties only the on-site assistance asks
+// for (HU-W2.3-03).
+func AssistanceSpecialties() []Specialty {
+	return []Specialty{SpecialtyTowing, SpecialtyRoadsideAssistance}
+}
+
+// Valid reports whether s is a specialty of the registry: one of the claims
+// or one of the assistance.
+func (s Specialty) Valid() bool {
+	return contains(Specialties(), s) || contains(AssistanceSpecialties(), s)
+}
 
 // Availability is whether a provider can take a claim.
 type Availability string
@@ -241,13 +260,23 @@ func (p Provider) WithAvailability(a Availability, until *time.Time, by string, 
 	return p, nil
 }
 
+// lengthOf checks a free text: required, within its length and, since
+// HU-W2.3-03, without control characters other than a line break, a carriage
+// return or a tab (invalid_format). PostgreSQL does not store the NUL, and the
+// rest have no place in a name, an address or a note.
 func lengthOf(field, value string, minLength, maxLength int, bad func(field, code string)) {
 	switch n := len([]rune(value)); {
 	case n == 0:
 		bad(field, CodeRequired)
 	case n < minLength, n > maxLength:
 		bad(field, CodeOutOfRange)
+	case strings.ContainsFunc(value, controlCharacter):
+		bad(field, CodeInvalidFormat)
 	}
+}
+
+func controlCharacter(r rune) bool {
+	return unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t'
 }
 
 func coordinate(field string, v *float64, valid func(float64) bool, bad func(field, code string)) *float64 {

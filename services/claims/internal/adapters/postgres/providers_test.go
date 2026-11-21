@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -119,7 +120,9 @@ func TestTheProvidersAreListedByFilter(t *testing.T) {
 		ids(ports.ProviderFilter{Specialty: domain.SpecialtyPlumbing, Availability: domain.AvailabilityAvailable}, 200))
 	assert.Equal(t, []string{"prv-reparaciones-chapinero"},
 		ids(ports.ProviderFilter{Availability: domain.AvailabilityUnavailable}, 200))
-	assert.Equal(t, []string{"prv-humedades-y-acabados", "prv-latoneria-pintura-la-80"},
+	byName := memory.ReferenceProviders()
+	sort.Slice(byName, func(i, j int) bool { return byName[i].Name < byName[j].Name })
+	assert.Equal(t, []string{byName[0].ID, byName[1].ID},
 		ids(ports.ProviderFilter{}, 2), "by name, up to the limit")
 
 	plumbing, err := store.WithSpecialty(context.Background(), domain.SpecialtyPlumbing)
@@ -140,7 +143,7 @@ func TestTheSeedDoesNotOverwriteWhatOperationsEdited(t *testing.T) {
 	p, err := store.Get(context.Background(), "prv-vidrios-capital")
 	require.NoError(t, err)
 	assert.Equal(t, domain.AvailabilityUnavailable, p.Availability)
-	assert.Equal(t, 8, s.count(t, `SELECT count(*) FROM provider`))
+	assert.Equal(t, len(memory.ReferenceProviders()), s.count(t, `SELECT count(*) FROM provider`))
 }
 
 func TestTheDatabaseRefusesAnInconsistentProvider(t *testing.T) {
