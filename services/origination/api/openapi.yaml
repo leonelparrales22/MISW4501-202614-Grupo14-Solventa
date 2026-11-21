@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.19.0
+  version: 0.20.0
 paths:
   /health:
     get:
@@ -1969,6 +1969,133 @@ paths:
           $ref: "#/components/responses/PolicyNotFound"
         "503":
           $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/{policy_id}/cancellation/quote:
+    get:
+      summary: Quote the cancellation of a policy of the insured, with its refund (HU-W1.6-01)
+      description: >
+        Screen A5 (CA-1): before confirming, the insured sees what would be
+        refunded if they cancelled now. The premium of a policy origination
+        issues is monthly (HU-W1.6-02); the refund is what was actually paid
+        for the current month (the charge of the issuance for month 1, the
+        instalment for a later one, never the current premium), times the
+        calendar days of that month not used over its days, truncated to the
+        peso, with no fees. The day of the cancellation counts as used and the
+        cancellation takes effect at the end of that day in Colombia. A current
+        month that was not paid (an instalment in its grace period, or due and
+        not billed yet) has nothing to give back: refund_amount is 0 and the
+        cancellation is still possible. The refund goes back to the payment
+        method of the issuance (refund_method, without its token). Only
+        policies origination issued (vida hipotecario): one of the policy
+        core, of another insured or unknown is 404. A policy that ended or has
+        not started is 409 policy_not_in_force; one already cancelled 409
+        policy_already_cancelled; one whose current period has its renewal
+        accepted or done 409 renewal_in_progress. Only the insured; no answer
+        is cached (the refund changes from one day to the next).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The calculation of the refund
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancellationQuote"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          $ref: "#/components/responses/CancellationConflict"
+        "503":
+          $ref: "#/components/responses/CancellationUnavailable"
+  /v1/policies/{policy_id}/cancellation:
+    post:
+      summary: Cancel a policy of the insured and register its refund (HU-W1.6-01)
+      description: >
+        Screen A5 (CA-2): the insured confirms the cancellation with a reason
+        of the list, optional comments (up to 500 characters), the box that
+        says the cancellation is final (accept_terms true) and the refund they
+        saw (refund_amount, the one of GET .../cancellation/quote). In one
+        transaction the policy is cancelled (status cancelled from now on, its
+        coverage ending at effective_at), its pending months are closed without
+        being charged and the refund is registered with its amount, date and
+        payment method, and a reference REF-<civil year of Colombia>-<number of
+        at least five digits> when there is something to refund. A refund in
+        process is then sent to the payment gateway in the background, with a
+        deterministic key and retries within the window of the premium charge
+        (RETRY_WINDOW_SECONDS): it ends completed, or failed when the gateway
+        rejects it or the window ends; the cancellation never waits for the
+        gateway. When the refund is not the one the insured saw (the day
+        changed, or a payment came in) nothing is written and the answer is 409
+        refund_changed with the new quote. While the sweep of the instalments
+        is charging a month of the policy the answer is 409
+        payment_in_progress (retry in a few minutes). Of several confirmations
+        at once exactly one cancels; the others get 409
+        policy_already_cancelled. Same 404 and 409 as the quote. Only the
+        insured; no answer is cached.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelPolicyRequest"
+      responses:
+        "201":
+          description: The policy is cancelled and its refund registered
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/policies/{policy_id}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelledPolicy"
+        "400":
+          description: Invalid path parameter or a body that is not a cancellation (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          description: >
+            The policy cannot be cancelled now (policy_not_in_force,
+            policy_already_cancelled, renewal_in_progress,
+            payment_in_progress), or the refund changed since it was quoted
+            (refund_changed, with the new quote)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/RefundChanged"
+        "422":
+          description: >
+            One or more fields are missing or invalid (invalid_request): a
+            reason out of the list, comments over 500 characters, a negative
+            refund_amount or accept_terms not true
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancellationValidationError"
+        "503":
+          $ref: "#/components/responses/CancellationUnavailable"
   /v1/policies/{policy_id}/assisted-renewal:
     get:
       summary: Read where the assisted renewal of a policy stands, for the advisor (HU-W1.5-03)
@@ -2739,6 +2866,22 @@ components:
             $ref: "#/components/schemas/Error"
     PolicyNotFound:
       description: The policy does not exist (policy_not_found)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    CancellationConflict:
+      description: >
+        The policy cannot be cancelled now: it ended or has not started
+        (policy_not_in_force), it is already cancelled
+        (policy_already_cancelled) or its renewal is in progress
+        (renewal_in_progress)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    CancellationUnavailable:
+      description: The cancellation could not be read or processed (cancellation_unavailable); retry later
       content:
         application/json:
           schema:
@@ -4367,41 +4510,265 @@ components:
           description: When it is charged again; null when no attempt is left.
     PolicyCancellation:
       type: object
-      required: [reason, cancelled_at, refund, month, due_at, grace_ends_at, amount, currency, attempts, email_sent_at]
+      description: >
+        The cancellation of a policy: for non-payment (HU-W1.6-02), with the
+        instalment that was not paid and no refund, or at the request of the
+        insured (HU-W1.6-01), with the refund of the part of the current month
+        not used. The members of the other reason are null.
+      required: [reason, cancelled_at, effective_at, refund, month, due_at, grace_ends_at, amount, currency, attempts,
+        email_sent_at, refund_detail, insured_reason]
       properties:
         reason:
           type: string
-          enum: [non_payment]
+          enum: [non_payment, insured_request]
         cancelled_at:
           type: string
           format: date-time
+        effective_at:
+          type: string
+          format: date-time
+          description: >
+            When the coverage ends: the cancellation itself for non-payment,
+            the end of the day in Colombia for one at the request of the insured.
         refund:
           type: string
-          enum: [not_applicable]
-          description: A cancellation for non-payment returns nothing.
+          enum: [not_applicable, in_process, completed, failed]
+          description: >
+            not_applicable for non-payment, or when nothing was paid to give
+            back; otherwise in_process until the gateway confirms it
+            (completed) or rejects it or the retry window ends (failed).
         month:
           type: integer
           minimum: 2
-          description: The instalment that was not paid.
+          nullable: true
+          description: The instalment that was not paid (non-payment only).
         due_at:
           type: string
           format: date-time
+          nullable: true
         grace_ends_at:
           type: string
           format: date-time
+          nullable: true
         amount:
           type: number
+          nullable: true
+          description: The amount of the unpaid instalment (non-payment only).
         currency:
           type: string
         attempts:
           type: integer
           minimum: 0
-          description: How many times it was charged.
+          nullable: true
+          description: How many times the unpaid instalment was charged (non-payment only).
         email_sent_at:
           type: string
           format: date-time
           nullable: true
-          description: When the e-mail to the insured went out; null until then. The push goes out from the event.
+          description: >
+            When the e-mail to the insured went out; null until then, and
+            always for a cancellation at the request of the insured. The push of
+            a cancellation for non-payment goes out from the event.
+        refund_detail:
+          nullable: true
+          description: The refund registered with a cancellation at the request of the insured; null for non-payment.
+          allOf:
+            - $ref: "#/components/schemas/RefundDetail"
+        insured_reason:
+          nullable: true
+          description: Why the insured cancelled; null for non-payment.
+          allOf:
+            - $ref: "#/components/schemas/InsuredCancellationReason"
+    InsuredCancellationReason:
+      type: object
+      required: [code, comments]
+      properties:
+        code:
+          type: string
+          enum: [property_sold, mortgage_paid, better_offer, no_longer_needed, financial_reasons, other]
+        comments:
+          type: string
+          nullable: true
+          maxLength: 500
+    RefundMethod:
+      type: object
+      description: Where the refund goes back to, the payment method of the issuance without its token.
+      required: [method, brand, last4, bank_code]
+      properties:
+        method:
+          type: string
+          enum: [card, pse]
+        brand:
+          type: string
+          nullable: true
+        last4:
+          type: string
+          nullable: true
+        bank_code:
+          type: string
+          nullable: true
+    PaidPeriod:
+      type: object
+      description: The month of the premium the refund is calculated on, [start, end).
+      required: [month, kind, start, end, paid_amount, currency]
+      properties:
+        month:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          enum: [issuance, installment]
+          description: Month 1 is paid by the charge of the issuance, every later month by an instalment.
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        paid_amount:
+          type: number
+          minimum: 0
+          description: What was actually paid for the month; 0 when it was not paid.
+        currency:
+          type: string
+    RefundDetail:
+      type: object
+      required: [reference, amount, currency, method, registered_at, completed_at, paid_period, unused_days, period_days,
+        prorate_percent]
+      properties:
+        reference:
+          type: string
+          nullable: true
+          pattern: "^REF-[0-9]{4}-[0-9]{5,}$"
+          description: REF-<civil year of Colombia>-<number>; null when nothing is refunded.
+        amount:
+          type: number
+          minimum: 0
+        currency:
+          type: string
+        method:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/RefundMethod"
+        registered_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the gateway confirmed it; null until then.
+        paid_period:
+          $ref: "#/components/schemas/PaidPeriod"
+        unused_days:
+          type: integer
+          minimum: 0
+        period_days:
+          type: integer
+          minimum: 1
+        prorate_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: unused_days / period_days, in percent with one decimal.
+    CancellationQuote:
+      type: object
+      required: [policy_id, effective_at, paid_period, unused_days, period_days, prorate_percent, refund_amount, currency,
+        refund_method, payment_status]
+      properties:
+        policy_id:
+          type: string
+        effective_at:
+          type: string
+          format: date-time
+          description: The end of the day in Colombia, when the coverage would end.
+        paid_period:
+          $ref: "#/components/schemas/PaidPeriod"
+        unused_days:
+          type: integer
+          minimum: 0
+        period_days:
+          type: integer
+          minimum: 1
+        prorate_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+        refund_amount:
+          type: number
+          minimum: 0
+          description: paid_amount x unused_days / period_days, truncated to the peso.
+        currency:
+          type: string
+        refund_method:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/RefundMethod"
+        payment_status:
+          type: string
+          enum: [up_to_date, payment_pending]
+          description: payment_pending while an instalment is in its grace period (nothing paid to give back).
+    CancelPolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, refund_amount, accept_terms]
+      properties:
+        reason:
+          type: string
+          description: One of property_sold, mortgage_paid, better_offer, no_longer_needed, financial_reasons, other.
+        comments:
+          type: string
+          nullable: true
+          description: Optional, up to 500 characters.
+        refund_amount:
+          type: number
+          description: The refund the insured saw before confirming.
+        accept_terms:
+          type: boolean
+          description: Must be true.
+    CancelledPolicy:
+      type: object
+      required: [policy_id, status, cancellation]
+      properties:
+        policy_id:
+          type: string
+        status:
+          type: string
+          enum: [cancelled]
+        cancellation:
+          $ref: "#/components/schemas/PolicyCancellation"
+    RefundChanged:
+      type: object
+      required: [error, message, quote]
+      properties:
+        error:
+          type: string
+          enum: [refund_changed]
+        message:
+          type: string
+        quote:
+          $ref: "#/components/schemas/CancellationQuote"
+    CancellationValidationError:
+      type: object
+      required: [error, message, fields]
+      properties:
+        error:
+          type: string
+          enum: [invalid_request]
+        message:
+          type: string
+        fields:
+          type: array
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                enum: [reason, comments, refund_amount, accept_terms]
+              code:
+                type: string
+                enum: [required, invalid, too_long]
     PaymentAttempt:
       type: object
       required: [attempt, outcome, decline_code, attempted_at]
@@ -5876,5 +6243,9 @@ components:
             - endorsement_unavailable
             - range_too_long
             - metrics_unavailable
+            - policy_already_cancelled
+            - renewal_in_progress
+            - payment_in_progress
+            - cancellation_unavailable
         message:
           type: string
