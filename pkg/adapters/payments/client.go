@@ -5,7 +5,8 @@
 // classifies each answer the way the idempotent retries need it (EC-D02 §7):
 // a success, an explicit rejection (final), an ambiguous answer (the charge
 // may have happened: retry with the same key) or a call that was never sent.
-// Indemnity payouts (HU-W2.2-03) go through the same rules.
+// Indemnity payouts (HU-W2.2-03) and the refunds of a premium when the
+// insured cancels their policy (HU-W1.6-01) go through the same rules.
 package payments
 
 import (
@@ -94,7 +95,8 @@ type RejectedError struct {
 	// Reference is the gateway's id for the declined charge or payout, when it
 	// gives one. It is what the customer quotes to the issuer (screen E4c).
 	Reference string
-	// Operation is what was rejected: "charge" (the default) or "payout".
+	// Operation is what was rejected: "charge" (the default), "payout" or
+	// "refund".
 	Operation string
 }
 
@@ -186,6 +188,34 @@ type Payout struct {
 	Currency       string `json:"currency"`
 }
 
+// ErrInvalidRefund is returned for a refund without idempotency key, charge,
+// reference, positive amount or currency. Like ErrInvalidCharge, it never
+// reaches the gateway.
+var ErrInvalidRefund = errors.New("idempotency key, charge id, reference, a positive amount and currency are required")
+
+// RefundRequest is the refund of part of a charge (HU-W1.6-01). AmountMinor
+// is in minor units of Currency and is what goes back to the payer.
+type RefundRequest struct {
+	// IdempotencyKey identifies the refund: the gateway refunds a key once.
+	IdempotencyKey string `json:"-"`
+	// ChargeID is the gateway's id of the charge the money goes back from.
+	ChargeID string `json:"charge_id"`
+	// Reference is the caller's reference, e.g. REF-2026-00001.
+	Reference   string `json:"reference"`
+	AmountMinor int64  `json:"amount_minor"`
+	Currency    string `json:"currency"`
+}
+
+// Refund is the gateway's record of a refund made.
+type Refund struct {
+	ID             string `json:"refund_id"`
+	Status         string `json:"status"`
+	IdempotencyKey string `json:"idempotency_key"`
+	ChargeID       string `json:"charge_id"`
+	AmountMinor    int64  `json:"amount_minor"`
+	Currency       string `json:"currency"`
+}
+
 // answer is what one call produced. A rejection is a valid answer of a
 // healthy gateway, so it does not count against the circuit breaker.
 type answer[T any] struct {
@@ -216,6 +246,18 @@ func (c *Client) Payout(ctx context.Context, req PayoutRequest) (Payout, error) 
 		return Payout{}, ErrInvalidPayout
 	}
 	return call[Payout](ctx, c, "/payouts", "payout", req.IdempotencyKey, req)
+}
+
+// Refund asks the gateway to refund the request, with the same
+// classification as Charge: the refund on success, a *RejectedError
+// (ErrRejected) when the gateway rejects it, ErrAmbiguous when the outcome is
+// unknown and ErrUnavailable when the call was not sent. Retrying with the
+// same IdempotencyKey never refunds twice.
+func (c *Client) Refund(ctx context.Context, req RefundRequest) (Refund, error) {
+	if req.IdempotencyKey == "" || req.ChargeID == "" || req.Reference == "" || req.AmountMinor <= 0 || req.Currency == "" {
+		return Refund{}, ErrInvalidRefund
+	}
+	return call[Refund](ctx, c, "/refunds", "refund", req.IdempotencyKey, req)
 }
 
 // call sends one idempotent request through the circuit breaker and maps the
