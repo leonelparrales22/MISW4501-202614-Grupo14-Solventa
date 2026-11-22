@@ -184,11 +184,24 @@ func main() {
 		opts = append(opts, assignment...)
 		// HU-M2.3-01: the request for on-site assistance from the phone, with
 		// the location of the insured, checked against the policy core.
-		assistanceOpts, err := assistanceRoutes(records, os.Getenv, verifier)
+		// HU-W2.3-03 reads the same requests, so the store is built once.
+		requests, err := assistanceStoreOf(records)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		assistanceOpts, err := assistanceRoutesOver(requests, os.Getenv, verifier)
 		if err != nil {
 			log.Fatalf("invalid configuration: %v", err)
 		}
 		opts = append(opts, assistanceOpts...)
+		// HU-W2.3-03: the inbox of operations that attends the requests for
+		// assistance and dispatches the provider the assignment suggests.
+		inboxOpts, err := assistanceInboxRoutes(context.Background(), requests, records, providers, os.Getenv,
+			verifier)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		opts = append(opts, inboxOpts...)
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)
 	}

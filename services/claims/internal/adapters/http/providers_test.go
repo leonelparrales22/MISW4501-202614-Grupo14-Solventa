@@ -98,7 +98,7 @@ func TestTheRegistryIsListedWithItsFilters(t *testing.T) {
 	rec = do(registryRouter(&fakeRegistry{}), http.MethodGet, "/v1/claims/providers", "operations", nil, nil)
 	assert.JSONEq(t, `{"items": []}`, rec.Body.String())
 
-	for _, query := range []string{"?specialty=towing", "?availability=maybe"} {
+	for _, query := range []string{"?specialty=carpentry", "?availability=maybe"} {
 		f := &fakeRegistry{}
 		rec := do(registryRouter(f), http.MethodGet, "/v1/claims/providers"+query, "operations", nil, nil)
 		assert.Equal(t, http.StatusBadRequest, rec.Code, query)

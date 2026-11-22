@@ -45,7 +45,7 @@ func TestEverySpecialtyOfTheRegistryIsValid(t *testing.T) {
 	for _, s := range domain.Specialties() {
 		assert.True(t, s.Valid(), s)
 	}
-	assert.False(t, domain.Specialty("towing").Valid(), "the trades of the assistance come with HU-W2.3-03")
+	assert.True(t, domain.Specialty("towing").Valid(), "the trades of the assistance came with HU-W2.3-03")
 	assert.False(t, domain.Specialty("").Valid())
 }
 
@@ -116,11 +116,15 @@ func TestTheLimitsOfAProfile(t *testing.T) {
 		{"name of 121", func(p *domain.ProviderProfile) { p.Name = strings.Repeat("ñ", 121) }, "name", "out_of_range"},
 		{"address of 4", func(p *domain.ProviderProfile) { p.Address = "abcd" }, "address", "out_of_range"},
 		{"address of 5", func(p *domain.ProviderProfile) { p.Address = "abcde" }, "", ""},
+		{"name with a NUL", func(p *domain.ProviderProfile) { p.Name = "Grúas\x00Norte" }, "name", "invalid_format"},
+		{"address with an escape", func(p *domain.ProviderProfile) { p.Address = "Calle 80 \x1b[2J" }, "address",
+			"invalid_format"},
+		{"address on two lines", func(p *domain.ProviderProfile) { p.Address = "Calle 80 # 11-20\r\n\tBogotá" }, "", ""},
 		{"six specialties", func(p *domain.ProviderProfile) { p.Specialties = domain.Specialties() }, "", ""},
 		{"seven specialties", func(p *domain.ProviderProfile) {
 			p.Specialties = append(domain.Specialties(), domain.SpecialtyPlumbing)
 		}, "specialties", "out_of_range"},
-		{"unknown specialty", func(p *domain.ProviderProfile) { p.Specialties = []domain.Specialty{"towing"} },
+		{"unknown specialty", func(p *domain.ProviderProfile) { p.Specialties = []domain.Specialty{"carpentry"} },
 			"specialties", "invalid_format"},
 		{"poles", func(p *domain.ProviderProfile) { p.Latitude, p.Longitude = float(-90), float(180) }, "", ""},
 		{"e-mail of 254", func(p *domain.ProviderProfile) {

@@ -134,7 +134,18 @@ func (r InstallmentRules) MaxAttempts() int { return len(r.AttemptDays) }
 
 // Months is how many monthly premiums the policy has: the months between the
 // start and the end of its coverage, at least 1.
+//
+// With a demo day (shorter than 24 h) a month lasts 30 demo days but the
+// coverage keeps its real end, so a policy has hundreds of thousands of
+// months: they are counted with arithmetic, never one by one.
 func (r InstallmentRules) Months(p Policy) int {
+	if !r.calendar() {
+		span, month := p.CoverageEnd.Sub(p.CoverageStart), r.days(30)
+		if span <= month {
+			return 1
+		}
+		return int((span + month - 1) / month)
+	}
 	n := 1
 	for r.DueAt(p, n+1).Before(p.CoverageEnd) {
 		n++
@@ -147,7 +158,8 @@ func (r InstallmentRules) Months(p Policy) int {
 // billed by this system and is not billed now.
 func (r InstallmentRules) DueInstallments(p Policy, since, now time.Time) []int {
 	var out []int
-	for seq := 2; seq <= r.Months(p); seq++ {
+	months := r.Months(p)
+	for seq := 2; seq <= months; seq++ {
 		due := r.DueAt(p, seq)
 		if due.After(now) {
 			break
@@ -162,7 +174,8 @@ func (r InstallmentRules) DueInstallments(p Policy, since, now time.Time) []int 
 // NextDueAt is when the next month of the policy falls due after now; false
 // when the coverage ends first.
 func (r InstallmentRules) NextDueAt(p Policy, now time.Time) (time.Time, bool) {
-	for seq := 2; seq <= r.Months(p); seq++ {
+	months := r.Months(p)
+	for seq := 2; seq <= months; seq++ {
 		if due := r.DueAt(p, seq); due.After(now) {
 			return due, true
 		}

@@ -33,6 +33,18 @@ func assistanceStoreOf(records ports.ClaimRecords) (ports.AssistanceStore, error
 // left open without that check (decision D2, assumption S12).
 func assistanceRoutes(records ports.ClaimRecords, getenv func(string) string,
 	verifier security.Verifier) ([]httpadapter.Option, error) {
+	store, err := assistanceStoreOf(records)
+	if err != nil {
+		return nil, err
+	}
+	return assistanceRoutesOver(store, getenv, verifier)
+}
+
+// assistanceRoutesOver is assistanceRoutes over a store the caller already
+// has: the inbox of operations (HU-W2.3-03) reads the same requests, which in
+// memory means the same instance.
+func assistanceRoutesOver(store ports.AssistanceStore, getenv func(string) string,
+	verifier security.Verifier) ([]httpadapter.Option, error) {
 	cfg, err := loadPolicyCoreConfig(getenv)
 	if err != nil {
 		return nil, err
@@ -40,10 +52,6 @@ func assistanceRoutes(records ports.ClaimRecords, getenv func(string) string,
 	if cfg.url == "" {
 		log.Printf("%s is not set: the request for assistance (HU-M2.3-01) is not mounted", envPolicyCoreURL)
 		return nil, nil
-	}
-	store, err := assistanceStoreOf(records)
-	if err != nil {
-		return nil, err
 	}
 	core := corepolicies.NewClient(corepolicies.Config{
 		BaseURL: cfg.url, Timeout: cfg.timeout, Breaker: resilience.DefaultConfig(),

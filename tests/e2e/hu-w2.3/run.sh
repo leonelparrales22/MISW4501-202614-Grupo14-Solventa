@@ -494,7 +494,7 @@ set_availability "$NEW" unavailable "$TOMORROW"
 check "and its availability" "200/unavailable/$TOMORROW" "$STATUS/$(field .availability)/$(field .unavailable_until)"
 call GET "$CLAIMS/v1/claims/providers?specialty=damp_proofing&availability=unavailable" "" "$OPS_TOKEN"
 check "the registry filters by specialty and availability" "$NEW" "$(field '[.items[].id] | join(",")')"
-call POST "$CLAIMS/v1/claims/providers" '{"name": "", "specialties": ["towing"], "latitude": 91}' "$OPS_TOKEN"
+call POST "$CLAIMS/v1/claims/providers" '{"name": "", "specialties": ["carpentry"], "latitude": 91}' "$OPS_TOKEN"
 check "an invalid profile names its fields at once (422)" "422/yes" \
   "$STATUS/$(field '[.fields[].field] as $f | ["name", "specialties", "latitude"] - $f | if length == 0 then "yes" else "no" end')"
 call GET "$CLAIMS/v1/claims/assignment-policy" "" "$OPS_TOKEN"
