@@ -47,10 +47,16 @@ func TestTheAssignmentsLiveWhereTheClaimsLive(t *testing.T) {
 	require.NoError(t, err)
 	assert.IsType(t, &postgres.AssignmentStore{}, store)
 	assert.IsType(t, &postgres.ProviderStore{}, providers)
+	steps, err := interventionStoreOf(store)
+	require.NoError(t, err)
+	assert.IsType(t, &postgres.InterventionStore{}, steps, "the intervention lives with the assignments (HU-W2.3-02)")
 
 	store, providers, err = assignmentStoresOf(memory.NewCaseStore())
 	require.NoError(t, err)
 	assert.IsType(t, &memory.AssignmentStore{}, store)
+	steps, err = interventionStoreOf(store)
+	require.NoError(t, err)
+	assert.IsType(t, &memory.InterventionStore{}, steps)
 	list, err := providers.List(context.Background(), ports.ProviderFilter{}, 200)
 	require.NoError(t, err)
 	assert.Len(t, list, len(memory.ReferenceProviders()), "the memory store has the reference providers")
@@ -116,7 +122,7 @@ func TestTheAssignmentIsMountedAndItsWorkerSendsTheNotice(t *testing.T) {
 
 	opts, err := assignmentRoutes(ctx, cases, env(map[string]string{"EMAIL_URL": server.URL}), analystTokens{})
 	require.NoError(t, err)
-	require.Len(t, opts, 2)
+	require.Len(t, opts, 3)
 	h := httpadapter.NewRouter(opts...)
 
 	rec := post(t, h, "/v1/claims/"+id+"/provider-searches", "")
@@ -131,6 +137,10 @@ func TestTheAssignmentIsMountedAndItsWorkerSendsTheNotice(t *testing.T) {
 	rec = post(t, h, "/v1/claims/providers", `{"name": "Nuevo Prestador", "specialties": ["painting"],
 		"latitude": 4.7, "longitude": -74.05, "address": "Calle 100 # 15-20", "contact_email": "nuevo@example.com"}`)
 	assert.Equal(t, http.StatusCreated, rec.Code, "the registry is mounted too")
+
+	rec = post(t, h, "/v1/claims/"+id+"/intervention/steps",
+		`{"step": "accepted", "occurred_at": "`+time.Now().UTC().Format(time.RFC3339)+`"}`)
+	assert.Equal(t, http.StatusCreated, rec.Code, "the intervention is mounted too (HU-W2.3-02): %s", rec.Body.String())
 }
 
 func TestTheAssignmentWithoutAnEmailProviderOrWithABadConfiguration(t *testing.T) {
@@ -138,11 +148,13 @@ func TestTheAssignmentWithoutAnEmailProviderOrWithABadConfiguration(t *testing.T
 	defer cancel()
 	opts, err := assignmentRoutes(ctx, memory.NewCaseStore(), env(nil), analystTokens{})
 	require.NoError(t, err)
-	assert.Len(t, opts, 2, "the notices wait; the assignment is mounted all the same")
+	assert.Len(t, opts, 3, "the notices wait; the assignment is mounted all the same")
 
 	_, err = assignmentRoutes(ctx, memory.NewCaseStore(),
 		env(map[string]string{"ASSIGNMENT_RETRY_INTERVAL_SECONDS": "5"}), analystTokens{})
 	assert.Error(t, err)
 	_, err = assignmentRoutes(ctx, fakeRecords{}, env(nil), analystTokens{})
 	assert.Error(t, err)
+	_, err = interventionStoreOf(nil)
+	assert.Error(t, err, "the intervention needs the store of the assignments")
 }

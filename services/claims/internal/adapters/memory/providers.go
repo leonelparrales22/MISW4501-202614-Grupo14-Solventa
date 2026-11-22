@@ -225,3 +225,17 @@ func copyString(s *string) *string {
 	v := *s
 	return &v
 }
+
+// release makes the provider busy with the claim available again, when there
+// is one (HU-W2.3-02). The caller holds no lock of s.
+func (s *ProviderStore) release(claimID, by string, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, p := range s.byID {
+		if p.BusyClaimID != nil && *p.BusyClaimID == claimID {
+			p.Availability, p.UnavailableUntil, p.BusyClaimID = domain.AvailabilityAvailable, nil, nil
+			p.UpdatedBy, p.UpdatedAt = by, at.UTC()
+			s.byID[id] = p
+		}
+	}
+}

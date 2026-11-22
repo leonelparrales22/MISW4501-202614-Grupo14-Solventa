@@ -60,7 +60,8 @@ func assignmentStoresOf(records ports.ClaimRecords) (ports.AssignmentStore, port
 }
 
 // assignmentRoutes mounts the assignment of the provider and the registry of
-// providers (HU-W2.3-01) and starts the worker that searches again the claims
+// providers (HU-W2.3-01), the follow-up of its intervention and the closing
+// of the case (HU-W2.3-02), and starts the worker that searches again the claims
 // pending assignment and sends the notices to the providers, which runs until
 // ctx ends. Without the e-mail provider the claims are still assigned, and
 // the notices wait until it is configured.
@@ -93,8 +94,25 @@ func assignmentRoutesOver(ctx context.Context, store ports.AssignmentStore, prov
 	go worker.Run(ctx)
 	log.Printf("assignment (HU-W2.3-01): policy %s, claims pending assignment searched again every %s",
 		svc.Policy().Version, interval)
+	interventions, err := interventionStoreOf(store)
+	if err != nil {
+		return nil, err
+	}
 	return []httpadapter.Option{
 		httpadapter.WithAssignment(svc, interval, verifier),
 		httpadapter.WithProviders(assessors.NewProviderService(providers, systemClock{}), verifier),
+		httpadapter.WithIntervention(assessors.NewInterventionService(interventions, systemClock{}), verifier),
 	}, nil
+}
+
+// interventionStoreOf keeps the follow-up of the intervention and the closing
+// of the case (HU-W2.3-02) where the assignments are.
+func interventionStoreOf(assignments ports.AssignmentStore) (ports.InterventionStore, error) {
+	switch a := assignments.(type) {
+	case *postgres.AssignmentStore:
+		return postgres.InterventionStoreOver(a), nil
+	case *memory.AssignmentStore:
+		return memory.NewInterventionStore(a), nil
+	}
+	return nil, fmt.Errorf("the intervention has no store for the assignments of %T", assignments)
 }
