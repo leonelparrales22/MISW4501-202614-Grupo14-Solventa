@@ -1,8 +1,15 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.18.0
+  version: 0.19.0
   description: >-
+    0.19.0 (HU-W2.3-02): GET /v1/claims/{claim_id}/intervention, POST
+    /v1/claims/{claim_id}/intervention/steps and POST
+    /v1/claims/{claim_id}/closure follow the intervention of the assigned
+    provider step by step and close the case with a mandatory result once
+    the provider reports it finished; closing releases the provider and never
+    changes the status of the claim. Only operations. Compatible with 0.18.0
+    (it only adds routes).
     0.18.0 (HU-W2.3-03): operations attends the requests for assistance. GET
     /v1/claims/assistance-inbox lists the requests the phone sent, the latest
     first, as soon as they are recorded, with the policy, the UTC instant and
@@ -3225,6 +3232,217 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/intervention:
+    get:
+      summary: Intervention of the assigned provider (HU-W2.3-02)
+      description: >-
+        Everything the screen "Intervención del prestador" (O8) shows: the
+        assigned provider, the steps the analyst recorded in chronological
+        order with who recorded them, the report of the visit, the next step,
+        whether the case can be closed and, when not, the steps still missing.
+        A claim without a provider answers state not_assigned. The status of
+        the claim does not change with the intervention. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The intervention of the claim
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Intervention"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/intervention/steps:
+    post:
+      summary: Record a progress of the provider (HU-W2.3-02)
+      description: >-
+        The analyst records a progress the provider reported through the
+        agreed channel: accepted, en_route, visit_done (with the report),
+        repair_authorized and repair_executed, in that order and once each.
+        occurred_at is when the provider says it happened: not before the
+        previous step (or the assignment) and not in the future. Only
+        operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InterventionStepRequest"
+      responses:
+        "201":
+          description: Recorded; the intervention as it is now
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Intervention"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            not_assigned - the claim has no provider; step_out_of_order - the
+            step is recorded already or one before it is missing (read the
+            intervention again); case_closed - the case is closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            validation_failed - step unknown, occurred_at missing or out of
+            range, note too long, or the report of the visit missing, sent with
+            another step or with a field missing or out of range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/closure:
+    post:
+      summary: Close the case (HU-W2.3-02)
+      description: >-
+        Closes the case once the provider reported the intervention finished
+        (repair_executed), with a mandatory result, the date and time of the
+        closing and optional notes; it keeps the analyst responsible and
+        releases the provider. Closing never approves, rejects nor pays the
+        claim: its status does not change. Once per claim. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CloseRequest"
+      responses:
+        "201":
+          description: Closed; the intervention with its closing
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Intervention"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            intervention_not_finished - the provider has not reported the
+            intervention finished, with the steps still missing;
+            not_assigned - the claim has no provider; case_closed - the case is
+            closed already
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/NotFinishedError"
+                  - $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            validation_failed - result missing or unknown, closed_at missing,
+            before the end of the repair or in the future, notes too long
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   headers:
     XStale:
@@ -5806,6 +6024,211 @@ components:
               code:
                 type: string
                 enum: [required, invalid_format, out_of_range]
+    InterventionStep:
+      type: string
+      description: >-
+        A progress of the provider, in the order it is recorded. The
+        assignment is where the intervention starts; repair_executed is the
+        provider reporting it finished.
+      enum: [accepted, en_route, visit_done, repair_authorized, repair_executed]
+    ProviderReport:
+      type: object
+      required: [cause, damage, repair_cost_minor, repair_days, photos]
+      description: What the provider found at the visit. The photos stay with the provider; only how many.
+      properties:
+        cause:
+          type: string
+          minLength: 3
+          maxLength: 300
+          example: Filtración por tubería del piso superior
+        damage:
+          type: string
+          minLength: 3
+          maxLength: 300
+          example: Techo y muro de cocina · 6 m²
+        repair_cost_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Estimated cost of the repair, in cents of COP.
+          example: 435000000
+        repair_days:
+          type: integer
+          minimum: 0
+          maximum: 365
+          example: 2
+        photos:
+          type: integer
+          minimum: 0
+          maximum: 50
+          example: 8
+    InterventionStepRecord:
+      type: object
+      required: [step, occurred_at, note, report, recorded_by, recorded_at]
+      properties:
+        step:
+          $ref: "#/components/schemas/InterventionStep"
+        occurred_at:
+          type: string
+          format: date-time
+        note:
+          type: string
+          nullable: true
+        report:
+          allOf:
+            - $ref: "#/components/schemas/ProviderReport"
+          nullable: true
+          description: Only on visit_done.
+        recorded_by:
+          $ref: "#/components/schemas/Actor"
+        recorded_at:
+          type: string
+          format: date-time
+    ClosingResult:
+      type: string
+      description: How the case ended on site. It never approves, rejects nor pays the claim.
+      enum: [repaired, partially_repaired, no_repair_needed, not_repairable]
+    Intervention:
+      type: object
+      required: [claim_id, filing_number, claim_status, incident_type, policy_id, place, state, assignment, steps,
+        next_step, report, closure, closable, missing]
+      properties:
+        claim_id:
+          type: string
+          format: uuid
+        filing_number:
+          type: string
+          example: SIN-2026-01655
+        claim_status:
+          type: string
+        incident_type:
+          type: string
+        policy_id:
+          type: string
+        place:
+          type: string
+        state:
+          type: string
+          enum: [not_assigned, in_progress, ready_to_close, closed]
+        assignment:
+          type: object
+          nullable: true
+          required: [provider, assigned_by, assigned_at]
+          properties:
+            provider:
+              type: object
+              required: [id, name, contact_email, contact_phone, distance_km]
+              properties:
+                id:
+                  type: string
+                name:
+                  type: string
+                contact_email:
+                  type: string
+                contact_phone:
+                  type: string
+                  nullable: true
+                distance_km:
+                  type: number
+            assigned_by:
+              $ref: "#/components/schemas/Actor"
+            assigned_at:
+              type: string
+              format: date-time
+        steps:
+          type: array
+          description: The steps recorded, in chronological order.
+          items:
+            $ref: "#/components/schemas/InterventionStepRecord"
+        next_step:
+          allOf:
+            - $ref: "#/components/schemas/InterventionStep"
+          nullable: true
+        report:
+          allOf:
+            - $ref: "#/components/schemas/ProviderReport"
+          nullable: true
+        closure:
+          type: object
+          nullable: true
+          required: [result, closed_at, notes, closed_by, recorded_at]
+          properties:
+            result:
+              $ref: "#/components/schemas/ClosingResult"
+            closed_at:
+              type: string
+              format: date-time
+            notes:
+              type: string
+              nullable: true
+            closed_by:
+              $ref: "#/components/schemas/Actor"
+            recorded_at:
+              type: string
+              format: date-time
+        closable:
+          type: boolean
+        missing:
+          type: array
+          description: The steps still to record before the case can be closed.
+          items:
+            $ref: "#/components/schemas/InterventionStep"
+    InterventionStepRequest:
+      type: object
+      additionalProperties: false
+      required: [step, occurred_at]
+      properties:
+        step:
+          $ref: "#/components/schemas/InterventionStep"
+        occurred_at:
+          type: string
+          format: date-time
+        note:
+          type: string
+          maxLength: 1000
+        report:
+          type: object
+          additionalProperties: false
+          description: Required with visit_done, refused with any other step. photos is optional (0).
+          required: [cause, damage, repair_cost_minor, repair_days]
+          properties:
+            cause:
+              type: string
+            damage:
+              type: string
+            repair_cost_minor:
+              type: integer
+              format: int64
+            repair_days:
+              type: integer
+            photos:
+              type: integer
+    CloseRequest:
+      type: object
+      additionalProperties: false
+      required: [result, closed_at]
+      properties:
+        result:
+          $ref: "#/components/schemas/ClosingResult"
+        closed_at:
+          type: string
+          format: date-time
+        notes:
+          type: string
+          maxLength: 1000
+    NotFinishedError:
+      type: object
+      required: [error, message, missing]
+      properties:
+        error:
+          type: string
+          enum: [intervention_not_finished]
+        message:
+          type: string
+        missing:
+          type: array
+          items:
+            $ref: "#/components/schemas/InterventionStep"
     IncidentLocationRequest:
       type: object
       additionalProperties: false

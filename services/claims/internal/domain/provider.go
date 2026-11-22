@@ -246,8 +246,8 @@ func (r AvailabilityRequest) Validate(now time.Time) (Availability, *time.Time, 
 }
 
 // WithAvailability is the provider with the availability operations set.
-// Setting it available releases it from the claim it was busy with (until the
-// closing of the intervention does it, HU-W2.3-02).
+// Setting it available releases it from the claim it was busy with; closing
+// the case releases it too (HU-W2.3-02).
 func (p Provider) WithAvailability(a Availability, until *time.Time, by string, at time.Time) (Provider, error) {
 	if a == AvailabilityBusy {
 		return Provider{}, ErrBusyIsSetByAssignment
