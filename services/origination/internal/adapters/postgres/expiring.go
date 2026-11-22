@@ -47,14 +47,15 @@ const expiringFrom = expiringJoin + ` WHERE ` + expiringOpen
 
 // expiringFilter is the open periods in the range [$1, $2) still in force at
 // $3, and the policies cancelled for non-payment after $5, narrowed by the
-// status $4 (empty for all).
+// status $4 (empty for all). HU-W1.6-01: a cancellation at the request of the
+// insured closes the period too, but is not listed as one for non-payment.
 const expiringFilter = expiringJoin + `
 	WHERE ((` + expiringOpen + `
 	        AND p.coverage_end >= $1 AND p.coverage_end < $2 AND p.coverage_end > $3
 	        AND ($4::text = ''
 	             OR ($4::text = 'expiring' AND r.renewal_id IS NULL)
 	             OR ($4::text = 'renewal_in_progress' AND r.renewal_id IS NOT NULL)))
-	    OR (c.policy_id IS NOT NULL AND c.cancelled_at > $5
+	    OR (c.policy_id IS NOT NULL AND c.reason = 'non_payment' AND c.cancelled_at > $5
 	        AND $4::text IN ('', 'cancelled_non_payment')))`
 
 // expiringRenewalColumns are the columns of the renewal that the list shows
@@ -147,10 +148,12 @@ func scanExpiring(rows *sql.Rows) ([]domain.ExpiringPolicy, error) {
 }
 
 // CountCancelledSince counts the policies cancelled for non-payment after
-// since (HU-W1.6-02).
+// since (HU-W1.6-02); not the ones cancelled at the request of the insured
+// (HU-W1.6-01).
 func (s *ExpiringPolicyStore) CountCancelledSince(ctx context.Context, since time.Time) (int, error) {
 	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM policy_cancellation WHERE cancelled_at > $1`,
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM policy_cancellation
+		WHERE reason = 'non_payment' AND cancelled_at > $1`,
 		since.UTC()).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count the policies cancelled for non-payment: %w", err)
 	}

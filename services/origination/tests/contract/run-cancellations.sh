@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Contract test of the cancellation of a policy at the request of the insured
+# (HU-W1.6-01, OBJ 05): starts the real service in Docker over
+# docker-compose.assisted-renewals.yml (PostgreSQL of its own, the payment
+# gateway and e-mail stubs so the routes are mounted, audit, Moto as Cognito)
+# and runs Schemathesis against ../../api/openapi.yaml with every check, on the
+# routes /v1/policies/{policy_id}/cancellation/quote and
+# /v1/policies/{policy_id}/cancellation:
+#   1. as an insured, with a Moto token: the generated policy ids do not exist,
+#      so the 404 answers are reached, and the malformed bodies reach 400 or 422;
+#   2. as an advisor and as an operations analyst: both routes answer 403.
+# The script exits with a non-zero code if any check fails. The environment is
+# always removed at the end (down -v). Requirements: Docker (compose v2), curl,
+# jq and the AWS CLI (only to seed Moto, as tests/security/ha-s01/local does).
+# Secrets are random, generated here and never printed.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+for tool in docker curl jq aws; do
+  command -v "$tool" >/dev/null || {
+    echo "$tool is required" >&2
+    exit 1
+  }
+done
+
+# Its own project and ports, so it does not collide with run-assisted-renewals.sh
+# nor run-change-requests.sh.
+COMPOSE="env MSYS_NO_PATHCONV=1 docker compose -p origination-contract-cancellations -f docker-compose.assisted-renewals.yml"
+export ORIGINATION_ASSISTED_PORT="${ORIGINATION_CANCELLATIONS_PORT:-8298}" MOTO_PORT="${MOTO_CANCELLATIONS_PORT:-5124}"
+PORT="$ORIGINATION_ASSISTED_PORT"
+secret() { head -c 128 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-"$1"; }
+PG_PASSWORD="$(secret 32)"
+MOTO_USER_PASSWORD="Ha$(secret 20)9!"
+DOCUMENT_LINK_SECRET="$(secret 48)"
+export PG_PASSWORD MOTO_USER_PASSWORD DOCUMENT_LINK_SECRET
+
+cleanup() { $COMPOSE --profile tools down -v --remove-orphans >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+echo "== Starting PostgreSQL, Redis, the stubs and Moto"
+$COMPOSE up -d --build --wait postgres-origination postgres-audit redis openfinance payment-gateway email moto
+
+echo "== Seeding the local Cognito (Moto)"
+SEED_OUT=""
+# The published port of Moto can lag behind its health check on Docker Desktop.
+for attempt in $(seq 1 15); do
+  if SEED_OUT="$(env -u MSYS_NO_PATHCONV MOTO_URL="http://localhost:$MOTO_PORT" bash ../../../../tests/security/ha-s01/local/seed.sh 2>&1 | tr -d '\r')"; then
+    break
+  fi
+  if [[ "$attempt" == 15 ]]; then
+    echo "$SEED_OUT" >&2
+    exit 1
+  fi
+  sleep 3
+done
+AUTH_ISSUER="$(sed -n 's/^  export AUTH_ISSUER=//p' <<<"$SEED_OUT")"
+AUTH_CLIENT_IDS="$(sed -n 's/^  export AUTH_CLIENT_IDS=//p' <<<"$SEED_OUT")"
+WEB_CLIENT_ID="${AUTH_CLIENT_IDS%%,*}"
+AUTH_JWKS_URL="http://moto:5000/${AUTH_ISSUER##*/}/.well-known/jwks.json"
+export AUTH_ISSUER AUTH_CLIENT_IDS AUTH_JWKS_URL
+if [[ -z "$AUTH_ISSUER" || -z "$WEB_CLIENT_ID" ]]; then
+  echo "Could not read the pool and the client from seed.sh" >&2
+  exit 1
+fi
+token() { # <username>
+  curl -sf -X POST "http://localhost:$MOTO_PORT/" -H 'Content-Type: application/x-amz-json-1.1' \
+    -H 'X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth' \
+    -d "{\"AuthFlow\":\"USER_PASSWORD_AUTH\",\"ClientId\":\"$WEB_CLIENT_ID\",\"AuthParameters\":{\"USERNAME\":\"$1\",\"PASSWORD\":\"$MOTO_USER_PASSWORD\"}}" |
+    tr -d '\r' | jq -r '.AuthenticationResult.IdToken'
+}
+
+echo "== Starting audit and origination"
+$COMPOSE up -d --build audit origination
+for i in $(seq 1 90); do
+  curl -sf --max-time 2 "http://localhost:$PORT/health" >/dev/null 2>&1 && break
+  if [[ "$i" == 90 ]]; then
+    echo "origination did not become healthy" >&2
+    $COMPOSE logs origination audit | tail -40 >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+ROUTES='^/v1/policies/\{policy_id\}/cancellation(/quote)?$'
+
+echo "== Schemathesis: the cancellation as the insured"
+$COMPOSE --profile tools run --rm schemathesis run /api/openapi.yaml --base-url=http://origination:8080 \
+  -H "Authorization: Bearer $(token asegurado.local@example.com)" --include-path-regex="$ROUTES" \
+  --checks=all --hypothesis-max-examples=50 --hypothesis-seed=3
+
+echo "== Both routes refuse the advisor and the operations analyst (403)"
+for user in asesor.local@example.com operaciones.local@example.com; do
+  STAFF="$(token "$user")"
+  for call in "GET /v1/policies/pol-x/cancellation/quote" "POST /v1/policies/pol-x/cancellation"; do
+    read -r method path <<<"$call"
+    status="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X "$method" "http://localhost:$PORT$path" \
+      -H "Authorization: Bearer $STAFF" -H 'Content-Type: application/json' \
+      -d '{"reason":"other","refund_amount":0,"accept_terms":true}')"
+    if [[ "$status" != "403" ]]; then
+      echo "$method $path as $user answered $status, not 403" >&2
+      exit 1
+    fi
+    echo "  ok    $method $path as ${user%%.*} → 403"
+  done
+done
+
+echo "== origination cancellation contract passed."

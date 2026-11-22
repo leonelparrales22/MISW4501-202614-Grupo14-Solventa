@@ -55,6 +55,10 @@ sola tarea (`claimed_until`, `FOR UPDATE SKIP LOCKED`) y la póliza se cancela u
 
 Cada póliza de originación trae `payment` y, si se canceló, `cancellation`. Las del núcleo traen ambos en `null`.
 
+> **HU-W1.6-01 (0.20.0):** `cancellation.reason` también puede ser `insured_request` (cancelación a solicitud del asegurado, con
+> reembolso prorrateado); entonces `month`, `due_at`, `grace_ends_at`, `amount`, `attempts` y `email_sent_at` vienen en `null` y llegan
+> `effective_at`, `refund_detail` e `insured_reason`. Ver [`HU-W1.6-01-api.md`](HU-W1.6-01-api.md) §5.
+
 ```json
 {
   "policy_id": "VH-2026-004512",

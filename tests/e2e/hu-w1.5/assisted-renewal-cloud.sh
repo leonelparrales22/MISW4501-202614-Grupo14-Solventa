@@ -11,7 +11,7 @@
 # down.sh.
 #
 # Usage:
-#   assisted-renewal-cloud.sh --seed           buys P1..P10 and E1..E6 through the real journey and writes SEED_FILE
+#   assisted-renewal-cloud.sh --seed           buys P1..P10, E1..E6 and C1..C3 through the real journey and writes SEED_FILE
 #   assisted-renewal-cloud.sh verify           buys its own policies and checks CA-1..CA-4, D-8, D-9, roles
 #                                              and concurrency by API (the seeded P1..P7 stay for the demo)
 #   assisted-renewal-cloud.sh code <policy_id> reads from CloudWatch Logs (read only) the last confirmation
@@ -41,6 +41,11 @@
 #   E4  beneficiaries, a document ending in 000       CA-2 not applied -> returned -> CA-5 rejected
 #   E5  insured value                                 rejected with observations (CA-5)
 #   E6  beneficiaries                                 KYC down (W7): 503 and nothing changes; applied in W8
+# and, for the cancellation at the request of the insured (HU-W1.6-01), bought
+# the day of the window, so the issuance pays the month in progress:
+#   C1  12 months  demonstration of CA-1 and CA-2 (quote, cancel, the refund registered)
+#   C2  12 months  cancelled with the payment gateway down (W7): the refund In process, Refunded in W8
+#   C3  12 months  the E2E of the cloud (e2e/nube/cancelacion.spec.ts of the front)
 # A policy without a payment method cannot be produced through the real journey
 # (every policy is born of a confirmed charge with a captured method), nor one
 # born in the assisted channel without creating a user: both are local only.
@@ -315,6 +320,18 @@ if [[ "$COMMAND" == --seed ]]; then
     printf '%s=%s\nREQ_%s=%s\nEMAIL_%s=%s\n' "$tag" "$POLICY" "$tag" "$(field .request_id)" "${POLICY//[^A-Za-z0-9]/_}" "$HOLDER" >>"$SEED_FILE"
     echo "  $tag  $POLICY  $(field .request_id)  $name ($HOLDER) · $purpose"
   done
+  # C1..C3 (HU-W1.6-01): policies to cancel, paid with the card 4111.
+  CANCELLATIONS=(
+    "C1|Diana Correa Lozano|1083012345|cancellation: demonstration of CA-1 and CA-2"
+    "C2|Hernan Vidal Rojas|1083123456|cancellation with the gateway down in W7 (refund In process -> Refunded in W8)"
+    "C3|Gloria Pena Silva|1083234567|cancellation: E2E of the cloud (e2e/nube/cancelacion.spec.ts)"
+  )
+  for seed in "${CANCELLATIONS[@]}"; do
+    IFS='|' read -r tag name document purpose <<<"$seed"
+    buy "$(tr '[:upper:]' '[:lower:]' <<<"$tag")" "$name" "$document" 12
+    printf '%s=%s\nEMAIL_%s=%s\n' "$tag" "$POLICY" "${POLICY//[^A-Za-z0-9]/_}" "$HOLDER" >>"$SEED_FILE"
+    echo "  $tag  $POLICY  12 months  $name ($HOLDER) · $purpose"
+  done
   echo
   echo "== Seeded. The ids are in $SEED_FILE"
   echo "   HU-W1.5-01: RENEW_ONLINE_POLICY_ID=$(sed -n 's/^P3=//p' "$SEED_FILE") ./tests/e2e/hu-w1.5/expiring-cloud.sh"
@@ -323,6 +340,8 @@ if [[ "$COMMAND" == --seed ]]; then
   echo "   Modificar:  $PORTAL_URL/originacion/polizas/$(sed -n 's/^P8=//p' "$SEED_FILE")/modificar"
   echo "   HU-W1.4-02: ./tests/e2e/hu-w1.4/endorsement-cloud.sh verify (its own policies; E1..E6 stay for the demo)"
   echo "   Endosos:    $PORTAL_URL/originacion/endosos"
+  echo "   HU-W1.6-01: ./tests/e2e/hu-w1.6/cancellation-cloud.sh verify (its own policies; C1..C3 stay for the demo)"
+  echo "   Cancelar:   $PORTAL_URL/originacion/polizas/$(sed -n 's/^C1=//p' "$SEED_FILE")/cancelar"
   exit 0
 fi
 

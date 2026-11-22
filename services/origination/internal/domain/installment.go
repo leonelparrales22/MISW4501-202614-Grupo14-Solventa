@@ -253,16 +253,32 @@ type CancellationReason string
 // CancellationNonPayment: an instalment was not paid within its grace period.
 const CancellationNonPayment CancellationReason = "non_payment"
 
-// PolicyCancellation is the cancellation of a policy for non-payment. It
-// never has a refund.
+// PolicyCancellation is the cancellation of a policy: for non-payment, which
+// never has a refund, or at the request of its insured (HU-W1.6-01), with the
+// refund of the part of the current month not used.
 type PolicyCancellation struct {
-	PolicyID    string
-	Reason      CancellationReason
+	PolicyID string
+	Reason   CancellationReason
+	// Installment is the unpaid instalment of a cancellation for
+	// non-payment; the zero value for one at the request of the insured.
 	Installment Installment
 	CancelledAt time.Time
-	EventID     string
-	// EmailSentAt is zero until the e-mail to the insured went out.
+	// EffectiveAt is when the coverage ends: CancelledAt for non-payment, the
+	// end of the day for one at the request of the insured.
+	EffectiveAt time.Time
+	// EventID is the PolicyCancelledForNonPayment event; empty for one at
+	// the request of the insured, which publishes none.
+	EventID string
+	// EmailSentAt is zero until the e-mail to the insured went out (only for
+	// non-payment).
 	EmailSentAt time.Time
+
+	// HU-W1.6-01: why the insured cancelled, with their optional comments,
+	// who asked and the refund.
+	InsuredReason InsuredCancellationReason
+	Comments      string
+	RequestedBy   string
+	Refund        *Refund
 }
 
 // PaymentStatus is how the premium of a policy stands.

@@ -32,7 +32,9 @@ func (s *Service) WithBilling(billing BillingReader, issuance IssuanceReader, ru
 }
 
 // withBilling sets the billing of the items origination issued. A cancelled
-// policy is listed as cancelled and cannot be renewed.
+// policy is listed as cancelled and cannot be renewed, whatever the reason:
+// for non-payment or at the request of the insured, whose cancellation carries
+// its refund (HU-W1.6-01).
 func (s *Service) withBilling(ctx context.Context, items []Item) error {
 	if s.billing == nil {
 		return nil

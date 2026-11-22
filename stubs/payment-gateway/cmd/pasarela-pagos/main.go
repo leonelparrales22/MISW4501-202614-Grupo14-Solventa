@@ -40,6 +40,13 @@
 // reachable in a demo. And a rejected payout moved no money, so it does not
 // bind its key: the analyst corrects the account and retries with the same
 // key, which is what keeps one approval to exactly one disbursement.
+//
+// POST /refunds returns to the insured the unused part of a premium charge
+// when they cancel their policy (HU-W1.6-01), with the same idempotency rules:
+// a key refunds once, it is recorded before the answer is written, and a retry
+// gets the same refund. The stub keeps everything in memory and a restart
+// forgets the charges, so a refund does not need the charge to be known here:
+// it only needs its id. A refund of zero or less is rejected (422).
 package main
 
 import (
@@ -79,6 +86,31 @@ const (
 	invalidAccountSuffix = "89"
 	statusPaid           = "paid"
 )
+
+// refundRequest is the return of part of a charge (HU-W1.6-01).
+type refundRequest struct {
+	ChargeID    string `json:"charge_id"`
+	Reference   string `json:"reference"`
+	AmountMinor int64  `json:"amount_minor"`
+	Currency    string `json:"currency"`
+}
+
+type refund struct {
+	ID             string    `json:"refund_id"`
+	Status         string    `json:"status"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	ChargeID       string    `json:"charge_id"`
+	Reference      string    `json:"reference"`
+	AmountMinor    int64     `json:"amount_minor"`
+	Currency       string    `json:"currency"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// refundResult is the stored refund of a key: what a retry with it gets.
+type refundResult struct {
+	req  refundRequest
+	body refund
+}
 
 // payoutDestination is the bank account an indemnity is paid to.
 type payoutDestination struct {
@@ -197,6 +229,12 @@ type gateway struct {
 	payoutRequests map[string]int
 	realPayouts    map[string]int
 	payoutSeq      int
+
+	// Refunds (HU-W1.6-01) are counted apart too.
+	refundByKey    map[string]refundResult
+	refundRequests map[string]int
+	realRefunds    map[string]int
+	refundSeq      int
 }
 
 func main() {
@@ -216,6 +254,7 @@ func newHandler(delay time.Duration, supportsIdempotency bool) http.Handler {
 	mux.HandleFunc("POST /tokens", g.tokenise)
 	mux.HandleFunc("POST /charges", g.charge)
 	mux.HandleFunc("POST /payouts", g.payout)
+	mux.HandleFunc("POST /refunds", g.refund)
 	mux.HandleFunc("GET /debug/charges", g.debug)
 	mux.HandleFunc("POST /debug/reset", func(w http.ResponseWriter, _ *http.Request) {
 		g.reset()
@@ -232,6 +271,8 @@ func (g *gateway) reset() {
 	g.total, g.seq, g.tokenSeq = 0, 0, 0
 	g.payoutByKey, g.payoutRequests, g.realPayouts = map[string]payoutResult{}, map[string]int{}, map[string]int{}
 	g.payoutSeq = 0
+	g.refundByKey, g.refundRequests, g.realRefunds = map[string]refundResult{}, map[string]int{}, map[string]int{}
+	g.refundSeq = 0
 }
 
 // tokenise turns a card into a token. This is the endpoint the browser calls
@@ -481,6 +522,63 @@ func validPayout(in payoutRequest) bool {
 		len(in.Destination.AccountNumber) <= 32
 }
 
+// refund returns part of a charge. Like a charge, it is recorded before the
+// answer is written, so a cut answer still leaves the refund made.
+func (g *gateway) refund(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" || len(key) > maxKeyLength {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_request", Message: "the Idempotency-Key header (up to 255 characters) is required"})
+		return
+	}
+	var in refundRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_request", Message: "the body is not valid JSON"})
+		return
+	}
+	if in.ChargeID == "" || in.Reference == "" || in.Currency == "" || len(in.ChargeID) > maxFieldLength ||
+		len(in.Reference) > maxFieldLength || len(in.Currency) > 8 {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_request",
+			Message: "charge_id, reference and currency are required"})
+		return
+	}
+	if in.AmountMinor <= 0 {
+		writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: "invalid_amount",
+			Message: "a refund returns a positive amount_minor"})
+		return
+	}
+
+	status, body, newRefund := g.processRefund(key, in)
+	log.Printf("refund request key=%s reference=%s charge=%s status=%d new_refund=%t", key, in.Reference, in.ChargeID,
+		status, newRefund)
+	if g.delay > 0 {
+		time.Sleep(g.delay)
+	}
+	writeJSON(w, status, body)
+}
+
+func (g *gateway) processRefund(key string, in refundRequest) (status int, body any, newRefund bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.refundRequests[key]++
+
+	if prev, seen := g.refundByKey[key]; seen && g.supportsIdempotency {
+		if prev.req != in {
+			return http.StatusUnprocessableEntity, errorBody{Error: "idempotency_key_reused",
+				Message: "this Idempotency-Key already refunded a different amount"}, false
+		}
+		return http.StatusOK, prev.body, false
+	}
+
+	g.refundSeq++
+	g.realRefunds[key]++
+	made := refund{
+		ID: "re-" + strconv.Itoa(g.refundSeq), Status: statusSuccess, IdempotencyKey: key, ChargeID: in.ChargeID,
+		Reference: in.Reference, AmountMinor: in.AmountMinor, Currency: in.Currency, CreatedAt: time.Now().UTC(),
+	}
+	g.refundByKey[key] = refundResult{req: in, body: made}
+	return http.StatusCreated, made, true
+}
+
 // debug lists, per key, the requests received and the real charges made.
 func (g *gateway) debug(w http.ResponseWriter, _ *http.Request) {
 	g.mu.Lock()
@@ -505,6 +603,16 @@ func (g *gateway) debug(w http.ResponseWriter, _ *http.Request) {
 		paid[k] = v
 		totalPaid += v
 	}
+	refundRequests := make(map[string]int, len(g.refundRequests))
+	for k, v := range g.refundRequests {
+		refundRequests[k] = v
+	}
+	refunded := make(map[string]int, len(g.realRefunds))
+	totalRefunded := 0
+	for k, v := range g.realRefunds {
+		refunded[k] = v
+		totalRefunded += v
+	}
 	g.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"requests":             requests,
@@ -514,6 +622,9 @@ func (g *gateway) debug(w http.ResponseWriter, _ *http.Request) {
 		"payout_requests":      payoutRequests,
 		"real_payouts":         paid,
 		"total_real_payouts":   totalPaid,
+		"refund_requests":      refundRequests,
+		"real_refunds":         refunded,
+		"total_real_refunds":   totalRefunded,
 		"supports_idempotency": g.supportsIdempotency,
 	})
 }
