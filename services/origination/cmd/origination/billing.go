@@ -119,6 +119,8 @@ type billingWiring struct {
 	// wake wakes the charge worker after a charge is stored elsewhere (the
 	// renewal of HU-W1.5-02).
 	wake func()
+	// gateway charges the monthly instalments too (HU-W1.6-02).
+	gateway *paymentsadapter.Gateway
 }
 
 // newBilling wires the premium charge (HA-D02) over the single pool of
@@ -145,6 +147,7 @@ func newBilling(ctx context.Context, cfg billingConfig, db *sql.DB, wakeContract
 		cfg.gatewayURL, cfg.gatewayTimeout, cfg.retry.Base, cfg.retry.Max, cfg.retry.Window, cfg.worker.PollInterval, cfg.worker.ClaimLease)
 	return billingWiring{
 		wake:    worker.Notify,
+		gateway: gateway,
 		starter: billing.NewStarter(repo, billing.OfferTerms(demoCoverageTerms()), clock, cfg.retry, worker.Notify),
 		service: billing.NewService(repo, clock, cfg.retry, worker.Notify).
 			WithContractRetry(postgres.NewContractStore(db), wakeContracts),

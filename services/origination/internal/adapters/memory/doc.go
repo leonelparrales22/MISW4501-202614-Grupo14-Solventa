@@ -27,4 +27,6 @@
 //   - Outbox: the outbox of the CustomerLinked events that CustomerStore.Link
 //     writes (HU-M1.3-01); the relay publishes them when EVENTS_TOPIC_ARN is
 //     set.
+//   - ExpiryAlertStore: the alerts before a policy expires (HU-M3.2-01); it
+//     writes their PolicyExpiryApproaching events to the same outbox.
 package memory

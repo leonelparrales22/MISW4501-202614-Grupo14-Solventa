@@ -1,8 +1,118 @@
 openapi: 3.0.3
 info:
   title: Solventa - claims service
-  version: 0.9.0
+  version: 0.19.0
   description: >-
+    0.19.0 (HU-W2.3-02): GET /v1/claims/{claim_id}/intervention, POST
+    /v1/claims/{claim_id}/intervention/steps and POST
+    /v1/claims/{claim_id}/closure follow the intervention of the assigned
+    provider step by step and close the case with a mandatory result once
+    the provider reports it finished; closing releases the provider and never
+    changes the status of the claim. Only operations. Compatible with 0.18.0
+    (it only adds routes).
+    0.18.0 (HU-W2.3-03): operations attends the requests for assistance. GET
+    /v1/claims/assistance-inbox lists the requests the phone sent, the latest
+    first, as soon as they are recorded, with the policy, the UTC instant and
+    the result of the location, and the indicators of the inbox (new, in
+    call, dispatched today and the mean time to dispatch). GET
+    /v1/claims/assistance-inbox/{request_id} reads one with the suggestion of
+    provider, computed with the search of HU-W2.3-01 (distance, availability
+    and specialty, radii 5, 10 and 20 km) and the estimated arrival. The
+    analyst attends it (new to in_call), records what the insured needs
+    (which gives the specialty) and, without GPS, the address given by voice
+    with the pin of the map; then dispatches an eligible provider, who
+    receives the location by e-mail (dispatched), or closes it with a
+    required reason (closed). Every decision keeps its analyst and its time.
+    GET /v1/claims/assistance-policy reads the needs, the estimate of arrival
+    and the reasons to close. The specialties gain towing and
+    roadside_assistance. Only operations. The free texts of the registry and
+    of the assignment (name, address) and of the inbox (address given by
+    voice, note of a closing) with a control character other than a line
+    break, a carriage return or a tab are now 422 invalid_format, instead of
+    503. Compatible with 0.17.0 (it only adds routes and enum values of the
+    registry).
+    0.17.0 (HU-W1.4-02): GET /internal/policies/{policy_id}/open-claims
+    counts the claims of a policy that are in progress (every status but paid
+    and rejected), for origination to check before an operations analyst
+    applies an endorsement. It is internal: it carries no token, lives outside
+    /v1/claims so neither the API Gateway nor the load balancer route it, and
+    only the services inside the VPC reach it through Cloud Map. It names no
+    claim nor who filed it. Compatible with 0.16.0 (it only adds a route).
+    0.16.0 (HU-M2.3-01): the request for on-site assistance from the phone.
+    POST /v1/claims/assistance-requests records, for one active policy of
+    the insured (checked against the policy core), the location the phone
+    could share (coordinates, accuracy and the instant of the fix) or why it
+    could not (permission denied, location disabled, no fix), with the UTC
+    instant of the server; it answers the request with its number
+    AST-<year>-<4 digits or more> and status new. It is identified by
+    Idempotency-Key, as the filing. GET
+    /v1/claims/assistance-requests/{request_id} reads it back, only for its
+    owner. A request is not a claim: it is not listed by GET /v1/claims. The
+    call line lives in the app, which dials it whatever this answers. Only the
+    insured; mounted with the policy core (POLICY_CORE_URL). Compatible with
+    0.15.0 (it only adds routes).
+    0.15.0 (HU-M2.4-01): the claims the parametric engine resolves by itself.
+    The list, the detail and the history of a claim gain
+    automatic_resolution (null for a claim evaluated by an analyst): when it
+    was resolved, the rules applied and the trigger (the parameter, its
+    threshold and the value observed that made it pay). Such a claim has
+    channel parametric, incident_type flight_delay, the line travel in its
+    policy and no requirements; its history goes in_evaluation, approved and
+    paid. The engine consumes ParametricTriggerObserved and publishes
+    ParametricPayoutCompleted (docs/events/README.md); no route is added.
+    Compatible with 0.14.0 (it only adds a field and enum values of reads).
+    0.14.0 (HU-W2.1-02): the insured follows the stage of their claims. The
+    list and the detail carry last_changed_at, when the claim reached its
+    current status; the list carries summary, the tally of every claim of the
+    insured whatever the filters (in progress, by status, paid this year and
+    what they paid, and the claims returned to correct). The history carries
+    decision (outcome, amount paid net of the deductible, payout status and
+    date, or the reason of a rejection) and provider (who attends and how far),
+    never the account nor the contact. GET
+    /v1/claims/{claim_id}/supports/{support_id}/download signs the read of a
+    support the claim shows, for 10 minutes.
+    0.13.0 (HU-W2.1-04): POST /v1/claims/{claim_id}/resubmission is the
+    insured correcting a returned filing and sending it again: the facts that
+    change, the supports added or replaced (a group is the whole set of files
+    the requirement keeps), and review_seq, the return it answers. The claim
+    keeps its id and filing number, becomes active for a new review of the
+    advisor and the resubmission is recorded (who, when, what changed); the
+    history lists the resubmissions. Every support the advisor found illegible
+    must be replaced and every one missing uploaded, besides the required ones
+    of the claim type: otherwise 422 with every field still missing. Filings of
+    the phone too: photographs of the vehicle uploaded then replace the ones of
+    the phone.
+    0.12.0 (HU-W2.2-02): GET /v1/claims/evaluations is the queue of
+    operations ordered by priority (Triage 1, 2 and 3, then the claims without
+    a level, and in each the one filed first), filtered by level, line and
+    status, with the insured of each claim and a summary: the claims by level,
+    how many match and the mean time of resolution of the last 30 days.
+    0.11.0 (HU-W2.3-01): the assignment of the nearest provider (assessor or
+    workshop) to a claim in evaluation that needs an on-site visit. The
+    claim's location comes from the most precise trusted evidence of the
+    phone; without it, operations records the address and the coordinates of
+    the pin (POST /v1/claims/{claim_id}/incident-location). POST
+    /v1/claims/{claim_id}/provider-searches looks for available providers
+    with the specialty of the claim type, widening the radius 5, 10 and 20 km
+    and recording every attempt, and suggests the nearest; with none within
+    the maximum radius the claim is pending assignment, with its reason, and
+    the search is repeated on its own. POST /v1/claims/{claim_id}/assignment
+    confirms a provider, which receives the location by e-mail. GET
+    /v1/claims/{claim_id}/assignment reads it all, GET /v1/claims/assignments
+    the state of a page of claims and GET /v1/claims/assignment-policy the
+    radii and the specialty of each claim type. The registry of providers is
+    administered by operations under /v1/claims/providers. The status of the
+    claim does not change. Only operations.
+    0.10.0 (HU-W2.1-03): the advisor reviews every filing before it enters
+    evaluation, with a verdict on each support (valid, illegible or missing). A filed claim is active (waiting for review) and is not
+    triaged nor listed for operations until the advisor approves it (POST
+    /v1/claims/{claim_id}/review-approval), which makes it in_evaluation; or
+    returns it with the reason and what is missing (POST
+    /v1/claims/{claim_id}/review-return), which makes it returned. GET
+    /v1/claims/reviews lists the filings to review and GET
+    /v1/claims/{claim_id}/review the detail. GET /v1/claims/{claim_id}/history
+    reads every change of status of a claim, recorded by the database as it
+    happens. The status gains returned.
     0.9.0 (HU-M2.2-01): the filing from the phone (POST /v1/claims) takes the
     optional estimated_amount_minor with the rules of the web filing, and its
     answer returns it when it was declared; it counts in the fingerprint of
@@ -53,6 +163,46 @@ paths:
       responses:
         "200":
           description: OK
+  /internal/policies/{policy_id}/open-claims:
+    get:
+      summary: Count the claims in progress of a policy (HU-W1.4-02, internal)
+      description: >-
+        Internal route for origination, reached only inside the VPC through
+        Cloud Map (neither the API Gateway nor the load balancer route it).
+        In progress is every status but paid and rejected (domain.Closed):
+        active, returned, in_evaluation, approved and payment_exception.
+      security: []
+      parameters:
+        - name: policy_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      responses:
+        "200":
+          description: The count of the claims in progress of the policy (0 for a policy without claims).
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenClaims"
+        "400":
+          description: The policy id is not valid (invalid_policy_id).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The claims cannot be counted now (unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/claims:
     post:
       summary: File a claim (HU-M2.2-01)
@@ -132,6 +282,9 @@ paths:
         (mobile and web), newest first. A claim filed from the mobile app has
         no policy snapshot, so its policy line, product and insured object are
         null.
+        HA-L02: the read waits 900 ms for the database; when it does not
+        answer in time, the last read kept in the read cache answers, with
+        stale true and as_of the time it was read.
       security:
         - cognitoJwt: []
       parameters:
@@ -140,7 +293,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
+            enum: [active, returned, in_evaluation, approved, paid, rejected, payment_exception]
         - name: policy_id
           in: query
           required: false
@@ -179,6 +332,10 @@ paths:
               schema:
                 type: string
                 enum: [no-store]
+            X-Stale:
+              $ref: "#/components/headers/XStale"
+            X-Data-Source:
+              $ref: "#/components/headers/XDataSource"
           content:
             application/json:
               schema:
@@ -554,6 +711,707 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-requests:
+    post:
+      summary: Request on-site assistance with the location of the phone (HU-M2.3-01)
+      description: >-
+        Records the request for on-site assistance of the insured, for one of
+        their own active policies, with the result of the location: the
+        coordinates, accuracy and instant of the fix the phone shared (status
+        sent), or the reason it could not share one (status unavailable). The
+        body is checked first and every invalid field is reported at once;
+        then the policy is looked up among the insured's own in the policy
+        core: a policy of another insured answers as one that does not exist.
+        If the core does not answer nothing is recorded (503
+        policy_directory_unavailable) and the app may retry with the same
+        key. requested_at is the clock of the server, in UTC. The request is
+        identified by Idempotency-Key: the same key and the same body answer
+        200 with the request that already exists. The app dials the call line
+        whatever this answers; it never waits for it. Mounted only when the
+        policy core is configured (POLICY_CORE_URL).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: >-
+            Identifier of the request; the app sends a new one each time the
+            insured taps "Solicitar asistencia" and the same one on a retry.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistanceRequestInput"
+            examples:
+              withLocation:
+                summary: The phone shared its location (M14)
+                value:
+                  policy_id: AU-2025-118204
+                  location:
+                    status: sent
+                    latitude: 4.7712
+                    longitude: -74.0452
+                    accuracy_m: 8
+                    captured_at: "2026-11-14T21:31:02Z"
+                  place: Autopista Norte km 12, Bogotá
+              permissionDenied:
+                summary: The insured denied the permission or the location is off (M14b)
+                value:
+                  policy_id: AU-2025-118204
+                  location:
+                    status: unavailable
+                    unavailable_reason: permission_denied
+              noFix:
+                summary: No satellite fix in time (M14c)
+                value:
+                  policy_id: AU-2025-118204
+                  location:
+                    status: unavailable
+                    unavailable_reason: no_fix
+      responses:
+        "201":
+          description: The request was recorded
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceRequest"
+        "200":
+          description: The same key had already recorded this request
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceRequest"
+        "400":
+          description: >-
+            invalid_request - the body is not a JSON object, has an unknown
+            field or a field of the wrong type, is larger than 16 KB, or the
+            key is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            validation_failed or idempotency_key_reused (WebValidationError),
+            or policy_not_eligible with reason policy_not_found or
+            policy_not_active (PolicyNotEligible). Nothing is recorded.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/WebValidationError"
+                  - $ref: "#/components/schemas/PolicyNotEligible"
+        "503":
+          description: >-
+            policy_directory_unavailable (the policy core did not answer;
+            nothing was recorded) or assistance_unavailable - retry with the
+            same key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-requests/{request_id}:
+    get:
+      summary: Read one own request for assistance (HU-M2.3-01)
+      description: >-
+        The request as it was recorded, with its current status. Only its
+        owner reads it: a request of another insured answers as one that
+        does not exist.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      responses:
+        "200":
+          description: The request
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceRequest"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >-
+            assistance_request_not_found - it does not exist, it is not the
+            insured's or the id is not a UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox:
+    get:
+      summary: The inbox of requests for assistance (HU-W2.3-03)
+      description: >-
+        The requests for on-site assistance the phone sent (HU-M2.3-01), the
+        latest first, with the policy, the UTC instant, the result of the
+        location (coordinates and accuracy for the map, or why there were
+        none and the location the analyst recorded by voice) and who handles
+        each one. A request is listed as soon as it is recorded: the inbox
+        reads the same database, without events, and the portal polls it
+        every 30 seconds. summary carries the indicators of the screen,
+        whatever the filters. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Repeatable. Absent - every status.
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 4
+            uniqueItems: true
+            items:
+              $ref: "#/components/schemas/AssistanceStatus"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: The inbox, the latest request first
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceInbox"
+        "400":
+          description: invalid_request - an unknown status or a limit out of 1-100
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}:
+    get:
+      summary: One request for assistance, as operations attends it (HU-W2.3-03)
+      description: >-
+        Everything the screen "Detalle de la asistencia" shows: the request,
+        the need the analyst chose, the location in force, the suggestion of
+        provider and, once decided, the dispatch or the closing, with the
+        history of every decision. The suggestion is computed on every read
+        with the search of HU-W2.3-01 (distance, availability today and
+        specialty, radii 5, 10 and 20 km); it is not recorded. Reading does
+        not change the status. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      responses:
+        "200":
+          description: The request
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found - it does not exist or the id is not a UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}/attend:
+    post:
+      summary: Attend a request (HU-W2.3-03)
+      description: >-
+        "Atender" and "Continuar": a new request becomes in_call and the
+        analyst handles it. On a request in_call of another analyst, the
+        analyst takes it over; of the same analyst, nothing changes. Every
+        change is recorded in the history. No body. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      responses:
+        "200":
+          description: Attended
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: assistance_not_open - the request is already dispatched or closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}/need:
+    post:
+      summary: Record the need of a request (HU-W2.3-03)
+      description: >-
+        The analyst chooses, during the call, what the insured needs from the
+        needs of the line of the policy (GET /v1/claims/assistance-policy);
+        the need gives the specialty of the suggestion. It may change until
+        the request is dispatched; the last one is in force. The request
+        must be in_call. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistanceNeedRequest"
+      responses:
+        "200":
+          description: Recorded, with the suggestion of the new specialty
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            assistance_not_attended - the request is new: attend it first;
+            assistance_not_open - it is already dispatched or closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            need_not_for_line - the need is not one of the line of the policy;
+            validation_failed - need is missing or unknown
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}/voice-location:
+    post:
+      summary: Record the location the insured gives by voice (HU-W2.3-03)
+      description: >-
+        For a request without coordinates from the phone: the address the
+        insured dictates and the coordinates of the pin the analyst puts on
+        the map (the portal resolves the address; the service does not
+        geocode). It may be corrected until the request is dispatched; the
+        last one is in force. The request must be in_call. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistanceVoiceLocationRequest"
+      responses:
+        "200":
+          description: Recorded, with the suggestion from that point
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            location_from_app - the phone shared its coordinates;
+            assistance_not_attended - the request is new: attend it first;
+            assistance_not_open - it is already dispatched or closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every invalid field at once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}/dispatch:
+    post:
+      summary: Dispatch a provider to a request (HU-W2.3-03)
+      description: >-
+        Sends one of the eligible providers (the suggested one or another
+        eligible) to the location in force. The suggestion is computed again
+        at this moment: a provider that stopped being eligible since the
+        detail was read is refused, and the portal reads the detail again.
+        The request becomes dispatched with the date and time and the
+        provider; the provider receives the request and the location by
+        e-mail (dispatch.notice.status tells whether it left). The provider
+        does not become busy. Once per request; the request must be in_call.
+        Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistanceDispatchRequest"
+      responses:
+        "200":
+          description: Dispatched
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            assistance_not_attended - the request is new: attend it first;
+            assistance_not_open - it is already dispatched or closed (another
+            analyst may have done it)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            need_missing - no need recorded; location_missing - no coordinates
+            from the phone nor by voice; provider_not_eligible - the provider is
+            not eligible now (unknown, unavailable, without the specialty or out
+            of the radius); validation_failed - provider_id is missing or has
+            not the form of an id
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-inbox/{request_id}/close:
+    post:
+      summary: Close a request without dispatching (HU-W2.3-03)
+      description: >-
+        "Cerrar por otro medio": the request was resolved during the call,
+        repeated, cancelled or cannot be served. The reason is required, and
+        the note too when the reason is other. Nobody is dispatched and no
+        provider is notified. From new or in_call. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/AssistanceRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistanceCloseRequest"
+      responses:
+        "200":
+          description: Closed
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceCase"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: assistance_request_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: assistance_not_open - the request is already dispatched or closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every invalid field at once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: assistance_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assistance-policy:
+    get:
+      summary: The assistance policy in force (HU-W2.3-03)
+      description: >-
+        The needs of each line of policy and the specialty each one asks for,
+        the radii of the search (those of the assignment policy of
+        HU-W2.3-01), how the estimated arrival is computed, the reasons to
+        close a request and the target time of a dispatch. The policy is
+        provisional until the business validates it; its version changes
+        when it does. Only operations.
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The policy in force
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistanceInboxPolicy"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/claims/triage:
     get:
       summary: Triage of a page of claims at once (HU-W2.2-01)
@@ -651,14 +1509,406 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/assignments:
+    get:
+      summary: Provider assignment of a page of claims at once (HU-W2.3-01)
+      description: >-
+        The state of the assignment of each claim asked for, in the order
+        asked, so a list of claims shows which ones are pending assignment or
+        already assigned with one call. A claim that does not exist comes back
+        with state not_found instead of failing the call. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: claim_id
+          in: query
+          required: true
+          description: Ids of the claims, repeated (claim_id=a&claim_id=b), 1 to 50, without repeats.
+          style: form
+          explode: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 50
+            uniqueItems: true
+            items:
+              type: string
+              pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      responses:
+        "200":
+          description: The assignment of each claim, in the order asked
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssignmentList"
+        "400":
+          description: >-
+            invalid_request - no claim_id, more than 50, a repeated one or one
+            that is not a claim id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/assignment-policy:
+    get:
+      summary: The assignment policy in force (HU-W2.3-01)
+      description: >-
+        The search radii, the specialty each claim type needs and how often a
+        claim pending assignment is searched again. The policy is provisional
+        until the business validates it; its version changes when it does.
+        Only operations.
+      security:
+        - cognitoJwt: []
+      responses:
+        "200":
+          description: The policy in force
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssignmentPolicy"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/providers:
+    get:
+      summary: The registry of providers (HU-W2.3-01)
+      description: >-
+        The providers (assessors and workshops) the assignment chooses from,
+        by name, up to 200. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: specialty
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/Specialty"
+        - name: availability
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ProviderAvailability"
+      responses:
+        "200":
+          description: The providers, by name
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderList"
+        "400":
+          description: invalid_request - an unknown specialty or availability
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Register a provider (HU-W2.3-01)
+      description: >-
+        Adds a provider to the registry, available from now on. The service
+        gives it its id. Only operations; the provider keeps who registered it
+        and when.
+      security:
+        - cognitoJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderProfile"
+      responses:
+        "201":
+          description: Registered
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Provider"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every invalid field at once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/providers/{provider_id}:
+    get:
+      summary: One provider of the registry (HU-W2.3-01)
+      description: Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      responses:
+        "200":
+          description: The provider
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Provider"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: provider_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/providers/{provider_id}/profile:
+    post:
+      summary: Change the data of a provider (HU-W2.3-01)
+      description: >-
+        Replaces the name, specialties, location and contact of a provider.
+        The availability changes with its own route. An assignment already made
+        keeps the data the provider had then. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderProfile"
+      responses:
+        "200":
+          description: Changed
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Provider"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: provider_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every invalid field at once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/providers/{provider_id}/availability:
+    post:
+      summary: Change the availability of a provider (HU-W2.3-01)
+      description: >-
+        available or unavailable, the latter optionally until a date. A
+        provider becomes busy only when it is assigned to a claim; setting it
+        available releases it (until the closing of the intervention does it,
+        HU-W2.3-02). Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderAvailabilityRequest"
+      responses:
+        "200":
+          description: Changed
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Provider"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: provider_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            validation_failed - an unknown availability, unavailable_until
+            with available, or a date before today
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/claims/evaluations:
     get:
-      summary: Claims in evaluation (HU-W2.2-03)
+      summary: The queue of operations ordered by priority (HU-W2.2-02)
       description: >-
-        The claims of every insured in the statuses the triage evaluates
-        (active and in_evaluation), oldest filed first, each with its estimated
-        amount and its priority, so operations opens one to evaluate it. The
-        order by priority is HU-W2.2-02. Only operations.
+        The claims waiting for the decision of operations (in_evaluation:
+        approved by the advisor, HU-W2.1-03), ordered by priority: Triage 1,
+        then 2, then 3, then the ones the triage has not assessed yet, and in
+        each the one filed first. A new level moves the claim in the next
+        read. Each claim carries its estimated amount, its priority and the
+        insured as the policy core describes them (null when the core does not
+        answer). The summary counts the whole queue by level, how many claims
+        match the filters and the mean time from the filing to the decision of
+        the claims decided in the last 30 days (null when none was). A claim
+        waiting for the review of the advisor or returned to the insured is
+        not here. Only operations.
       security:
         - cognitoJwt: []
       parameters:
@@ -677,9 +1927,29 @@ paths:
           schema:
             type: string
             maxLength: 512
+        - name: level
+          in: query
+          required: false
+          description: Only the claims of a level of the triage, or none for the ones without a level yet.
+          schema:
+            type: string
+            enum: ["1", "2", "3", none]
+        - name: line
+          in: query
+          required: false
+          description: Only the claims of a line, by their claim type.
+          schema:
+            $ref: "#/components/schemas/PolicyLine"
+        - name: status
+          in: query
+          required: false
+          description: Only the claims of one status of the queue.
+          schema:
+            type: string
+            enum: [in_evaluation]
       responses:
         "200":
-          description: One page of the claims in evaluation
+          description: One page of the queue by priority and its summary
           headers:
             Cache-Control:
               schema:
@@ -688,9 +1958,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/EvaluationQueue"
+                $ref: "#/components/schemas/PriorityQueue"
         "400":
-          description: invalid_request - page_size out of 1 to 50 or a page token that is not valid
+          description: invalid_request - page_size out of 1 to 50, a filter or a page token that is not valid
           content:
             application/json:
               schema:
@@ -775,12 +2045,423 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/reviews:
+    get:
+      summary: Filings waiting for the review of the advisor (HU-W2.1-03)
+      description: >-
+        The claims of every insured that wait for the review of the advisor
+        (status active: just filed, or sent again after a return), oldest filed
+        first, with their estimated amount. They have no priority yet: the
+        triage only assesses a claim once the advisor approves it, so triage
+        comes with state not_applicable. Only the advisor.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: page_size
+          in: query
+          required: false
+          description: Claims per page, 1 to 50; 20 when absent.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+        - name: page_token
+          in: query
+          required: false
+          description: The next_page_token of the previous page; opaque.
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        "200":
+          description: One page of the filings to review
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationQueue"
+        "400":
+          description: invalid_request - page_size out of 1 to 50 or a page token that is not valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an advisor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/review:
+    get:
+      summary: Everything the advisor reviews a filing with (HU-W2.1-03)
+      description: >-
+        The same reading operations evaluates with (the claim with its supports
+        and evidence, its policy and coverage as the policy core describes them
+        today and the insured), plus the checklist of the supports of the
+        claim type to give a verdict on, the other claims of the insured on the
+        same policy and every review the filing already had (screen S8). Only
+        the advisor.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The filing and its reviews
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimReview"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an advisor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/review-approval:
+    post:
+      summary: Approve a filing, which enters evaluation (HU-W2.1-03)
+      description: >-
+        The advisor approves a filing waiting for review: every attached
+        support is valid. The claim becomes in_evaluation, the triage gives it
+        a level within 60 seconds and it enters the queue of operations. A
+        filing with a required support missing is not approved (422
+        supports_incomplete): it is returned. Only the advisor, and only once
+        per filing: a second approval, or one of a filing already returned,
+        answers 409.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: Approved; the claim is in evaluation
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewOutcome"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an advisor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: claim_not_reviewable - the claim is not waiting for review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: supports_incomplete - a required support is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/review-return:
+    post:
+      summary: Return a filing to the insured with what is missing (HU-W2.1-03)
+      description: >-
+        The advisor returns a filing waiting for review with the reason (from
+        a list), the message the insured reads, the verdict on the supports
+        that do not serve (illegible, or missing to ask for an optional one)
+        and the facts to correct; at least one support illegible or missing or
+        one fact. The answer carries the verdict on every support (screen A9).
+        The claim becomes returned and keeps its filing number; the insured
+        corrects it and sends it again (HU-W2.1-04), which makes it active again
+        for a new review. Only the advisor.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReturnRequest"
+      responses:
+        "200":
+          description: Returned to the insured
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewOutcome"
+        "400":
+          description: invalid_request - the body does not follow the schema
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an advisor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: claim_not_reviewable - the claim is not waiting for review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            message_required (only blanks), message_too_long, note_too_long,
+            nothing_requested (no support illegible or missing and no fact),
+            support_not_applicable (a code that is not a support of the claim
+            type) or verdict_not_applicable (an attached support marked missing,
+            or one that is not attached marked valid or illegible)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/history:
+    get:
+      summary: Every status the claim went through (HU-W2.1-03)
+      description: >-
+        The changes of status of the claim, oldest first, each with when it
+        happened, and the date of the last one. The database records them as
+        the status changes, whoever changes it, so every stage of the case is
+        here: filed, returned, sent again, in evaluation, decided and paid.
+        When the claim is returned, last_return says why and what is missing,
+        and requirements the rules of the supports to upload (HU-W2.1-04);
+        resubmissions are the times it was sent again.
+        The insured reads only their own claims (another one answers 404, as if
+        it did not exist); the advisor and operations read any. It is the
+        source of the timeline of the case (HU-W2.1-02, HU-M2.4-01) and of the
+        notice of a change of stage (HU-M3.3-01).
+        HA-L02: the read waits 900 ms for the database; when it does not
+        answer in time, the last read kept in the read cache answers, with
+        stale true and as_of the time it was read.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The history of the claim
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+            X-Stale:
+              $ref: "#/components/headers/XStale"
+            X-Data-Source:
+              $ref: "#/components/headers/XDataSource"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimHistory"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured, an advisor or operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/resubmission:
+    post:
+      summary: Correct a returned filing and send it again (HU-W2.1-04)
+      description: >-
+        The insured who filed the claim corrects it while it is returned
+        (screen A9): the facts that change (occurred_at, place, description,
+        estimated_amount_minor; one that is not sent is kept) and the supports.
+        A support group is the whole set of files the requirement keeps after
+        the correction: the ids of the claim it keeps and the new ones
+        uploaded (POST /v1/claims/supports); a requirement that is not sent
+        keeps its files. review_seq is the review that returned the claim
+        (last_return.seq of the history). Everything is checked as the advisor
+        will review it: the facts with the rules of the filing (the time of the
+        incident within the validity of the policy copied at the filing), every
+        required support of the claim type with its files, every support the
+        advisor found illegible replaced with a new file (not_replaced) and
+        every one missing uploaded (missing). The claim keeps its id and filing
+        number and becomes active for a new review; the resubmission is
+        recorded with who, when and what changed, and the replaced files stop
+        being shown. A retry of a resubmission that went through answers 200
+        with the same one and the claim as it is now. Only the insured who
+        filed the claim; another insured's answers 404.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResubmissionRequest"
+      responses:
+        "200":
+          description: Sent again; the claim is active for a new review
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResubmissionOutcome"
+        "400":
+          description: invalid_request - the body does not follow the schema
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of an insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found - it does not exist or it is another insured's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            claim_not_returned (it is not returned: never was, or it was sent
+            already) or stale_return (review_seq is not the last return: read
+            the history and correct the last one)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every field and support still missing or invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResubmissionValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/claims/{claim_id}:
     get:
       summary: Detail of one of the insured's claims (HU-W2.1-01)
       description: >-
         What the confirmation of the filing shows: number, status, policy,
         incident and supports. Only the insured who filed the claim reads it.
+        HA-L02: the read waits 900 ms for the database; when it does not
+        answer in time, the last read kept in the read cache answers, with
+        stale true and as_of the time it was read.
       security:
         - cognitoJwt: []
       parameters:
@@ -793,6 +2474,10 @@ paths:
               schema:
                 type: string
                 enum: [no-store]
+            X-Stale:
+              $ref: "#/components/headers/XStale"
+            X-Data-Source:
+              $ref: "#/components/headers/XDataSource"
           content:
             application/json:
               schema:
@@ -1089,6 +2774,59 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/supports/{support_id}/download:
+    get:
+      summary: Signed read of a support of one of the insured's claims (HU-W2.1-02)
+      description: >-
+        A short-lived signed URL (10 minutes) to read one support the claim
+        shows (screen A8); a support a resubmission replaced is not one any
+        more. Only the insured who filed the claim. It is not cached.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+        - name: support_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^sup-[0-9a-f]{32}$'
+      responses:
+        "200":
+          description: Where to read the support
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportDownload"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - not an insured, or the claim belongs to another insured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found, or support_not_found (not a support the claim shows)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable or downloads_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/claims/{claim_id}/filing-receipt:
     get:
       summary: Filing receipt of one of the insured's claims, in PDF (HU-W2.1-01)
@@ -1200,7 +2938,523 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/assignment:
+    get:
+      summary: Provider assignment of one claim (HU-W2.3-01)
+      description: >-
+        Everything the screen "Asignar prestador" shows: the state of the
+        assignment, the specialty the claim type needs, the location of the
+        incident, the last search with every attempt and its candidates, and
+        the assignment once confirmed. A claim pending assignment shows the
+        reason; the search is repeated on its own every retry_interval_seconds
+        of the policy. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The assignment of the claim
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimAssignment"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Confirm the provider of a claim (HU-W2.3-01)
+      description: >-
+        Assigns one of the eligible providers of the last search (the
+        suggested one or another eligible). The claim records the provider,
+        the date and time, the distance and the location shared; the provider
+        becomes busy and receives the location by e-mail (notice.status tells
+        whether it left). A provider out of the radius of the last attempt is
+        not eligible: widen the radius first. Once per claim. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignmentRequest"
+      responses:
+        "201":
+          description: Assigned
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimAssignment"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            assignment_exists - the claim already has its provider;
+            provider_unavailable - the provider stopped being available after
+            the search (search again); search_outdated - search_seq is not the
+            last search of the claim, or the location changed after it;
+            claim_not_assignable - the claim is not in evaluation or its type
+            needs no on-site visit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            provider_not_eligible - the provider is not among the eligible of
+            the search (unavailable, without the specialty, out of the radius or
+            unknown); validation_failed - a field is missing or malformed
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/incident-location:
+    post:
+      summary: Record the location of the incident (HU-W2.3-01)
+      description: >-
+        The alternative when the claim has no coordinates from the app: the
+        address of the incident and the coordinates of the pin the analyst
+        placed on the map. It can be corrected until the claim is assigned
+        (the last one counts); every record keeps who made it and when. Only
+        operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IncidentLocationRequest"
+      responses:
+        "201":
+          description: Recorded; the claim is ready to search
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimAssignment"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            location_from_app - the claim has trusted coordinates from the app;
+            assignment_exists - the claim already has its provider;
+            claim_not_assignable - the claim is not in evaluation or its type
+            needs no on-site visit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: validation_failed - every invalid field at once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/provider-searches:
+    post:
+      summary: Search the nearest provider (HU-W2.3-01)
+      description: >-
+        Looks for available providers with the specialty of the claim type,
+        from from_radius_km (the initial radius when absent) widening through
+        the radii of the policy until one has eligible providers, and records
+        every attempt. found suggests the nearest eligible; exhausted leaves
+        the claim pending assignment with its reason, and the search is
+        repeated on its own. "Ampliar radio" is a search from the next radius;
+        "Reintentar búsqueda", one without body. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderSearchRequest"
+      responses:
+        "201":
+          description: Searched (last_search holds the result, found or exhausted)
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimAssignment"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            assignment_exists - the claim already has its provider;
+            claim_not_assignable - the claim is not in evaluation or its type
+            needs no on-site visit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            location_missing - the claim has no coordinates from the app and the
+            analyst has not recorded the location; validation_failed -
+            from_radius_km is not a radius of the policy
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/intervention:
+    get:
+      summary: Intervention of the assigned provider (HU-W2.3-02)
+      description: >-
+        Everything the screen "Intervención del prestador" (O8) shows: the
+        assigned provider, the steps the analyst recorded in chronological
+        order with who recorded them, the report of the visit, the next step,
+        whether the case can be closed and, when not, the steps still missing.
+        A claim without a provider answers state not_assigned. The status of
+        the claim does not change with the intervention. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      responses:
+        "200":
+          description: The intervention of the claim
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Intervention"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/intervention/steps:
+    post:
+      summary: Record a progress of the provider (HU-W2.3-02)
+      description: >-
+        The analyst records a progress the provider reported through the
+        agreed channel: accepted, en_route, visit_done (with the report),
+        repair_authorized and repair_executed, in that order and once each.
+        occurred_at is when the provider says it happened: not before the
+        previous step (or the assignment) and not in the future. Only
+        operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InterventionStepRequest"
+      responses:
+        "201":
+          description: Recorded; the intervention as it is now
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Intervention"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            not_assigned - the claim has no provider; step_out_of_order - the
+            step is recorded already or one before it is missing (read the
+            intervention again); case_closed - the case is closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            validation_failed - step unknown, occurred_at missing or out of
+            range, note too long, or the report of the visit missing, sent with
+            another step or with a field missing or out of range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/claims/{claim_id}/closure:
+    post:
+      summary: Close the case (HU-W2.3-02)
+      description: >-
+        Closes the case once the provider reported the intervention finished
+        (repair_executed), with a mandatory result, the date and time of the
+        closing and optional notes; it keeps the analyst responsible and
+        releases the provider. Closing never approves, rejects nor pays the
+        claim: its status does not change. Once per claim. Only operations.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/ClaimID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CloseRequest"
+      responses:
+        "201":
+          description: Closed; the intervention with its closing
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Intervention"
+        "400":
+          description: invalid_request - the body is not a JSON object or has unknown fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: forbidden - the token is not of operations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: claim_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            intervention_not_finished - the provider has not reported the
+            intervention finished, with the steps still missing;
+            not_assigned - the claim has no provider; case_closed - the case is
+            closed already
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/NotFinishedError"
+                  - $ref: "#/components/schemas/Error"
+        "422":
+          description: >-
+            validation_failed - result missing or unknown, closed_at missing,
+            before the end of the repair or in the future, notes too long
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FieldValidationError"
+        "503":
+          description: claims_unavailable - retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
+  headers:
+    XStale:
+      description: HA-L02. true when the read came from the read cache.
+      schema:
+        type: string
+        enum: ["true", "false"]
+    XDataSource:
+      description: HA-L02. Where the read came from.
+      schema:
+        type: string
+        enum: [database, cache]
   parameters:
     ClaimID:
       name: claim_id
@@ -1210,6 +3464,22 @@ components:
         type: string
         pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
         example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
+    AssistanceRequestID:
+      name: request_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        example: 3b8e2f6a-1c4d-4e7f-9a2b-6c5d8e0f1a2b
+    ProviderID:
+      name: provider_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^prv-[a-z0-9-]{3,40}$'
+        example: prv-servicios-hogar-norte
   securitySchemes:
     cognitoJwt:
       type: http
@@ -1295,6 +3565,15 @@ components:
           allOf:
             - $ref: "#/components/schemas/EstimatedAmountMinor"
           description: What the insured declared; absent when it was not.
+    OpenClaims:
+      type: object
+      required: [policy_id, open_claims]
+      properties:
+        policy_id:
+          type: string
+        open_claims:
+          type: integer
+          minimum: 0
     Error:
       type: object
       required: [error, message]
@@ -1449,6 +3728,50 @@ components:
     PolicyLine:
       type: string
       enum: [auto, home]
+    ClaimIncidentType:
+      type: string
+      description: >-
+        The type of a claim as it is read: every IncidentType, and
+        flight_delay, the parameter of a claim the parametric engine resolved
+        (HU-M2.4-01), which no filing accepts.
+      enum: [collision, theft, third_party_damage, glass, water_damage, other, flight_delay]
+    AutomaticResolution:
+      type: object
+      description: >-
+        HU-M2.4-01. A claim the parametric engine filed and resolved by
+        itself when an external event crossed the threshold of its policy.
+      required: [resolved_at, rule_version, trigger]
+      properties:
+        resolved_at:
+          type: string
+          format: date-time
+        rule_version:
+          type: string
+          example: parametric-rules-v1
+        trigger:
+          type: object
+          required: [parameter, event_reference, threshold, observed, unit, observed_at]
+          properties:
+            parameter:
+              type: string
+              example: flight_delay
+            event_reference:
+              type: string
+              description: What was observed, such as the flight.
+              example: AV-8421
+            threshold:
+              type: number
+              example: 180
+            observed:
+              type: number
+              description: The value that made it pay; at least the threshold.
+              example: 215
+            unit:
+              type: string
+              example: minutes
+            observed_at:
+              type: string
+              format: date-time
     FileFormat:
       type: string
       enum: [jpeg, png, pdf]
@@ -1672,8 +3995,9 @@ components:
         policy_id:
           type: string
         line:
-          allOf:
-            - $ref: "#/components/schemas/PolicyLine"
+          type: string
+          description: travel is the policy of a parametric claim (HU-M2.4-01).
+          enum: [auto, home, travel]
           nullable: true
         product:
           type: string
@@ -1724,8 +4048,26 @@ components:
                   $ref: "#/components/schemas/AttachedFile"
     ClaimDetail:
       type: object
-      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, place, description, filed_at, supports, evidence]
+      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, place, description, filed_at, supports, evidence,
+        automatic_resolution]
       properties:
+        automatic_resolution:
+          allOf:
+            - $ref: "#/components/schemas/AutomaticResolution"
+          nullable: true
+          description: HU-M2.4-01. Null for a claim evaluated by an analyst.
+        stale:
+          type: boolean
+          description: >-
+            HA-L02. True when the database did not answer within 900 ms and
+            this is the last read kept in the read cache; the data may be out
+            of date.
+        as_of:
+          type: string
+          format: date-time
+          description: >-
+            HA-L02. When the data was read from the database: now for a
+            fresh read, the time of the cached read when stale is true.
         claim_id:
           type: string
           example: 8f14e45f-ceea-467a-9f3a-5a2d0b1c7e90
@@ -1742,14 +4084,15 @@ components:
             filed from the mobile app).
         status:
           type: string
-          enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
+          enum: [active, returned, in_evaluation, approved, paid, rejected, payment_exception]
         channel:
           type: string
-          enum: [mobile, web]
+          description: parametric is a claim the parametric engine filed and resolved by itself (HU-M2.4-01).
+          enum: [mobile, web, parametric]
         policy:
           $ref: "#/components/schemas/PolicySummary"
         incident_type:
-          $ref: "#/components/schemas/IncidentType"
+          $ref: "#/components/schemas/ClaimIncidentType"
         occurred_at:
           type: string
           format: date-time
@@ -1760,6 +4103,12 @@ components:
         filed_at:
           type: string
           format: date-time
+        last_changed_at:
+          type: string
+          format: date-time
+          description: >-
+            HU-W2.1-02. When the claim reached its current status; the time it
+            was filed when it never moved.
         supports:
           $ref: "#/components/schemas/SupportsSummary"
         evidence:
@@ -1811,32 +4160,57 @@ components:
           nullable: true
     ClaimSummary:
       type: object
-      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, filed_at]
+      required: [claim_id, filing_number, status, channel, policy, incident_type, occurred_at, filed_at,
+        automatic_resolution]
       properties:
+        automatic_resolution:
+          allOf:
+            - $ref: "#/components/schemas/AutomaticResolution"
+          nullable: true
+          description: HU-M2.4-01. Null for a claim evaluated by an analyst.
         claim_id:
           type: string
         filing_number:
           type: string
         status:
           type: string
-          enum: [active, in_evaluation, approved, paid, rejected, payment_exception]
+          enum: [active, returned, in_evaluation, approved, paid, rejected, payment_exception]
         channel:
           type: string
-          enum: [mobile, web]
+          description: parametric is a claim the parametric engine filed and resolved by itself (HU-M2.4-01).
+          enum: [mobile, web, parametric]
         policy:
           $ref: "#/components/schemas/PolicySummary"
         incident_type:
-          $ref: "#/components/schemas/IncidentType"
+          $ref: "#/components/schemas/ClaimIncidentType"
         occurred_at:
           type: string
           format: date-time
         filed_at:
           type: string
           format: date-time
+        last_changed_at:
+          type: string
+          format: date-time
+          description: >-
+            HU-W2.1-02. When the claim reached its current status; the time it
+            was filed when it never moved.
     ClaimList:
       type: object
-      required: [items, next_page_token]
+      required: [items, next_page_token, stale, as_of]
       properties:
+        stale:
+          type: boolean
+          description: >-
+            HA-L02. True when the database did not answer within 900 ms and
+            this is the last read kept in the read cache; the data may be out
+            of date.
+        as_of:
+          type: string
+          format: date-time
+          description: >-
+            HA-L02. When the data was read from the database: now for a
+            fresh read, the time of the cached read when stale is true.
         items:
           type: array
           items:
@@ -1845,6 +4219,80 @@ components:
           type: string
           nullable: true
           description: Null on the last page.
+        summary:
+          $ref: "#/components/schemas/ClaimTally"
+    ClaimTally:
+      type: object
+      description: >-
+        HU-W2.1-02. The tally of every claim of the insured, whatever the
+        filters and the page (screen A7).
+      required: [in_progress, by_status, paid_this_year, pending_action, policies]
+      properties:
+        in_progress:
+          type: integer
+          minimum: 0
+          description: Claims not paid nor rejected.
+        by_status:
+          type: object
+          description: Claims in each status; a status without claims is absent.
+          additionalProperties:
+            type: integer
+            minimum: 1
+        paid_this_year:
+          type: object
+          required: [claims, amount_minor, currency]
+          properties:
+            claims:
+              type: integer
+              minimum: 0
+            amount_minor:
+              type: integer
+              format: int64
+              minimum: 0
+              description: What they paid, net of the deductible, in cents.
+            currency:
+              type: string
+              nullable: true
+        pending_action:
+          type: array
+          description: The claims returned to the insured to correct, newest filed first, up to 20.
+          items:
+            type: object
+            required: [claim_id, filing_number]
+            properties:
+              claim_id:
+                type: string
+              filing_number:
+                type: string
+        policies:
+          type: array
+          description: >-
+            The policies the insured filed claims on, by id: what the filter
+            of A7 offers, also expired policies and the ones of filings of the
+            phone (line, product and insured object null when no claim kept a
+            copy of the policy).
+          items:
+            $ref: "#/components/schemas/PolicySummary"
+    SupportDownload:
+      type: object
+      required: [support_id, file_name, content_type, byte_size, download_url, expires_at]
+      properties:
+        support_id:
+          type: string
+        file_name:
+          type: string
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, application/pdf]
+        byte_size:
+          type: integer
+          format: int64
+        download_url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
     WebValidationError:
       type: object
       required: [error, message]
@@ -1890,6 +4338,642 @@ components:
           type: string
           format: date-time
           nullable: true
+    AssistanceStatus:
+      type: string
+      description: >-
+        new is the only status HU-M2.3-01 writes. in_call, dispatched and
+        closed belong to the inbox of operations (HU-W2.3-03) and are listed
+        so the app does not break when they arrive.
+      enum: [new, in_call, dispatched, closed]
+    LocationStatus:
+      type: string
+      description: sent when the phone shared a fix; unavailable when it could not.
+      enum: [sent, unavailable]
+    LocationUnavailableReason:
+      type: string
+      description: >-
+        Why the phone shared no location: the insured denied the permission
+        (permission_denied), the location service is off
+        (location_disabled), or no fix came in time or the last one is older
+        than 60 seconds (no_fix).
+      enum: [permission_denied, location_disabled, no_fix]
+    AssistanceLocationInput:
+      type: object
+      additionalProperties: false
+      required: [status]
+      description: >-
+        With status sent, latitude, longitude, accuracy_m and captured_at are
+        required and unavailable_reason is not allowed; with status
+        unavailable, unavailable_reason is required and the other four are
+        not allowed (field code not_applicable).
+      properties:
+        status:
+          $ref: "#/components/schemas/LocationStatus"
+        latitude:
+          type: number
+          minimum: -90
+          maximum: 90
+          example: 4.7712
+        longitude:
+          type: number
+          minimum: -180
+          maximum: 180
+          example: -74.0452
+        accuracy_m:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 10000
+          description: Radius of the fix in meters, as the phone reports it.
+          example: 8
+        captured_at:
+          type: string
+          format: date-time
+          description: >-
+            Instant of the fix on the phone. Not more than 5 minutes in the
+            future (clock skew of the phone).
+        unavailable_reason:
+          $ref: "#/components/schemas/LocationUnavailableReason"
+    AssistanceRequestInput:
+      type: object
+      additionalProperties: false
+      required: [policy_id, location]
+      description: >-
+        Who requests is the subject of the token; the body does not say it.
+      properties:
+        policy_id:
+          type: string
+          pattern: '^[A-Za-z0-9-]{3,40}$'
+          example: AU-2025-118204
+        location:
+          $ref: "#/components/schemas/AssistanceLocationInput"
+        place:
+          type: string
+          minLength: 3
+          maxLength: 160
+          description: >-
+            Optional. The readable address the phone got from its own
+            geocoder; the service does not geocode. Kept as text, trimmed.
+          example: Autopista Norte km 12, Bogotá
+    AssistanceLocation:
+      type: object
+      required: [status, latitude, longitude, accuracy_m, captured_at, unavailable_reason]
+      description: >-
+        The result of the location as it was recorded. The fields that do
+        not apply to the status are null.
+      properties:
+        status:
+          $ref: "#/components/schemas/LocationStatus"
+        latitude:
+          type: number
+          nullable: true
+        longitude:
+          type: number
+          nullable: true
+        accuracy_m:
+          type: number
+          nullable: true
+        captured_at:
+          type: string
+          format: date-time
+          nullable: true
+        unavailable_reason:
+          allOf:
+            - $ref: "#/components/schemas/LocationUnavailableReason"
+          nullable: true
+    AssistancePolicy:
+      type: object
+      required: [policy_id, line, product, insured_object]
+      description: The policy as the policy core described it when the request was recorded.
+      properties:
+        policy_id:
+          type: string
+          example: AU-2025-118204
+        line:
+          type: string
+          description: Any line takes a request; the coverage of the assistance is confirmed on the call.
+          enum: [auto, home, travel]
+        product:
+          type: string
+          example: Autos
+        insured_object:
+          type: string
+          example: KJT-482
+    AssistanceRequest:
+      type: object
+      required: [request_id, request_number, status, policy, location, place, requested_at]
+      properties:
+        request_id:
+          type: string
+          example: 3b8e2f6a-1c4d-4e7f-9a2b-6c5d8e0f1a2b
+        request_number:
+          type: string
+          pattern: '^AST-[0-9]{4}-[0-9]{4,}$'
+          description: AST-<year>-<4 digits or more>, unique in the platform. The one the insured sees.
+          example: AST-2026-0912
+        status:
+          $ref: "#/components/schemas/AssistanceStatus"
+        policy:
+          $ref: "#/components/schemas/AssistancePolicy"
+        location:
+          $ref: "#/components/schemas/AssistanceLocation"
+        place:
+          type: string
+          nullable: true
+          description: The address the app sent; null when it sent none.
+        requested_at:
+          type: string
+          format: date-time
+          description: When the service recorded the request, in UTC (its own clock).
+    AssistanceNeedCode:
+      type: string
+      description: >-
+        What the insured needs, chosen by the analyst on the call
+        (HU-W2.3-03, assistance-policy-v1, provisional). auto: towing (tow
+        truck), battery, flat_tire, fuel and vehicle_lockout (keys locked
+        inside). home: plumbing_emergency. travel has no on-site assistance.
+      enum: [towing, battery, flat_tire, fuel, vehicle_lockout, plumbing_emergency]
+    AssistanceCloseReason:
+      type: string
+      description: >-
+        Why a request was closed without a dispatch. resolved_by_phone:
+        solved on the call; duplicate: another request of the same event;
+        cancelled_by_insured; not_covered: the policy does not cover it;
+        no_provider_available: no eligible provider within the maximum
+        radius; other: the note says why.
+      enum: [resolved_by_phone, duplicate, cancelled_by_insured, not_covered, no_provider_available, other]
+    AssistanceActionCode:
+      type: string
+      description: >-
+        A decision on a request. attended: new to in_call; taken_over:
+        another analyst took a request in_call; need_recorded;
+        voice_location_recorded; dispatched; closed.
+      enum: [attended, taken_over, need_recorded, voice_location_recorded, dispatched, closed]
+    AssistanceVoiceLocation:
+      type: object
+      required: [address, latitude, longitude, recorded_by, recorded_at]
+      description: The location the insured gave by voice, with the pin the analyst put on the map.
+      properties:
+        address:
+          type: string
+          example: Vía Cali–Palmira km 4
+        latitude:
+          type: number
+          format: double
+          example: 3.4921
+        longitude:
+          type: number
+          format: double
+          example: -76.4203
+        recorded_by:
+          $ref: "#/components/schemas/Actor"
+        recorded_at:
+          type: string
+          format: date-time
+    AssistanceInboxLocation:
+      allOf:
+        - $ref: "#/components/schemas/AssistanceLocation"
+        - type: object
+          required: [place, voice]
+          properties:
+            place:
+              type: string
+              nullable: true
+              description: The address the app sent; null when it sent none.
+              example: Autopista Norte km 12, Bogotá
+            voice:
+              allOf:
+                - $ref: "#/components/schemas/AssistanceVoiceLocation"
+              nullable: true
+              description: >-
+                The last location recorded by voice; null when there is none
+                (always null when the phone shared its coordinates).
+    AssistanceInboxItem:
+      type: object
+      required: [request_id, request_number, status, requester_name, policy, location, requested_at, handled_by,
+        dispatched_at, closed_at]
+      properties:
+        request_id:
+          type: string
+          example: 3b8e2f6a-1c4d-4e7f-9a2b-6c5d8e0f1a2b
+        request_number:
+          type: string
+          pattern: '^AST-[0-9]{4}-[0-9]{4,}$'
+          example: AST-2026-0912
+        status:
+          $ref: "#/components/schemas/AssistanceStatus"
+        requester_name:
+          type: string
+          nullable: true
+          description: The name of the insured as the token said it; null when it had none. Their phone is not known.
+          example: Carolina Pérez Ruiz
+        policy:
+          $ref: "#/components/schemas/AssistancePolicy"
+        location:
+          $ref: "#/components/schemas/AssistanceInboxLocation"
+        requested_at:
+          type: string
+          format: date-time
+          description: When the service recorded the request, in UTC.
+        handled_by:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: The last analyst who attended it; null while new.
+        dispatched_at:
+          type: string
+          format: date-time
+          nullable: true
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+    AssistanceInboxSummary:
+      type: object
+      required: [new_count, in_call_count, dispatched_today, mean_dispatch_seconds_today, dispatch_target_seconds]
+      description: >-
+        The indicators of the inbox, whatever the filters. Today is the
+        calendar day of Colombia (UTC-5).
+      properties:
+        new_count:
+          type: integer
+          minimum: 0
+          example: 2
+        in_call_count:
+          type: integer
+          minimum: 0
+          example: 1
+        dispatched_today:
+          type: integer
+          minimum: 0
+          example: 6
+        mean_dispatch_seconds_today:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >-
+            Mean seconds from the request to its dispatch, of the requests
+            dispatched today; null when none was.
+          example: 220
+        dispatch_target_seconds:
+          type: integer
+          description: The target of a dispatch ("objetivo menos de 5 min").
+          example: 300
+    AssistanceInbox:
+      type: object
+      required: [summary, items]
+      properties:
+        summary:
+          $ref: "#/components/schemas/AssistanceInboxSummary"
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/AssistanceInboxItem"
+    AssistanceNeed:
+      type: object
+      required: [code, specialty, recorded_by, recorded_at]
+      description: The need in force, the last one the analyst recorded.
+      properties:
+        code:
+          $ref: "#/components/schemas/AssistanceNeedCode"
+        specialty:
+          $ref: "#/components/schemas/Specialty"
+        recorded_by:
+          $ref: "#/components/schemas/Actor"
+        recorded_at:
+          type: string
+          format: date-time
+    AssistanceCandidate:
+      allOf:
+        - $ref: "#/components/schemas/ProviderCandidate"
+        - type: object
+          required: [eta_minutes, dispatched_today]
+          properties:
+            eta_minutes:
+              type: integer
+              minimum: 0
+              description: >-
+                Estimated arrival in minutes: the preparation time plus the
+                straight-line distance at the average speed of the policy,
+                rounded up. An estimate, not a route.
+              example: 12
+            dispatched_today:
+              type: integer
+              minimum: 0
+              description: >-
+                Assistances dispatched to this provider today (Colombia).
+                Informative: a dispatch does not make a provider busy.
+    AssistanceSuggestion:
+      type: object
+      required: [state, specialty, location_source, from_radius_km, radius_km, reason, policy_version, attempts,
+        candidates]
+      description: >-
+        The search of HU-W2.3-01 from the location in force, computed on every
+        read and not recorded. need_missing: no need yet; location_missing: no
+        coordinates from the phone nor by voice; found: a radius had eligible
+        providers; exhausted: none up to the maximum radius; not_applicable:
+        the request is dispatched or closed. Only found and exhausted carry a
+        search.
+      properties:
+        state:
+          type: string
+          enum: [need_missing, location_missing, found, exhausted, not_applicable]
+        specialty:
+          allOf:
+            - $ref: "#/components/schemas/Specialty"
+          nullable: true
+        location_source:
+          type: string
+          nullable: true
+          description: app - the coordinates of the phone; voice - the pin of the analyst.
+          enum: [app, voice]
+        from_radius_km:
+          type: number
+          nullable: true
+          example: 5
+        radius_km:
+          type: number
+          nullable: true
+          description: The radius of the last attempt (where it found, or the maximum).
+          example: 5
+        reason:
+          type: string
+          nullable: true
+          enum: [no_eligible_provider_within_max_radius]
+        policy_version:
+          type: string
+          description: The assignment policy whose radii were used.
+          example: assignment-policy-v1
+        attempts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchAttempt"
+        candidates:
+          type: array
+          description: >-
+            The providers with the specialty, nearest first, up to 20, eligible
+            or not. Only eligible ones can be dispatched.
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/AssistanceCandidate"
+    AssistanceDispatch:
+      type: object
+      required: [provider, need, specialty, distance_km, eta_minutes, location_shared, suggested_provider_id,
+        dispatched_by, dispatched_at, policy_versions, notice]
+      properties:
+        provider:
+          type: object
+          required: [id, name, contact_email, contact_phone]
+          description: The provider as it was when dispatched.
+          properties:
+            id:
+              type: string
+              example: prv-gruas-autopista-norte
+            name:
+              type: string
+              example: Grúas Autopista Norte
+            contact_email:
+              type: string
+              format: email
+            contact_phone:
+              type: string
+              nullable: true
+        need:
+          $ref: "#/components/schemas/AssistanceNeedCode"
+        specialty:
+          $ref: "#/components/schemas/Specialty"
+        distance_km:
+          type: number
+          description: Straight-line distance, rounded to 0.1 km.
+          example: 0.9
+        eta_minutes:
+          type: integer
+          minimum: 0
+          example: 12
+        location_shared:
+          type: object
+          required: [source, latitude, longitude, accuracy_m, address, place]
+          description: What the provider received.
+          properties:
+            source:
+              type: string
+              enum: [app, voice]
+            latitude:
+              type: number
+              format: double
+            longitude:
+              type: number
+              format: double
+            accuracy_m:
+              type: number
+              nullable: true
+              description: The accuracy of the phone; null for a location by voice.
+            address:
+              type: string
+              nullable: true
+              description: The address given by voice; null for the phone.
+            place:
+              type: string
+              nullable: true
+              description: The address the app sent, if any.
+        suggested_provider_id:
+          type: string
+          description: The provider the system suggested at the dispatch; it may differ from provider.id.
+        dispatched_by:
+          $ref: "#/components/schemas/Actor"
+        dispatched_at:
+          type: string
+          format: date-time
+        policy_versions:
+          type: object
+          required: [assistance, assignment]
+          properties:
+            assistance:
+              type: string
+              example: assistance-policy-v1
+            assignment:
+              type: string
+              example: assignment-policy-v1
+        notice:
+          type: object
+          required: [status, attempts, sent_at]
+          description: The e-mail to the provider. pending - not sent yet (it is retried); sent.
+          properties:
+            status:
+              type: string
+              enum: [pending, sent]
+            attempts:
+              type: integer
+              minimum: 0
+            sent_at:
+              type: string
+              format: date-time
+              nullable: true
+    AssistanceClosure:
+      type: object
+      required: [reason, note, closed_by, closed_at]
+      properties:
+        reason:
+          $ref: "#/components/schemas/AssistanceCloseReason"
+        note:
+          type: string
+          nullable: true
+        closed_by:
+          $ref: "#/components/schemas/Actor"
+        closed_at:
+          type: string
+          format: date-time
+    AssistanceHistoryEntry:
+      type: object
+      required: [action, by, at, detail]
+      properties:
+        action:
+          $ref: "#/components/schemas/AssistanceActionCode"
+        by:
+          $ref: "#/components/schemas/Actor"
+        at:
+          type: string
+          format: date-time
+        detail:
+          type: object
+          nullable: true
+          description: >-
+            need_recorded - need; dispatched - provider_id; closed - reason;
+            taken_over - from (the e-mail of the previous analyst); null for the
+            rest.
+          properties:
+            need:
+              $ref: "#/components/schemas/AssistanceNeedCode"
+            provider_id:
+              type: string
+            reason:
+              $ref: "#/components/schemas/AssistanceCloseReason"
+            from:
+              type: string
+    AssistanceCase:
+      allOf:
+        - $ref: "#/components/schemas/AssistanceInboxItem"
+        - type: object
+          required: [need, suggestion, dispatch, closure, history]
+          properties:
+            need:
+              allOf:
+                - $ref: "#/components/schemas/AssistanceNeed"
+              nullable: true
+            suggestion:
+              $ref: "#/components/schemas/AssistanceSuggestion"
+            dispatch:
+              allOf:
+                - $ref: "#/components/schemas/AssistanceDispatch"
+              nullable: true
+            closure:
+              allOf:
+                - $ref: "#/components/schemas/AssistanceClosure"
+              nullable: true
+            history:
+              type: array
+              description: Every decision, oldest first.
+              items:
+                $ref: "#/components/schemas/AssistanceHistoryEntry"
+    AssistanceNeedRequest:
+      type: object
+      additionalProperties: false
+      required: [need]
+      properties:
+        need:
+          $ref: "#/components/schemas/AssistanceNeedCode"
+    AssistanceVoiceLocationRequest:
+      type: object
+      additionalProperties: false
+      required: [address, latitude, longitude]
+      properties:
+        address:
+          type: string
+          minLength: 5
+          maxLength: 200
+          example: Vía Cali–Palmira km 4
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+          example: 3.4921
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          example: -76.4203
+    AssistanceDispatchRequest:
+      type: object
+      additionalProperties: false
+      required: [provider_id]
+      properties:
+        provider_id:
+          type: string
+          pattern: '^prv-[a-z0-9-]{3,40}$'
+          example: prv-gruas-autopista-norte
+    AssistanceCloseRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          $ref: "#/components/schemas/AssistanceCloseReason"
+        note:
+          type: string
+          minLength: 3
+          maxLength: 500
+          description: Required when reason is other. Trimmed.
+          example: El asegurado consiguió quien le pasara corriente
+    AssistanceInboxPolicy:
+      type: object
+      required: [version, needs, radii_km, assignment_policy_version, eta, close_reasons, dispatch_target_seconds]
+      properties:
+        version:
+          type: string
+          example: assistance-policy-v1
+        needs:
+          type: array
+          description: The needs of each line and the specialty each one asks for. travel has none.
+          items:
+            type: object
+            required: [line, code, specialty]
+            properties:
+              line:
+                $ref: "#/components/schemas/PolicyLine"
+              code:
+                $ref: "#/components/schemas/AssistanceNeedCode"
+              specialty:
+                $ref: "#/components/schemas/Specialty"
+        radii_km:
+          type: array
+          description: The radii of the search, those of the assignment policy.
+          items:
+            type: number
+          example: [5, 10, 20]
+        assignment_policy_version:
+          type: string
+          example: assignment-policy-v1
+        eta:
+          type: object
+          required: [preparation_minutes, average_speed_kmh]
+          description: eta_minutes = preparation_minutes + ceil(distance_km / average_speed_kmh * 60).
+          properties:
+            preparation_minutes:
+              type: integer
+              example: 10
+            average_speed_kmh:
+              type: number
+              example: 30
+        close_reasons:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssistanceCloseReason"
+        dispatch_target_seconds:
+          type: integer
+          example: 300
     TriageLevel:
       type: integer
       enum: [1, 2, 3]
@@ -2456,3 +5540,1259 @@ components:
                 $ref: "#/components/schemas/TriageLevel"
               target:
                 $ref: "#/components/schemas/TriageTarget"
+    ClaimStatus:
+      type: string
+      description: >-
+        active: filed, waiting for the review of the advisor. returned: the
+        advisor returned it to the insured to complete (HU-W2.1-03).
+        in_evaluation: approved by the advisor, with operations. approved,
+        paid, rejected and payment_exception: the decision of operations
+        (HU-W2.2-03).
+      enum: [active, returned, in_evaluation, approved, paid, rejected, payment_exception]
+    CorrectableFact:
+      type: string
+      description: A fact of the filing the advisor asks the insured to correct.
+      enum: [occurred_at, place, description, estimated_amount]
+    ReturnReasonCode:
+      type: string
+      description: Why the filing is returned (screen S8).
+      enum: [illegible_or_incomplete_supports, inconsistent_facts, missing_information, other]
+    SupportVerdict:
+      type: string
+      description: >-
+        valid: attached and serves. illegible: attached but does not serve, the
+        insured replaces it. missing: not attached, a required support or an
+        optional one the advisor asks for.
+      enum: [valid, illegible, missing]
+    ReturnRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code, message]
+      properties:
+        reason_code:
+          $ref: "#/components/schemas/ReturnReasonCode"
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: What the insured reads (screen A9).
+        supports:
+          type: array
+          maxItems: 12
+          description: >-
+            The verdict on the supports that do not serve. An attached support
+            that is not listed is valid; a required one that is not attached is
+            missing. An attached support takes valid or illegible; one that is
+            not attached, only missing (to ask for an optional one). A code
+            appears once.
+          items:
+            type: object
+            additionalProperties: false
+            required: [requirement_code, verdict]
+            properties:
+              requirement_code:
+                type: string
+                minLength: 1
+                maxLength: 40
+                example: traffic_report
+              verdict:
+                $ref: "#/components/schemas/SupportVerdict"
+              note:
+                type: string
+                maxLength: 300
+                description: Why, as the insured reads it next to the support.
+                example: borroso, no se lee el número de croquis
+        facts_to_correct:
+          type: array
+          maxItems: 4
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/CorrectableFact"
+    SupportAssessment:
+      type: object
+      required: [requirement_code, label, verdict, note]
+      properties:
+        requirement_code:
+          type: string
+        label:
+          type: string
+          example: Informe de tránsito o croquis
+        verdict:
+          $ref: "#/components/schemas/SupportVerdict"
+        note:
+          type: string
+          nullable: true
+    Review:
+      type: object
+      required: [seq, outcome, reviewed_by, reviewer_name, reviewed_at, reason_code, message, supports, facts_to_correct]
+      properties:
+        seq:
+          type: integer
+          minimum: 1
+          description: 1 for the first review of the filing, 2 after it was sent again, and so on.
+        outcome:
+          type: string
+          enum: [approved, returned]
+        reviewed_by:
+          type: string
+          description: The advisor who reviewed it (e-mail of the token).
+        reviewer_name:
+          type: string
+          description: The name of the advisor, as the insured reads it; the e-mail when the user has no name.
+        reviewed_at:
+          type: string
+          format: date-time
+        reason_code:
+          allOf:
+            - $ref: "#/components/schemas/ReturnReasonCode"
+          nullable: true
+          description: null when it was approved.
+        message:
+          type: string
+          nullable: true
+          description: What the insured reads; null when it was approved.
+        supports:
+          type: array
+          description: >-
+            The verdict on every support that is attached, or missing and
+            required or asked for. An approval has every attached support
+            valid.
+          items:
+            $ref: "#/components/schemas/SupportAssessment"
+        facts_to_correct:
+          type: array
+          items:
+            $ref: "#/components/schemas/CorrectableFact"
+    ReviewOutcome:
+      type: object
+      required: [claim_id, filing_number, status, review]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+        status:
+          $ref: "#/components/schemas/ClaimStatus"
+        review:
+          $ref: "#/components/schemas/Review"
+    ChecklistItem:
+      type: object
+      required: [requirement_code, label, required, files]
+      properties:
+        requirement_code:
+          type: string
+        label:
+          type: string
+        required:
+          type: boolean
+        files:
+          type: integer
+          minimum: 0
+          description: >-
+            Files attached for it. In a filing of the phone, the evidence counts
+            as vehicle_photos, the only support it requires.
+    ClaimReview:
+      allOf:
+        - $ref: "#/components/schemas/ClaimEvaluation"
+        - type: object
+          required: [checklist, prior_claims, reviews]
+          properties:
+            checklist:
+              type: array
+              description: Every support of the claim type, in the order of the catalog (screen S8).
+              items:
+                $ref: "#/components/schemas/ChecklistItem"
+            prior_claims:
+              type: array
+              description: The other claims the insured filed on the same policy, newest first, up to 20.
+              items:
+                $ref: "#/components/schemas/ClaimSummary"
+            reviews:
+              type: array
+              description: The reviews of the filing, oldest first.
+              items:
+                $ref: "#/components/schemas/Review"
+    StatusChange:
+      type: object
+      required: [id, status, previous_status, changed_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Grows with every change of every claim, so it also orders changes of different claims.
+        status:
+          $ref: "#/components/schemas/ClaimStatus"
+        previous_status:
+          allOf:
+            - $ref: "#/components/schemas/ClaimStatus"
+          nullable: true
+          description: null on the change that filed the claim.
+        changed_at:
+          type: string
+          format: date-time
+    ClaimHistory:
+      type: object
+      required: [claim_id, filing_number, status, last_changed_at, changes, reviews, last_return, resubmissions,
+        requirements, decision, provider, stale, as_of, automatic_resolution]
+      properties:
+        automatic_resolution:
+          allOf:
+            - $ref: "#/components/schemas/AutomaticResolution"
+          nullable: true
+          description: >-
+            HU-M2.4-01. What resolved the claim when the parametric engine
+            did, so the timeline tells it apart from a claim evaluated by an
+            analyst; null otherwise.
+        stale:
+          type: boolean
+          description: >-
+            HA-L02. True when the database did not answer within 900 ms and
+            this is the last read kept in the read cache; the data may be out
+            of date.
+        as_of:
+          type: string
+          format: date-time
+          description: >-
+            HA-L02. When the data was read from the database: now for a
+            fresh read, the time of the cached read when stale is true.
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+        status:
+          $ref: "#/components/schemas/ClaimStatus"
+        last_changed_at:
+          type: string
+          format: date-time
+          description: When the claim reached its current status.
+        changes:
+          type: array
+          description: Oldest first.
+          items:
+            $ref: "#/components/schemas/StatusChange"
+        reviews:
+          type: array
+          description: The reviews of the advisor, oldest first (who approved or returned it, screen A8).
+          items:
+            $ref: "#/components/schemas/Review"
+        last_return:
+          allOf:
+            - $ref: "#/components/schemas/Review"
+          nullable: true
+          description: The review that returned the claim, while it is returned; null otherwise.
+        resubmissions:
+          type: array
+          description: >-
+            HU-W2.1-04. The times the insured sent the claim again after a
+            return, oldest first, with what changed.
+          items:
+            $ref: "#/components/schemas/Resubmission"
+        requirements:
+          type: array
+          description: >-
+            HU-W2.1-04. The supports the claim can have, with their rules, in
+            the order of the catalog: what the insured uploads to correct a
+            returned filing (screen A9). A filing of the phone has its
+            photographs of the vehicle as the one required.
+          items:
+            $ref: "#/components/schemas/Requirement"
+        decision:
+          type: object
+          nullable: true
+          description: >-
+            HU-W2.1-02. The decision of operations as the insured reads it;
+            null until there is one. Never the account nor who decided.
+          required: [outcome, decided_at, amount_minor, currency, payout_status, paid_at, rejection_reason]
+          properties:
+            outcome:
+              type: string
+              enum: [approved, rejected]
+            decided_at:
+              type: string
+              format: date-time
+            amount_minor:
+              type: integer
+              format: int64
+              nullable: true
+              description: What the insurer pays, net of the deductible, in cents; null in a rejection.
+            currency:
+              type: string
+              nullable: true
+            payout_status:
+              type: string
+              nullable: true
+              enum: [pending, in_progress, confirmed, failed, null]
+            paid_at:
+              type: string
+              format: date-time
+              nullable: true
+            rejection_reason:
+              type: string
+              nullable: true
+        provider:
+          type: object
+          nullable: true
+          description: >-
+            HU-W2.1-02. The provider assigned to attend the claim; null until
+            there is one. Never how to reach them.
+          required: [name, distance_km, assigned_at]
+          properties:
+            name:
+              type: string
+            distance_km:
+              type: number
+              minimum: 0
+            assigned_at:
+              type: string
+              format: date-time
+    ResubmissionRequest:
+      type: object
+      additionalProperties: false
+      required: [review_seq]
+      properties:
+        review_seq:
+          type: integer
+          minimum: 1
+          description: The review that returned the claim (last_return.seq of the history).
+        occurred_at:
+          type: string
+          format: date-time
+          description: RFC 3339. Not after the filing, and within the validity of the policy filed.
+        place:
+          type: string
+          description: 3 to 160 characters.
+        description:
+          type: string
+          description: 10 to 1000 characters.
+        estimated_amount_minor:
+          allOf:
+            - $ref: "#/components/schemas/EstimatedAmountMinor"
+          nullable: true
+          description: Null or absent keeps the amount filed.
+        supports:
+          type: array
+          maxItems: 20
+          description: >-
+            One group per requirement that changes: the whole set of files it
+            keeps (ids of the claim and new ones). At most 20 ids in all.
+          items:
+            $ref: "#/components/schemas/SupportGroup"
+    FactChange:
+      type: object
+      required: [fact, before, after]
+      properties:
+        fact:
+          $ref: "#/components/schemas/CorrectableFact"
+        before:
+          type: string
+          nullable: true
+          description: RFC 3339 for occurred_at, cents for estimated_amount; null for no value.
+        after:
+          type: string
+          nullable: true
+    SupportChange:
+      type: object
+      required: [requirement_code, label, added, withdrawn]
+      properties:
+        requirement_code:
+          type: string
+          example: traffic_report
+        label:
+          type: string
+          example: Informe de tránsito o croquis
+        added:
+          type: array
+          description: The ids of the files the resubmission added.
+          items:
+            type: string
+        withdrawn:
+          type: array
+          description: The ids of the files it replaced; they stop being shown.
+          items:
+            type: string
+    Resubmission:
+      type: object
+      required: [seq, review_seq, resubmitted_by, resubmitted_at, changed_facts, changed_supports]
+      properties:
+        seq:
+          type: integer
+          minimum: 1
+          description: 1 for the first resubmission of the claim, and so on.
+        review_seq:
+          type: integer
+          minimum: 1
+          description: The return it answered.
+        resubmitted_by:
+          type: string
+          description: The subject of the insured who sent it.
+        resubmitted_at:
+          type: string
+          format: date-time
+        changed_facts:
+          type: array
+          items:
+            $ref: "#/components/schemas/FactChange"
+        changed_supports:
+          type: array
+          items:
+            $ref: "#/components/schemas/SupportChange"
+    ResubmissionOutcome:
+      type: object
+      required: [claim_id, filing_number, status, resubmission]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+          description: The same filing number.
+        status:
+          $ref: "#/components/schemas/ClaimStatus"
+        resubmission:
+          $ref: "#/components/schemas/Resubmission"
+    ResubmissionValidationError:
+      type: object
+      required: [error, message, fields]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed]
+        message:
+          type: string
+        fields:
+          type: array
+          description: >-
+            Everything still missing or invalid at once. A support is named
+            supports.<requirement_code>; the list itself, supports.
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                example: supports.traffic_report
+              code:
+                type: string
+                enum: [required, invalid_format, out_of_range, missing, too_few, too_many, not_applicable,
+                  not_found, not_replaced]
+    Specialty:
+      type: string
+      description: >-
+        The trade of a provider (HU-W2.3-01). vehicle_assessment: vehicle
+        assessor; auto_glass: vehicle glass; plumbing: plumbing and damp;
+        damp_proofing, painting and bodywork: trades a provider may add.
+        towing (tow truck) and roadside_assistance (battery, tire, fuel,
+        locked keys): the on-site assistance of HU-W2.3-03.
+      enum: [vehicle_assessment, auto_glass, plumbing, damp_proofing, painting, bodywork, towing, roadside_assistance]
+    ProviderAvailability:
+      type: string
+      description: >-
+        available: can take a claim today. unavailable: set by operations,
+        optionally until a date. busy: assigned to a claim (busy_claim_id),
+        set only by the assignment.
+      enum: [available, unavailable, busy]
+    Actor:
+      type: object
+      required: [email, name]
+      description: The analyst of operations, from the token.
+      properties:
+        email:
+          type: string
+          example: andres.ruiz@solventa.example
+        name:
+          type: string
+          nullable: true
+          example: Andrés Ruiz
+    FieldValidationError:
+      type: object
+      required: [error, message, fields]
+      properties:
+        error:
+          type: string
+          enum: [validation_failed]
+        message:
+          type: string
+        fields:
+          type: array
+          description: Every invalid field at once.
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                example: latitude
+              code:
+                type: string
+                enum: [required, invalid_format, out_of_range]
+    InterventionStep:
+      type: string
+      description: >-
+        A progress of the provider, in the order it is recorded. The
+        assignment is where the intervention starts; repair_executed is the
+        provider reporting it finished.
+      enum: [accepted, en_route, visit_done, repair_authorized, repair_executed]
+    ProviderReport:
+      type: object
+      required: [cause, damage, repair_cost_minor, repair_days, photos]
+      description: What the provider found at the visit. The photos stay with the provider; only how many.
+      properties:
+        cause:
+          type: string
+          minLength: 3
+          maxLength: 300
+          example: Filtración por tubería del piso superior
+        damage:
+          type: string
+          minLength: 3
+          maxLength: 300
+          example: Techo y muro de cocina · 6 m²
+        repair_cost_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Estimated cost of the repair, in cents of COP.
+          example: 435000000
+        repair_days:
+          type: integer
+          minimum: 0
+          maximum: 365
+          example: 2
+        photos:
+          type: integer
+          minimum: 0
+          maximum: 50
+          example: 8
+    InterventionStepRecord:
+      type: object
+      required: [step, occurred_at, note, report, recorded_by, recorded_at]
+      properties:
+        step:
+          $ref: "#/components/schemas/InterventionStep"
+        occurred_at:
+          type: string
+          format: date-time
+        note:
+          type: string
+          nullable: true
+        report:
+          allOf:
+            - $ref: "#/components/schemas/ProviderReport"
+          nullable: true
+          description: Only on visit_done.
+        recorded_by:
+          $ref: "#/components/schemas/Actor"
+        recorded_at:
+          type: string
+          format: date-time
+    ClosingResult:
+      type: string
+      description: How the case ended on site. It never approves, rejects nor pays the claim.
+      enum: [repaired, partially_repaired, no_repair_needed, not_repairable]
+    Intervention:
+      type: object
+      required: [claim_id, filing_number, claim_status, incident_type, policy_id, place, state, assignment, steps,
+        next_step, report, closure, closable, missing]
+      properties:
+        claim_id:
+          type: string
+          format: uuid
+        filing_number:
+          type: string
+          example: SIN-2026-01655
+        claim_status:
+          type: string
+        incident_type:
+          type: string
+        policy_id:
+          type: string
+        place:
+          type: string
+        state:
+          type: string
+          enum: [not_assigned, in_progress, ready_to_close, closed]
+        assignment:
+          type: object
+          nullable: true
+          required: [provider, assigned_by, assigned_at]
+          properties:
+            provider:
+              type: object
+              required: [id, name, contact_email, contact_phone, distance_km]
+              properties:
+                id:
+                  type: string
+                name:
+                  type: string
+                contact_email:
+                  type: string
+                contact_phone:
+                  type: string
+                  nullable: true
+                distance_km:
+                  type: number
+            assigned_by:
+              $ref: "#/components/schemas/Actor"
+            assigned_at:
+              type: string
+              format: date-time
+        steps:
+          type: array
+          description: The steps recorded, in chronological order.
+          items:
+            $ref: "#/components/schemas/InterventionStepRecord"
+        next_step:
+          allOf:
+            - $ref: "#/components/schemas/InterventionStep"
+          nullable: true
+        report:
+          allOf:
+            - $ref: "#/components/schemas/ProviderReport"
+          nullable: true
+        closure:
+          type: object
+          nullable: true
+          required: [result, closed_at, notes, closed_by, recorded_at]
+          properties:
+            result:
+              $ref: "#/components/schemas/ClosingResult"
+            closed_at:
+              type: string
+              format: date-time
+            notes:
+              type: string
+              nullable: true
+            closed_by:
+              $ref: "#/components/schemas/Actor"
+            recorded_at:
+              type: string
+              format: date-time
+        closable:
+          type: boolean
+        missing:
+          type: array
+          description: The steps still to record before the case can be closed.
+          items:
+            $ref: "#/components/schemas/InterventionStep"
+    InterventionStepRequest:
+      type: object
+      additionalProperties: false
+      required: [step, occurred_at]
+      properties:
+        step:
+          $ref: "#/components/schemas/InterventionStep"
+        occurred_at:
+          type: string
+          format: date-time
+        note:
+          type: string
+          maxLength: 1000
+        report:
+          type: object
+          additionalProperties: false
+          description: Required with visit_done, refused with any other step. photos is optional (0).
+          required: [cause, damage, repair_cost_minor, repair_days]
+          properties:
+            cause:
+              type: string
+            damage:
+              type: string
+            repair_cost_minor:
+              type: integer
+              format: int64
+            repair_days:
+              type: integer
+            photos:
+              type: integer
+    CloseRequest:
+      type: object
+      additionalProperties: false
+      required: [result, closed_at]
+      properties:
+        result:
+          $ref: "#/components/schemas/ClosingResult"
+        closed_at:
+          type: string
+          format: date-time
+        notes:
+          type: string
+          maxLength: 1000
+    NotFinishedError:
+      type: object
+      required: [error, message, missing]
+      properties:
+        error:
+          type: string
+          enum: [intervention_not_finished]
+        message:
+          type: string
+        missing:
+          type: array
+          items:
+            $ref: "#/components/schemas/InterventionStep"
+    IncidentLocationRequest:
+      type: object
+      additionalProperties: false
+      required: [address, latitude, longitude]
+      properties:
+        address:
+          type: string
+          minLength: 5
+          maxLength: 200
+          example: "Carrera 15 # 93-40, apto 402, Bogotá"
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+          example: 4.6771
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          example: -74.0483
+    IncidentLocation:
+      type: object
+      required: [source, latitude, longitude, accuracy_m, address, recorded_by, recorded_at]
+      properties:
+        source:
+          type: string
+          description: >-
+            app: the most precise trusted evidence of the phone (precision of 50
+            m or better). analyst: recorded by operations.
+          enum: [app, analyst]
+        latitude:
+          type: number
+          format: double
+          example: 4.6771
+        longitude:
+          type: number
+          format: double
+          example: -74.0483
+        accuracy_m:
+          type: number
+          format: double
+          nullable: true
+          description: Precision of the capture in meters; null when the analyst recorded it.
+          example: 8
+        address:
+          type: string
+          nullable: true
+          description: The address the analyst recorded; null for the app.
+        recorded_by:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: null for the app.
+        recorded_at:
+          type: string
+          format: date-time
+          description: When the analyst recorded it, or when the phone captured the evidence.
+    ProviderSearchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        from_radius_km:
+          type: number
+          description: >-
+            The radius the search starts from; one of radii_km of the policy.
+            Absent: the initial radius.
+          enum: [5, 10, 20]
+    SearchAttempt:
+      type: object
+      required: [radius_km, eligible_count, attempted_at]
+      properties:
+        radius_km:
+          type: number
+          example: 5
+        eligible_count:
+          type: integer
+          minimum: 0
+        attempted_at:
+          type: string
+          format: date-time
+    ProviderCandidate:
+      type: object
+      required: [provider_id, name, specialties, distance_km, availability, unavailable_until, eligibility, suggested]
+      properties:
+        provider_id:
+          type: string
+        name:
+          type: string
+        specialties:
+          type: array
+          items:
+            $ref: "#/components/schemas/Specialty"
+        distance_km:
+          type: number
+          description: Straight-line distance to the incident, rounded to 0.1 km.
+          example: 2.3
+        availability:
+          $ref: "#/components/schemas/ProviderAvailability"
+        unavailable_until:
+          type: string
+          format: date
+          nullable: true
+        eligibility:
+          type: string
+          description: >-
+            eligible: available and within the radius of the last attempt; only
+            these can be assigned. unavailable: unavailable or busy.
+            out_of_radius: available but farther than the radius of the last
+            attempt.
+          enum: [eligible, unavailable, out_of_radius]
+        suggested:
+          type: boolean
+          description: The nearest eligible; ties go to the lowest provider_id.
+    ProviderSearch:
+      type: object
+      required: [seq, trigger, searched_by, specialty, location, from_radius_km, outcome, radius_km, reason, policy_version,
+        searched_at, attempts, candidates]
+      properties:
+        seq:
+          type: integer
+          minimum: 1
+          description: Number of the search in the claim; the assignment names it.
+        trigger:
+          type: string
+          description: analyst, or automatic_retry of a claim pending assignment.
+          enum: [analyst, automatic_retry]
+        searched_by:
+          allOf:
+            - $ref: "#/components/schemas/Actor"
+          nullable: true
+          description: null for automatic_retry.
+        specialty:
+          $ref: "#/components/schemas/Specialty"
+        location:
+          type: object
+          required: [source, latitude, longitude]
+          description: The location the search measured from.
+          properties:
+            source:
+              type: string
+              enum: [app, analyst]
+            latitude:
+              type: number
+              format: double
+            longitude:
+              type: number
+              format: double
+        from_radius_km:
+          type: number
+          example: 5
+        outcome:
+          type: string
+          description: found - a radius had eligible providers; exhausted - none up to the maximum radius.
+          enum: [found, exhausted]
+        radius_km:
+          type: number
+          description: The radius of the last attempt (where it found, or the maximum).
+          example: 5
+        reason:
+          type: string
+          nullable: true
+          description: Why the claim is pending assignment; null when found.
+          enum: [no_eligible_provider_within_max_radius]
+        policy_version:
+          type: string
+          example: assignment-policy-v1
+        searched_at:
+          type: string
+          format: date-time
+        attempts:
+          type: array
+          description: Every radius tried, in order.
+          items:
+            $ref: "#/components/schemas/SearchAttempt"
+        candidates:
+          type: array
+          description: >-
+            The providers with the specialty, nearest first, up to 20, eligible
+            or not, so the analyst sees why each one is not.
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/ProviderCandidate"
+    AssignmentRequest:
+      type: object
+      additionalProperties: false
+      required: [provider_id, search_seq]
+      properties:
+        provider_id:
+          type: string
+          pattern: '^prv-[a-z0-9-]{3,40}$'
+          example: prv-servicios-hogar-norte
+        search_seq:
+          type: integer
+          minimum: 1
+          description: The seq of the last search, which the analyst saw.
+    Assignment:
+      type: object
+      required: [provider, assigned_by, assigned_at, distance_km, search_seq, location_shared, policy_version, notice]
+      properties:
+        provider:
+          type: object
+          required: [id, name, contact_email, contact_phone]
+          description: The provider as it was when assigned.
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            contact_email:
+              type: string
+              format: email
+            contact_phone:
+              type: string
+              nullable: true
+        assigned_by:
+          $ref: "#/components/schemas/Actor"
+        assigned_at:
+          type: string
+          format: date-time
+        distance_km:
+          type: number
+          example: 2.3
+        search_seq:
+          type: integer
+          minimum: 1
+        location_shared:
+          type: object
+          required: [source, latitude, longitude, accuracy_m, address]
+          description: What the provider received to get to the site.
+          properties:
+            source:
+              type: string
+              enum: [app, analyst]
+            latitude:
+              type: number
+              format: double
+            longitude:
+              type: number
+              format: double
+            accuracy_m:
+              type: number
+              format: double
+              nullable: true
+            address:
+              type: string
+              nullable: true
+        policy_version:
+          type: string
+        notice:
+          type: object
+          required: [status, attempts, sent_at]
+          description: The e-mail to the provider; retried until it leaves.
+          properties:
+            status:
+              type: string
+              enum: [pending, sent]
+            attempts:
+              type: integer
+              minimum: 0
+            sent_at:
+              type: string
+              format: date-time
+              nullable: true
+    AssignmentState:
+      type: string
+      description: >-
+        not_required: the claim type needs no on-site visit. not_applicable:
+        the claim is not in evaluation and has no assignment. location_missing:
+        no coordinates from the app nor a location recorded by the analyst.
+        ready: located, not searched yet (or the location changed after the
+        last search). proposed: the last search found eligible providers.
+        pending_assignment: the last search found none up to the maximum
+        radius. assigned: the provider is confirmed.
+      enum: [not_required, not_applicable, location_missing, ready, proposed, pending_assignment, assigned]
+    ClaimAssignment:
+      type: object
+      required: [claim_id, filing_number, claim_status, incident_type, line, state, specialty, policy_version, location,
+        last_search, assignment]
+      properties:
+        claim_id:
+          type: string
+        filing_number:
+          type: string
+          example: SIN-2026-01655
+        claim_status:
+          $ref: "#/components/schemas/ClaimStatus"
+        incident_type:
+          $ref: "#/components/schemas/IncidentType"
+        line:
+          $ref: "#/components/schemas/PolicyLine"
+        state:
+          $ref: "#/components/schemas/AssignmentState"
+        specialty:
+          allOf:
+            - $ref: "#/components/schemas/Specialty"
+          nullable: true
+          description: null when the claim type needs no on-site visit.
+        policy_version:
+          type: string
+          example: assignment-policy-v1
+        location:
+          allOf:
+            - $ref: "#/components/schemas/IncidentLocation"
+          nullable: true
+        last_search:
+          allOf:
+            - $ref: "#/components/schemas/ProviderSearch"
+          nullable: true
+        assignment:
+          allOf:
+            - $ref: "#/components/schemas/Assignment"
+          nullable: true
+    AssignmentSummary:
+      type: object
+      required: [claim_id, state, specialty, provider_name, distance_km, assigned_at, reason]
+      properties:
+        claim_id:
+          type: string
+        state:
+          type: string
+          description: The states of AssignmentState, plus not_found for a claim that does not exist.
+          enum: [not_required, not_applicable, location_missing, ready, proposed, pending_assignment, assigned, not_found]
+        specialty:
+          allOf:
+            - $ref: "#/components/schemas/Specialty"
+          nullable: true
+        provider_name:
+          type: string
+          nullable: true
+        distance_km:
+          type: number
+          nullable: true
+        assigned_at:
+          type: string
+          format: date-time
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+          enum: [no_eligible_provider_within_max_radius]
+    AssignmentList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssignmentSummary"
+    AssignmentPolicy:
+      type: object
+      required: [version, radii_km, initial_radius_km, max_radius_km, specialties, retry_interval_seconds]
+      properties:
+        version:
+          type: string
+          example: assignment-policy-v1
+        radii_km:
+          type: array
+          description: The radii the search widens through, in order.
+          items:
+            type: number
+          example: [5, 10, 20]
+        initial_radius_km:
+          type: number
+          example: 5
+        max_radius_km:
+          type: number
+          example: 20
+        specialties:
+          type: array
+          items:
+            type: object
+            required: [line, incident_type, specialty]
+            properties:
+              line:
+                $ref: "#/components/schemas/PolicyLine"
+              incident_type:
+                $ref: "#/components/schemas/IncidentType"
+              specialty:
+                allOf:
+                  - $ref: "#/components/schemas/Specialty"
+                nullable: true
+                description: null - the claim type needs no on-site visit (theft).
+        retry_interval_seconds:
+          type: integer
+          description: How often a claim pending assignment is searched again.
+          example: 300
+    ProviderProfile:
+      type: object
+      additionalProperties: false
+      required: [name, specialties, latitude, longitude, address, contact_email]
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 120
+          example: Servicios Hogar Norte
+        specialties:
+          type: array
+          minItems: 1
+          maxItems: 6
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/Specialty"
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+        address:
+          type: string
+          minLength: 5
+          maxLength: 200
+        contact_email:
+          type: string
+          format: email
+          maxLength: 254
+          description: The channel the provider receives its assignments by.
+        contact_phone:
+          type: string
+          nullable: true
+          pattern: '^\+[1-9][0-9]{6,14}$'
+          description: Informative, in E.164.
+          example: "+576015550102"
+    ProviderAvailabilityRequest:
+      type: object
+      additionalProperties: false
+      required: [availability]
+      properties:
+        availability:
+          type: string
+          enum: [available, unavailable]
+        unavailable_until:
+          type: string
+          format: date
+          nullable: true
+          description: Only with unavailable; today or later. Informative, it does not make the provider available on its own.
+    Provider:
+      type: object
+      required: [id, name, specialties, latitude, longitude, address, contact_email, contact_phone, availability,
+        unavailable_until, busy_claim_id, updated_by, updated_at]
+      properties:
+        id:
+          type: string
+          example: prv-servicios-hogar-norte
+        name:
+          type: string
+        specialties:
+          type: array
+          items:
+            $ref: "#/components/schemas/Specialty"
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        address:
+          type: string
+        contact_email:
+          type: string
+          format: email
+        contact_phone:
+          type: string
+          nullable: true
+        availability:
+          $ref: "#/components/schemas/ProviderAvailability"
+        unavailable_until:
+          type: string
+          format: date
+          nullable: true
+        busy_claim_id:
+          type: string
+          nullable: true
+          description: The claim the provider is assigned to while busy.
+        updated_by:
+          type: string
+          description: E-mail of the analyst who last changed it, or "reference-data" for the seed.
+        updated_at:
+          type: string
+          format: date-time
+    ProviderList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/Provider"
+    QueueHolder:
+      type: object
+      required: [full_name, document_type, document_id]
+      description: The insured of the claim, without their contact.
+      properties:
+        full_name:
+          type: string
+        document_type:
+          type: string
+        document_id:
+          type: string
+    PriorityQueueItem:
+      allOf:
+        - $ref: "#/components/schemas/EvaluationQueueItem"
+        - type: object
+          required: [holder]
+          properties:
+            holder:
+              allOf:
+                - $ref: "#/components/schemas/QueueHolder"
+              nullable: true
+              description: null when the policy core does not answer.
+    PriorityQueue:
+      type: object
+      required: [items, next_page_token, summary]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PriorityQueueItem"
+        next_page_token:
+          type: string
+          nullable: true
+        summary:
+          type: object
+          required: [total, matching, levels, unassessed, mean_resolution_days, decided_in_window, window_days]
+          properties:
+            total:
+              type: integer
+              minimum: 0
+              description: Claims in the queue, without the filters.
+            matching:
+              type: integer
+              minimum: 0
+              description: Claims that match the filters of the request.
+            levels:
+              type: array
+              description: The claims of the queue of each level, 1 to 3, without the filters.
+              items:
+                type: object
+                required: [level, claims]
+                properties:
+                  level:
+                    $ref: "#/components/schemas/TriageLevel"
+                  claims:
+                    type: integer
+                    minimum: 0
+            unassessed:
+              type: integer
+              minimum: 0
+              description: Claims of the queue the triage has not assessed yet.
+            mean_resolution_days:
+              type: number
+              nullable: true
+              description: Mean days from the filing to the decision, one decimal; null when none was decided in the window.
+            decided_in_window:
+              type: integer
+              minimum: 0
+            window_days:
+              type: integer
+              example: 30

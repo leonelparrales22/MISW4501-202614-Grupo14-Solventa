@@ -15,6 +15,11 @@ import (
 // PolicyStore is the ports.PolicyRepository over the policy table
 // (HU-W1.5-02, migration 0012). A policy is written once, from the activation
 // of its coverage, and never changes.
+//
+// HU-W1.4-02: it reads the view policy_current (migration 0019), the policy
+// with its last endorsement laid over it, so the wallet, the renewals and the
+// alerts see the current contractual terms in the same COMMIT that applies an
+// endorsement. It writes the policy table, which never changes.
 type PolicyStore struct {
 	db *sql.DB
 }
@@ -68,7 +73,7 @@ func (s *PolicyStore) Create(ctx context.Context, p domain.Policy) error {
 
 // Get returns ports.ErrPolicyNotFound when the id is unknown.
 func (s *PolicyStore) Get(ctx context.Context, policyID string) (domain.Policy, error) {
-	p, err := scanPolicy(s.db.QueryRowContext(ctx, `SELECT `+policyColumns+` FROM policy WHERE policy_id = $1`, policyID))
+	p, err := scanPolicy(s.db.QueryRowContext(ctx, `SELECT `+policyColumns+` FROM policy_current WHERE policy_id = $1`, policyID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Policy{}, ports.ErrPolicyNotFound
 	}
@@ -97,14 +102,17 @@ func (s *PolicyStore) list(ctx context.Context, query string, args ...any) ([]do
 
 // ListByCustomer returns the policies of the insured, the ones ending last first.
 func (s *PolicyStore) ListByCustomer(ctx context.Context, customerID string) ([]domain.Policy, error) {
-	return s.list(ctx, `SELECT `+policyColumns+` FROM policy WHERE customer_id = $1 ORDER BY coverage_end DESC, policy_id`, customerID)
+	return s.list(ctx, `SELECT `+policyColumns+` FROM policy_current WHERE customer_id = $1 ORDER BY coverage_end DESC, policy_id`, customerID)
 }
 
-// ListLapsed returns the policies that ended with no renewal row for their period.
+// ListLapsed returns the policies that ended with no renewal row for their
+// period. A policy cancelled for non-payment (HU-W1.6-02) is left out: it
+// ended with its cancellation and was told so then.
 func (s *PolicyStore) ListLapsed(ctx context.Context, since, now time.Time, limit int) ([]domain.Policy, error) {
-	return s.list(ctx, `SELECT `+prefixed("p", policyColumns)+` FROM policy p
+	return s.list(ctx, `SELECT `+prefixed("p", policyColumns)+` FROM policy_current p
 		WHERE p.coverage_end BETWEEN $1 AND $2
 		  AND NOT EXISTS (SELECT 1 FROM renewal r WHERE r.policy_id = p.policy_id AND r.period_end = p.coverage_end)
+		  AND NOT EXISTS (SELECT 1 FROM policy_cancellation c WHERE c.policy_id = p.policy_id)
 		ORDER BY p.coverage_end LIMIT $3`, since.UTC(), now.UTC(), limit)
 }
 

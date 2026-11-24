@@ -5,7 +5,30 @@ Recibe, prioriza, evalúa y resuelve siniestros, incluidos los paramétricos que
 **Estado:** `GET /health` y **HU-M2.2-01:** `POST /v1/claims` (radicación del siniestro desde el asistente guiado del móvil), con autenticación Cognito (`pkg/security`) y los casos en **PostgreSQL** (`DATABASE_URL`); sin base de datos quedan en memoria. **HU-M2.1-01:** `POST /v1/claims/evidence/upload-url` (URL firmada con la que el teléfono sube la evidencia directamente al *bucket* `EVIDENCE_BUCKET`), y la evidencia asociada al caso con su ubicación, su instante de captura y su resumen de integridad. **HU-W2.1-01:** radicación del siniestro con soportes desde el portal web (`GET /v1/claims/filing-options`, `POST /v1/claims/supports` y su confirmación, `POST /v1/claims/web-filings`), validada contra el core de pólizas (`POLICY_CORE_URL`) y con los soportes subidos directo al *bucket* con URL firmada, y lectura de los casos propios de los dos canales (`GET /v1/claims`, `GET /v1/claims/{claim_id}`, que incluye la evidencia del móvil, y el comprobante en PDF `GET /v1/claims/{claim_id}/filing-receipt`). **HU-W2.2-01:** triage automático: cada caso que entra a
 evaluación recibe su nivel (Triage 1, 2 o 3) por severidad y monto estimado en ≤ 60 s, se recalcula solo cuando cambia esa
 información y se lee por `GET /v1/claims/{claim_id}/triage` (analista y asegurado), `GET /v1/claims/triage` (una página de casos)
-y `GET /v1/claims/triage-policy`; la radicación web gana el monto estimado opcional. El resto de módulos sigue reservado.
+y `GET /v1/claims/triage-policy`; la radicación web gana el monto estimado opcional. **HU-W2.3-01:** asignación del prestador
+más cercano a un caso en evaluación: ubicación del incidente (la de la app o la que registra el analista), búsqueda por
+especialidad con radios de 5, 10 y 20 km, asignación confirmada por el analista con aviso por correo al prestador, búsqueda
+automática de los casos pendientes de asignación y el registro de prestadores que administra operaciones
+(`/v1/claims/{claim_id}/assignment`, `…/incident-location`, `…/provider-searches`, `/v1/claims/assignments`,
+`/v1/claims/assignment-policy` y `/v1/claims/providers*`). **HU-W2.3-02:** seguimiento de la intervención del prestador y
+cierre del caso (`/v1/claims/{claim_id}/intervention`, `…/intervention/steps` y `…/closure`), sin cambiar el estado del siniestro. **HA-L02:** caché de lectura en Redis delante de la lista, el detalle y
+el historial del asegurado (`GET /v1/claims`, `GET /v1/claims/{claim_id}` y `GET /v1/claims/{claim_id}/history`): cada lectura
+espera 900 ms a la base y, si no llega, responde la última lectura guardada con `stale: true` y la hora en que se leyó.
+**HU-M2.4-01:** motor paramétrico mínimo: consume `ParametricTriggerObserved` de su cola SQS (`EVENTS_QUEUE_URL`, suscrita al
+tópico `iot`), radica y resuelve solo el siniestro cuando el retraso de un vuelo alcanza el umbral de la póliza de Viaje, lo paga
+con el trabajador de HU-W2.2-03 y publica `ParametricPayoutCompleted` con *outbox* (`EVENTS_TOPIC_ARN`); la lista, el detalle y
+el historial traen `automatic_resolution` con el parámetro, el umbral y el valor que generó el pago. **HU-M3.3-01:** cada cambio de
+etapa que el asegurado espera (en evaluación, aprobado, pagado) se convierte en `ClaimStageChanged` en el *outbox* (`internal/stages`), que
+`notifications` vuelve notificación y *push*. **HU-M2.3-01:** solicitud de asistencia en sitio desde el móvil
+(`POST /v1/claims/assistance-requests` y `GET /v1/claims/assistance-requests/{request_id}`): la póliza propia y activa (core de
+pólizas), la fecha y hora UTC y el resultado de la ubicación (coordenadas y precisión, o el motivo por el que no hubo), con número
+`AST-…` y estado `new`, en su propia tabla y protegido contra reescritura. **HU-W1.4-02:** ruta interna
+`GET /internal/policies/{policy_id}/open-claims`, que cuenta los siniestros en curso de una póliza para que `origination` valide un
+endoso antes de aplicarlo. **HU-W2.3-03:** bandeja de operaciones de las solicitudes de asistencia
+(`/v1/claims/assistance-inbox*` y `GET /v1/claims/assistance-policy`): la solicitud aparece en cuanto se registra, el analista la
+atiende, registra la necesidad y, sin GPS, la dirección y el pin dados por voz. Ve el prestador sugerido con la búsqueda de
+HU-W2.3-01 (distancia y llegada estimada) y despacha uno elegible, que recibe la ubicación por correo, o la cierra con motivo.
+Cada decisión queda con su analista y su hora. El resto de módulos sigue reservado.
 
 ## Responsabilidades
 
@@ -13,9 +36,11 @@ y `GET /v1/claims/triage-policy`; la radicación web gana el monto estimado opci
 |---|---|
 | `filing` | Radicación y seguimiento del siniestro (web y móvil). **HU-M2.2-01:** `Service` radica desde el asistente del móvil. **HU-W2.1-01:** `WebService` ofrece las pólizas activas del asegurado con los tipos y soportes de cada una y radica desde el portal web validando la póliza con el core de pólizas; `SupportService` declara cada soporte, firma su subida y confirma lo que llegó; `QueryService` lista los casos propios de los dos canales, entrega el detalle y el comprobante en PDF |
 | `triage` | Priorización automática por severidad, monto y tiempo de respuesta comprometido. **HU-W2.2-01:** `Service` calcula el nivel de cada caso con la política `triage-policy-v1`, lo registra con su causa y lee el triage de un caso, de una página de casos y la política vigente; `Worker` barre la base cada `TRIAGE_SWEEP_INTERVAL_SECONDS` buscando los casos sin cálculo o cuyos datos cambiaron |
-| `assessors` | Prestadores (peritos y talleres) y su asignación al caso: elige el más cercano por distancia y especialidad, ampliando el radio si no hay disponibles (HU-W2.3-01). Seguimiento de la intervención y cierre del caso (HU-W2.3-02). Es el único dueño del cálculo de distancia |
-| `assistance` | Asistencia en sitio: recibe las solicitudes del móvil con la ubicación del asegurado (HU-M2.3-01), las muestra en la bandeja de entrantes y gestiona su despacho y cierre con motivo (HU-W2.3-03). Para elegir prestador **llama a `assessors`**; no calcula distancias |
-| `parametric` | Pago automático cuando un evento externo (retraso de vuelo, clima) cruza un umbral |
+| `assessors` | Prestadores (peritos y talleres) y su asignación al caso: elige el más cercano por distancia y especialidad, ampliando el radio si no hay disponibles (HU-W2.3-01). Seguimiento de la intervención y cierre del caso (HU-W2.3-02). Es el único dueño del cálculo de distancia. **HU-W2.3-01:** `Service` registra la ubicación del incidente, busca, asigna y lee la asignación de un caso, de una página de casos y la política vigente; `ProviderService` administra el registro de prestadores; `Worker` repite la búsqueda de los casos pendientes cada `ASSIGNMENT_RETRY_INTERVAL_SECONDS` y envía los avisos a los prestadores; `Suggest` es la búsqueda sin estado que usa `assistance` (HU-W2.3-03). **HU-W2.3-02:** `InterventionService` registra los avances del prestador en orden y cierra el caso cuando la intervención terminó. **HU-W2.3-03:** las especialidades `towing` (grúa) y `roadside_assistance` (asistencia vial) se suman al registro (`AssistanceSpecialties`), con su propia semilla de prestadores |
+| `assistance` | Asistencia en sitio: recibe las solicitudes del móvil con la ubicación del asegurado (HU-M2.3-01), las muestra en la bandeja de entrantes y gestiona su despacho y cierre con motivo (HU-W2.3-03). Para elegir prestador **llama a `assessors`**; no calcula distancias. **HU-M2.3-01:** `Service.Request` valida el cuerpo, comprueba contra el core de pólizas que la póliza sea del asegurado y esté vigente, y registra la solicitud con el reloj del servidor; `Service.Get` la lee solo para su dueño. **HU-W2.3-03:** `InboxService` lista la bandeja con sus indicadores, lee una solicitud con la sugerencia de prestador (`assessors.Suggest`, calculada en cada lectura) y registra cada decisión del analista: atender o tomar, necesidad, ubicación por voz, despacho y cierre. Detecta con la versión de la solicitud si dos analistas deciden a la vez y vuelve a intentar hasta 3 veces. `NoticeWorker` envía el correo del despacho al prestador con reintentos; `DispatchNotice` arma su texto |
+| `parametric` | Pago automático cuando un evento externo (retraso de vuelo, clima) cruza un umbral. **HU-M2.4-01:** `Service` resuelve cada observación (`ParametricTriggerObserved`, ya asociada a la póliza): lee la póliza y la cuenta del asegurado en el núcleo, aplica `parametric-rules-v1` (180 min de retraso o más pagan $ 180.000 COP) y guarda en una transacción el siniestro (canal `parametric`), su resolución automática y la aprobación con el pago pendiente, que paga el trabajador de `decision`. Es idempotente por observación; una que no paga se descarta con su motivo en el log |
+| `readcache` | **HA-L02:** `Claims` e `History` envuelven la consulta de los casos propios (`filing.QueryService`) y el historial de estados (`review.Service`) con un presupuesto de 900 ms hacia la base y la caché de lectura como respaldo. El comprobante y los enlaces de la evidencia no pasan por la caché |
+| `stages` | **HU-M3.3-01:** `Notifier` sigue el historial de estados (`claim_status_change`) cada 2 s y, por cada cambio que el asegurado espera —entra a evaluación, aprobado viniendo de evaluación, pagado—, escribe `ClaimStageChanged` en el *outbox* con la etapa, la hora, el siniestro (id y radicado) y, si aplica, el monto y la fecha del desembolso. Cada cambio se mira una vez (`claim_stage_notice`); los siniestros paramétricos no avisan por etapa porque ya tienen el *push* de su pago |
 | `evidence` | **HU-M2.1-01:** emite la URL firmada con la que el teléfono sube cada foto o video al *bucket* de evidencia; el binario nunca cruza el servicio y lo que queda con el caso es su llave, su ubicación, su instante de captura y su resumen de integridad |
 
 ## Radicación del siniestro (HU-M2.2-01)
@@ -104,18 +129,19 @@ GET  /v1/claims[/{id}[/filing-receipt]] ─▶ casos propios de los dos canales,
   no es parte de esta historia.
 - **Comprobante:** PDF generado al vuelo desde el caso (`internal/adapters/pdf`), con fechas en hora de Colombia (UTC−5) y
   determinista: dos descargas dan el mismo archivo.
-- **Estado:** el caso nace `active` («Radicado» en el portal). La revisión del asesor (HU-W2.1-03), la devolución (HU-W2.1-04) y
-  el triage (HU-W2.2-01) no están en esta historia.
+- **Estado:** el caso nace `active` («Radicado» en el portal): espera la revisión del asesor (HU-W2.1-03). La devolución
+  (HU-W2.1-04) y el triage (HU-W2.2-01) no están en esta historia.
 
 ### Adaptadores (`internal/adapters`)
 
 | Adaptador | Qué hace |
 |---|---|
-| `http` | Router `chi`. `WithFilings` (HU-M2.2-01), `WithClaimReads` y `WithWebFilings` (HU-W2.1-01): `security.Authenticate` + `RequireRole(insured)`, `Cache-Control: no-store`. `WithTriage` (HU-W2.2-01): el triage de un caso para `operations` e `insured` (vista por rol), el lote y la política solo para `operations` |
-| `postgres` | `ClaimRecordStore`: único almacén de casos de los dos canales (radicación móvil con evidencia y web con soportes y póliza, transaccional) y `SupportStore`: metadatos de los soportes (HU-W2.1-01). `TriageStore` (HU-W2.2-01): los cálculos del nivel en `claim_triage`, sobre el mismo *pool* que los casos (`TriageStoreOf`). Migraciones embebidas con *advisory lock* |
-| `memory` | Sin `DATABASE_URL`: `CaseStore` sirve a los dos canales y a los metadatos de los soportes, y `TriageStore` guarda los cálculos del nivel sobre esos casos (HU-W2.2-01); todo se pierde al reiniciar |
+| `http` | Router `chi`. `WithFilings` (HU-M2.2-01), `WithClaimReads` y `WithWebFilings` (HU-W2.1-01): `security.Authenticate` + `RequireRole(insured)`, `Cache-Control: no-store`. `WithTriage` (HU-W2.2-01): el triage de un caso para `operations` e `insured` (vista por rol), el lote y la política solo para `operations`. `WithAssignment` y `WithProviders` (HU-W2.3-01): la asignación y el registro de prestadores, solo para `operations`. `WithIntervention` (HU-W2.3-02): el seguimiento de la intervención y el cierre del caso, solo para `operations`. `WithAssistance` (HU-M2.3-01): la solicitud de asistencia y su lectura, solo `insured`, `Cache-Control: no-store`. `WithOpenClaims` (HU-W1.4-02): la ruta interna de los siniestros en curso de una póliza, sin token. `WithAssistanceInbox` (HU-W2.3-03): la bandeja de asistencias, solo `operations`, `Cache-Control: no-store` |
+| `postgres` | `ClaimRecordStore`: único almacén de casos de los dos canales (radicación móvil con evidencia y web con soportes y póliza, transaccional) y `SupportStore`: metadatos de los soportes (HU-W2.1-01). `TriageStore` (HU-W2.2-01): los cálculos del nivel en `claim_triage`, sobre el mismo *pool* que los casos (`TriageStoreOf`). `AssignmentStore` y `ProviderStore` (HU-W2.3-01): ubicaciones, búsquedas, asignaciones y avisos, y el registro de prestadores, sobre el mismo *pool* (`AssignmentStoreOf`, `ProviderStoreOf`). `InterventionStore` (HU-W2.3-02): los pasos de la intervención y el cierre del caso, que libera al prestador en la misma transacción (`InterventionStoreOver`). `AssistanceStore` (HU-M2.3-01): las solicitudes de asistencia, sobre el mismo *pool* (`AssistanceStoreOf`). `AssistanceInboxStore` (HU-W2.3-03): las decisiones de la bandeja y los avisos de los despachos, sobre el mismo *pool* (`AssistanceInboxStoreOf`); cada decisión bloquea la solicitud (`FOR UPDATE`) y comprueba su versión. Migraciones embebidas con *advisory lock* |
+| `memory` | Sin `DATABASE_URL`: `CaseStore` sirve a los dos canales y a los metadatos de los soportes, y `TriageStore` guarda los cálculos del nivel sobre esos casos (HU-W2.2-01); `AssignmentStore` y `ProviderStore` (HU-W2.3-01) hacen lo mismo con la asignación y con los prestadores de referencia de la semilla (`ReferenceProviders`), e `InterventionStore` (HU-W2.3-02) con los pasos y el cierre; `AssistanceStore` (HU-M2.3-01) guarda las solicitudes de asistencia con las mismas reglas de llave y numeración; `AssistanceInboxStore` (HU-W2.3-03) guarda las decisiones de la bandeja sobre **ese mismo** `AssistanceStore`, para ver las solicitudes del móvil; `ReferenceProviders` incluye los prestadores de grúa y asistencia vial; todo se pierde al reiniciar |
 | `policies` | Puente de `pkg/adapters/policies` al puerto `PolicyDirectory`; deja fuera las pólizas mal descritas y traduce cualquier falla a `ErrPolicyDirectoryUnavailable` |
 | `pdf` | Comprobante de radicación con `go-pdf/fpdf` |
+| `redis` | **HA-L02:** `ReadCache`, la caché de lectura de las consultas sobre ElastiCache: claves `claims:read:v1:<alcance>:…` con TTL de 5 minutos. Una falla de Redis se registra y se lee como si no hubiera nada guardado; nunca hace fallar una consulta |
 | `s3` | `ObjectStore` sobre el *bucket* de evidencia: firma las subidas (evidencia del móvil y soportes del portal), comprueba lo que llegó, lee los primeros bytes de un objeto y firma las lecturas |
 
 ## Triage automático (HU-W2.2-01)
@@ -125,7 +151,7 @@ la información de la que salió. Contrato: [`docs/contratos/HU-W2.2-01-api.md`]
 
 ```
 claims (cada tarea de ECS)
-  triage.Worker ──cada 10 s──▶ casos en active o in_evaluation sin cálculo o con monto, tipo o versión de la política distintos
+  triage.Worker ──cada 10 s──▶ casos en in_evaluation sin cálculo o con monto, tipo o versión de la política distintos
                               └─▶ Service.Assess: nivel = severidad × banda de monto ──▶ INSERT en claim_triage (con su causa)   [CA-1…CA-3]
 GET /v1/claims/{id}/triage ──▶ operations: nivel, severidad, banda, monto, objetivo e historial · insured dueño: nivel y días    [CA-4]
 GET /v1/claims/triage?claim_id=… ─▶ el nivel de una página de casos en una llamada (operations)                                   [CA-4, CA-5]
@@ -142,8 +168,8 @@ GET /v1/claims/triage-policy ────▶ severidad por tipo, umbrales y obje
   que cambie el monto, el tipo o la cobertura de un caso (HU-W2.1-03, HU-W2.1-04, HU-W2.3-02) obtiene el recálculo sin llamar a
   nada. El primer barrido corre al arrancar, por eso un caso que llegó con el servicio detenido se prioriza apenas vuelve. Dos
   tareas no duplican un cálculo: cada uno ocupa el lugar `seq` siguiente del caso (llave primaria) y la que pierde no escribe.
-- **Estados que se priorizan:** `active` (mientras no exista la revisión del asesor, radicado es entrar a evaluación; HU-W2.1-03
-  lo quitará) e `in_evaluation` (HU-W2.2-03). Fuera de ellos no se recalcula, pero el último nivel sigue visible.
+- **Estados que se priorizan:** solo `in_evaluation`: desde HU-W2.1-03 un caso entra a evaluación cuando el asesor aprueba
+  la radicación (fin del supuesto S5). Fuera de él no se recalcula, pero el último nivel sigue visible.
 - **Causas:** `entered_evaluation`, `estimated_amount_changed`, `incident_type_changed`, `coverage_changed`,
   `provider_report_received` (reservada para HU-W2.3-02) y `policy_updated`. Un cambio que no mueve el nivel también se registra.
 - **El triage no consulta al core de pólizas:** la cobertura es la del tipo de siniestro y la línea sale del catálogo.
@@ -161,7 +187,7 @@ indemnizar —y el pago sale solo— o lo rechaza con su motivo. Contrato:
 [`docs/contratos/HU-W2.2-03-api.md`](../../docs/contratos/HU-W2.2-03-api.md).
 
 ```
-GET  /v1/claims/evaluations ─────────▶ casos en active o in_evaluation con su monto estimado y su prioridad           [CA-1]
+GET  /v1/claims/evaluations ─────────▶ casos en in_evaluation ordenados por prioridad (HU-W2.2-02), con su monto     [CA-1]
 GET  /v1/claims/{id}/evaluation ─────▶ caso, soportes y evidencia firmados, triage, póliza y cobertura de hoy
                                        (core), asegurado con la cuenta enmascarada y la decisión                    [CA-1, CA-5]
 POST /v1/claims/{id}/approval ───────▶ costo bruto ≤ valor asegurado; paga bruto − deducible ──▶ approved          [CA-2]
@@ -188,6 +214,349 @@ POST /v1/claims/{id}/payout-retry ───▶ destino corregido o el mismo, mis
 - **Estados nuevos:** `approved`, `paid`, `rejected` y `payment_exception`. Ninguno es de evaluación, así que el caso sale
   de la cola y el triage deja de recalcularlo.
 
+## Revisión del asesor e historial de estados (HU-W2.1-03)
+
+El asesor revisa cada radicación antes de que entre a evaluación (pantalla S8): da un veredicto sobre cada soporte
+(válido, ilegible o falta) y la aprueba o la devuelve al asegurado con el motivo, el mensaje y lo que debe corregir. Contrato: [`docs/contratos/HU-W2.1-03-api.md`](../../docs/contratos/HU-W2.1-03-api.md).
+
+```
+GET  /v1/claims/reviews ─────────────▶ radicaciones en active, de la más antigua a la más nueva (advisor)
+GET  /v1/claims/{id}/review ─────────▶ lo de /evaluation sin el triage + checklist de soportes, siniestros previos
+                                       de la póliza y revisiones                                                    [CA-1]
+POST /v1/claims/{id}/review-approval ▶ todos los soportes válidos (sin un requerido faltante) ──▶ in_evaluation     [CA-2]
+POST /v1/claims/{id}/review-return ──▶ motivo (lista) + mensaje + veredicto por soporte y/o datos ──▶ returned       [CA-3]
+GET  /v1/claims/{id}/history ────────▶ cada cambio de estado (insured: solo los suyos; advisor y operations: todos)
+```
+
+- **Veredicto por soporte:** el *checklist* son los soportes del tipo de siniestro con sus archivos. En una radicación del
+  móvil la evidencia cuenta como `vehicle_photos`, el único requerido. Lo adjunto que el asesor no marca queda `valid`, y un
+  requerido sin adjuntar queda `missing`. Con un requerido faltante no se aprueba (`422 supports_incomplete`). Colisión gana
+  `plate_photo` (fotografía de la placa), opcional, para que el asesor pueda pedirla.
+- **Solo `advisor`** revisa (HA-S01). Cada revisión guarda quién (correo y nombre del token), cuándo, el veredicto de cada soporte y lo que pidió en `claim_review` (`seq` por ronda: un
+  caso reenviado por HU-W2.1-04 se revisa otra vez). La escritura mueve el estado en la misma sentencia y solo si el caso
+  sigue `active`, así que de dos asesores a la vez gana uno y el otro recibe `409`.
+- **El historial lo escribe la base:** un *trigger* de `claim` agrega una fila a `claim_status_change` en cada cambio de
+  `status`, sin importar qué código lo cambie. Es la fuente de la línea de tiempo (HU-W2.1-02, HU-M2.4-01) y de la
+  notificación por cambio de etapa (HU-M3.3-01). `claim_review` y `claim_status_change` son de solo inserción.
+- La migración `0007` reconstruye el historial de los casos anteriores: la radicación y, si estaban decididos, su estado
+  actual a la hora de la decisión.
+
+## Consulta de estado del siniestro por el cliente (HU-W2.1-02)
+
+El asegurado sigue la etapa de sus casos sin llamar (pantallas A7 y A8). Contrato:
+[`docs/contratos/HU-W2.1-02-api.md`](../../docs/contratos/HU-W2.1-02-api.md).
+
+- **Último cambio (CA-1):** el listado y el detalle traen `last_changed_at`, el último cambio de `claim_status_change`
+  (`ports.ClaimActivity.LastChanges`, una sola consulta por página).
+- **Resumen (A7):** el listado trae `summary` con los casos en curso, por estado, los pagados en el año (hora de Colombia)
+  con su monto neto y los devueltos que esperan al asegurado (`ClaimActivity.Tally`), sin importar los filtros ni la página.
+- **Decisión y prestador (A8):** el historial suma `decision` (`domain.DecisionView`) y `provider`
+  (`domain.ProviderView`), vistas reducidas sin la cuenta ni el contacto. Así tampoco llegan a la caché HA-L02.
+- **Descarga de soportes:** `GET /v1/claims/{id}/supports/{support_id}/download` firma por 10 minutos la lectura de un
+  soporte vigente del caso. No se guarda en la caché.
+- **Refresco (CA-2, umbral ≤ 5 min):** cada cambio queda en la base al instante y el portal vuelve a leer cada 60 s.
+
+## Edición de la radicación devuelta (HU-W2.1-04)
+
+El asegurado corrige una radicación que el asesor le devolvió y la reenvía (pantalla A9), sin crear otro siniestro.
+Contrato: [`docs/contratos/HU-W2.1-04-api.md`](../../docs/contratos/HU-W2.1-04-api.md).
+
+```
+GET  /v1/claims/{id}/history ───▶ last_return: motivo, mensaje, veredicto por soporte, datos a corregir y su seq  [CA-1]
+POST /v1/claims/{id}/resubmission ─▶ review_seq + hechos que cambian + por requisito el conjunto de archivos que queda
+     ├─ falta algo ──▶ 422 con todo lo pendiente (not_replaced, missing, reglas de la radicación)             [CA-3]
+     └─ completo ───▶ mismos id y radicado, active para una nueva revisión; claim_resubmission registra
+                      quién, cuándo y qué cambió                                                     [CA-2, CA-4, CA-5]
+```
+
+- **Editables:** fecha y hora, lugar, descripción y monto estimado; la póliza y el tipo no. La fecha se valida contra la
+  radicación y la vigencia de la póliza copiada.
+- **Soportes:** cada grupo es el conjunto completo que queda en el requisito. Los archivos nuevos se agregan a
+  `claim_support`, y los que salen se registran en `claim_support_withdrawal` y dejan de mostrarse: `claim_support` sigue
+  siendo de solo inserción. Un soporte ilegible exige un archivo nuevo, y uno faltante exige al menos un archivo.
+- **Concurrencia e idempotencia:** el `UPDATE` corrige el caso solo si sigue `returned` por esa misma revisión, así que de
+  dos reenvíos a la vez gana uno. Un reintento del mismo asegurado recibe el reenvío que ya entró.
+- **Radicaciones del móvil:** se corrigen desde el portal. Las fotos que se suben reemplazan las del móvil en el
+  *checklist* del asesor (`domain.Checklist`).
+- `claim_resubmission` y `claim_support_withdrawal` son de solo inserción (migración `0010`).
+
+## Asignación del prestador más cercano (HU-W2.3-01)
+
+El analista de operaciones asigna a un caso en evaluación el prestador más cercano con la especialidad que el caso necesita,
+para que el perito o el técnico vaya al sitio. Contrato:
+[`docs/contratos/HU-W2.3-01-api.md`](../../docs/contratos/HU-W2.3-01-api.md).
+
+```
+GET  /v1/claims/{id}/assignment ──────▶ especialidad, ubicación, última búsqueda y asignación; el estado de la asignación   [CA-1…CA-6]
+POST /v1/claims/{id}/incident-location ▶ dirección + pin del analista, solo si la app no dio coordenadas                   [CA-1]
+POST /v1/claims/{id}/provider-searches ▶ los prestadores con la especialidad por distancia; radio 5 → 10 → 20 km
+                                         hasta el primero con elegibles, cada radio registrado; sugerido el más cercano      [CA-2…CA-4]
+        sin elegibles en 20 km ────────▶ exhausted, pending_assignment                                                     [CA-6]
+        assessors.Worker ──cada 300 s──▶ busca de nuevo los pendientes ──▶ proposed (no asigna)                            [CA-6]
+POST /v1/claims/{id}/assignment ──────▶ prestador elegible de la última búsqueda ──▶ assigned; el prestador queda busy
+        assessors.Worker ──────────────▶ correo al prestador, llave asignacion-<id>, reintentos 5 s, 30 s, 2 min, 10 min  [CA-5]
+GET  /v1/claims/assignments?claim_id=… ▶ el estado de una página de casos en una llamada (cola de operaciones)
+GET  /v1/claims/assignment-policy ────▶ especialidad por tipo, radios e intervalo de la búsqueda automática
+GET|POST /v1/claims/providers* ───────▶ registro de prestadores: alta, perfil y disponibilidad                             [CA-2]
+```
+
+- **Solo `operations`** (HA-S01): el asegurado, el asesor y el socio reciben `403`. El asegurado no ve la asignación en esta
+  historia; la fecha de la visita es de HU-W2.3-02.
+- **Qué casos se asignan:** los que están en `in_evaluation` (aprobados por el asesor, HU-W2.1-03) y cuyo tipo necesita visita.
+  Otro estado responde `409 claim_not_assignable`. Una asignación ya hecha sigue visible aunque el caso cambie de estado después.
+- **Ubicación del incidente:** la de la app es la evidencia del caso con `location_trusted` y la menor `accuracy_m` (≤ 50 m,
+  HU-M2.1-01); en un empate, la primera capturada. Sin ella (todo caso web) el estado es `location_missing` hasta que el analista
+  registra la dirección (5–200 caracteres) y las coordenadas del pin. El front resuelve la dirección en el mapa; **no hay
+  geocodificador**. El analista puede corregirla antes de asignar (vale la última) y no puede reemplazar la de la app
+  (`409 location_from_app`).
+- **Política `assignment-policy-v1`** (`internal/domain/assignment_policy.go`), **provisional, pendiente de validación con
+  negocio**, versionada como la del triage:
+  - colisión, daño a terceros y otro (autos) → `vehicle_assessment`; cristales → `auto_glass`; daño por agua (hogar) →
+    `plumbing`; hurto no necesita visita (`not_required`);
+  - radios de 5, 10 y 20 km; 20 es el máximo.
+
+  Cada búsqueda y cada asignación guardan la versión.
+- **Distancia:** en línea recta (Haversine) entre el incidente y el prestador (`internal/domain/geo.go`, que solo usa
+  `assessors`). Se compara sin redondear; se muestra redondeada a 0,1 km.
+- **Elegible** = disponible **hoy** + con la especialidad + dentro del radio del intento. Un prestador «disponible mañana» está
+  `unavailable` con `unavailable_until` y no es elegible. El analista ve a todos los de la especialidad con su
+  `eligibility` (`eligible`, `unavailable`, `out_of_radius`). Solo se asigna uno `eligible` de la **última** búsqueda (si no,
+  `409 search_outdated` o `422 provider_not_eligible`); a uno fuera del radio se llega ampliando el radio, que queda como
+  intento. Sugerido: el elegible más cercano; en un empate, el de menor `provider_id`.
+- **Asignación y aviso:** una por caso, en una transacción que inserta la asignación, deja al prestador `busy` y registra el
+  aviso. De dos analistas a la vez, o de dos casos sobre el mismo prestador, gana uno: el otro recibe `409 assignment_exists` o
+  `409 provider_unavailable`. El `Worker` envía el correo por `EMAIL_URL` con el radicado, el tipo, las coordenadas, la
+  precisión, la dirección y un enlace al mapa, sin datos del asegurado. Sin `EMAIL_URL`, o con el proveedor caído, la asignación
+  se registra igual y el aviso espera.
+- **Estado propio:** `claim.status` **no cambia** al buscar, al quedar pendiente ni al asignar, así que el triage, la decisión y la
+  revisión no se enteran y `claim_status_change` no gana filas. El estado de la asignación es `not_required`, `not_applicable`,
+  `location_missing`, `ready`, `proposed`, `pending_assignment` o `assigned`.
+- **Búsqueda automática:** el `Worker` repite la búsqueda de los casos `pending_assignment` cada
+  `ASSIGNMENT_RETRY_INTERVAL_SECONDS` (actor `system`). Si encuentra elegibles el caso queda `proposed`, y el analista confirma.
+- **Registro de prestadores:** semilla de referencia `0009_provider_seed.sql` con 8 prestadores de Bogotá, **pendiente de
+  reemplazo por negocio**; no pisa lo que operaciones haya editado. Operaciones da de alta, cambia el perfil y la
+  disponibilidad por API; cada cambio guarda quién y cuándo. `busy` solo lo escribe la asignación.
+- **Cómo lo usa otra historia:** `assessors.Suggest(ctx, providers, at, specialty, policy, now)` es la misma búsqueda sin caso y
+  sin registrarla: la asistencia en sitio (HU-W2.3-03) la llama en proceso, sin otra copia de la distancia ni de la
+  elegibilidad. HU-W2.3-02 libera al prestador al cerrar el caso; operaciones también puede devolverlo a
+  `available` por la API. Reasignar o cancelar una asignación sigue fuera de alcance.
+- **No publica ni consume eventos:** el caso, los prestadores y la asignación están en la misma base, y el aviso es un correo.
+
+## Seguimiento de la intervención y cierre del caso (HU-W2.3-02)
+
+El analista de operaciones registra los avances que el prestador asignado le reporta por el canal acordado y cierra el caso cuando
+el prestador informa la intervención finalizada (pantalla O8). Contrato:
+[`docs/contratos/HU-W2.3-02-api.md`](../../docs/contratos/HU-W2.3-02-api.md).
+
+- **Rutas** (solo `operations`, `Cache-Control: no-store`): `GET /v1/claims/{claim_id}/intervention`,
+  `POST …/intervention/steps` y `POST …/closure`.
+- **Pasos:** `accepted`, `en_route`, `visit_done` (con el informe del prestador: causa, daño, costo en centavos de COP, días y
+  número de fotos), `repair_authorized` y `repair_executed`, en ese orden y una vez cada uno. La asignación de HU-W2.3-01 es el
+  inicio; no es un paso. Cada paso guarda cuándo dice el prestador que ocurrió, la observación y quién lo registró y cuándo. La
+  hora no puede ser anterior al paso previo (o a la asignación) ni futura; se compara al minuto porque la pantalla no pide
+  segundos.
+- **Cierre:** solo después de `repair_executed`; si falta, `409 intervention_not_finished` con `missing` (los pasos que faltan).
+  El resultado es obligatorio (`repaired`, `partially_repaired`, `no_repair_needed`, `not_repairable`) y la fecha de cierre no
+  puede ser anterior al fin de la reparación. Guarda al analista responsable y, en la misma transacción, **libera al
+  prestador** (`busy` → `available`).
+- **No toca el estado del siniestro:** `claim.status` no cambia (como la asignación, decisión D2) y el cierre no aprueba, rechaza ni
+  paga. El estado propio de la intervención es `not_assigned`, `in_progress`, `ready_to_close` o `closed`.
+- **Solo inserción:** `claim_intervention_step` y `claim_closure` (migración `0016`) usan el mismo *trigger* que el historial de
+  la asignación. De dos analistas que registran el mismo paso o cierran a la vez gana uno; el otro recibe `409`.
+- **Fuera de alcance:** reasignar o cancelar la asignación, la calificación del prestador, subir las fotos (solo se cuenta
+  cuántas), recalcular la prioridad con `provider_report_received` y avisar a la asegurada en cada etapa.
+
+## Solicitud de asistencia (HU-M2.3-01)
+
+El asegurado pide asistencia en sitio desde la app (pantallas M14, M14b y M14c) y la app comparte su ubicación, o el motivo por el
+que no pudo, mientras abre el marcador hacia la línea de atención. Contrato:
+[`docs/contratos/HU-M2.3-01-api.md`](../../docs/contratos/HU-M2.3-01-api.md).
+
+```
+POST /v1/claims/assistance-requests ─▶ 1. cuerpo: póliza, resultado de la ubicación, place (todo lo inválido a la vez)  [CA-2, CA-4]
+     (Idempotency-Key)                 2. core de pólizas: propia y vigente hoy; si no responde, 503 y nada se guarda  [CA-5]
+                                       3. assistance_request con requested_at del servidor (UTC), número AST-… y new   [CA-2, CA-5]
+GET  /v1/claims/assistance-requests/{request_id} ─▶ la solicitud, solo para su dueño (otro asegurado: 404)
+```
+
+- **Quién solicita:** solo `insured`, a nombre del `sub` del token; el cuerpo no lo dice (un `sub` en el cuerpo es `400`).
+  `advisor`, `operations` y `partner` reciben `403`.
+- **Póliza:** cualquier línea (Autos, Hogar, Viaje), siempre que sea del asegurado y esté vigente hoy; el core no dice qué
+  productos incluyen asistencia y la cobertura se confirma en la llamada. Ajena o inexistente: `422 policy_not_eligible` con
+  `policy_not_found`; no vigente: `policy_not_active`, con su vigencia. **Póliza verificada o nada:** con el core caído la
+  respuesta es `503 policy_directory_unavailable` y no se registra nada; la app llama igual y reintenta con la misma llave.
+- **Resultado de la ubicación:** `sent` con latitud, longitud, `accuracy_m` (> 0 y ≤ 10 000 m) y `captured_at` (el *fix* del
+  teléfono, hasta 5 minutos en el futuro por desfase del reloj), o `unavailable` con `permission_denied`, `location_disabled` o
+  `no_fix` y sin coordenadas. Mezclar las dos formas es `422` (`not_applicable`). No hay umbral de precisión: toda ubicación
+  viaja con la suya y el analista decide. El servicio no rechaza un *fix* viejo; la app manda `no_fix`.
+- **`place`** es opcional (3–160 caracteres): la dirección que la app obtiene del geocodificador del teléfono. Este servicio
+  no geocodifica.
+- **Idempotencia:** `Idempotency-Key` única por `(sub, llave)` y huella del contenido, como la radicación: la misma llave y el
+  mismo cuerpo responden `200` con la misma solicitud; con otro cuerpo, `422 idempotency_key_reused`.
+- **No es un siniestro:** tabla y número propios (`AST-<año>-<4 dígitos o más>`, secuencia `assistance_request_number_seq`);
+  no toca `claim`, no entra a la revisión ni al triage y no aparece en `GET /v1/claims`.
+- **Lo enviado no se reescribe:** un disparador de `assistance_request` impide `DELETE`, `TRUNCATE` y todo `UPDATE` que cambie
+  lo registrado; solo `status` queda libre para la bandeja de HU-W2.3-03. Un `CHECK` exige la forma de cada resultado de
+  ubicación.
+- **Privacidad:** la ubicación de una persona es un dato sensible. Los logs llevan solo `request_id`, `request_number` y
+  `location_status`; nunca coordenadas, `place`, nombre ni `sub` (tampoco el error del core, que trae el `sub` en la URL).
+  Las respuestas son `no-store` y la lectura no pasa por la caché de HA-L02.
+- **La línea de atención vive en la app:** el marcador abre aunque la red o este servicio fallen. El servicio no la conoce.
+- **Se monta** con `AUTH_*` y `POLICY_CORE_URL`; sin el core, el log lo dice y las rutas no existen (`404`). Sin
+  `DATABASE_URL` las solicitudes viven en memoria.
+- **Para HU-W2.3-03:** las solicitudes están en `assistance_request` con la copia de la póliza (`policy_snapshot`), el nombre
+  del token (`requester_name`) y `status = new`; el `CHECK` ya admite `in_call`, `dispatched` y `closed`. El teléfono del
+  asegurado no se guarda (el token no lo trae). **No publica ni consume eventos:** la bandeja lee la misma base.
+
+## Consulta ágil del estado del siniestro (HA-L02)
+
+La lista, el detalle y el historial de estados que lee el asegurado (y el historial que leen el asesor y operaciones) pasan por
+una caché de lectura en Redis. Es el mecanismo validado en el experimento EC-L02 (p95 de 1.121 ms con un corte de 900 ms).
+Contrato: [`docs/contratos/HA-L02-api.md`](../../docs/contratos/HA-L02-api.md).
+
+```
+GET /v1/claims[/{id}[/history]]
+  └─ base de datos, con 900 ms (CLAIM_READ_BUDGET_MS)
+       ├─ responde ──────────────▶ se guarda en Redis y sale con stale=false, as_of=ahora
+       ├─ responde «no existe», «no es tuyo» o «filtro inválido» ─▶ sale tal cual (la base contestó: no se degrada)
+       └─ tarda más o falla ──▶ Redis
+                                  ├─ hay lectura guardada ─▶ sale con stale=true, as_of=hora de esa lectura
+                                  └─ no hay ──────────────▶ 503 claims_unavailable, como antes
+```
+
+- **Campos nuevos en las tres respuestas:** `stale` y `as_of`, más las cabeceras `X-Stale` y `X-Data-Source`
+  (`database` o `cache`). Son aditivos: el portal y el móvil que no los leen siguen funcionando. La respuesta de una
+  radicación no los lleva, porque no es una lectura.
+- **Aislamiento:** la clave lleva el `sub` de quien lee (`owner:<sub>:claim:<id>`, `owner:<sub>:list:<hash del filtro>`), así
+  que la caché solo devuelve algo que esa misma persona ya leyó de la base. El historial del asesor y de operaciones va en
+  claves `staff:` aparte.
+- **Frescura ≤ 5 minutos:** las lecturas normales siempre van primero a la base, y cada entrada vence a los 5 minutos
+  (`CLAIM_READ_CACHE_TTL_SECONDS`, máximo 300). Un cambio de estado nunca queda tapado por la caché más de ese tiempo.
+- **Sin Redis no pasa nada:** sin `REDIS_ADDR` las consultas leen solo la base. Si Redis se cae, la falla se registra y la
+  consulta sigue contra la base.
+- Prueba de carga: [`tests/load-k6/ha-l02`](../../tests/load-k6/ha-l02/README.md).
+
+## Cola de trabajo ordenada por prioridad (HU-W2.2-02)
+
+`GET /v1/claims/evaluations` es la cola de operaciones (O5): los casos `in_evaluation`, ordenados por nivel del triage
+(1, 2, 3 y al final los que aún no tienen) y en cada nivel por tiempo de espera desde la radicación. Contrato:
+[`docs/contratos/HU-W2.2-02-api.md`](../../docs/contratos/HU-W2.2-02-api.md).
+
+- **Orden en la base:** `PriorityQueue` (`internal/adapters/postgres/priority.go`) une `claim` con `claim_current_triage` y
+  ordena por `(rango, filed_at, id)` con paginación por cursor. Un nuevo cálculo del triage mueve el caso en la siguiente
+  lectura. En memoria, `memory.PriorityQueue` ordena con los niveles del servicio de triage.
+- **Filtros:** `level` (1, 2, 3, `none`), `line` (por el tipo de siniestro) y `status`. Los indicadores (`summary`) cuentan
+  toda la cola por nivel. `matching` cuenta lo que cumple los filtros, y el tiempo medio de resolución es el de los casos
+  decididos en los últimos 30 días (`null` si no hay ninguno).
+- **Asegurado de cada fila:** se lee del núcleo de pólizas una vez por asegurado de la página, con hasta 8 lecturas a la
+  vez. Si falla, la fila llega sin él.
+
+## Motor paramétrico (HU-M2.4-01)
+
+El criterio 3 de HU-M2.4-01 pide que la línea de tiempo muestre un siniestro resuelto automáticamente con el parámetro y el valor
+que generó el pago. Contrato para el móvil: [`docs/contratos/HU-M2.4-01-api.md`](../../docs/contratos/HU-M2.4-01-api.md).
+Eventos: [`ParametricTriggerObserved` y `ParametricPayoutCompleted`](../../docs/events/README.md).
+
+- **Entrada:** `internal/adapters/messaging` consume `ParametricTriggerObserved` de la cola de `claims` (`pkg/events/sqsconsumer`).
+  Un *payload* inválido o el núcleo de pólizas caído son error: el mensaje se reintenta y termina en la DLQ.
+- **Una transacción:** `postgres.ClaimRecordStore.Resolve` inserta el siniestro con el mismo `INSERT` de los otros canales (nace
+  `in_evaluation`, con la clave `parametric-<observation_id>`), la fila de `claim_parametric_resolution` (solo inserción) y la
+  aprobación de `parametric-engine` con la sentencia de `Decide`. El historial queda `in_evaluation → approved`.
+- **Pago y evento:** el trabajador de `decision` (HU-W2.2-03) paga a la pasarela con la clave `indemnizacion-<claim_id>`. La
+  sentencia de `Confirm` que lo deja `paid` escribe además `ParametricPayoutCompleted` en `outbox_event` cuando el siniestro tiene
+  resolución paramétrica, y el relevo (`pkg/outbox`) lo publica en el tópico `claims`, que consume `notifications`.
+- **Se monta** con `DATABASE_URL`, `POLICY_CORE_URL`, `PAYMENT_GATEWAY_URL` y `EVENTS_QUEUE_URL`. Sin alguna de ellas, el log dice
+  por qué y el resto del servicio sigue respondiendo.
+- **Ensayo:** [`tests/e2e/hu-m2.4`](../../tests/e2e/hu-m2.4/README.md) (`app-local.sh` en local y `nube.sh` en AWS).
+
+## Siniestros en curso de una póliza (HU-W1.4-02)
+
+Antes de que un analista de operaciones aplique un endoso de beneficiarios o de suma asegurada, `origination` valida «Sin siniestro
+en curso que bloquee el cambio» preguntándole a este servicio.
+
+- **Ruta interna:** `GET /internal/policies/{policy_id}/open-claims` → `200 {policy_id, open_claims}` (`0` si la póliza no tiene
+  siniestros), `400 invalid_policy_id` y `503 unavailable`. No lleva token: vive fuera de `/v1/claims`, así que ni el API Gateway
+  (`/v1/claims/{proxy+}`) ni el balanceador la enrutan, y solo la alcanzan los servicios de la VPC por Cloud Map
+  (`claims.<entorno>.local:8080`), igual que `GET /v1/audit/consent-verifications` de `audit`. No nombra ningún siniestro ni a
+  quien lo radicó: solo el conteo.
+- **En curso:** todo estado que la regla del servicio no cierra (`domain.Closed`: `paid` o `rejected`), es decir `active`,
+  `returned`, `in_evaluation`, `approved` y `payment_exception`. La base cuenta por estado (`claim_policy_status_idx`, migración
+  `0014`) y la regla decide en Go, así que un estado nuevo cuenta como en curso sin tocar la consulta.
+- **Se monta** junto a las rutas humanas (con `AUTH_ISSUER`), sobre el almacén de los casos: `ClaimRecordStore` en PostgreSQL o
+  `CaseStore` en memoria.
+
+## Atención de solicitudes de asistencia (HU-W2.3-03)
+
+El analista de operaciones atiende en el portal las solicitudes que el asegurado envió desde la app (HU-M2.3-01). Las
+pantallas son «Asistencias en sitio» y «Detalle de la asistencia». El analista despacha al prestador más cercano, que recibe
+la ubicación, o cierra la solicitud por otro medio. Contrato:
+[`docs/contratos/HU-W2.3-03-api.md`](../../docs/contratos/HU-W2.3-03-api.md).
+
+```
+GET  /v1/claims/assistance-inbox[?status=…&limit=…] ─▶ solicitudes, la más reciente primero, con póliza, hora y ubicación;
+                                                       indicadores: nuevas, en llamada, despachadas hoy, tiempo medio    [CA-1]
+GET  /v1/claims/assistance-inbox/{id} ──────────────▶ la solicitud, la necesidad, la sugerencia, el despacho o el cierre
+                                                       y el historial                                                     [CA-2, CA-5]
+POST …/{id}/attend ─────────────▶ new → in_call (o la toma otro analista: taken_over)
+POST …/{id}/need ───────────────▶ necesidad del catálogo de la línea → especialidad
+POST …/{id}/voice-location ─────▶ sin GPS: dirección + pin del analista
+        assessors.Suggest ──────▶ disponibles hoy + especialidad, 5 → 10 → 20 km, el más cercano con llegada estimada     [CA-2]
+POST …/{id}/dispatch ───────────▶ in_call → dispatched; copia del prestador y de la ubicación; aviso pendiente            [CA-3]
+        assistance.NoticeWorker ▶ correo al prestador, llave asistencia-<id>, reintentos 5 s, 30 s, 2 min, 10 min         [CA-3]
+POST …/{id}/close ──────────────▶ new|in_call → closed con motivo (y nota con other), sin despacho ni correo              [CA-4]
+GET  /v1/claims/assistance-policy ─▶ necesidades por línea, radios, llegada estimada, motivos de cierre
+```
+
+- **Solo `operations`** (HA-S01): el asegurado, el asesor y el socio reciben `403`. El asegurado sigue el estado en su propia
+  lectura (HU-M2.3-01), que muestra `in_call`, `dispatched` o `closed` sin datos del prestador.
+- **Estados:** `new` → `in_call` (atender) → `dispatched` (despachar) o `closed` (cerrar, también desde `new`). Los dos últimos
+  son finales: otra decisión es `409 assistance_not_open`. Abrir el detalle no cambia el estado. Solo cambia
+  `assistance_request.status`; lo que envió la app no se reescribe.
+- **Necesidad:** la elige el analista en la llamada. Política `assistance-policy-v1` (`internal/domain/assistance_policy.go`),
+  **provisional, pendiente de validación con negocio**:
+  - en Autos, `towing` va a `towing`; `battery`, `flat_tire`, `fuel` y `vehicle_lockout` van a `roadside_assistance`;
+  - en Hogar, `plumbing_emergency` va a `plumbing`;
+  - Viaje no tiene necesidades (`422 need_not_for_line`).
+
+  Llegada estimada: 10 min de alistamiento más la distancia a 30 km/h, redondeada hacia arriba. Meta de despacho: 5 min.
+- **Ubicación:** la del teléfono (`sent`) o, sin GPS, la dirección dictada y el pin que pone el analista (5–200 caracteres; vale
+  la última). El servicio no geocodifica. Una solicitud con coordenadas del teléfono no acepta ubicación por voz
+  (`409 location_from_app`).
+- **Sugerencia:** la búsqueda es `assessors.Suggest`, la de HU-W2.3-01 sin caso: disponible hoy, con la especialidad y dentro
+  del radio; radios de 5, 10 y 20 km. Se calcula en cada lectura y no se guarda. El estado de la sugerencia dice qué falta:
+  `need_missing`, `location_missing`, `found`, `exhausted` o `not_applicable`.
+- **Despacho:** la búsqueda se repite al despachar, y solo se despacha un prestador `eligible` en ese momento
+  (`422 provider_not_eligible`). Guarda una copia del prestador, de la ubicación compartida, de la distancia y de la llegada
+  estimada. Al despachar, el prestador **no** queda `busy`: cada candidato de la sugerencia solo informa cuántas asistencias
+  tiene hoy (`dispatched_today`). HU-W2.3-02 decidirá si
+  una asistencia ocupa prestadores.
+- **Aviso:** el `NoticeWorker` envía el correo por `EMAIL_URL`. Lleva el número, la necesidad, la línea, las coordenadas con
+  su precisión u origen, la dirección y un enlace al mapa. No lleva nombre, documento ni teléfono del asegurado. Sin
+  `EMAIL_URL`, o con el proveedor caído, el despacho se registra igual y el aviso espera (`notice.status: pending`).
+- **Cierre:** con motivo obligatorio (`resolved_by_phone`, `duplicate`, `cancelled_by_insured`, `not_covered`,
+  `no_provider_available` u `other`; con `other`, nota de 3–500 caracteres).
+- **Concurrencia:** cada decisión lleva la versión de la solicitud (el número de decisiones). Si dos analistas deciden a la vez,
+  gana uno; el otro vuelve a leer y recibe `409` si la solicitud ya no está abierta.
+- **Trazabilidad (CA-5):** las tablas `assistance_action` (cada decisión, con el correo y el nombre del analista y la hora),
+  `assistance_need`, `assistance_voice_location`, `assistance_dispatch` y `assistance_closure` son de solo inserción: sus
+  disparadores impiden `UPDATE`, `DELETE` y `TRUNCATE`. Solo `assistance_notice` (el estado del aviso) cambia.
+- **Texto libre:** desde esta historia, un nombre, una dirección o una nota con un carácter de control (salvo salto de línea,
+  retorno y tabulador) es `422 invalid_format`. Aplica también al registro de prestadores y a la ubicación del siniestro de
+  HU-W2.3-01; antes, un NUL llegaba a PostgreSQL y respondía `503`.
+- **Privacidad:** los logs llevan solo `request_id`. Nunca llevan coordenadas, direcciones, nombres ni correos.
+- **Prestadores:** la semilla `0015_assistance_provider_seed.sql` trae 5 de grúa y asistencia vial en Bogotá y en la vía
+  Cali–Palmira (**pendientes de reemplazo por negocio**). Operaciones los mantiene con la API del registro de HU-W2.3-01.
+- **Se monta** con `AUTH_*`, sobre las solicitudes de HU-M2.3-01 y el registro de HU-W2.3-01. No necesita el core de pólizas.
+  Sin `DATABASE_URL` vive en memoria, sobre el mismo almacén de las solicitudes.
+- **No publica ni consume eventos:** la bandeja lee la misma base (≤ 60 s sin SNS/SQS) y el aviso es un correo.
+- **Queda fuera:**
+  - el seguimiento después del despacho, la cancelación o el re-despacho;
+  - ocupar al prestador (HU-W2.3-02);
+  - el teléfono del asegurado y la llamada desde el portal;
+  - los avisos al asegurado;
+  - la distancia por vía;
+  - la necesidad enviada por la app.
+
 ## Requisitos de calidad que gobiernan el servicio
 
 - Consulta de estado del siniestro p95 ≤ 2 s en la app móvil (EC-L02): caché de lectura en Redis con corte duro de 900 ms; ante timeout responde la última versión válida con `stale=true`.
@@ -196,9 +565,10 @@ POST /v1/claims/{id}/payout-retry ───▶ destino corregido o el mismo, mis
 
 ## Datos y eventos
 
-- **BD propia:** PostgreSQL (siniestros): `claim` (con `channel`, `policy_snapshot` y `catalog_version` desde HU-W2.1-01 y `estimated_amount_minor` desde HU-W2.2-01), `claim_evidence`, `support_file` (metadatos; el archivo vive en S3), `claim_support` y `claim_triage` (HU-W2.2-01: cada cálculo del nivel, solo se agregan filas) con su vista `claim_current_triage`, `claim_decision` (HU-W2.2-03: la decisión y el pago de la indemnización) y `claim_payout_retry` (cada reintento manual). Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
-- **Publica:** `ClaimApproved` (dispara notificación y pago paramétrico). Ver [catálogo de eventos](../../docs/events/README.md).
-- **Depende de:** `pkg/adapters` (`iot`, `payments`, `policies` desde HU-W2.1-01), `pkg/outbox`. HU-W2.1-01 no publica ni consume eventos.
+- **BD propia:** PostgreSQL (siniestros): `claim` (con `channel`, `policy_snapshot` y `catalog_version` desde HU-W2.1-01 y `estimated_amount_minor` desde HU-W2.2-01), `claim_evidence`, `support_file` (metadatos; el archivo vive en S3), `claim_support` y `claim_triage` (HU-W2.2-01: cada cálculo del nivel, solo se agregan filas) con su vista `claim_current_triage`, `claim_decision` (HU-W2.2-03: la decisión y el pago de la indemnización), `claim_payout_retry` (cada reintento manual), `claim_review` (HU-W2.1-03: cada revisión del asesor) y `claim_status_change` (cada cambio de estado, escrito por un *trigger*). HU-W2.3-01: `provider` (registro de prestadores), `claim_incident_location` (cada ubicación que registra el analista), `claim_provider_search` y `claim_provider_search_attempt` (cada búsqueda y cada radio intentado), `claim_assignment` (una por caso) y `provider_notice` (el aviso al prestador y sus intentos); las cuatro de historial son de solo inserción. HU-W2.3-02: `claim_intervention_step` (cada avance del prestador, con el informe de la visita) y `claim_closure` (el cierre del caso), las dos de solo inserción (migración `0016`). HU-M2.4-01: `claim_parametric_resolution` (la resolución automática y su disparador, solo inserción) y `outbox_event` (los eventos por publicar). HU-M3.3-01: `claim_stage_notice` (cada cambio de estado ya mirado, con su evento) y `claim_stage_notice_start` (desde qué cambio se avisa: lo anterior a la migración `0012` es historia). HU-M2.3-01: `assistance_request` (cada solicitud de asistencia con la copia de la póliza, el resultado de la ubicación y su estado; solo `status` se puede actualizar). HU-W1.4-02: índice `claim_policy_status_idx` (`policy_id`, `status`, migración `0014`) para contar los siniestros en curso de una póliza. HU-W2.3-03 (migraciones `0014_assistance_dispatch` y `0015_assistance_provider_seed`): `assistance_action` (cada decisión del analista), `assistance_need`, `assistance_voice_location`, `assistance_dispatch` (una por solicitud, con la copia del prestador y de la ubicación) y `assistance_closure` (una por solicitud), todas de solo inserción, y `assistance_notice` (el aviso al prestador y sus intentos). Caché: Redis (`internal/adapters/redis`). Objetos: S3 (`internal/adapters/s3`).
+- **Publica:** `ParametricPayoutCompleted` con *outbox* (HU-M2.4-01), `ClaimStageChanged` (HU-M3.3-01, también con *outbox*) y, cuando se implemente, `ClaimApproved`. Ver [catálogo de eventos](../../docs/events/README.md).
+- **Consume:** `ParametricTriggerObserved` (HU-M2.4-01) de su cola, suscrita al tópico `iot`.
+- **Depende de:** `pkg/adapters` (`iot`, `payments`, `policies` desde HU-W2.1-01), `pkg/events`, `pkg/outbox`. HU-W2.1-01 no publica ni consume eventos; HU-W2.3-03 tampoco.
 
 ## Historias asociadas
 
@@ -220,11 +590,18 @@ Variables que el servicio lee:
 | `EVIDENCE_BUCKET` | HU-M2.1-01: la URL firmada no se monta y una radicación que declare evidencia se rechaza con `not_stored`; **HU-W2.1-01:** tampoco se monta la radicación web (los soportes no tendrían dónde ir); el resto del servicio sigue respondiendo. Un *bucket* configurado que no se alcanza sí impide arrancar: es un error de configuración |
 | `EVIDENCE_ENDPOINT_URL` | Solo para una corrida local contra un emulador de S3 (LocalStack); vacía en AWS, donde se usa el servicio real y el rol de la tarea |
 | `AWS_REGION` | Región del SDK de AWS (la plataforma la fija, `us-east-2`) |
-| `POLICY_CORE_URL` | HU-W2.1-01: las opciones, la declaración y confirmación de soportes y la radicación web no se montan (sin el core no se sabe qué pólizas son del asegurado) |
+| `POLICY_CORE_URL` | HU-W2.1-01: las opciones, la declaración y confirmación de soportes y la radicación web no se montan (sin el core no se sabe qué pólizas son del asegurado). **HU-M2.3-01:** tampoco la solicitud de asistencia |
 | `POLICY_CORE_TIMEOUT_MS` | 700 ms por llamada al core de pólizas |
 | `TRIAGE_SWEEP_INTERVAL_SECONDS` | HU-W2.2-01: el barrido del triage corre cada 10 s. Entre 1 y 30; otro valor impide arrancar. Solo se acorta en local y en la e2e |
 | `PAYMENT_GATEWAY_URL` | HU-W2.2-03: aprobar, rechazar y reintentar el pago no se montan (una aprobación no tendría cómo pagarse). La lectura de la evaluación sí |
-| `EMAIL_URL` | HU-W2.2-03: los rechazos se registran igual y sus avisos esperan hasta que se configure |
+| `EMAIL_URL` | HU-W2.2-03: los rechazos se registran igual y sus avisos esperan hasta que se configure. **HU-W2.3-01:** también avisa al prestador asignado; sin ella las asignaciones se registran y sus avisos esperan. **HU-W2.3-03:** también avisa al prestador despachado a una asistencia; sin ella los despachos se registran y sus avisos esperan |
+| `REDIS_ADDR` | HA-L02: las consultas del asegurado no tienen caché de lectura y solo leen la base. Un Redis que no responde al arrancar no impide arrancar |
+| `CLAIM_READ_BUDGET_MS` | HA-L02: cada consulta espera 900 ms a la base antes de usar la caché. Entre 50 y 5000; otro valor impide arrancar |
+| `CLAIM_READ_CACHE_TTL_SECONDS` | HA-L02: cada lectura guardada vence a los 300 s (5 minutos). Entre 1 y 300; otro valor impide arrancar |
+| `EVENTS_QUEUE_URL` | HU-M2.4-01: el motor paramétrico no consume observaciones (tampoco se monta sin `DATABASE_URL`, `POLICY_CORE_URL` o `PAYMENT_GATEWAY_URL`). En local, `AWS_ENDPOINT_URL_SQS` apunta a LocalStack |
+| `EVENTS_TOPIC_ARN` | HU-M2.4-01: `ParametricPayoutCompleted` se queda en el *outbox* sin publicarse. En local, `AWS_ENDPOINT_URL_SNS` apunta a LocalStack |
+| `OUTBOX_POLL_INTERVAL_MS` | HU-M2.4-01: el relevo del *outbox* busca eventos cada 1000 ms. Entre 100 y 60000; otro valor impide arrancar |
+| `ASSIGNMENT_RETRY_INTERVAL_SECONDS` | HU-W2.3-01: la búsqueda automática de los casos pendientes de asignación corre cada 300 s. Entre 10 y 3600; otro valor impide arrancar. Solo se acorta en local y en la e2e |
 
 El `AUTH_ISSUER` del *user pool* permanente es
 `https://cognito-idp.us-east-2.amazonaws.com/us-east-2_EWwg8NL2C`. Las migraciones se aplican solas al arrancar.
@@ -242,3 +619,15 @@ que necesitan Docker se saltan). `tests/integration/web_filing_test.go` ejercita
 [`tests/e2e/hu-w2.1`](../../tests/e2e/hu-w2.1/README.md) recorre los criterios de punta a punta con el core detrás de Toxiproxy.
 **HU-W2.2-01:** `tests/integration/triage_test.go` ejercita cada criterio del triage por HTTP con el barrido corriendo; el contrato
 también pasa como `operations`; [`tests/e2e/hu-w2.2`](../../tests/e2e/hu-w2.2/README.md) lo recorre de punta a punta.
+**HU-W2.3-01:** `tests/integration/assignment_test.go` ejercita cada criterio de la asignación por HTTP con el `Worker` corriendo,
+además de las carreras y las tablas de solo inserción; el contrato pasa con los tres roles;
+[`tests/e2e/hu-w2.3`](../../tests/e2e/hu-w2.3/README.md) la recorre de punta a punta con el correo detrás de Toxiproxy.
+**HU-W2.3-02:** `tests/integration/intervention_test.go` ejercita cada criterio del seguimiento y del cierre por HTTP, desde una
+asignación real, y comprueba que el cierre libera al prestador y no cambia el estado del siniestro.
+**HU-M2.3-01:** `tests/integration/assistance_test.go` ejercita cada criterio con parte de backend (CA-2, CA-4 y CA-5) por HTTP,
+con el corte y el *circuit breaker* del cliente real del core; el contrato pasa como `insured`;
+[`tests/e2e/hu-m2.3`](../../tests/e2e/hu-m2.3/README.md) la recorre de punta a punta con el core detrás de Toxiproxy.
+**HU-W2.3-03:** `tests/integration/assistance_inbox_test.go` ejercita cada criterio de la bandeja por HTTP. Usa la ruta real del
+móvil, el `NoticeWorker` y un correo que falla, y cubre además la carrera entre analistas, los roles y las tablas de solo
+inserción. El contrato pasa con los tres roles.
+[`tests/e2e/hu-w2.3-03`](../../tests/e2e/hu-w2.3-03/README.md) la recorre de punta a punta con el correo detrás de Toxiproxy.

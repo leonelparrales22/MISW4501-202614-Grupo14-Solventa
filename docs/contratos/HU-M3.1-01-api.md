@@ -26,7 +26,11 @@ App ──GET /v1/notifications/{id}─────────▶ detalle del p
 - **El centro no depende del *push*:** la notificación se registra al llegar el evento, haya o no dispositivo con permiso y llegue o no el
   *push* (criterios 5 y 7).
 
-## 2. El proveedor de *push* es un simulador (decisión del equipo)
+## 2. El proveedor de *push* era un simulador (decisión del equipo; reemplazada en HU-M3.3-01)
+
+> **Desde HU-M3.3-01 el *push* sale por Firebase Cloud Messaging** (proyecto `solventa-94126`) en AWS: es un mensaje de solo datos con
+> prioridad alta y `data` = `notification_id`, `kind` y `claim_id`; la app lo recibe aunque esté cerrada y hace en ese momento la
+> revisión del paso 2. `token` es el de FCM. Lo de abajo sigue valiendo en local y en las e2e, que usan el simulador.
 
 En esta historia no hay proyecto de Firebase: `notifications` envía cada *push* a `stubs/push`, que lo registra pero **no lo entrega al
 teléfono**. Para que el asegurado se entere igual, la app:

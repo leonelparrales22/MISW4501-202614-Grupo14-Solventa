@@ -21,6 +21,14 @@ data "terraform_remote_state" "identity" {
   }
 }
 
+# The service account of the Firebase project solventa-94126 (HU-M3.3-01). It
+# is created once, outside Terraform (infra/terraform/modules/platform/README.md,
+# «Firebase Cloud Messaging»), so the key is never in the state and survives
+# every window; the platform only reads its ARN.
+data "aws_secretsmanager_secret" "fcm" {
+  name = "solventa/fcm/service-account"
+}
+
 module "platform" {
   source = "../../../modules/platform"
 
@@ -32,6 +40,10 @@ module "platform" {
   image_tag           = var.image_tag
   image_tag_overrides = var.image_tag_overrides
   services_enabled    = var.services_enabled
+
+  # The demonstration clock of the instalments (HU-W1.6-02): see
+  # «Reloj de las cuotas para la sustentación» in the README.
+  origination_environment = var.origination_environment
 
   service_sizing = {
     # EXP-L01: 0.5 vCPU / 1 GB. Temporary deviation from ADR-02 (3 tasks,
@@ -61,6 +73,13 @@ module "platform" {
     issuer        = data.terraform_remote_state.identity.outputs.issuer
     jwks_url      = data.terraform_remote_state.identity.outputs.jwks_url
     client_ids    = data.terraform_remote_state.identity.outputs.client_ids
+  }
+
+  # HU-M3.3-01: the pushes go through Firebase Cloud Messaging with the
+  # permanent secret (data "aws_secretsmanager_secret" "fcm" below).
+  fcm = {
+    project_id             = "solventa-94126"
+    credentials_secret_arn = data.aws_secretsmanager_secret.fcm.arn
   }
 
   deletion_protection = var.deletion_protection

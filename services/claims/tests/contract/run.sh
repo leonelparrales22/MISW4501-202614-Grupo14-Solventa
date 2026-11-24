@@ -8,7 +8,9 @@
 #      (filing options, declaration and confirmation of a support, web filing,
 #      list, detail and receipt). The generated policies are not the insured's and the generated
 #      ids do not exist, so the 422 and 404 answers are reached.
-#   2. as an advisor: every route answers 403.
+#   2. as an advisor: the review of the filing of HU-W2.1-03 (the filings to
+#      review, the detail, the approval and the return) and the history of a
+#      claim answer 200, 400, 404, 409 or 422; every other route answers 403.
 #   3. as operations (HU-W2.2-01): the reads of the triage (the triage of a
 #      claim, a page of claims and the policy in force) answer 200, 400 or
 #      404; the routes of the insured answer 403.

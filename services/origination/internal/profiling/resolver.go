@@ -74,9 +74,29 @@ func (r *Resolver) Resolve(ctx context.Context, customerID string, consentActive
 		}
 	}
 
-	// Simultaneous requests for the same customer share one calculation. It
-	// runs detached from any single caller, bounded by the fan-out deadline, so
-	// one disconnect does not fail the others.
+	return r.shared(ctx, customerID)
+}
+
+// ResolveFresh returns a profile for the customer querying the external
+// sources first, even when a complete cached profile could be reused: the
+// advisor requotes a renewal with the current data of the customer
+// (HU-W1.5-03, decision D-5 b; the architecture says the cached profile is
+// invalidated when the customer is requoted). The cache is never dropped
+// beforehand: a profile from the sources replaces it, and when the sources
+// fail it still backs a provisional answer (cache, then the base actuarial
+// profile), exactly as in Resolve. Resolve is not changed by it.
+func (r *Resolver) ResolveFresh(ctx context.Context, customerID string, consentActive bool) (domain.ProfileResolution, error) {
+	if !consentActive {
+		return domain.ProfileResolution{}, ErrConsentRequired
+	}
+	return r.shared(ctx, customerID)
+}
+
+// shared runs the calculation of the customer's profile. Simultaneous
+// requests for the same customer share one calculation. It runs detached from
+// any single caller, bounded by the fan-out deadline, so one disconnect does
+// not fail the others.
+func (r *Resolver) shared(ctx context.Context, customerID string) (domain.ProfileResolution, error) {
 	ch := r.flight.DoChan(customerID, func() (any, error) {
 		return r.calculate(context.WithoutCancel(ctx), customerID)
 	})

@@ -27,6 +27,7 @@ func TestClaimsFromMap_IDToken(t *testing.T) {
 		"sub":               "a1b2c3",
 		"cognito:username":  "a1b2c3",
 		"email":             "ana@solventa.test",
+		"name":              "Ana Rojas",
 		"custom:partner_id": "partner-7",
 		"token_use":         "id",
 		"cognito:groups":    []any{"partner"},
@@ -37,6 +38,7 @@ func TestClaimsFromMap_IDToken(t *testing.T) {
 	assert.Equal(t, "a1b2c3", c.Subject)
 	assert.Equal(t, "a1b2c3", c.Username)
 	assert.Equal(t, "ana@solventa.test", c.Email)
+	assert.Equal(t, "Ana Rojas", c.Name)
 	assert.Equal(t, "partner-7", c.PartnerID)
 	assert.Equal(t, "id", c.TokenUse)
 	assert.Equal(t, []Role{RolePartner}, c.Roles)

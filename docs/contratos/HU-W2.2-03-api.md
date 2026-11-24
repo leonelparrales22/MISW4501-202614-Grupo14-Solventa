@@ -26,7 +26,7 @@ POST /v1/claims/{claim_id}/payout-retry ─────────────�
 **Estados del caso**
 
 ```
-active / in_evaluation ──aprobar──▶ approved ──pago confirmado──▶ paid
+         in_evaluation ──aprobar──▶ approved ──pago confirmado──▶ paid
           │                            │  ▲
           │                            │  └──payout-retry──┐
           │                            └──rechazo de la pasarela o 3 intentos sin respuesta──▶ payment_exception
@@ -36,9 +36,9 @@ active / in_evaluation ──aprobar──▶ approved ──pago confirmado─�
 - Las dos rutas cuelgan de `/v1/claims`, así que el API Gateway ya las enruta con el autorizador de Cognito
   (`/v1/claims/{proxy+}`, GET). **Solo el rol `operations`**: asegurado, asesor y socio reciben `403`.
 - **Solo `operations`** aprueba, rechaza y reintenta (HA-S01, criterio 6).
-- **"En evaluación"** son los estados que evalúa el triage (`active` e `in_evaluation`): mientras no exista la revisión del
-  asesor (HU-W2.1-03), un caso radicado entra a evaluación tal como llega (supuesto S5 de HU-W2.2-01). Un caso decidido
-  (pagado o rechazado, PR 2b) sale de la lista y el triage deja de recalcularlo.
+- **"En evaluación"** es `in_evaluation`: desde HU-W2.1-03 un caso entra a evaluación cuando el asesor aprueba la
+  radicación (fin del supuesto S5 de HU-W2.2-01; ver [`HU-W2.1-03-api.md`](HU-W2.1-03-api.md)). Un caso decidido
+  (pagado o rechazado) sale de la lista y el triage deja de recalcularlo.
 - La **cola ordenada por prioridad** (O5) es HU-W2.2-02. Esta lista va del más antiguo al más nuevo y trae la prioridad de
   cada caso para que O5 la ordene o la filtre.
 

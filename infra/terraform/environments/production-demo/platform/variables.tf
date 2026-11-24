@@ -68,3 +68,17 @@ variable "ephemeral" {
   type        = bool
   default     = false
 }
+
+variable "origination_environment" {
+  description = "Extra environment variables of origination for the demonstration, for example the clock of the instalments of HU-W1.6-02 (INSTALLMENT_DAY_MS, INSTALLMENT_SWEEP_INTERVAL_MS, INSTALLMENT_UNKNOWN_RETRY_MS), so the cancellation for non-payment happens in minutes instead of 61 days. Empty by default: the real deadlines. It cannot replace the values of the platform."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for k in keys(var.origination_environment) :
+      can(regex("^[A-Z][A-Z0-9_]*$", k)) && !can(regex("^(PORT|REDIS_ADDR|AWS_REGION|DATABASE_URL|.*_URL|AUTH_.*|COGNITO_.*|DOCUMENTS_.*|DOCUMENT_LINK_.*|EVENTS_.*)$", k))
+    ])
+    error_message = "origination_environment keys must be UPPER_SNAKE_CASE and cannot replace a value of the platform (PORT, REDIS_ADDR, AWS_REGION, DATABASE_URL, *_URL, AUTH_*, COGNITO_*, DOCUMENTS_*, DOCUMENT_LINK_*, EVENTS_*)."
+  }
+}

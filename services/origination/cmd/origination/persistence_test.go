@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,13 +24,39 @@ import (
 
 // captureLog sends the standard log (and slog, which writes through it) to a
 // buffer for the rest of the test.
-func captureLog(t *testing.T) *bytes.Buffer {
+func captureLog(t *testing.T) *logBuffer {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &logBuffer{}
 	prev := log.Writer()
-	log.SetOutput(&buf)
+	log.SetOutput(buf)
 	t.Cleanup(func() { log.SetOutput(prev) })
-	return &buf
+	return buf
+}
+
+// logBuffer is a buffer that a test can read while a worker started by the
+// composition (the sweep of the renewal, for one) still writes to the log
+// from its own goroutine: every access holds the lock.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *logBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
 }
 
 // CF-7 / D-2 a: without DATABASE_URL every store is in memory, and one notice
@@ -47,12 +74,15 @@ func TestNewStoresWithoutADatabaseKeepsEverythingInMemoryAndSaysSo(t *testing.T)
 	assert.IsType(t, &memory.CustomerStore{}, st.customers)
 	assert.Same(t, st.demo, st.adjusted, "the adjusted offers live in the stub, in memory")
 	assert.Contains(t, buf.String(), "DATABASE_URL is not set: personalized and adjusted offers, acceptances, "+
-		"the advisor inbox and its decisions, customers, the advisor quotes and their formalizations, and the outbox of domain events are kept in memory and lost on restart")
+		"the advisor inbox and its decisions, customers, the advisor quotes and their formalizations, the expiry alerts and the outbox of domain events are kept in memory and lost on restart")
 	assert.IsType(t, &memory.QuoteStore{}, st.quotes)
 	assert.IsType(t, &memory.FormalizationStore{}, st.formalized)
 	assert.IsType(t, &memory.ConsentChallengeStore{}, st.consentCodes)
 	assert.IsType(t, &memory.Outbox{}, st.outbox)
 	assert.Same(t, st.customers.(*memory.CustomerStore).Outbox(), st.outbox, "the customers write to the outbox the relay reads")
+	assert.Nil(t, st.expiringOwn, "in memory origination issues no policies (HU-M3.2-01)")
+	assert.Same(t, st.customers, st.linked)
+	assert.IsType(t, &memory.ExpiryAlertStore{}, st.expiryAlerts)
 	assert.Equal(t, 1, strings.Count(buf.String(), "DATABASE_URL is not set"), "a single notice")
 	assert.NotContains(t, buf.String(), "PostgreSQL")
 	assert.NotNil(t, st.router())
@@ -115,7 +145,10 @@ func TestNewStoresPutsEverythingInPostgresOverASinglePool(t *testing.T) {
 	assert.IsType(t, &postgres.CustomerStore{}, first.customers)
 	assert.IsType(t, &postgres.OutboxStore{}, first.outbox)
 	assert.Contains(t, buf.String(), "origination data in PostgreSQL: personalized and adjusted offers, acceptances, "+
-		"the advisor inbox and its decisions, customers, the advisor quotes and their formalizations, and the outbox of domain events (HU-W1.2-03, HU-W1.3-01, HU-W1.1-02, HU-M1.1-01, HU-M1.3-01, HU-W1.1-01, HU-W1.1-03)")
+		"the advisor inbox and its decisions, customers, the advisor quotes and their formalizations, the expiry alerts and the outbox of domain events (HU-W1.2-03, HU-W1.3-01, HU-W1.1-02, HU-M1.1-01, HU-M1.3-01, HU-W1.1-01, HU-W1.1-03, HU-M3.2-01)")
+	assert.IsType(t, &postgres.PolicyStore{}, first.expiringOwn)
+	assert.IsType(t, &postgres.CustomerStore{}, first.linked)
+	assert.IsType(t, &postgres.ExpiryAlertStore{}, first.expiryAlerts)
 	assert.IsType(t, &postgres.QuoteStore{}, first.quotes)
 	assert.IsType(t, &postgres.FormalizationStore{}, first.formalized)
 	assert.IsType(t, &postgres.ConsentChallengeStore{}, first.consentCodes)

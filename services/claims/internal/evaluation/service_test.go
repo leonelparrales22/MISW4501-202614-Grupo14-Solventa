@@ -84,9 +84,13 @@ func servicio(store *memory.CaseStore, p ports.PolicyTermsReader, tri *triageFal
 
 func TestLaColaTraeLosSiniestrosEnEvaluacionDelMasAntiguoAlMasNuevo(t *testing.T) {
 	store := memory.NewCaseStore()
-	segundo := radicar(t, store, "k2", radicadoEn.Add(time.Hour), domain.StatusActive)
+	segundo := radicar(t, store, "k2", radicadoEn.Add(time.Hour), domain.StatusInEvaluation)
 	primero := radicar(t, store, "k1", radicadoEn, domain.StatusInEvaluation)
 	radicar(t, store, "k3", radicadoEn.Add(2*time.Hour), domain.Status("paid"))
+	// HU-W2.1-03: lo que espera la revisión del asesor o volvió al asegurado
+	// no es de operaciones.
+	radicar(t, store, "k4", radicadoEn.Add(-time.Hour), domain.StatusActive)
+	radicar(t, store, "k5", radicadoEn.Add(-time.Hour), domain.StatusReturned)
 	tri := &triageFalso{}
 
 	page, err := servicio(store, nil, tri).Queue(context.Background(), 0, "")
@@ -100,12 +104,27 @@ func TestLaColaTraeLosSiniestrosEnEvaluacionDelMasAntiguoAlMasNuevo(t *testing.T
 	assert.Empty(t, page.NextPageToken)
 }
 
+func TestLaColaDelAsesorTraeSoloLasRadicacionesPorRevisar(t *testing.T) {
+	store := memory.NewCaseStore()
+	segunda := radicar(t, store, "k2", radicadoEn.Add(time.Hour), domain.StatusActive)
+	primera := radicar(t, store, "k1", radicadoEn, domain.StatusActive)
+	radicar(t, store, "k3", radicadoEn, domain.StatusReturned)
+	radicar(t, store, "k4", radicadoEn, domain.StatusInEvaluation)
+
+	page, err := servicio(store, nil, &triageFalso{}).ReviewQueue(context.Background(), 0, "")
+
+	require.NoError(t, err)
+	require.Len(t, page.Items, 2, "lo devuelto y lo que ya está en evaluación no se revisa")
+	assert.Equal(t, primera, page.Items[0].Claim.ID)
+	assert.Equal(t, segunda, page.Items[1].Claim.ID)
+}
+
 func TestLaColaSePagina(t *testing.T) {
 	store := memory.NewCaseStore()
 	var ids []string
 	for i := 0; i < 5; i++ {
 		ids = append(ids, radicar(t, store, "k"+string(rune('a'+i)), radicadoEn.Add(time.Duration(i)*time.Minute),
-			domain.StatusActive))
+			domain.StatusInEvaluation))
 	}
 	svc := servicio(store, nil, &triageFalso{})
 

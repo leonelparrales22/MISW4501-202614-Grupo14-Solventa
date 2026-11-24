@@ -46,17 +46,17 @@ func TestOnlyTheThreeLevelsAreValid(t *testing.T) {
 	}
 }
 
-func TestTheTriageEvaluatesTheActiveAndTheInEvaluationClaims(t *testing.T) {
-	for _, s := range []domain.Status{domain.StatusActive, domain.StatusInEvaluation} {
-		assert.True(t, domain.Triageable(s), s)
-	}
-	for _, s := range []domain.Status{"paid", "rejected", "payment_exception", "returned", ""} {
+func TestTheTriageEvaluatesOnlyTheClaimsInEvaluation(t *testing.T) {
+	assert.True(t, domain.Triageable(domain.StatusInEvaluation))
+	// HU-W2.1-03 ends assumption S5: a filing waiting for the review of the
+	// advisor (active) or returned to the insured is not triaged.
+	for _, s := range []domain.Status{"active", "returned", "paid", "rejected", "payment_exception", ""} {
 		assert.False(t, domain.Triageable(s), s)
 	}
 
 	statuses := domain.TriageableStatuses()
 	statuses[0] = "paid"
-	assert.True(t, domain.Triageable(domain.StatusActive), "a caller cannot change the statuses")
+	assert.True(t, domain.Triageable(domain.StatusInEvaluation), "a caller cannot change the statuses")
 }
 
 func waterDamageInput() domain.TriageInput {
@@ -166,7 +166,8 @@ func TestARecalculationRecordsItsCausesAndThePreviousLevel(t *testing.T) {
 
 func TestTheStateOfTheTriageOfAClaim(t *testing.T) {
 	last := &domain.TriageRecord{Seq: 1}
-	assert.Equal(t, domain.TriagePending, domain.TriageStateOf(domain.StatusActive, nil))
+	assert.Equal(t, domain.TriageNotApplicable, domain.TriageStateOf(domain.StatusActive, nil),
+		"a filing waiting for review has no priority yet")
 	assert.Equal(t, domain.TriagePending, domain.TriageStateOf(domain.StatusInEvaluation, nil))
 	assert.Equal(t, domain.TriageAssessed, domain.TriageStateOf(domain.StatusInEvaluation, last))
 	assert.Equal(t, domain.TriageAssessed, domain.TriageStateOf("paid", last), "the last level stays visible")

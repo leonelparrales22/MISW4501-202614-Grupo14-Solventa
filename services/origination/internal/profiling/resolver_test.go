@@ -482,3 +482,90 @@ func TestResolveWithoutReuseAlwaysQueriesTheSourceFirst(t *testing.T) {
 	assert.Equal(t, domain.ModeProvisional, got.Mode)
 	assert.Equal(t, domain.SourceCache, got.Source)
 }
+
+// ResolveFresh (HU-W1.5-03, decision D-5 b): the advisor's requote of a
+// renewal queries the sources first, with the cache only as a fallback.
+
+func TestResolveFreshQueriesTheSourcesEvenWithACompleteRecentCachedProfile(t *testing.T) {
+	cache := newFakeCache()
+	cache.items["c1"] = completeProfile(48 * time.Hour)
+	fresh := freshProfile()
+	fresh.Score = 0.12
+	src := &fakeSource{profile: fresh}
+
+	got, err := newReusingResolver(src, cache).ResolveFresh(context.Background(), "c1", true)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, src.calls, "a requote always asks the sources")
+	assert.Equal(t, domain.ModeNormal, got.Mode)
+	assert.Equal(t, domain.SourceOpenFinance, got.Source)
+	assert.Equal(t, 0.12, got.Profile.Score)
+	assert.Equal(t, 0.12, cache.items["c1"].Score, "the answer of the sources replaces the cached profile")
+	assert.Empty(t, cache.invalidated, "the cache is never dropped beforehand")
+}
+
+func TestResolveFreshWithTheSourcesDownUsesTheCachedProfileWithItsDate(t *testing.T) {
+	cache := newFakeCache()
+	cached := completeProfile(20 * 24 * time.Hour)
+	cache.items["c1"] = cached
+	src := &fakeSource{err: ports.ErrSourceUnavailable}
+
+	got, err := newReusingResolver(src, cache).ResolveFresh(context.Background(), "c1", true)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, src.calls)
+	assert.Equal(t, domain.ModeProvisional, got.Mode)
+	assert.Equal(t, domain.SourceCache, got.Source)
+	assert.Equal(t, domain.ExternalSourceOpenFinance, got.UnavailableSource)
+	assert.Equal(t, cached.CalculatedAt, got.Profile.CalculatedAt, "the advisor is told the date of the profile")
+	assert.Empty(t, cache.invalidated)
+	assert.Equal(t, cached, cache.items["c1"], "a failed query leaves the cache as it was")
+}
+
+func TestResolveFreshWithoutARecentCachedProfileFallsBackToTheBaseProfile(t *testing.T) {
+	for name, cache := range map[string]*fakeCache{
+		"no cached profile": newFakeCache(),
+		"older than 30 days": func() *fakeCache {
+			c := newFakeCache()
+			c.items["c1"] = completeProfile(30*24*time.Hour + time.Minute)
+			return c
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := &fakeSource{err: ports.ErrSourceUnavailable}
+
+			got, err := newReusingResolver(src, cache).ResolveFresh(context.Background(), "c1", true)
+
+			require.NoError(t, err)
+			assert.Equal(t, domain.ModeProvisional, got.Mode)
+			assert.Equal(t, domain.SourceBaseActuarial, got.Source)
+			assert.Equal(t, domain.BaseActuarialProfile("c1"), got.Profile)
+		})
+	}
+}
+
+func TestResolveFreshWithoutConsentTouchesNeitherSourceNorCache(t *testing.T) {
+	cache := newFakeCache()
+	src := &fakeSource{profile: freshProfile()}
+
+	_, err := newReusingResolver(src, cache).ResolveFresh(context.Background(), "c1", false)
+
+	require.ErrorIs(t, err, profiling.ErrConsentRequired)
+	assert.Zero(t, src.calls)
+	assert.Zero(t, cache.gets)
+}
+
+func TestResolveFreshDoesNotChangeResolve(t *testing.T) {
+	cache := newFakeCache()
+	cache.items["c1"] = completeProfile(time.Hour)
+	src := &fakeSource{profile: freshProfile()}
+	r := newReusingResolver(src, cache)
+
+	_, err := r.ResolveFresh(context.Background(), "c1", true)
+	require.NoError(t, err)
+	got, err := r.Resolve(context.Background(), "c1", true)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, src.calls, "Resolve still reuses the complete cached profile the fresh query left")
+	assert.Equal(t, domain.SourceCache, got.Source)
+}

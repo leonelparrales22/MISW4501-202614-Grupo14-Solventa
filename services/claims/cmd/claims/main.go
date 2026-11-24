@@ -21,6 +21,8 @@ import (
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/evidence"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/filing"
 	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/ports"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/readcache"
+	"github.com/leonelparrales22/MISW4501-202614-Grupo14-Solventa/services/claims/internal/review"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
@@ -68,22 +70,54 @@ func main() {
 			log.Fatalf("could not set up the token verification: %v", err)
 		}
 		records, supports := claimStores(context.Background())
+		// HA-L02: with Redis, the insured's claim reads wait 900 ms for the
+		// database and then serve the last read from the cache, marked stale.
+		cacheCfg, err := loadReadCacheConfig(os.Getenv)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		var cache ports.ReadCache
+		if cacheCfg.addr != "" {
+			cache = newReadCache(context.Background(), cacheCfg)
+			log.Printf("read cache (HA-L02): Redis at %s, budget %s, TTL %s", cacheCfg.addr, cacheCfg.budget, cacheCfg.ttl)
+		} else {
+			log.Printf("%s is not set: the claim reads (HA-L02) have no read cache", envRedisAddr)
+		}
 		// HU-M2.1-01: the evidence of the phone lives in the bucket of the
 		// environment, and the filing checks every key against it.
 		evidences := evidenceStore(context.Background())
+		decisions, err := decisionStoreOf(records)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		activity, err := claimActivityOf(records, decisions)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		// HU-W2.1-02: the list and the detail say when each claim last changed
+		// status, and the list carries the tally of the insured's claims.
+		var claimReads httpadapter.ClaimReader = filing.NewQueryService(records, pdf.NewReceiptRenderer()).
+			WithObjects(evidences).WithActivity(activity, systemClock{})
+		if cache != nil {
+			claimReads = readcache.NewClaims(claimReads, cache, cacheCfg.budget, systemClock{})
+		}
 		opts = append(opts,
 			httpadapter.WithFilings(
 				filing.NewService(records, evidences, systemClock{}), verifier),
 			// HU-W2.1-01: the insured's claims of both channels, the detail
 			// (with the evidence of the phone, when there is a store to sign
 			// its reads) and the filing receipt.
-			httpadapter.WithClaimReads(
-				filing.NewQueryService(records, pdf.NewReceiptRenderer()).WithObjects(evidences), verifier))
+			httpadapter.WithClaimReads(claimReads, verifier))
 		if evidences != nil {
 			opts = append(opts,
 				httpadapter.WithEvidence(evidence.NewService(evidences, systemClock{}), verifier))
 		}
 		opts = append(opts, webFilings(records, supports, evidences, verifier)...)
+		// HU-W1.4-02: origination asks, inside the VPC, how many claims of a
+		// policy are in progress before an analyst applies an endorsement.
+		if open, ok := records.(ports.OpenClaimsReader); ok {
+			opts = append(opts, httpadapter.WithOpenClaims(open))
+		}
 		// HU-W2.2-01: the triage gives every claim in evaluation its priority
 		// from a sweep of the claims, and its routes read it.
 		priorities, interval, err := startTriage(context.Background(), records, os.Getenv)
@@ -96,13 +130,78 @@ func main() {
 		// terms of its policy when the policy core is configured, and the
 		// decision on it, which pays the indemnity or notifies the rejection.
 		terms := policyTerms(os.Getenv)
-		decisions, err := decisionStoreOf(records)
+		// HU-W2.2-02: the claims in evaluation come ordered by priority.
+		queue, err := priorityQueueOf(records, decisions, priorities)
 		if err != nil {
 			log.Fatalf("invalid configuration: %v", err)
 		}
-		opts = append(opts, httpadapter.WithEvaluation(
-			evaluationService(records, priorities, evidences, terms).WithDecisions(decisions), verifier))
-		opts = append(opts, decisionRoutes(context.Background(), records, decisions, terms, verifier, os.Getenv)...)
+		evaluations := evaluationService(records, priorities, evidences, terms).WithDecisions(decisions).
+			WithPriorityQueue(queue, systemClock{})
+		opts = append(opts, httpadapter.WithEvaluation(evaluations, verifier))
+		// HU-W2.1-03: the advisor reviews every filing before it enters
+		// evaluation, and the history of the status of a claim is read here.
+		reviews, err := reviewStoreOf(records)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		resubmissions, err := resubmissionStoreOf(records, reviews)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		assignments, providers, err := assignmentStoresOf(records)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		// HU-W2.1-04: the insured corrects a returned filing and sends it
+		// again. HU-W2.1-02: the history carries the decision and the provider
+		// as the insured reads them.
+		reviewSvc := review.NewService(records, reviews, reviews, evaluations, systemClock{}, nil).
+			WithResubmissions(resubmissions, supports).WithOutcome(decisions, assignments)
+		var reviewer httpadapter.Reviewer = reviewSvc
+		if cache != nil {
+			reviewer = cachedReviewer{Service: reviewSvc,
+				history: readcache.NewHistory(reviewSvc, cache, cacheCfg.budget, systemClock{})}
+		}
+		opts = append(opts, httpadapter.WithReviews(reviewer, verifier), httpadapter.WithResubmission(reviewSvc, verifier))
+		decisionOpts, payouts := decisionRoutes(context.Background(), records, decisions, terms, verifier, os.Getenv)
+		opts = append(opts, decisionOpts...)
+		// HU-M2.4-01: the parametric engine files and resolves the claims of
+		// the external events of its queue, the payout worker of the decision
+		// pays them, and the outbox publishes ParametricPayoutCompleted.
+		if err := startParametric(context.Background(), records, terms, payouts, os.Getenv); err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		// HU-M3.3-01: every change of stage the insured waits for becomes a
+		// ClaimStageChanged in the outbox, which notifications turns into the
+		// notification and the push.
+		startStageNotices(context.Background(), records)
+		// HU-W2.3-01: the assignment of the nearest provider to a claim in
+		// evaluation, and the registry of providers that operations keeps.
+		assignment, err := assignmentRoutesOver(context.Background(), assignments, providers, os.Getenv, verifier)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		opts = append(opts, assignment...)
+		// HU-M2.3-01: the request for on-site assistance from the phone, with
+		// the location of the insured, checked against the policy core.
+		// HU-W2.3-03 reads the same requests, so the store is built once.
+		requests, err := assistanceStoreOf(records)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		assistanceOpts, err := assistanceRoutesOver(requests, os.Getenv, verifier)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		opts = append(opts, assistanceOpts...)
+		// HU-W2.3-03: the inbox of operations that attends the requests for
+		// assistance and dispatches the provider the assignment suggests.
+		inboxOpts, err := assistanceInboxRoutes(context.Background(), requests, records, providers, os.Getenv,
+			verifier)
+		if err != nil {
+			log.Fatalf("invalid configuration: %v", err)
+		}
+		opts = append(opts, inboxOpts...)
 	} else {
 		log.Printf("%s is not set: the filing of the claim (HU-M2.2-01) is not mounted", security.EnvIssuer)
 	}

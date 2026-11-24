@@ -178,9 +178,9 @@ variable "portal_partner" {
 }
 
 variable "partner_display_names" {
-  description = "Display names of the financial entities the consents authorize, by partner code (HU-M1.3-01, decision D-2 a); audit receives them as PARTNER_DISPLAY_NAMES. A code without a name is shown as it is. Default: the partner of screen E1 of the portal."
+  description = "Display names of the financial entities the consents authorize, by partner code (HU-M1.3-01, decision D-2 a); audit receives them as PARTNER_DISPLAY_NAMES, and so does origination for the onerous beneficiary of the change requests (HU-W1.4-01, decision D-14 a). A code without a name is shown as it is. Default: the partner of screen E1 of the portal and the demonstration partner of the portal (portal-embebido), the one the staging seed buys with (HU-W1.4-01)."
   type        = map(string)
-  default     = { "aliado-banco-1" = "Banco Aliado" }
+  default     = { "aliado-banco-1" = "Banco Aliado", "portal-embebido" = "Banco Aliado" }
 
   validation {
     condition     = alltrue([for k, v in var.partner_display_names : can(regex("^[A-Za-z0-9_-]+$", k)) && length(trimspace(v)) > 0])
@@ -209,7 +209,8 @@ variable "human_routes" {
     # The insured lists their policies and renews one online (HU-W1.5-02):
     # GET /v1/policies/{policy_id}/renewal and .../renewal/status, and
     # POST .../renewal to accept and pay it. The root /v1/policies stays
-    # read-only.
+    # read-only. The advisor lists the policies about to expire with
+    # GET /v1/policies/expiring (HU-W1.5-01), covered by the same proxy GET.
     policies = { methods = ["GET", "POST"], root_methods = ["GET"] }
     # Advisor inbox (HU-W1.1-02): list and read the requests, POST the
     # decision. Issuance exceptions of the premium charge (HA-D02): read by
@@ -220,6 +221,10 @@ variable "human_routes" {
     # .../{acceptance_id}/actions, and POST .../{acceptance_id}/retry. The root
     # /v1/issuances stays read-only.
     issuances = { methods = ["GET", "POST"], root_methods = ["GET"] }
+    # Dashboard of the commercial partner (HU-W3.2-01): GET
+    # /v1/partner-metrics/summary for the users of the partner portal. The
+    # root has no method.
+    partner-metrics = { methods = ["GET"], root_methods = [] }
     # Filing of the claim from the guided assistant of the mobile app
     # (HU-M2.2-01) and from the web portal (HU-W2.1-01). GET reads the list of
     # claims (/v1/claims), the filing options, the detail and the filing
@@ -238,6 +243,9 @@ variable "human_routes" {
     # .../credential-rotations. partners has no internal route, so the whole
     # prefix is human.
     partners = { methods = ["GET", "POST"] }
+    # Technical performance of the partner API for the partner portal
+    # (HU-W3.2-03): GET /v1/partner-performance, served by partners. Only GET.
+    partner-performance = { methods = ["GET"] }
     # The notification center of the mobile app (HU-M3.1-01): GET
     # /v1/notifications and GET /v1/notifications/{notification_id}, POST
     # .../{notification_id}/read and POST /v1/notifications/read-all; the root
@@ -378,4 +386,21 @@ variable "ephemeral" {
   description = "Environment destroyed after use: no final RDS snapshot, buckets deleted with their objects and secrets deleted without recovery window."
   type        = bool
   default     = false
+}
+
+variable "fcm" {
+  description = "Firebase Cloud Messaging for the pushes of notifications (HU-M3.3-01): the Firebase project and the ARN of the permanent secret with the JSON of its service account, created outside the platform so it never reaches the state and survives every window. null keeps the push stub (HU-M3.1-01)."
+  type = object({
+    project_id             = string
+    credentials_secret_arn = string
+  })
+  default = null
+
+  validation {
+    condition = var.fcm == null ? true : (
+      length(trimspace(var.fcm.project_id)) > 0 &&
+      can(regex("^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:", var.fcm.credentials_secret_arn))
+    )
+    error_message = "fcm needs the Firebase project and the ARN of a Secrets Manager secret."
+  }
 }

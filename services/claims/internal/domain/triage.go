@@ -65,10 +65,10 @@ func LevelOf(s Severity, b AmountBand) PriorityLevel {
 const StatusInEvaluation Status = "in_evaluation"
 
 // triageableStatuses are the statuses whose claims get a level and are
-// recalculated (assumption S5). While the review of the advisor (HU-W2.1-03)
-// does not exist, a filed claim is complete and enters evaluation as it is
-// filed, so active is one of them; HU-W2.1-03 removes it.
-var triageableStatuses = []Status{StatusActive, StatusInEvaluation}
+// recalculated. Since the review of the advisor (HU-W2.1-03) a filed claim
+// waits for it as active and only enters evaluation once approved, so the end
+// of assumption S5 leaves in_evaluation alone.
+var triageableStatuses = []Status{StatusInEvaluation}
 
 // TriageableStatuses returns the statuses the triage evaluates, in a new
 // slice.

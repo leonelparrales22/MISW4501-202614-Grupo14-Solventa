@@ -56,6 +56,9 @@ const (
 	SupportSupportingDocument = "supporting_document"
 	SupportDamagePhotos       = "damage_photos"
 	SupportRepairQuote        = "repair_quote"
+	// SupportPlatePhoto is optional: the insured may attach it when filing,
+	// and the advisor may ask for it when reviewing (HU-W2.1-03, screen S8).
+	SupportPlatePhoto = "plate_photo"
 )
 
 // Requirement is one support a claim type asks for. MinFiles is 0 when the
@@ -157,7 +160,8 @@ func CatalogV1() Catalog {
 		Version: CatalogVersionV1,
 		Incidents: []IncidentOption{
 			{Type: IncidentCollision, Line: LineAuto, Label: "Colisión con daños al vehículo",
-				Requirements: []Requirement{vehiclePhotos(true), driverDocument(true), trafficReport()}},
+				Requirements: []Requirement{vehiclePhotos(true), driverDocument(true), trafficReport(),
+					{Code: SupportPlatePhoto, Label: "Fotografía de la placa", MaxFiles: 2, Formats: image()}}},
 			{Type: IncidentTheft, Line: LineAuto, Label: "Hurto",
 				Requirements: []Requirement{
 					{Code: SupportPoliceReport, Label: "Denuncia ante autoridad", Required: true, MinFiles: 1, MaxFiles: 3, Formats: document()},

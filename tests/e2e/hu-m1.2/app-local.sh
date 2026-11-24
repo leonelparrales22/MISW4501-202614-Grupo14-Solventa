@@ -11,6 +11,10 @@
 #   SUBJECT=<same sub> bash tests/e2e/hu-m1.2/app-local.sh --changes
 #       # CA-4: renews AU-2025-118204 for a year and cancels HG-2025-880231 in
 #       # the policy core; the app shows them after its next synchronization
+#   SUBJECT=<same sub> bash tests/e2e/hu-m1.2/app-local.sh --dias-para-vencer N
+#       # HU-M3.2-01: AU-2025-118204 ends at the last second of the day N days
+#       # from today in Colombia (N calendar days left, the count of the
+#       # expiry alerts); combinable with --changes. Without it, 16 days.
 #   docker compose -f tests/e2e/hu-m1.2/docker-compose.yml down -v   # stop
 #
 # SUBJECT is read with the read-only
@@ -43,16 +47,42 @@ COMPOSE="env MSYS_NO_PATHCONV=1 docker compose -f docker-compose.yml"
 export ORIGINATION_PORT="${ORIGINATION_PORT:-8392}" POLICY_CORE_PORT="${POLICY_CORE_PORT:-9392}"
 DOCUMENT="${DOCUMENT:-1020304050}"
 CHANGES=false
-[[ "${1:-}" == "--changes" ]] && CHANGES=true
+DAYS_TO_EXPIRY=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --changes) CHANGES=true ;;
+  --dias-para-vencer)
+    DAYS_TO_EXPIRY="${2:-}"
+    shift
+    [[ "$DAYS_TO_EXPIRY" =~ ^[0-9]+$ ]] || {
+      echo "--dias-para-vencer needs a number of days (0 or more)" >&2
+      exit 2
+    }
+    ;;
+  *)
+    echo "Unknown option $1 (see the header of this script)." >&2
+    exit 2
+    ;;
+  esac
+  shift
+done
 
 day() { date -u -d "$1" +%Y-%m-%dT00:00:00Z; }
+# end_of_day_cot is the last second of the day, in Colombia (UTC-5), that is
+# the given offset away from today there.
+end_of_day_cot() { date -u -d "-5 hours $1" +%Y-%m-%dT23:59:59-05:00; }
 
-auto_to="$(day '+16 days')"
-home_status="active"
-if $CHANGES; then
-  auto_to="$(day '+16 days +1 year')"
-  home_status="cancelled"
+if [[ -n "$DAYS_TO_EXPIRY" ]]; then
+  auto_from="$(end_of_day_cot "+$DAYS_TO_EXPIRY days -1 year")"
+  auto_to="$(end_of_day_cot "+$DAYS_TO_EXPIRY days")"
+  $CHANGES && auto_to="$(end_of_day_cot "+$DAYS_TO_EXPIRY days +1 year")"
+else
+  auto_from="$(day '+16 days -1 year')"
+  auto_to="$(day '+16 days')"
+  $CHANGES && auto_to="$(day '+16 days +1 year')"
 fi
+home_status="active"
+$CHANGES && home_status="cancelled"
 
 coverages() { # <insured value in pesos> <incident>...
   local value="$1" first=true
@@ -75,7 +105,7 @@ cat >generated/policy-seed.json <<EOF
        "status":"active","valid_from":"$(day '-45 days')","valid_to":"$(day '-45 days +20 years')",
        "covered_incidents":["death"],"coverages":$(coverages 250000000 death)},
       {"policy_id":"AU-2025-118204","line":"auto","product":"Autos","insured_object":"KJT-482",
-       "status":"active","valid_from":"$(day '+16 days -1 year')","valid_to":"$auto_to",
+       "status":"active","valid_from":"$auto_from","valid_to":"$auto_to",
        "covered_incidents":["collision","theft","third_party_damage","glass","other"],
        "coverages":$(coverages 72500000 collision theft third_party_damage glass other)},
       {"policy_id":"VJ-2026-000931","line":"travel","product":"Viaje","insured_object":"Retraso de vuelo",
@@ -110,6 +140,11 @@ else
   echo "== Starting origination and the policy core (tokens of the pool $POOL)"
   $COMPOSE up -d --build --wait redis
   $COMPOSE up -d --build policy-core openfinance origination
+  if [[ -n "$DAYS_TO_EXPIRY" ]]; then
+    echo "== AU-2025-118204 ends on ${auto_to%%T*} ($DAYS_TO_EXPIRY days left in Colombia)"
+    # The stub reads its seed when it starts: a running one gets the new date.
+    $COMPOSE up -d --force-recreate policy-core
+  fi
 fi
 
 ORIGINATION="http://localhost:$ORIGINATION_PORT"

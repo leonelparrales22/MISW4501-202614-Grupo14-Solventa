@@ -1,8 +1,36 @@
 openapi: 3.0.3
 info:
   title: Solventa - notifications service
-  version: 0.2.0
+  version: 0.5.0
   description: >
+    0.5.0 (HU-W1.6-02): the cancellation of a policy of the insured for
+    non-payment (event PolicyCancelledForNonPayment of the origination
+    service): kind policy_cancelled with cancellation, the policy, the month
+    of the premium that was not paid, its due date, the end of its grace
+    period, the cancellation, the unpaid amount and refund not_applicable. One
+    per policy. Its push goes in its own thread and carries policy_id.
+    Compatible with 0.4.0 (it adds a kind and the cancellation field, null for
+    the other kinds). Guide: docs/contratos/HU-W1.6-02-api.md.
+
+    0.4.0 (HU-M3.2-01): the alerts 30, 15 and 5 days before a policy of the
+    insured expires (event PolicyExpiryApproaching of the origination
+    service): kind policy_expiry with expiry, the policy (policy_id, line,
+    product and insured_object, null when the source does not name them), its
+    exact end (coverage_end), the milestone reached (milestone_days) and the
+    days left when it was detected. One per policy, period and milestone. Its
+    push goes in its own thread and carries policy_id. Compatible with 0.3.0
+    (it adds a kind and the expiry field, null for the other kinds). Guide:
+    docs/contratos/HU-M3.2-01-api.md.
+
+    0.3.0 (HU-M3.3-01): the notification of every change of stage of a claim
+    of the insured (event ClaimStageChanged of the claims service): kind
+    claim_stage_changed with stage, the stage the claim reached (in_evaluation,
+    approved or paid), when, the claim (claim_id to open its timeline and
+    filing_number to show) and, for the approval and the payment, the amount
+    and the date of the disbursement. Its push goes in its own thread and
+    carries claim_id. Compatible with 0.2.0 (it adds a kind and the stage
+    field, null for the payouts). Guide: docs/contratos/HU-M3.3-01-api.md.
+
     The notification center of the insured and the pushes of the automatic
     parametric payments (HU-M3.1-01). The notifications are recorded from the
     event ParametricPayoutCompleted of the claims service (SQS queue of the
@@ -232,14 +260,18 @@ components:
           minimum: 0
     Notification:
       type: object
-      required: [notification_id, kind, occurred_at, created_at, read_at, payout]
+      required: [notification_id, kind, occurred_at, created_at, read_at, payout, stage, expiry, cancellation]
       properties:
         notification_id:
           type: string
-          description: ntf-<payout_id>; one per payout.
+          description: >-
+            ntf-<payout_id>, one per payout; ntf-stage-<change_id>, one per
+            change of stage; ntf-expiry-<policy_id>-<YYYYMMDD>-<milestone_days>,
+            one per policy, period and milestone (the date is the end of the
+            coverage in Colombia); ntf-cancelled-<policy_id>, one per policy.
         kind:
           type: string
-          enum: [parametric_payout]
+          enum: [parametric_payout, claim_stage_changed, policy_expiry, policy_cancelled]
           description: The app writes the texts of each kind in its own language.
         occurred_at:
           type: string
@@ -258,6 +290,125 @@ components:
           description: The automatic payment, for kind parametric_payout.
           allOf:
             - $ref: "#/components/schemas/ParametricPayout"
+        stage:
+          nullable: true
+          description: The change of stage of a claim, for kind claim_stage_changed (HU-M3.3-01).
+          allOf:
+            - $ref: "#/components/schemas/ClaimStageChange"
+        expiry:
+          nullable: true
+          description: The alert that a policy is about to expire, for kind policy_expiry (HU-M3.2-01).
+          allOf:
+            - $ref: "#/components/schemas/ExpiryAlert"
+        cancellation:
+          type: object
+          nullable: true
+          description: The cancellation of a policy for non-payment, for kind policy_cancelled (HU-W1.6-02).
+          allOf:
+            - $ref: "#/components/schemas/PolicyCancellation"
+    PolicyCancellation:
+      type: object
+      required: [policy_id, reason, line, installment_seq, due_at, grace_ends_at, cancelled_at, amount, currency, refund]
+      properties:
+        policy_id:
+          type: string
+          description: The policy, to open it (GET /v1/policies/{policy_id} of origination).
+        reason:
+          type: string
+          enum: [non_payment]
+        line:
+          type: string
+          description: Always life; origination only issues life policies.
+        installment_seq:
+          type: integer
+          minimum: 2
+          description: The month of the premium that was not paid (1 is the issuance).
+        due_at:
+          type: string
+          format: date-time
+        grace_ends_at:
+          type: string
+          format: date-time
+        cancelled_at:
+          type: string
+          format: date-time
+        amount:
+          type: number
+          description: The unpaid premium, in units of the currency.
+        currency:
+          type: string
+        refund:
+          type: string
+          enum: [not_applicable]
+    ExpiryAlert:
+      type: object
+      required: [policy_id, line, product, insured_object, coverage_end, milestone_days, days_left]
+      properties:
+        policy_id:
+          type: string
+          description: The policy, to open it in the wallet (GET /v1/policies of origination).
+        line:
+          type: string
+          description: The line of insurance (life, auto, home, travel), as the source names it.
+        product:
+          type: string
+          nullable: true
+          description: The product of the policy (Autos); null for the life policies of origination.
+        insured_object:
+          type: string
+          nullable: true
+          description: What the policy insures (KJT-482); null when the source does not name it.
+        coverage_end:
+          type: string
+          format: date-time
+          description: >-
+            When the coverage ends, as the source keeps it. The app shows its
+            date in Colombia (America/Bogota), the one the milestones count.
+        milestone_days:
+          type: integer
+          enum: [30, 15, 5]
+          description: The milestone reached; only the last one crossed is alerted.
+        days_left:
+          type: integer
+          minimum: 0
+          maximum: 30
+          description: Calendar days left, in Colombia, when the alert was detected.
+    ClaimStageChange:
+      type: object
+      required: [change_id, claim_id, filing_number, policy_id, stage, changed_at, amount, currency, paid_at]
+      properties:
+        change_id:
+          type: integer
+          format: int64
+        claim_id:
+          type: string
+          description: The id of the claim, to open its timeline (GET /v1/claims/{claim_id} of claims).
+        filing_number:
+          type: string
+          description: The number the insured sees, SIN-<year>-<five digits>.
+        policy_id:
+          type: string
+        stage:
+          type: string
+          enum: [in_evaluation, approved, paid]
+        changed_at:
+          type: string
+          format: date-time
+          description: When the claim reached the stage.
+        amount:
+          type: number
+          nullable: true
+          description: >-
+            The amount approved or paid, in units of the currency: what the
+            insured receives, net of the deductible. Null for in_evaluation.
+        currency:
+          type: string
+          nullable: true
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: The date of the disbursement, for paid.
     ParametricPayout:
       type: object
       required: [payout_id, claim_id, policy_id, amount, currency, trigger, payment_method, idempotency_key, paid_at]

@@ -103,3 +103,15 @@ type ClaimRecords interface {
 type ReceiptRenderer interface {
 	Render(r domain.Receipt) ([]byte, error)
 }
+
+// ClaimActivity reads what the insured sees of the stage of their claims
+// (HU-W2.1-02): when each one last changed status and the tally of all of
+// them.
+type ClaimActivity interface {
+	// LastChanges returns when each claim of the ids reached its current
+	// status; an id without changes is absent from the map.
+	LastChanges(ctx context.Context, ids []string) (map[string]time.Time, error)
+	// Tally counts the subject's claims by status, the ones paid since since
+	// and what they paid, and names the ones returned to the subject.
+	Tally(ctx context.Context, subject string, since time.Time) (domain.ClaimTally, error)
+}

@@ -18,7 +18,7 @@ import (
 
 // EvaluationReader is what the routes of the evaluation read (HU-W2.2-03).
 type EvaluationReader interface {
-	Queue(ctx context.Context, pageSize int, pageToken string) (evaluation.QueuePage, error)
+	PriorityQueue(ctx context.Context, pageSize int, pageToken string, f evaluation.QueueFilter) (evaluation.PriorityPage, error)
 	Exceptions(ctx context.Context, pageSize int, pageToken string) (evaluation.QueuePage, error)
 	Detail(ctx context.Context, claimID string) (evaluation.Evaluation, error)
 }
@@ -32,7 +32,7 @@ func WithEvaluation(svc EvaluationReader, verifier security.Verifier) Option {
 	return func(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(noStore, security.Authenticate(verifier), security.RequireRole(security.RoleOperations))
-			r.Get("/v1/claims/evaluations", evaluationQueue(svc.Queue))
+			r.Get("/v1/claims/evaluations", priorityQueue(svc))
 			r.Get("/v1/claims/payment-exceptions", evaluationQueue(svc.Exceptions))
 			r.Get("/v1/claims/{claim_id}/evaluation", evaluationDetail(svc))
 		})

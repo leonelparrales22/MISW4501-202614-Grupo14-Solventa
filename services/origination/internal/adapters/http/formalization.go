@@ -206,6 +206,20 @@ func writeFormalizationError(w http.ResponseWriter, req *http.Request, what stri
 		writeQuoteExpired(w, offerExpired.ExpiresAt)
 	case errors.Is(err, formalization.ErrAlreadyFormalized):
 		writeError(w, http.StatusConflict, "already_formalized", "another advisor already formalized the purchase of this quote")
+	default:
+		if writeConsentCodeError(w, err, "quote") {
+			return
+		}
+		slog.ErrorContext(req.Context(), what, "error", err)
+		writeError(w, http.StatusServiceUnavailable, "formalization_unavailable", "the purchase could not be formalized; retry later")
+	}
+}
+
+// writeConsentCodeError answers the errors of the confirmation code, shared by
+// the purchase (HU-W1.1-03) and the assisted renewal (HU-W1.5-03), whose code
+// belongs to a quote or to a requote (of). It reports whether err was one.
+func writeConsentCodeError(w http.ResponseWriter, err error, of string) bool {
+	switch {
 	case errors.Is(err, formalization.ErrConsentCodeRequired):
 		writeError(w, http.StatusUnprocessableEntity, "consent_code_required", "ask for the confirmation code before formalizing")
 	case errors.Is(err, formalization.ErrConsentCodeInvalid):
@@ -213,15 +227,15 @@ func writeFormalizationError(w http.ResponseWriter, req *http.Request, what stri
 	case errors.Is(err, formalization.ErrConsentCodeExpired):
 		writeError(w, http.StatusUnprocessableEntity, "confirmation_code_expired", "the confirmation code expired; ask for a new one")
 	case errors.Is(err, formalization.ErrConsentCodeLocked):
-		writeError(w, http.StatusTooManyRequests, "too_many_attempts", "too many confirmation code attempts for this quote")
+		writeError(w, http.StatusTooManyRequests, "too_many_attempts", "too many confirmation code attempts for this "+of)
 	case errors.Is(err, formalization.ErrConsentCodeLimit):
-		writeError(w, http.StatusTooManyRequests, "too_many_codes", "too many confirmation codes were sent for this quote")
+		writeError(w, http.StatusTooManyRequests, "too_many_codes", "too many confirmation codes were sent for this "+of)
 	case errors.Is(err, formalization.ErrCodeDeliveryUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "code_delivery_unavailable", "the confirmation code cannot be delivered; retry later")
 	default:
-		slog.ErrorContext(req.Context(), what, "error", err)
-		writeError(w, http.StatusServiceUnavailable, "formalization_unavailable", "the purchase could not be formalized; retry later")
+		return false
 	}
+	return true
 }
 
 func writeQuoteExpired(w http.ResponseWriter, expiresAt time.Time) {

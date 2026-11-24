@@ -220,3 +220,82 @@ func TestAcceptanceStoreKeepsTheAdvisorChannel(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, domain.ChannelAdvisor, got.Channel)
 }
+
+// The code of a renewal (HU-W1.5-03) lives in its own table, keyed by the
+// requote, with the same rules as the code of a quote.
+
+func TestRenewalConsentChallengeKeepsTheCountersAndReplacesTheCode(t *testing.T) {
+	db, p := newRenewalDB(t)
+	ctx := context.Background()
+	require.NoError(t, postgres.NewRenewalRequoteStore(db).Create(ctx, sampleRequote("rq-1", p, requotedAt)))
+	store := postgres.NewRenewalConsentChallengeStore(db)
+	challenge := func(hash string, at time.Time) domain.ConsentChallenge {
+		return domain.ConsentChallenge{QuoteID: "rq-1", AdvisorID: "sub-advisor", CodeHash: hash, CreatedAt: at, ExpiresAt: at.Add(domain.ConsentCodeTTL)}
+	}
+
+	_, err := store.Get(ctx, "rq-1")
+	assert.ErrorIs(t, err, ports.ErrConsentChallengeNotFound)
+	_, err = store.RegisterAttempt(ctx, "rq-1")
+	assert.ErrorIs(t, err, ports.ErrConsentChallengeNotFound)
+
+	first, err := store.Issue(ctx, challenge("h1", requotedAt))
+	require.NoError(t, err)
+	assert.Equal(t, 1, first.Sends)
+	attempts, err := store.RegisterAttempt(ctx, "rq-1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, attempts)
+
+	second, err := store.Issue(ctx, challenge("h2", requotedAt.Add(time.Minute)))
+	require.NoError(t, err)
+	assert.Equal(t, 2, second.Sends)
+	assert.Equal(t, 1, second.Attempts, "a new code does not reset the attempts")
+	got, err := store.Get(ctx, "rq-1")
+	require.NoError(t, err)
+	assert.Equal(t, "h2", got.CodeHash, "the new code replaces the previous one")
+	assert.Equal(t, requotedAt.Add(time.Minute+domain.ConsentCodeTTL), got.ExpiresAt)
+
+	_, err = store.Issue(ctx, challenge("h3", requotedAt))
+	require.NoError(t, err)
+	_, err = store.Issue(ctx, challenge("h4", requotedAt))
+	assert.ErrorIs(t, err, ports.ErrConsentCodeLimit, "a fourth code is refused")
+
+	var quoteCodes int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM consent_challenge`).Scan(&quoteCodes))
+	assert.Zero(t, quoteCodes, "the codes of the quotes are not touched")
+}
+
+func TestRenewalConsentChallengeCountsConcurrentAttemptsAtomically(t *testing.T) {
+	db, p := newRenewalDB(t)
+	ctx := context.Background()
+	require.NoError(t, postgres.NewRenewalRequoteStore(db).Create(ctx, sampleRequote("rq-1", p, requotedAt)))
+	store := postgres.NewRenewalConsentChallengeStore(db)
+	_, err := store.Issue(ctx, domain.ConsentChallenge{QuoteID: "rq-1", AdvisorID: "a", CodeHash: "h", CreatedAt: requotedAt,
+		ExpiresAt: requotedAt.Add(time.Minute)})
+	require.NoError(t, err)
+
+	const guesses = 10
+	var wg sync.WaitGroup
+	seen := make([]int, guesses)
+	for i := 0; i < guesses; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n, err := store.RegisterAttempt(ctx, "rq-1")
+			assert.NoError(t, err)
+			seen[i] = n
+		}()
+	}
+	wg.Wait()
+
+	got, err := store.Get(ctx, "rq-1")
+	require.NoError(t, err)
+	assert.Equal(t, guesses, got.Attempts)
+	assert.ElementsMatch(t, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, seen, "each guess gets its own count")
+}
+
+func TestARenewalConsentChallengeNeedsItsRequote(t *testing.T) {
+	db, _ := newRenewalDB(t)
+	_, err := postgres.NewRenewalConsentChallengeStore(db).Issue(context.Background(), domain.ConsentChallenge{
+		QuoteID: "rq-missing", AdvisorID: "a", CodeHash: "h", CreatedAt: requotedAt, ExpiresAt: requotedAt.Add(time.Minute)})
+	assert.Error(t, err)
+}

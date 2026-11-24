@@ -51,10 +51,58 @@ func TestTheCalculationsLiveWhereTheClaimsLive(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestTheReviewsLiveWhereTheClaimsLive(t *testing.T) {
+	store, err := reviewStoreOf(postgres.NewClaimRecordStore(nil))
+	require.NoError(t, err)
+	assert.IsType(t, &postgres.ReviewStore{}, store)
+
+	store, err = reviewStoreOf(memory.NewCaseStore())
+	require.NoError(t, err)
+	assert.IsType(t, &memory.ReviewStore{}, store)
+
+	_, err = reviewStoreOf(fakeRecords{})
+	assert.Error(t, err)
+}
+
+func TestTheReadsOfTheInsuredLiveWhereTheClaimsLive(t *testing.T) {
+	records := postgres.NewClaimRecordStore(nil)
+	activity, err := claimActivityOf(records, nil)
+	require.NoError(t, err)
+	assert.Same(t, records, activity)
+
+	activity, err = claimActivityOf(memory.NewCaseStore(), nil)
+	require.NoError(t, err)
+	assert.IsType(t, &memory.ClaimActivity{}, activity)
+
+	_, err = claimActivityOf(fakeRecords{}, nil)
+	assert.Error(t, err)
+}
+
+func TestTheResubmissionsLiveWhereTheReviewsLive(t *testing.T) {
+	records := postgres.NewClaimRecordStore(nil)
+	reviews, err := reviewStoreOf(records)
+	require.NoError(t, err)
+	store, err := resubmissionStoreOf(records, reviews)
+	require.NoError(t, err)
+	assert.IsType(t, &postgres.ResubmissionStore{}, store)
+
+	cases := memory.NewCaseStore()
+	reviews, err = reviewStoreOf(cases)
+	require.NoError(t, err)
+	store, err = resubmissionStoreOf(cases, reviews)
+	require.NoError(t, err)
+	assert.Same(t, reviews, store, "in memory the reviews and the resubmissions are one store")
+
+	_, err = resubmissionStoreOf(cases, postgres.ReviewStoreOf(records))
+	assert.Error(t, err)
+	_, err = resubmissionStoreOf(fakeRecords{}, reviews)
+	assert.Error(t, err)
+}
+
 func TestTheTriageStartsItsSweep(t *testing.T) {
 	cases := memory.NewCaseStore()
 	_, _, err := cases.Create(context.Background(), domain.Claim{ID: "cl-1", Subject: "sub-carolina", FilingKey: "k",
-		IncidentType: domain.IncidentTheft, Status: domain.StatusActive, FiledAt: time.Now().UTC(), Details: map[string]string{}})
+		IncidentType: domain.IncidentTheft, Status: domain.StatusInEvaluation, FiledAt: time.Now().UTC(), Details: map[string]string{}})
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

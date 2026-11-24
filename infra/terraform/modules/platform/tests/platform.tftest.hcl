@@ -312,6 +312,22 @@ run "inbox_and_exceptions_are_routed" {
   }
 }
 
+# HU-W3.2-01: the partner portal reads the summary of its dashboard from
+# origination, behind the Cognito authorizer, and the root has no method.
+run "the_partner_dashboard_is_a_human_route_of_origination" {
+  command = plan
+
+  assert {
+    condition = (
+      var.human_routes["partner-metrics"].methods == tolist(["GET"]) &&
+      length(var.human_routes["partner-metrics"].root_methods) == 0 &&
+      contains(local.services.origination.paths, "/v1/partner-metrics*") &&
+      !contains(local.services.partners.paths, "/v1/partner-metrics*")
+    )
+    error_message = "GET /v1/partner-metrics/summary (HU-W3.2-01) is a human route that the ALB sends to origination; its root has no method."
+  }
+}
+
 # HU-W1.3-04 and HU-W1.5-02: the issuance monitor of operations and the online
 # renewal of the insured write through the gateway, so their routes take POST
 # under the root while the root stays read-only.
@@ -361,6 +377,13 @@ run "the_claim_filing_is_a_human_route" {
       contains(keys(local.service_environment.claims), v)
     ])
     error_message = "Claims verifies the token of the insured: it needs the user pool of the environment."
+  }
+
+  # HA-L02: the endpoint of the cluster is only known after it exists, so
+  # what is checked is that claims gets it, like origination.
+  assert {
+    condition     = contains(keys(local.service_environment.claims), "REDIS_ADDR")
+    error_message = "Claims needs the Redis cluster for the read cache of the claim queries (HA-L02)."
   }
 }
 
@@ -823,10 +846,10 @@ run "offers_root_is_partner_and_sub_paths_are_human" {
   }
 
   # consents (HU-M1.3-02), issuances (HU-W1.3-04) and policies (HU-W1.5-02)
-  # set their root to GET only, and notifications and devices (HU-M3.1-01)
-  # set theirs too; they have their own tests.
+  # set their root to GET only, notifications and devices (HU-M3.1-01) and
+  # partner-metrics (HU-W3.2-01) set theirs too; they have their own tests.
   assert {
-    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents", "issuances", "policies", "notifications", "devices"], k)])
+    condition     = alltrue([for k, r in var.human_routes : r.root_methods == null if !contains(["offers", "consents", "issuances", "policies", "notifications", "devices", "partner-metrics"], k)])
     error_message = "Every other human route keeps its root as before."
   }
 }
@@ -861,10 +884,10 @@ run "audit_is_discoverable_by_origination" {
 
   assert {
     condition = (
-      local.discoverable_services == ["audit"] &&
-      contains(keys(local.services), "audit")
+      local.discoverable_services == ["audit", "claims"] &&
+      contains(keys(local.services), "audit") && contains(keys(local.services), "claims")
     )
-    error_message = "audit is registered in Cloud Map (and stays behind the ALB); no other service is."
+    error_message = "audit and claims (HU-W1.4-02) are registered in Cloud Map (and stay behind the ALB); no other service is."
   }
 
   assert {
@@ -1011,6 +1034,35 @@ run "origination_environment_cannot_override_audit_url" {
   expect_failures = [var.origination_environment]
 }
 
+# --- HU-W1.4-02: origination asks claims for the claims in progress, inside the VPC ---
+
+run "origination_reaches_claims_through_cloud_map" {
+  command = plan
+
+  assert {
+    condition = (
+      local.service_environment.origination.CLAIMS_URL == "http://claims.solventa-test.local:8080" &&
+      output.claims_url == local.service_environment.origination.CLAIMS_URL
+    )
+    error_message = "Origination asks the claims in progress at http://claims.<name>.local:8080, inside the VPC (HU-W1.4-02, D-6 a)."
+  }
+
+  assert {
+    condition     = !contains(keys(local.service_environment.origination), "CLAIMS_TIMEOUT_MS")
+    error_message = "The cut of the claims query keeps its default of 300 ms (EC-D01)."
+  }
+}
+
+run "origination_environment_cannot_override_claims_url" {
+  command = plan
+
+  variables {
+    origination_environment = { CLAIMS_URL = "http://elsewhere:8080" }
+  }
+
+  expect_failures = [var.origination_environment]
+}
+
 # --- HU-M1.3-01: the insured reads their consents; origination and audit talk by events ---
 
 run "consents_are_a_human_route_of_audit" {
@@ -1074,8 +1126,13 @@ run "audit_gets_the_queue_the_user_pool_and_the_catalog" {
   }
 
   assert {
-    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES) == { "aliado-banco-1" = "Banco Aliado" }
+    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES) == { "aliado-banco-1" = "Banco Aliado", "portal-embebido" = "Banco Aliado" }
     error_message = "audit gets the catalog of entity names as JSON (decision D-2 a)."
+  }
+
+  assert {
+    condition     = local.service_environment.origination.PARTNER_DISPLAY_NAMES == local.service_environment.audit.PARTNER_DISPLAY_NAMES
+    error_message = "origination gets the same catalog for the onerous beneficiary of the change requests (HU-W1.4-01, D-14 a)."
   }
 
   assert {
@@ -1106,6 +1163,55 @@ run "origination_publishes_to_its_topic" {
   }
 }
 
+# HU-M2.4-01: the parametric engine of claims consumes the external events of
+# the iot topic from its own queue and publishes ParametricPayoutCompleted to
+# the claims topic, which the notifications queue receives.
+run "claims_consumes_the_iot_topic_and_publishes_to_its_topic" {
+  command = plan
+
+  override_resource {
+    target          = module.messaging.aws_sns_topic.this
+    override_during = plan
+    values = {
+      arn = "arn:aws:sns:us-east-2:123456789012:solventa-test-claims"
+    }
+  }
+
+  override_resource {
+    target          = module.messaging.aws_sqs_queue.this
+    override_during = plan
+    values = {
+      url = "https://sqs.us-east-2.amazonaws.com/123456789012/solventa-test-claims"
+      arn = "arn:aws:sqs:us-east-2:123456789012:solventa-test-claims"
+    }
+  }
+
+  assert {
+    condition     = contains(local.topics, "iot") && local.queues.claims.topics == ["iot"]
+    error_message = "The claims queue receives the external events of the iot topic, and only them."
+  }
+
+  assert {
+    condition     = contains(local.queues.notifications.topics, "claims")
+    error_message = "ParametricPayoutCompleted reaches the notifications queue (HU-M3.1-01)."
+  }
+
+  assert {
+    condition = (
+      local.service_environment.claims.EVENTS_QUEUE_URL == module.messaging.queue_urls["claims"] &&
+      local.service_environment.claims.EVENTS_TOPIC_ARN == module.messaging.topic_arns["claims"]
+    )
+    error_message = "claims consumes its queue and its outbox relay publishes to the claims topic."
+  }
+
+  assert {
+    condition = anytrue([
+      for st in local.task_role_statements.claims : st.sid == "ConsumeItsQueue"
+    ]) && anytrue([for st in local.task_role_statements.claims : st.sid == "PublishItsEvents"])
+    error_message = "The task role of claims can consume its queue and publish to its topic."
+  }
+}
+
 run "partner_display_names_can_be_replaced" {
   command = plan
 
@@ -1114,8 +1220,11 @@ run "partner_display_names_can_be_replaced" {
   }
 
   assert {
-    condition     = jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A"
-    error_message = "The catalog follows partner_display_names."
+    condition = (
+      jsondecode(local.service_environment.audit.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A" &&
+      jsondecode(local.service_environment.origination.PARTNER_DISPLAY_NAMES)["socio-a"] == "Socio A"
+    )
+    error_message = "The catalog of audit and of origination follows partner_display_names."
   }
 }
 
@@ -1206,4 +1315,91 @@ run "partners_manages_the_credentials_and_publishes_to_audit" {
     condition     = contains(keys(var.human_routes), "partners")
     error_message = "The operations portal reaches /v1/partners with Cognito."
   }
+}
+
+# HU-W3.2-03: the dashboard of the partner reads the SLO alarms of the partner
+# API from partners, with read-only CloudWatch permissions.
+run "partners_reads_the_slo_of_the_partner_api" {
+  command = plan
+
+  assert {
+    condition     = local.service_environment.partners.SLO_ALARM_PREFIX == "solventa-test-slo-"
+    error_message = "partners receives the prefix of the SLO alarms (the platform turns them on)."
+  }
+
+  assert {
+    condition = (
+      contains([for st in local.task_role_statements.partners : st.sid], "ReadTheSloMetricsAndAlarms") &&
+      contains([for st in local.task_role_statements.partners : st.sid], "ReadTheHistoryOfTheSloAlarms") &&
+      alltrue([for st in local.task_role_statements.partners : alltrue([for a in st.actions : !startswith(a, "cloudwatch:") || contains(["cloudwatch:DescribeAlarms", "cloudwatch:GetMetricData", "cloudwatch:DescribeAlarmHistory"], a)])])
+    )
+    error_message = "partners only reads CloudWatch: the alarms, their history and the metrics."
+  }
+
+  assert {
+    condition = alltrue([
+      for k, sts in local.task_role_statements : k == "partners" || alltrue([
+        for st in sts : !contains(["ReadTheSloMetricsAndAlarms", "ReadTheHistoryOfTheSloAlarms"], st.sid)
+      ])
+    ])
+    error_message = "Only partners reads the SLO alarms."
+  }
+
+  assert {
+    condition = (
+      var.human_routes["partner-metrics"].methods == tolist(["GET"]) &&
+      var.human_routes["partner-performance"].methods == tolist(["GET"]) &&
+      contains(local.services.partners.paths, "/v1/partner-performance*") &&
+      !contains(local.services.origination.paths, "/v1/partner-performance*")
+    )
+    error_message = "GET /v1/partner-performance (HU-W3.2-03) is a human route that the ALB sends to partners."
+  }
+}
+
+# HU-M3.3-01: with FCM the pushes leave for Firebase with the permanent secret,
+# and the stub is no longer the provider; without it nothing changes.
+run "notifications_pushes_through_fcm" {
+  command = plan
+
+  variables {
+    fcm = {
+      project_id             = "solventa-94126"
+      credentials_secret_arn = "arn:aws:secretsmanager:us-east-2:123456789012:secret:solventa/fcm/service-account-AbCdEf"
+    }
+  }
+
+  assert {
+    condition = (
+      local.service_environment.notifications.FCM_PROJECT_ID == "solventa-94126" &&
+      !contains(keys(local.service_environment.notifications), "PUSH_PROVIDER_URL")
+    )
+    error_message = "With fcm, notifications sends to Firebase and not to the push stub."
+  }
+
+  assert {
+    condition     = local.service_secrets.notifications.FCM_CREDENTIALS == "arn:aws:secretsmanager:us-east-2:123456789012:secret:solventa/fcm/service-account-AbCdEf"
+    error_message = "The service account of Firebase reaches notifications as a secret, never as plain environment."
+  }
+}
+
+run "notifications_keeps_the_push_stub_without_fcm" {
+  command = plan
+
+  assert {
+    condition = (
+      contains(keys(local.service_environment.notifications), "PUSH_PROVIDER_URL") &&
+      !contains(keys(local.service_secrets.notifications), "FCM_CREDENTIALS")
+    )
+    error_message = "Without fcm, the pushes go to the stub as in HU-M3.1-01."
+  }
+}
+
+run "fcm_needs_a_secret_arn" {
+  command = plan
+
+  variables {
+    fcm = { project_id = "solventa-94126", credentials_secret_arn = "solventa/fcm/service-account" }
+  }
+
+  expect_failures = [var.fcm]
 }

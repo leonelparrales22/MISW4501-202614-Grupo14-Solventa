@@ -9,11 +9,9 @@ package formalization
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/big"
 	"strings"
 	"time"
 
@@ -297,27 +295,7 @@ func (s *Service) assignOwner(ctx context.Context, f domain.Formalization) error
 // verifyCode checks the code against the one sent. Every typed code counts,
 // whether it is right or not.
 func (s *Service) verifyCode(ctx context.Context, quoteID, code string, now time.Time) error {
-	challenge, err := s.Challenges.Get(ctx, quoteID)
-	if errors.Is(err, ports.ErrConsentChallengeNotFound) {
-		return ErrConsentCodeRequired
-	}
-	if err != nil {
-		return err
-	}
-	if challenge.IsExpired(now) {
-		return ErrConsentCodeExpired
-	}
-	attempts, err := s.Challenges.RegisterAttempt(ctx, quoteID)
-	if err != nil {
-		return err
-	}
-	if attempts > domain.MaxConsentCodeAttempts {
-		return ErrConsentCodeLocked
-	}
-	if !domain.ValidConsentCode(code) || !challenge.Matches(code) {
-		return ErrConsentCodeInvalid
-	}
-	return nil
+	return VerifyConsentCode(ctx, s.Challenges, quoteID, code, now)
 }
 
 // buildOffer turns the quote into the offer the acceptance and the charge
@@ -345,14 +323,7 @@ func buildOffer(q domain.Quote, f domain.Formalization) domain.PersonalizedOffer
 }
 
 // randomCode returns a uniformly random code of domain.ConsentCodeLength digits.
-func randomCode() (string, error) {
-	max := new(big.Int).Exp(big.NewInt(10), big.NewInt(domain.ConsentCodeLength), nil)
-	n, err := rand.Int(rand.Reader, max)
-	if err != nil {
-		return "", fmt.Errorf("could not generate the confirmation code: %w", err)
-	}
-	return fmt.Sprintf("%0*d", domain.ConsentCodeLength, n), nil
-}
+func randomCode() (string, error) { return NewConsentCode() }
 
 // MaskEmail hides most of an address ("jo***@example.com") so the advisor can
 // tell the customer where the code went without the screen leaking the

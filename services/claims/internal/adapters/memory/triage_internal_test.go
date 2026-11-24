@@ -20,7 +20,7 @@ var triageFiledAt = time.Date(2026, 9, 4, 13, 30, 0, 0, time.UTC)
 
 func triageClaim(id string, minutes int, cop *int64) domain.Claim {
 	return domain.Claim{ID: id, Subject: "sub-carolina", FilingKey: id, IncidentType: domain.IncidentCollision,
-		Status: domain.StatusActive, FiledAt: triageFiledAt.Add(time.Duration(minutes) * time.Minute), Details: map[string]string{}}
+		Status: domain.StatusInEvaluation, FiledAt: triageFiledAt.Add(time.Duration(minutes) * time.Minute), Details: map[string]string{}}
 }
 
 func minor(cop int64) *int64 {

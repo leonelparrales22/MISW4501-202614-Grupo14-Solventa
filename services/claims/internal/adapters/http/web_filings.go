@@ -37,6 +37,7 @@ type ClaimReader interface {
 	Get(ctx context.Context, id string) (domain.ClaimRecord, error)
 	Receipt(ctx context.Context, id string) (domain.ClaimRecord, []byte, error)
 	EvidenceLinks(ctx context.Context, c domain.ClaimRecord) []filing.EvidenceLink
+	SupportLink(ctx context.Context, claimID, supportID string) (filing.SupportLink, error)
 }
 
 var (
@@ -54,6 +55,7 @@ func WithClaimReads(svc ClaimReader, verifier security.Verifier) Option {
 			r.Get("/v1/claims", listClaims(svc))
 			r.Get("/v1/claims/{claim_id}", getClaim(svc))
 			r.Get("/v1/claims/{claim_id}/filing-receipt", getReceipt(svc))
+			r.Get("/v1/claims/{claim_id}/supports/{support_id}/download", supportDownload(svc))
 		})
 	}
 }
@@ -82,6 +84,20 @@ type requirementBody struct {
 	MinFiles int      `json:"min_files"`
 	MaxFiles int      `json:"max_files"`
 	Formats  []string `json:"formats"`
+}
+
+// requirementBodiesOf are the supports with their rules, never null.
+func requirementBodiesOf(list []domain.Requirement) []requirementBody {
+	out := make([]requirementBody, 0, len(list))
+	for _, r := range list {
+		formats := make([]string, 0, len(r.Formats))
+		for _, f := range r.Formats {
+			formats = append(formats, string(f))
+		}
+		out = append(out, requirementBody{Code: r.Code, Label: r.Label, Required: r.Required, MinFiles: r.MinFiles,
+			MaxFiles: r.MaxFiles, Formats: formats})
+	}
+	return out
 }
 
 type incidentOptionBody struct {
@@ -121,17 +137,7 @@ func filingOptions(svc WebFilingService) http.HandlerFunc {
 				IncidentTypes: []incidentOptionBody{},
 			}
 			for _, o := range p.Incidents {
-				option := incidentOptionBody{Code: string(o.Type), Label: o.Label, Requirements: []requirementBody{}}
-				for _, r := range o.Requirements {
-					formats := make([]string, 0, len(r.Formats))
-					for _, f := range r.Formats {
-						formats = append(formats, string(f))
-					}
-					option.Requirements = append(option.Requirements, requirementBody{
-						Code: r.Code, Label: r.Label, Required: r.Required, MinFiles: r.MinFiles, MaxFiles: r.MaxFiles,
-						Formats: formats,
-					})
-				}
+				option := incidentOptionBody{Code: string(o.Type), Label: o.Label, Requirements: requirementBodiesOf(o.Requirements)}
 				body.IncidentTypes = append(body.IncidentTypes, option)
 			}
 			out.Policies = append(out.Policies, body)
@@ -406,6 +412,44 @@ type claimSummaryBody struct {
 	IncidentType string            `json:"incident_type"`
 	OccurredAt   time.Time         `json:"occurred_at"`
 	FiledAt      time.Time         `json:"filed_at"`
+	// LastChangedAt is when the claim reached its current status
+	// (HU-W2.1-02); absent where it is not read, such as the prior claims of
+	// the review of the advisor.
+	LastChangedAt *time.Time `json:"last_changed_at,omitempty"`
+	// AutomaticResolution is what resolved a parametric claim (HU-M2.4-01);
+	// null for a claim evaluated by an analyst.
+	AutomaticResolution *automaticResolutionBody `json:"automatic_resolution"`
+}
+
+// automaticResolutionBody tells a claim the parametric engine resolved by
+// itself, with the parameter, its threshold and the value that made it pay
+// (HU-M2.4-01, criterion 3).
+type automaticResolutionBody struct {
+	ResolvedAt  time.Time   `json:"resolved_at"`
+	RuleVersion string      `json:"rule_version"`
+	Trigger     triggerBody `json:"trigger"`
+}
+
+type triggerBody struct {
+	Parameter      string    `json:"parameter"`
+	EventReference string    `json:"event_reference"`
+	Threshold      float64   `json:"threshold"`
+	Observed       float64   `json:"observed"`
+	Unit           string    `json:"unit"`
+	ObservedAt     time.Time `json:"observed_at"`
+}
+
+// automaticResolutionOf is the body of the automatic resolution of a claim,
+// or nil when it has none.
+func automaticResolutionOf(c domain.ClaimRecord) *automaticResolutionBody {
+	r := c.Parametric
+	if r == nil {
+		return nil
+	}
+	t := r.Trigger
+	return &automaticResolutionBody{ResolvedAt: r.ResolvedAt.UTC(), RuleVersion: r.RuleVersion,
+		Trigger: triggerBody{Parameter: string(t.Parameter), EventReference: t.EventReference, Threshold: t.Threshold,
+			Observed: t.Observed, Unit: t.Unit, ObservedAt: t.ObservedAt.UTC()}}
 }
 
 // evidenceViewBody is a photograph or video captured by the insured in the place
@@ -435,11 +479,63 @@ type claimDetailBody struct {
 	// (HU-W2.2-01); absent when it was not, so the detail of the claims
 	// filed without it does not change.
 	EstimatedAmountMinor *int64 `json:"estimated_amount_minor,omitempty"`
+	// HA-L02: whether the detail came from the read cache, and when it was
+	// read; absent in the answer of a filing, which is not a read.
+	*freshnessBody
+}
+
+// claimTallyBody is the tally of the insured's claims (HU-W2.1-02, screen
+// A7), whatever the filters and the page.
+type claimTallyBody struct {
+	InProgress    int            `json:"in_progress"`
+	ByStatus      map[string]int `json:"by_status"`
+	PaidThisYear  paidTallyBody  `json:"paid_this_year"`
+	PendingAction []claimRefBody `json:"pending_action"`
+	// Policies are the policies the insured filed claims on: the filter of
+	// A7, whatever the policy core says of them now.
+	Policies []policySummaryBody `json:"policies"`
+}
+
+type paidTallyBody struct {
+	Claims      int     `json:"claims"`
+	AmountMinor int64   `json:"amount_minor"`
+	Currency    *string `json:"currency"`
+}
+
+type claimRefBody struct {
+	ClaimID      string `json:"claim_id"`
+	FilingNumber string `json:"filing_number"`
+}
+
+func tallyBody(t domain.ClaimTally) *claimTallyBody {
+	out := &claimTallyBody{InProgress: t.InProgress(), ByStatus: map[string]int{},
+		PaidThisYear:  paidTallyBody{Claims: t.PaidSince, AmountMinor: t.PaidAmountMinor, Currency: nullable(t.Currency)},
+		PendingAction: make([]claimRefBody, 0, len(t.PendingAction)),
+		Policies:      make([]policySummaryBody, 0, len(t.Policies))}
+	for _, p := range t.Policies {
+		body := policySummaryBody{PolicyID: p.ID}
+		if p.Line != "" {
+			line, product, object := string(p.Line), p.Product, p.InsuredObject
+			body.Line, body.Product, body.InsuredObject = &line, &product, &object
+		}
+		out.Policies = append(out.Policies, body)
+	}
+	for s, n := range t.ByStatus {
+		out.ByStatus[string(s)] = n
+	}
+	for _, r := range t.PendingAction {
+		out.PendingAction = append(out.PendingAction, claimRefBody{ClaimID: r.ID, FilingNumber: r.FilingNumber})
+	}
+	return out
 }
 
 type claimListResponse struct {
 	Items         []claimSummaryBody `json:"items"`
 	NextPageToken *string            `json:"next_page_token"`
+	// Summary is the tally of every claim of the insured (HU-W2.1-02).
+	Summary *claimTallyBody `json:"summary,omitempty"`
+	// HA-L02: whether the list came from the read cache, and when it was read.
+	*freshnessBody
 }
 
 func summaryBody(c domain.ClaimRecord) claimSummaryBody {
@@ -447,6 +543,11 @@ func summaryBody(c domain.ClaimRecord) claimSummaryBody {
 		ClaimID: c.ID, FilingNumber: c.FilingNumber, Status: string(c.Status), Channel: string(c.Channel),
 		Policy:       policySummaryBody{PolicyID: c.PolicyID},
 		IncidentType: string(c.IncidentType), OccurredAt: c.OccurredAt.UTC(), FiledAt: c.FiledAt.UTC(),
+		AutomaticResolution: automaticResolutionOf(c),
+	}
+	if !c.LastChangedAt.IsZero() {
+		at := c.LastChangedAt.UTC()
+		out.LastChangedAt = &at
 	}
 	if p := c.Policy; p != nil {
 		line, product, object := string(p.Line), p.Product, p.InsuredObject
@@ -516,6 +617,7 @@ func listClaims(svc ClaimReader) http.HandlerFunc {
 			return
 		}
 
+		req, fresh := trackFreshness(req)
 		claims, _ := security.ClaimsFromContext(req.Context())
 		page, err := svc.List(req.Context(), claims.Subject, q)
 		switch {
@@ -534,6 +636,10 @@ func listClaims(svc ClaimReader) http.HandlerFunc {
 		if page.NextPageToken != "" {
 			out.NextPageToken = &page.NextPageToken
 		}
+		if page.Summary != nil {
+			out.Summary = tallyBody(*page.Summary)
+		}
+		out.freshnessBody = freshnessOf(w, fresh)
 		writeJSON(w, http.StatusOK, out)
 	}
 }
@@ -545,9 +651,12 @@ func getClaim(svc ClaimReader) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "claim_not_found", "there is no claim with that id")
 			return
 		}
+		req, fresh := trackFreshness(req)
 		c, err := svc.Get(req.Context(), id)
 		if !writeReadError(w, req, err) {
-			writeJSON(w, http.StatusOK, detailBody(c, svc.EvidenceLinks(req.Context(), c)))
+			out := detailBody(c, svc.EvidenceLinks(req.Context(), c))
+			out.freshnessBody = freshnessOf(w, fresh)
+			writeJSON(w, http.StatusOK, out)
 		}
 	}
 }
@@ -574,6 +683,45 @@ func getReceipt(svc ClaimReader) http.HandlerFunc {
 }
 
 // writeReadError answers a failed read and tells whether it did.
+type supportDownloadBody struct {
+	SupportID   string    `json:"support_id"`
+	FileName    string    `json:"file_name"`
+	ContentType string    `json:"content_type"`
+	ByteSize    int64     `json:"byte_size"`
+	DownloadURL string    `json:"download_url"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// supportDownload signs the read of one support of the insured's claim
+// (HU-W2.1-02, screen A8). The URL is short-lived and not cached.
+func supportDownload(svc ClaimReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		id, supportID := chi.URLParam(req, "claim_id"), chi.URLParam(req, "support_id")
+		if !claimIDPattern.MatchString(id) {
+			writeError(w, http.StatusNotFound, "claim_not_found", "there is no claim with that id")
+			return
+		}
+		if !domain.ValidSupportID(supportID) {
+			writeError(w, http.StatusNotFound, "support_not_found", "the claim has no support with that id")
+			return
+		}
+		link, err := svc.SupportLink(req.Context(), id, supportID)
+		switch {
+		case errors.Is(err, domain.ErrSupportNotFound):
+			writeError(w, http.StatusNotFound, "support_not_found", "the claim has no support with that id")
+			return
+		case errors.Is(err, filing.ErrDownloadsUnavailable):
+			writeError(w, http.StatusServiceUnavailable, "downloads_unavailable", "the support cannot be downloaded now")
+			return
+		case writeReadError(w, req, err):
+			return
+		}
+		f := link.File
+		writeJSON(w, http.StatusOK, supportDownloadBody{SupportID: f.ID, FileName: f.FileName,
+			ContentType: f.ContentType(), ByteSize: f.ByteSize, DownloadURL: link.URL, ExpiresAt: link.ExpiresAt.UTC()})
+	}
+}
+
 func writeReadError(w http.ResponseWriter, req *http.Request, err error) bool {
 	switch {
 	case err == nil:

@@ -48,6 +48,9 @@ func (s triageStores) file(t *testing.T, id string, minutes int, cop *int64) {
 	c.EstimatedAmountMinor = cop
 	_, _, err := s.claims.CreateWeb(context.Background(), c)
 	require.NoError(t, err)
+	// The advisor approved the filing (HU-W2.1-03): only then is it triaged.
+	_, err = s.db.Exec(`UPDATE claim SET status = 'in_evaluation' WHERE id = $1`, id)
+	require.NoError(t, err)
 }
 
 func (s triageStores) record(t *testing.T, c ports.TriageCandidate, version string) domain.TriageRecord {
@@ -209,7 +212,7 @@ func TestTheCurrentTriageOfAPage(t *testing.T) {
 	require.NotNil(t, got["cl-1"].Last)
 	assert.Equal(t, 2, got["cl-1"].Last.Seq, "the last calculation")
 	assert.Equal(t, domain.Triage1, got["cl-1"].Last.Assessment.Level)
-	assert.Equal(t, domain.StatusActive, got["cl-2"].Claim.Status)
+	assert.Equal(t, domain.StatusInEvaluation, got["cl-2"].Claim.Status)
 	assert.Nil(t, got["cl-2"].Last)
 
 	empty, err := s.triage.Current(context.Background(), []string{"cl-404"})

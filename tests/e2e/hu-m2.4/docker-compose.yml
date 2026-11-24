@@ -1,0 +1,133 @@
+# HU-M2.4-01 local backend for the mobile app (consultation and follow-up of
+# the claim): the real claims service with its PostgreSQL (behind Toxiproxy,
+# so app-local.sh can slow it down and the reads answer from the cache,
+# criterion 4), Redis as the read cache (HA-L02), the policy core and payment
+# gateway stubs, and LocalStack with the iot topic, the claims queue of the
+# parametric engine and the claims topic its outbox publishes to
+# (localstack/init-messaging.sh). The human routes verify the tokens of the
+# permanent user pool (written by app-local.sh), so the insured signs in on
+# the emulator. Build context is the repository root.
+#
+# Published ports (127.0.0.1 only, configurable, chosen not to collide with
+# the other e2e environments): claims 8394, policy core 9394, Toxiproxy API
+# 8494, LocalStack 4578.
+name: hu-m2-4-local
+
+x-aws-local: &aws-local
+  AWS_REGION: us-east-2
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_EC2_METADATA_DISABLED: "true"
+
+services:
+  postgres-claims:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=claims
+      - POSTGRES_USER=claims
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claims -d claims"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "127.0.0.1:${TOXIPROXY_PORT:-8494}:8474" # Toxiproxy API: app-local.sh --slow-db / --fast-db
+    depends_on:
+      postgres-claims:
+        condition: service_healthy
+
+  # The Toxiproxy image is distroless (no shell, no CLI), so the proxy of the
+  # database is created through its HTTP API.
+  toxiproxy-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - toxiproxy
+    entrypoint:
+      - sh
+      - -c
+      - >
+        until curl -sf http://toxiproxy:8474/version; do sleep 1; done;
+        curl -sf -X POST http://toxiproxy:8474/proxies -H 'Content-Type: application/json'
+        -d '{"name":"postgres","listen":"0.0.0.0:5433","upstream":"postgres-claims:5432","enabled":true}'
+
+  # LocalStack 4.14.0: the last image that starts without an auth token
+  # (decision D-10 a of HA-D02).
+  localstack:
+    image: localstack/localstack:4.14.0
+    ports:
+      - "127.0.0.1:${LOCALSTACK_PORT:-4578}:4566"
+    environment:
+      - SERVICES=sns,sqs
+      - AWS_DEFAULT_REGION=us-east-2
+    volumes:
+      - ./localstack/init-messaging.sh:/etc/localstack/init/ready.d/init-messaging.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal --region us-east-2 sns list-subscriptions-by-topic --topic-arn arn:aws:sns:us-east-2:000000000000:solventa-local-claims --query 'length(Subscriptions)' --output text | grep -q '^1$'"]
+      interval: 3s
+      timeout: 10s
+      retries: 60
+
+  policy-core:
+    build:
+      context: ../../..
+      dockerfile: stubs/policy-core/Dockerfile
+    ports:
+      - "127.0.0.1:${POLICY_CORE_PORT:-9394}:9060" # read by app-local.sh: the policies of the insured
+    environment:
+      - PORT=9060
+
+  payment-gateway:
+    build:
+      context: ../../..
+      dockerfile: stubs/payment-gateway/Dockerfile
+    environment:
+      - PORT=9040
+
+  claims:
+    build:
+      context: ../../..
+      dockerfile: services/claims/Dockerfile
+    ports:
+      - "127.0.0.1:${CLAIMS_PORT:-8394}:8080"
+    environment:
+      <<: *aws-local
+      PORT: "8080"
+      # Through Toxiproxy (criterion 4: app-local.sh --slow-db).
+      DATABASE_URL: postgres://claims:${PG_PASSWORD:-}@toxiproxy:5433/claims?sslmode=disable
+      REDIS_ADDR: redis:6379
+      AUTH_ISSUER: ${AUTH_ISSUER:-}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
+      AUTH_CLIENT_IDS: ${AUTH_CLIENT_IDS:-}
+      POLICY_CORE_URL: http://policy-core:9060
+      PAYMENT_GATEWAY_URL: http://payment-gateway:9040
+      # HU-M2.4-01: the parametric engine and the relay of its outbox.
+      EVENTS_QUEUE_URL: http://localstack:4566/000000000000/solventa-local-claims
+      EVENTS_TOPIC_ARN: arn:aws:sns:us-east-2:000000000000:solventa-local-claims
+      AWS_ENDPOINT_URL_SQS: http://localstack:4566
+      AWS_ENDPOINT_URL_SNS: http://localstack:4566
+      # A short sweep so the triage of the seeded claim (criterion 2) is there
+      # in seconds.
+      TRIAGE_SWEEP_INTERVAL_SECONDS: "2"
+    depends_on:
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_started
+      policy-core:
+        condition: service_started
+      payment-gateway:
+        condition: service_started

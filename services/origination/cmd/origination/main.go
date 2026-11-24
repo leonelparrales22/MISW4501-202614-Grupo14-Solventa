@@ -89,6 +89,14 @@ func main() {
 	if relay != nil {
 		go relay.Run(context.Background())
 	}
+	// HU-M1.2-01 and HU-M3.2-01: the policy core the wallet lists and the
+	// expiry alerts look at; nil without POLICY_CORE_URL.
+	portfolio := newPolicyPortfolio(cfg.policyCore)
+	// HU-M3.2-01: alerts 30, 15 and 5 days before a policy expires, written
+	// to the outbox (PolicyExpiryApproaching) for the notifications service.
+	if err := startExpiryAlerts(context.Background(), cfg.expiryAlerts, st, portfolio); err != nil {
+		log.Fatalf("could not set up the expiry alerts: %v", err)
+	}
 	offers := newOfferWiring(context.Background(), cfg, resolver, st)
 	cfg.acceptances.offers, cfg.acceptances.acceptanceStore, cfg.acceptances.reviewStore = offers.router, offers.acceptances, offers.reviews
 
@@ -115,6 +123,10 @@ func main() {
 		var consentSender ports.ConsentCodeSender = formalization.UnavailableSender{}
 		// HU-W1.5-02: the not-renewed notice goes out through the same client.
 		var renewalNotifier ports.RenewalNotifier
+		// HU-W1.6-02: and so does the notice of a cancellation for non-payment.
+		var cancellationNotifier ports.CancellationNotifier
+		// HU-W1.5-03: so does the confirmation code of an assisted renewal.
+		var renewalCodeEmail emailadapter.Sender
 		// One repository for every document of the service: the contractual
 		// PDF (HU-W1.3-03) and the faces of the identity document of the
 		// sign-up (HU-M1.1-01) go to the same bucket, so they share one client.
@@ -137,6 +149,8 @@ func main() {
 			reviewNotifier = emailadapter.NewReviewNotifier(contract.emailClient)
 			consentSender = emailadapter.NewConsentNotifier(contract.emailClient)
 			renewalNotifier = emailadapter.NewRenewalNotifier(contract.emailClient)
+			cancellationNotifier = emailadapter.NewCancellationNotifier(contract.emailClient)
+			renewalCodeEmail = contract.emailClient
 			opts = append(opts, httpadapter.WithContractDocuments(contract.reader, verifier))
 		} else {
 			log.Printf("%s is not set: the contractual document and its notification (HU-W1.3-03) are not wired", envEmailURL)
@@ -150,6 +164,8 @@ func main() {
 		// HU-M1.2-01: the wallet lists the policies origination issued (with
 		// the premium charge) next to the ones of the policy core.
 		var issued wallet.RenewalLister
+		// HU-W1.5-03: the assisted renewal extends the online one.
+		var onlineRenewals *renewal.Service
 		if cfg.billing.enabled {
 			// HU-W1.5-02: every activation is also projected into the
 			// policies the insured sees and renews.
@@ -159,17 +175,63 @@ func main() {
 				log.Fatalf("could not set up the premium charge: %v", err)
 			}
 			starter = charges.starter
+			// HU-W1.6-02: the monthly instalments, charged with the same
+			// gateway, and the cancellation of the policies that do not pay.
+			if err := startInstallments(context.Background(), cfg.installments, st.db, charges.gateway,
+				cancellationNotifier); err != nil {
+				log.Fatalf("could not set up the instalments: %v", err)
+			}
 			opts = append(opts, httpadapter.WithCharges(charges.service, verifier))
 			renewals, err := newRenewalService(context.Background(), cfg.renewal, st.db, resolver, renewalNotifier, charges.wake)
 			if err != nil {
 				log.Fatalf("could not set up the policy renewal: %v", err)
 			}
 			opts = append(opts, httpadapter.WithPolicies(renewals, verifier))
-			issued = renewals
+			issued, onlineRenewals = renewals, renewals
 		} else {
 			logWithoutBilling(cfg.contracts.enabled)
 		}
-		opts = append(opts, walletOptions(issued, newPolicyPortfolio(cfg.policyCore), verifier)...)
+		// HU-W1.5-01: the advisor lists the policies about to expire, the ones
+		// the charge activated, with the same renewal window.
+		expiring, err := expiringOptions(cfg.billing.enabled, cfg.renewal.rules, st.db, verifier)
+		if err != nil {
+			log.Fatalf("could not set up the list of the policies about to expire: %v", err)
+		}
+		opts = append(opts, expiring...)
+		// HU-W1.4-01: the insured asks for a change of a policy the charge
+		// activated (beneficiaries, insured value or contact data).
+		changes, err := endorsementOptions(cfg.billing.enabled, cfg.endorsements, st.db, st.offers, verifier)
+		if err != nil {
+			log.Fatalf("could not set up the change requests: %v", err)
+		}
+		opts = append(opts, changes...)
+		// HU-W1.4-02: the operations analyst reviews and applies them, and the
+		// insured is told the decision through the shared e-mail client.
+		review, err := endorsementReviewOptions(context.Background(), cfg.billing.enabled, cfg.endorsements, st.db, st.offers,
+			renewalCodeEmail, verifier)
+		if err != nil {
+			log.Fatalf("could not set up the review of the endorsements: %v", err)
+		}
+		opts = append(opts, review...)
+		// HU-W1.6-01: the insured cancels a policy the charge activated and
+		// gets back the part of the current month not used.
+		cancellations, err := cancellationOptions(context.Background(), cfg.billing, cfg.installments.rules, st.db, verifier)
+		if err != nil {
+			log.Fatalf("could not set up the cancellation: %v", err)
+		}
+		opts = append(opts, cancellations...)
+		// HU-W1.5-03: the advisor requotes and formalizes the renewal of a
+		// policy about to expire, with the consent verifier of the offers.
+		assisted, err := assistedRenewalOptions(assistedRenewalWiring{renewals: onlineRenewals, db: st.db, resolver: resolver,
+			offers: st.offers, consents: offers.consents, email: renewalCodeEmail}, verifier)
+		if err != nil {
+			log.Fatalf("could not set up the assisted renewal: %v", err)
+		}
+		opts = append(opts, assisted...)
+		opts = append(opts, walletOptions(issued, portfolio, verifier, st.db, cfg.installments.rules)...)
+		// HU-W3.2-01: the commercial partner reads the summary of its
+		// integration (quotes, policies issued and conversion).
+		opts = append(opts, partnerMetricsOptions(st.db, verifier)...)
 		acceptances, reviews := newAcceptanceService(context.Background(), cfg.acceptances, starter, reviewNotifier)
 		opts = append(opts,
 			httpadapter.WithAcceptances(acceptances, verifier),
@@ -272,8 +334,18 @@ type config struct {
 	// Personalized offer (HU-W1.2-03).
 	offers offerConfig
 
-	// Policy core read by the wallet (HU-M1.2-01).
+	// Policy core read by the wallet (HU-M1.2-01) and the expiry alerts.
 	policyCore policyCoreConfig
+
+	// Alerts before a policy expires (HU-M3.2-01).
+	expiryAlerts expiryAlertConfig
+
+	// Change requests of the insured (HU-W1.4-01).
+	endorsements endorsementConfig
+
+	// installments are the monthly instalments and the cancellation for
+	// non-payment (HU-W1.6-02).
+	installments installmentConfig
 }
 
 // acceptanceConfig configures the offer acceptance (HU-W1.3-01). Its routes
@@ -597,6 +669,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := loadPolicyCoreConfig(getenv, &cfg.policyCore); err != nil {
+		return config{}, err
+	}
+	if err := loadExpiryAlertConfig(getenv, &cfg.expiryAlerts); err != nil {
+		return config{}, err
+	}
+	if err := loadEndorsementConfig(getenv, &cfg.endorsements); err != nil {
+		return config{}, err
+	}
+	if err := loadInstallmentConfig(getenv, &cfg.installments); err != nil {
 		return config{}, err
 	}
 	return cfg, nil

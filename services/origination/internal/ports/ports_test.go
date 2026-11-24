@@ -34,3 +34,13 @@ func TestErrCircuitOpenIsDistinct(t *testing.T) {
 	assert.ErrorIs(t, err, ports.ErrCircuitOpen)
 	assert.False(t, errors.Is(ports.ErrSourceUnavailable, ports.ErrCircuitOpen))
 }
+
+func TestTheOpenChangeRequestErrorNamesTheRequestAndMatchesTheSentinel(t *testing.T) {
+	err := fmt.Errorf("file: %w", &ports.ChangeRequestOpenError{RequestID: "SOL-MOD-2026-0042"})
+
+	assert.ErrorIs(t, err, ports.ErrChangeRequestOpen)
+	var open *ports.ChangeRequestOpenError
+	require.ErrorAs(t, err, &open)
+	assert.Equal(t, "SOL-MOD-2026-0042", open.RequestID)
+	assert.Contains(t, err.Error(), "SOL-MOD-2026-0042")
+}

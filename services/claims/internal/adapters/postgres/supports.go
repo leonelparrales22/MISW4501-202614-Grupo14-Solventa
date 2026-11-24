@@ -20,6 +20,9 @@ type SupportStore struct {
 // NewSupportStore builds the store over an open, migrated database.
 func NewSupportStore(db *sql.DB) *SupportStore { return &SupportStore{db: db} }
 
+// SupportStoreOf builds the store over the database of the claims.
+func SupportStoreOf(records *ClaimRecordStore) *SupportStore { return &SupportStore{db: records.db} }
+
 var _ ports.SupportStore = (*SupportStore)(nil)
 
 const supportColumns = `support_id, owner_sub, file_name, content_type, byte_size, sha256, uploaded_at, confirmed_at`

@@ -115,6 +115,15 @@ type fakeReads struct {
 	gotList filing.ClaimQuery
 	gotID   string
 	links   []filing.EvidenceLink
+	// link and linkErr answer the download of a support (HU-W2.1-02).
+	link       filing.SupportLink
+	linkErr    error
+	gotSupport string
+}
+
+func (f *fakeReads) SupportLink(_ context.Context, claimID, supportID string) (filing.SupportLink, error) {
+	f.gotID, f.gotSupport = claimID, supportID
+	return f.link, f.linkErr
 }
 
 func (f *fakeReads) EvidenceLinks(context.Context, domain.ClaimRecord) []filing.EvidenceLink {
@@ -225,7 +234,8 @@ func TestTheFilingOptionsAreServed(t *testing.T) {
 		"incident_types":[{"code":"collision","label":"Colisión con daños al vehículo","requirements":[
 			{"code":"vehicle_photos","label":"Fotos del vehículo","required":true,"min_files":4,"max_files":10,"formats":["jpeg","png"]},
 			{"code":"driver_document","label":"Documento del conductor","required":true,"min_files":1,"max_files":2,"formats":["pdf","jpeg","png"]},
-			{"code":"traffic_report","label":"Informe de tránsito o croquis","required":true,"min_files":1,"max_files":3,"formats":["pdf","jpeg","png"]}]}]}]}`,
+			{"code":"traffic_report","label":"Informe de tránsito o croquis","required":true,"min_files":1,"max_files":3,"formats":["pdf","jpeg","png"]},
+			{"code":"plate_photo","label":"Fotografía de la placa","required":false,"min_files":0,"max_files":2,"formats":["jpeg","png"]}]}]}]}`,
 		rec.Body.String())
 }
 
@@ -387,6 +397,7 @@ func TestAWebFilingAnswersWithTheClaimDetail(t *testing.T) {
 	assert.JSONEq(t, `{"claim_id":"`+claimID+`","filing_number":"SIN-2026-01712","status":"active","channel":"web",
 		"policy":{"policy_id":"AU-2025-118204","line":"auto","product":"Autos","insured_object":"KJT-482"},
 		"incident_type":"other","occurred_at":"2026-09-14T23:40:00Z","filed_at":"2026-10-23T15:00:00Z",
+		"automatic_resolution":null,
 		"place":"Calle 80","description":"Un golpe por detrás.","evidence":[],
 		"supports":{"required_total":1,"required_attached":1,"files":1,"items":[{"requirement_code":"supporting_document",
 			"label":"Documento de soporte","files":[{"support_id":"sup-`+strings.Repeat("c", 32)+`","file_name":"croquis.pdf",
@@ -469,7 +480,11 @@ func TestTheListOfClaims(t *testing.T) {
 func TestTheLastPageHasANullToken(t *testing.T) {
 	rec := do(webRouter(&fakeWeb{}, &fakeUploads{}, &fakeReads{}), http.MethodGet, "/v1/claims", "insured", nil, nil)
 
-	assert.JSONEq(t, `{"items":[],"next_page_token":null}`, rec.Body.String())
+	m := decode(t, rec)
+	assert.Equal(t, []any{}, m["items"])
+	assert.Contains(t, m, "next_page_token")
+	assert.Nil(t, m["next_page_token"])
+	assert.Equal(t, false, m["stale"], "HA-L02: a read from the database")
 }
 
 func TestAnInvalidListQueryIs400(t *testing.T) {

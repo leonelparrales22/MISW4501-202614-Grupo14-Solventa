@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Solventa - origination service
-  version: 0.13.0
+  version: 0.20.0
 paths:
   /health:
     get:
@@ -1180,6 +1180,14 @@ paths:
         had instead of taking the missing ones as cancelled. Mounted when at
         least one source is configured (the premium charge with PostgreSQL, or
         the policy core). Only the insured.
+
+        HU-W1.6-02: a policy origination issued also says where its monthly
+        premium stands (payment): up_to_date with the next due date,
+        payment_pending while an instalment fell due unpaid (the grace period:
+        the policy keeps its coverage and status active), or cancelled. A
+        policy cancelled for non-payment has status cancelled, can_renew false
+        and its cancellation (refund not_applicable). Both are null for the
+        policies of the core.
       security:
         - cognitoJwt: []
       responses:
@@ -1193,6 +1201,1183 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/expiring:
+    get:
+      summary: List the policies about to expire, for the advisor (HU-W1.5-01)
+      description: >
+        Screen S6 of the advisor portal ("Renovaciones"), the entry point of the
+        assisted renewal (HU-W1.5-03). Lists every policy origination issued
+        (line life) whose coverage ends inside the range of expiration and is
+        still in force, and whose current period is open: status expiring when
+        it has no renewal yet, renewal_in_progress when its renewal was accepted
+        and the premium is being charged. Renewed and not renewed periods leave
+        the list; a renewed policy appears again by the end of its new coverage.
+        The status is the stored renewal of the period: a renewal whose charge
+        was just confirmed reads as renewal_in_progress until the renewal sweep
+        settles it (RENEWAL_POLL_INTERVAL_MS, one minute by default). The range
+        is made of civil days of Colombia (UTC-5), both included; without it,
+        the range is today to today plus the renewal window
+        (RENEWAL_WINDOW_DAYS, 30 by default) of HU-W1.5-02, with only
+        expires_from it lasts the window from that day, and with only
+        expires_to it starts today; the answer carries the range applied.
+        can_renew is true only inside the renewal window and while the period
+        has no renewal (the rule of HU-W1.5-02); renewal_window says when it
+        opens. due_within_window counts the policies with an open period that
+        end within the renewal window from now, whatever the filter. Ordered by
+        the end of the coverage, then by policy id; a range with no policies is
+        an empty list, not an error. The status values may grow (HU-W1.6-02 will
+        add the policies cancelled for non-payment): a client shows an unknown
+        one neutrally. Every advisor sees every policy. Mounted with the premium
+        charge (PostgreSQL). Only advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: expires_from
+          in: query
+          required: false
+          description: First civil day of the range (AAAA-MM-DD, Colombia), included.
+          schema:
+            type: string
+            format: date
+        - name: expires_to
+          in: query
+          required: false
+          description: Last civil day of the range (AAAA-MM-DD, Colombia), included; not before expires_from.
+          schema:
+            type: string
+            format: date
+        - name: status
+          in: query
+          required: false
+          description: >
+            Only the policies with this status; all when absent.
+            cancelled_non_payment lists the policies cancelled for non-payment
+            in the last 30 days, whatever the range (HU-W1.6-02).
+          schema:
+            type: string
+            enum: [expiring, renewal_in_progress, cancelled_non_payment]
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: The page of the policies about to expire, the range applied and the indicator
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExpiringPolicyList"
+        "400":
+          description: >
+            A date that is not AAAA-MM-DD, an unknown status or an invalid page or
+            page size (invalid_request); expires_to before expires_from
+            (out_of_range)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/change-requests:
+    get:
+      summary: List the change requests of the insured (HU-W1.4-01)
+      description: >
+        Screen A11 of the insured portal ("Mis solicitudes"): the change requests
+        the caller filed on their policies, the latest filed first. status is
+        the stored one (five values); the insured sees not_applied as in_review
+        while it has no decision_reason and as rejected once the analyst
+        returned it with one (adjustment A-1), and the filter speaks that
+        projection: in_review also lists the not applied requests without a
+        reason, and rejected the ones with a reason. filed_from is a civil day
+        of Colombia (UTC-5), included. The indicators ignore the filter: the
+        open requests (filed, in review, or not applied without a reason) with
+        the latest filed, the ones applied in the civil year with the last one
+        applied, and the rejected ones (also the returned not applied ones)
+        with the last one. policies are the policies of the caller that have
+        requests, the options of the filter. Only the requests of the caller:
+        those of another insured never appear. Mounted with the premium charge
+        (PostgreSQL). Only insured users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Only the requests the insured sees with this status; every status when absent.
+          schema:
+            type: string
+            enum: [filed, in_review, applied, rejected]
+        - name: policy_id
+          in: query
+          required: false
+          description: Only the requests of this policy.
+          schema:
+            type: string
+            maxLength: 128
+        - name: filed_from
+          in: query
+          required: false
+          description: Only the requests filed from this civil day (AAAA-MM-DD, Colombia), included.
+          schema:
+            type: string
+            format: date
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: The page of the requests, the indicators and the policies with requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangeRequestPage"
+        "400":
+          description: >
+            Every query parameter that cannot be read (validation_failed with
+            the list: an unknown status, a date that is not AAAA-MM-DD, a page or
+            page size out of range, a policy_id that is too long)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ChangeRequestUnavailable"
+  /v1/policies/change-requests/{request_id}:
+    get:
+      summary: Read one change request of the insured (HU-W1.4-01)
+      description: >
+        Screen A3b of the insured portal: the request with the photo of the
+        value when it was filed (previous), what the insured asked for
+        (requested), the difference field by field (changes), who filed it and
+        where it stands. Only the owner of the policy reads it (another insured
+        gets 403); an id that is not SOL-MOD-<year>-<number> is not found.
+        Only insured users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The change request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangeRequest"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The change request does not exist (change_request_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ChangeRequestUnavailable"
+  /v1/policies/endorsement-requests:
+    get:
+      summary: Inbox of the change requests for the operations analyst (HU-W1.4-02)
+      description: >
+        Screen O2 of the portal of the operations analyst: the change requests
+        the insured filed (HU-W1.4-01), the latest filed first, with the holder
+        of each policy (name and document, without its type). status is
+        pending by default (filed, in review, and not applied and not returned
+        yet); returned tells a not applied request that the analyst returned
+        to the insured. filed_from is a civil day of Colombia (UTC-5), included.
+        The indicators ignore the filter: the pending requests and how many
+        wait more than 24 h; the endorsements applied in the civil day of
+        Colombia and the mean time from filing to applying them; the requests
+        rejected or not applied in the last 7 days and the most frequent reason
+        (the code of the validation that failed most, or analyst_rejection).
+        Never the subject nor the e-mail of the insured. Mounted with the
+        premium charge (PostgreSQL). Only operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: change_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [beneficiaries, insured_amount, personal_data]
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, filed, in_review, applied, rejected, not_applied, all]
+            default: pending
+        - name: filed_from
+          in: query
+          required: false
+          description: Only the requests filed from this civil day (AAAA-MM-DD, Colombia), included.
+          schema:
+            type: string
+            format: date
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: The page of the requests and the indicators
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementInboxPage"
+        "400":
+          description: Every query parameter that cannot be read (validation_failed), or a filter out of range (out_of_range)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/endorsement-requests/{request_id}:
+    get:
+      summary: Detail of a change request for the operations analyst (HU-W1.4-02)
+      description: >
+        Screens O3 and O3b: the request, the change field by field (and the
+        premium before and after for a new insured value, priced by the rating
+        engine with the inputs of the issuance), the policy with its current
+        terms and its endorsements, the business validations of the type of
+        the change and what was decided. While the request can still be applied
+        (filed or in review) the validations are a preview computed now: KYC and
+        claims are asked and nothing is written (validations_source preview);
+        otherwise they are the ones of the last attempt (attempt), or none for
+        a request rejected before anybody tried to apply it (none). A guard
+        (policy_in_force, previous_values_current, no_renewal_in_progress,
+        premium_recalculated) is listed only when it does not pass. An id that
+        is not SOL-MOD-<year>-<number> is not found. Only operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/EndorsementRequestID"
+      responses:
+        "200":
+          description: The detail of the request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementDetail"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/endorsement-requests/{request_id}/review:
+    post:
+      summary: Take a change request (HU-W1.4-02)
+      description: >
+        The first analyst who opens a filed request takes it: it moves to
+        in_review and the insured sees it so. Taking a request already in review
+        changes nothing (200, idempotent); any other status is 409
+        request_already_decided with the status it has now. No body. Only
+        operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/EndorsementRequestID"
+      responses:
+        "200":
+          description: The request in review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementRequestResult"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "409":
+          $ref: "#/components/responses/EndorsementConflict"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/endorsement-requests/{request_id}/application:
+    post:
+      summary: Apply a change request as an endorsement (HU-W1.4-02)
+      description: >
+        Runs the business validations of the type of the change, asking KYC
+        (identity documents of the new beneficiaries) and claims (claims in
+        progress of the policy) before any transaction. When every validation
+        holds, the endorsement END-<year>-<number> is stored with the
+        contractual terms that result, which every channel reads from then on,
+        the insured sees the request applied and receives an e-mail (outcome
+        applied). When one fails, the attempt is recorded with its
+        validations, the policy keeps its terms and the request is not_applied:
+        the insured still sees it in review until the analyst returns it
+        (outcome not_applied). When one cannot be verified nothing changes (503
+        validation_unverifiable, naming them). Applying a request already
+        applied answers its endorsement, and one not applied and not returned
+        its attempt (a double click never creates two). 409 policy_changed when
+        another endorsement of the same policy was applied while this one was
+        validated (nothing changed; applying it again decides against the new
+        terms); 409 request_already_decided for a rejected or returned request.
+        No body. Only operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/EndorsementRequestID"
+      responses:
+        "200":
+          description: The endorsement applied, or the attempt not applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementApplication"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "409":
+          description: The request was already decided (request_already_decided) or another endorsement of the policy won (policy_changed)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/DecidedConflict"
+                  - $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            A validation could not be verified (validation_unverifiable, with
+            the codes) or the endorsement could not be processed
+            (endorsement_unavailable); nothing changed
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationUnverifiable"
+                  - $ref: "#/components/schemas/Error"
+  /v1/policies/endorsement-requests/{request_id}/rejection:
+    post:
+      summary: Reject a change request (HU-W1.4-02)
+      description: >
+        Rejects a filed or in review request with observations of 10 to 500
+        characters (trimmed) that the insured reads with the rejected status,
+        and that reach them by e-mail. Any other status is 409
+        request_already_decided. Only operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/EndorsementRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ObservationsInput"
+      responses:
+        "200":
+          description: The request rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementRequestResult"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "409":
+          $ref: "#/components/responses/EndorsementConflict"
+        "422":
+          $ref: "#/components/responses/ObservationsRequired"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/endorsement-requests/{request_id}/return:
+    post:
+      summary: Return a change request not applied to the insured (HU-W1.4-02)
+      description: >
+        Returns a not applied request with observations of 10 to 500 characters
+        (trimmed): the status stays not_applied, the analyst sees it returned
+        and the insured sees it rejected with the observations, by e-mail too,
+        and can file a new one. Any other request is 409 not_returnable. Only
+        operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/EndorsementRequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ObservationsInput"
+      responses:
+        "200":
+          description: The request returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementRequestResult"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "409":
+          $ref: "#/components/responses/EndorsementConflict"
+        "422":
+          $ref: "#/components/responses/ObservationsRequired"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/{policy_id}/endorsements:
+    get:
+      summary: History of the endorsements of a policy (HU-W1.4-02)
+      description: >
+        Screen O4, read only: the endorsements applied and the attempts not
+        applied of the policy, the newest first, each with the request it came
+        from, what changed (previous and requested values, and the premium
+        before and after a new insured value), the validations that failed and
+        who did it. The records cannot be edited nor deleted. A policy without
+        endorsements answers an empty list. Only operations users.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: policy_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        "200":
+          description: The history of the policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EndorsementHistory"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/EndorsementNotFound"
+        "503":
+          $ref: "#/components/responses/EndorsementUnavailable"
+  /v1/policies/{policy_id}/current-terms:
+    get:
+      summary: Read the terms of a policy the insured can change (HU-W1.4-01)
+      description: >
+        What screen A3 starts from (CA-1): the insured value, the beneficiaries
+        designated for the remainder, the onerous beneficiary (the lender of
+        the credit, which cannot be changed; partner_id and name are null when
+        they are not known, for example in an advisor sale) and the contact
+        data of the policy (address and phone are null while not registered;
+        email is the contact e-mail of the policy, not the sign-in one).
+        in_force tells whether a change can be filed now; open_requests lists
+        the open request of each type that has one, which blocks a new one of
+        that type. limits are the rules of the capture. Only the policies
+        origination issued (a policy of the policy core is not found). Only
+        the insured who owns the policy (403 for another insured).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The current terms of the policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyCurrentTerms"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "503":
+          $ref: "#/components/responses/ChangeRequestUnavailable"
+  /v1/policies/{policy_id}/change-requests:
+    post:
+      summary: File a change request of a policy in force (HU-W1.4-01)
+      description: >
+        The insured who owns the policy asks for new beneficiaries, a new
+        insured value or new contact data (CA-1). The body carries the type,
+        the channel and only the member of that type; the onerous beneficiary
+        never travels (additionalProperties false, 400). Every invalid field is
+        answered at once and nothing is filed (CA-3): beneficiaries are 1 to 10
+        with a name, a relationship and a document of the catalogs (only digits
+        in CC, TI and RC), a share above 0 with up to two decimals, shares that
+        add up to exactly 100 (share_total_not_100) and no document twice
+        (duplicate); the insured value is a whole value in COP inside the
+        limits of the rating engine; the personal data carry at least one of
+        address (5 to 160 characters), email or phone (10 digits, +57
+        optional); and something must change (no_change). Per policy and type
+        only one request can be open (filed, in review, or not applied and not
+        returned to the insured): another one answers 409 change_request_open
+        with the id of the open one, also when two are filed at once. The id
+        is SOL-MOD-<civil year of Colombia>-<number of at least four digits>,
+        consecutive per year with no gaps (CA-2). The request keeps the photo
+        of the current value and who filed it. Only the insured who owns the
+        policy (403 for another insured, CA-4).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeRequestInput"
+      responses:
+        "201":
+          description: The request was filed with status filed
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/policies/change-requests/{request_id}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangeRequest"
+        "400":
+          description: >
+            A body that is not JSON, a member the contract does not name (also
+            the onerous beneficiary) or a member of another type (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          description: >
+            The policy is not in force (policy_not_in_force: its coverage is not
+            running or it was cancelled for non-payment), or it already has an
+            open request of the same type (change_request_open, with its
+            request_id)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ChangeRequestConflict"
+                  - $ref: "#/components/schemas/Error"
+        "422":
+          description: Every invalid or missing field at once (validation_failed); nothing is filed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "503":
+          $ref: "#/components/responses/ChangeRequestUnavailable"
+  /v1/partner-metrics/summary:
+    get:
+      summary: Read the summary of the integration of the partner of the caller (HU-W3.2-01)
+      description: >
+        Screen B1 of the partner portal ("Tablero de integración"). Counts, for
+        the partner of the caller only, the quotes it requested through the
+        embedded channel and the policies issued from them in a range of civil
+        days of Colombia (UTC-5), both included, and the conversion between
+        both. The partner is always the custom:partner_id claim of the verified
+        token (HA-S01): the request cannot name another one, and a partner_id
+        in the query is ignored; a user of the partner portal without the claim
+        gets 403. A quote requested is an embedded offer of the partner created
+        in the range (POST /v1/offers); the offer the advisor adjusts and the
+        renewal of an offer are not new requests. A policy issued is a new
+        policy (not a renewal) of an offer of the partner whose coverage started
+        in the range, which is when its premium was confirmed; a quote of an
+        earlier day issued inside the range counts as a policy of the range.
+        conversion_rate is policies_issued / quotes_requested x 100 with one
+        decimal, and 0 when there are no quotes. A range without activity
+        answers zeros, not an error. Mounted with PostgreSQL (DATABASE_URL);
+        without the premium charge no policy is ever issued. Only users of the
+        partner portal.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: First civil day of the range (AAAA-MM-DD, Colombia), included.
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          description: >
+            Last civil day of the range (AAAA-MM-DD, Colombia), included; not
+            before from, and at most 366 days after it counting both.
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: The summary of the range
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartnerSummary"
+        "400":
+          description: >
+            A missing day or one that is not AAAA-MM-DD (invalid_request); to
+            before from (out_of_range); more than 366 days (range_too_long)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: The summary could not be read (metrics_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/policies/{policy_id}:
+    get:
+      summary: Read one policy of the insured, with every month of its premium (HU-W1.6-02)
+      description: >
+        Screens A2 and A2b of the portal. The policy as GET /v1/policies lists
+        it, with the payment method of its issuance (without its token) and
+        payments, every month billed the newest first: month 1 is the charge of
+        the issuance and every later month an instalment, due on the day of the
+        month the coverage started, charged on days 1, 8 and 15 of its grace
+        period (INSTALLMENT_ATTEMPT_DAYS) with the card of the issuance and
+        cancelling the policy, with no refund, on the day after the grace
+        (INSTALLMENT_GRACE_DAYS, 30). Each instalment lists the attempts the
+        gateway answered. For a policy of the policy core, payment_method is
+        null and payments is empty: the core keeps no premiums. A policy the
+        caller does not own is 404, like one that does not exist. Only the
+        insured; no answer is cached.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyDetail"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/{policy_id}/cancellation/quote:
+    get:
+      summary: Quote the cancellation of a policy of the insured, with its refund (HU-W1.6-01)
+      description: >
+        Screen A5 (CA-1): before confirming, the insured sees what would be
+        refunded if they cancelled now. The premium of a policy origination
+        issues is monthly (HU-W1.6-02); the refund is what was actually paid
+        for the current month (the charge of the issuance for month 1, the
+        instalment for a later one, never the current premium), times the
+        calendar days of that month not used over its days, truncated to the
+        peso, with no fees. The day of the cancellation counts as used and the
+        cancellation takes effect at the end of that day in Colombia. A current
+        month that was not paid (an instalment in its grace period, or due and
+        not billed yet) has nothing to give back: refund_amount is 0 and the
+        cancellation is still possible. The refund goes back to the payment
+        method of the issuance (refund_method, without its token). Only
+        policies origination issued (vida hipotecario): one of the policy
+        core, of another insured or unknown is 404. A policy that ended or has
+        not started is 409 policy_not_in_force; one already cancelled 409
+        policy_already_cancelled; one whose current period has its renewal
+        accepted or done 409 renewal_in_progress. Only the insured; no answer
+        is cached (the refund changes from one day to the next).
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: The calculation of the refund
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancellationQuote"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          $ref: "#/components/responses/CancellationConflict"
+        "503":
+          $ref: "#/components/responses/CancellationUnavailable"
+  /v1/policies/{policy_id}/cancellation:
+    post:
+      summary: Cancel a policy of the insured and register its refund (HU-W1.6-01)
+      description: >
+        Screen A5 (CA-2): the insured confirms the cancellation with a reason
+        of the list, optional comments (up to 500 characters), the box that
+        says the cancellation is final (accept_terms true) and the refund they
+        saw (refund_amount, the one of GET .../cancellation/quote). In one
+        transaction the policy is cancelled (status cancelled from now on, its
+        coverage ending at effective_at), its pending months are closed without
+        being charged and the refund is registered with its amount, date and
+        payment method, and a reference REF-<civil year of Colombia>-<number of
+        at least five digits> when there is something to refund. A refund in
+        process is then sent to the payment gateway in the background, with a
+        deterministic key and retries within the window of the premium charge
+        (RETRY_WINDOW_SECONDS): it ends completed, or failed when the gateway
+        rejects it or the window ends; the cancellation never waits for the
+        gateway. When the refund is not the one the insured saw (the day
+        changed, or a payment came in) nothing is written and the answer is 409
+        refund_changed with the new quote. While the sweep of the instalments
+        is charging a month of the policy the answer is 409
+        payment_in_progress (retry in a few minutes). Of several confirmations
+        at once exactly one cancels; the others get 409
+        policy_already_cancelled. Same 404 and 409 as the quote. Only the
+        insured; no answer is cached.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelPolicyRequest"
+      responses:
+        "201":
+          description: The policy is cancelled and its refund registered
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/policies/{policy_id}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelledPolicy"
+        "400":
+          description: Invalid path parameter or a body that is not a cancellation (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          description: >
+            The policy cannot be cancelled now (policy_not_in_force,
+            policy_already_cancelled, renewal_in_progress,
+            payment_in_progress), or the refund changed since it was quoted
+            (refund_changed, with the new quote)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/RefundChanged"
+        "422":
+          description: >
+            One or more fields are missing or invalid (invalid_request): a
+            reason out of the list, comments over 500 characters, a negative
+            refund_amount or accept_terms not true
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancellationValidationError"
+        "503":
+          $ref: "#/components/responses/CancellationUnavailable"
+  /v1/policies/{policy_id}/assisted-renewal:
+    get:
+      summary: Read where the assisted renewal of a policy stands, for the advisor (HU-W1.5-03)
+      description: >
+        Screens S7 and S7b of the advisor portal, opened from the list of the
+        policies about to expire (HU-W1.5-01) with "Renovar" or "Ver". Returns
+        the policy (line life; the holder without their contact), its renewal
+        window, the current conditions, the payment method the renewal charges
+        (without its token; null when none was registered), the last requote of
+        the current period, the renewal of the period with the channel that
+        made it (advisor when an advisor formalized it, insured when the
+        insured renewed online, HU-W1.5-02), the advisor's record and the
+        premium charge of the renewal with its outcome; renewal.retry_until
+        says until when the insured can retry with another payment method
+        from their portal. The renewal is settled first, as the online renewal
+        does. consent_mode is audit for a policy born in the embedded channel
+        (or whose channel is unknown): the requote asks audit for the consent;
+        advisor_affirmation for a policy born in the assisted channel: the
+        advisor affirms the customer's consent with consent_affirmed.
+        blocked_reason tells why the advisor cannot renew now: outside the
+        window or not renewed (renewal_not_available), the period already has
+        a renewal (renewal_closed), or there is no registered payment method
+        to charge (payment_method_missing; the requote is allowed, the
+        formalization is not). The page works on reload: everything comes from
+        here. Only advisors; no answer is cached.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      responses:
+        "200":
+          description: Where the assisted renewal stands
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistedRenewal"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "503":
+          $ref: "#/components/responses/RenewalUnavailable"
+  /v1/policies/{policy_id}/assisted-renewal/requotes:
+    post:
+      summary: Requote the renewal of a policy with the rating engine (HU-W1.5-03)
+      description: >
+        CA-1. The consent comes first and nothing is consulted without it:
+        for a policy born in the embedded channel (or of unknown channel) audit
+        must answer that the customer has an active consent (otherwise 422
+        consent_required, and 503 consent_unverifiable when audit does not
+        answer); for a policy born in the assisted channel the body must carry
+        consent_affirmed true (otherwise 422 validation_failed on the field
+        consent_affirmed), and the requote records who affirmed it and when.
+        Then the external sources are queried first, even when a recent profile
+        is cached, and the cache only backs them: with the sources down the
+        requote uses the last cached profile (at most 30 days old) and says so
+        (mode provisional, source cache, notice last_profile_in_use and
+        profile_date, CA-5) or, without a recent one, the base actuarial
+        profile (notice personalization_unavailable). The engine prices the
+        renewal with the age of today, the same insured amount and the renewal
+        term, and the good-experience discount of HU-W1.5-02 applies. requoted
+        is false when the engine could not price it (no customer or birth date
+        for the policy) and the conditions repeat the current ones. The requote
+        is stored and immutable; it can be formalized for 24 hours and only
+        while it is the last one of the period. Only advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequoteRenewalRequest"
+      responses:
+        "201":
+          description: The requote, stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenewalRequote"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          $ref: "#/components/responses/RenewalNotAvailable"
+        "422":
+          description: >
+            A policy born in the assisted channel without consent_affirmed
+            (validation_failed, field consent_affirmed), or a policy born in the
+            embedded channel whose customer has no active consent in audit
+            (consent_required). Nothing was consulted.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "503":
+          description: The consent could not be verified (consent_unverifiable) or the requote could not be made (renewal_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/policies/{policy_id}/assisted-renewal/consent:
+    post:
+      summary: Send the insured the confirmation code of a renewal (HU-W1.5-03)
+      description: >
+        Only for the confirmation_code acceptance method, as in the purchase
+        (HU-W1.1-03): the service generates a code of 6 digits, keeps only its
+        hash and e-mails it to the holder of the policy; the code never travels
+        back to the advisor, who only gets the masked address. The code is
+        valid for 10 minutes and never past the requote. A new code replaces
+        the previous one, up to 3 codes per requote. Only the last valid
+        requote of an open period, of a policy with a registered payment
+        method, gets a code. Only advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenewalConsentCodeRequest"
+      responses:
+        "200":
+          description: The code was sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenewalConsentCodeSent"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The policy (policy_not_found) or its requote (requote_not_found) does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Outside the window or not renewed (renewal_not_available), renewed
+            by the insured (renewal_closed), already formalized by an advisor
+            (already_formalized) or without a registered payment method
+            (payment_method_missing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >
+            requote_id is missing (validation_failed), the requote expired
+            (requote_expired) or a newer one replaced it (requote_superseded)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "429":
+          description: The requote used all its codes (too_many_codes)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The code cannot be delivered (code_delivery_unavailable) or the renewal is down (renewal_unavailable); retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/policies/{policy_id}/assisted-renewal/formalization:
+    post:
+      summary: Formalize the renewal of a policy on behalf of the insured (HU-W1.5-03)
+      description: >
+        CA-2, CA-3 and CA-4. The advisor cites the requote the customer
+        accepted and records how and when they accepted, with the three
+        methods of the purchase (HU-W1.1-03): a recorded call or a remote
+        signature, identified by its reference, or the confirmation code the
+        customer received (5 attempts per requote). The requote must be the
+        last of the period and valid, and the policy must have a registered
+        payment method. Formalizing records the renewal of the period with the
+        advisor (with the name of their account when it has one), the date, the
+        acceptance and the requote applied, then charges the requoted premium
+        with the registered method through the premium charge of HA-D02 with
+        the channel renewal; once confirmed a new policy is active with the
+        coverage starting when the renewed one ends, and its certificate is
+        issued (HU-W1.3-03), as in the online renewal. One renewal per policy
+        and period: another advisor gets 409 already_formalized and, after the
+        insured renewed online, 409 renewal_closed; repeating it by the advisor
+        who formalized returns the same renewal (200) whatever the body. Every
+        invalid field is reported at once (422 validation_failed). Answers the
+        body of GET …/assisted-renewal. Only advisors.
+      security:
+        - cognitoJwt: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FormalizeRenewalRequest"
+      responses:
+        "200":
+          description: The caller already formalized the renewal of this period; the same renewal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistedRenewal"
+        "201":
+          description: The renewal was formalized and its charge started
+          headers:
+            Location:
+              description: Path of the assisted renewal of the policy.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistedRenewal"
+        "400":
+          description: The body is not valid JSON or the policy id is invalid (invalid_request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The policy (policy_not_found) or its requote (requote_not_found) does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            Another advisor formalized the period (already_formalized), the
+            insured renewed it (renewal_closed), it is outside the window or not
+            renewed (renewal_not_available), or there is no registered payment
+            method (payment_method_missing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: >
+            A field is missing or invalid (validation_failed, with every field),
+            the requote expired (requote_expired) or was replaced
+            (requote_superseded), no code was requested (consent_code_required),
+            the code is not the one sent (invalid_confirmation_code) or it
+            expired (confirmation_code_expired)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ValidationError"
+                  - $ref: "#/components/schemas/Error"
+        "429":
+          description: The requote used all its attempts (too_many_attempts)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/RenewalUnavailable"
   /v1/policies/{policy_id}/renewal:
@@ -1621,6 +2806,15 @@ components:
         minLength: 1
         maxLength: 128
         pattern: "^[A-Za-z0-9_-]+$"
+    EndorsementRequestID:
+      name: request_id
+      in: path
+      required: true
+      description: SOL-MOD-<year>-<number>; any other id is not found.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
   responses:
     ContractPDF:
       description: The contractual document
@@ -1676,11 +2870,57 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    CancellationConflict:
+      description: >
+        The policy cannot be cancelled now: it ended or has not started
+        (policy_not_in_force), it is already cancelled
+        (policy_already_cancelled) or its renewal is in progress
+        (renewal_in_progress)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    CancellationUnavailable:
+      description: The cancellation could not be read or processed (cancellation_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     RenewalNotAvailable:
       description: >
         The policy is not inside its renewal window, or the window closed with no
         renewal (renewal_not_available); or the period was already accepted or
         renewed and the conditions are no longer offered (renewal_closed)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    EndorsementNotFound:
+      description: The change request (change_request_not_found) or the policy (policy_not_found) does not exist
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    EndorsementConflict:
+      description: The request is no longer where the action needs it (request_already_decided or not_returnable), with its status now
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DecidedConflict"
+    ObservationsRequired:
+      description: Observations of 10 to 500 characters are required (observations_required)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    EndorsementUnavailable:
+      description: The endorsement could not be processed (endorsement_unavailable); retry later
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ChangeRequestUnavailable:
+      description: The change request could not be read or filed (change_request_unavailable); retry later
       content:
         application/json:
           schema:
@@ -1844,7 +3084,7 @@ components:
           description: JSON name of the invalid field.
         code:
           type: string
-          enum: [required, invalid_format, out_of_range]
+          enum: [required, invalid_format, out_of_range, share_total_not_100, duplicate, no_change]
     ValidationError:
       type: object
       required: [error, message, fields]
@@ -3135,7 +4375,8 @@ components:
     PolicyListItem:
       type: object
       required: [policy_id, source, line, product, insured_object, status, holder_name, holder, premium, currency,
-        insured_amount, coverages, coverage_start, coverage_end, renewal_of, renewal_window, can_renew, renewal]
+        insured_amount, coverages, coverage_start, coverage_end, renewal_of, renewal_window, can_renew, renewal,
+        payment, cancellation]
       properties:
         policy_id:
           type: string
@@ -3158,7 +4399,10 @@ components:
         status:
           type: string
           enum: [active, expired, cancelled]
-          description: Origination's are active until their coverage ends and expired afterwards.
+          description: >
+            Origination's are active until their coverage ends and expired
+            afterwards, or cancelled when an instalment was not paid within its
+            grace period (HU-W1.6-02).
         holder_name:
           type: string
           description: The main insured's name. Kept from 0.12.0; holder carries it too.
@@ -3199,6 +4443,399 @@ components:
           nullable: true
           allOf:
             - $ref: "#/components/schemas/RenewalSummary"
+        payment:
+          type: object
+          nullable: true
+          description: Where the monthly premium stands (HU-W1.6-02); null for a policy of the core.
+          allOf:
+            - $ref: "#/components/schemas/PolicyPayment"
+        cancellation:
+          type: object
+          nullable: true
+          description: The cancellation for non-payment (HU-W1.6-02); null when the policy was not cancelled.
+          allOf:
+            - $ref: "#/components/schemas/PolicyCancellation"
+    PolicyPayment:
+      type: object
+      required: [status, next_due_at, pending]
+      properties:
+        status:
+          type: string
+          enum: [up_to_date, payment_pending, cancelled]
+          description: >
+            payment_pending: an instalment fell due unpaid and the policy is in
+            its grace period, with its coverage.
+        next_due_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the next month falls due, while up to date and the coverage has months left.
+        pending:
+          type: object
+          nullable: true
+          description: The instalment that fell due unpaid, while payment_pending.
+          allOf:
+            - $ref: "#/components/schemas/PendingInstallment"
+    PendingInstallment:
+      type: object
+      required: [month, due_at, grace_ends_at, cancels_at, amount, currency, attempts, next_attempt_at]
+      properties:
+        month:
+          type: integer
+          minimum: 2
+          description: The month of the premium (1 is the issuance).
+        due_at:
+          type: string
+          format: date-time
+        grace_ends_at:
+          type: string
+          format: date-time
+          description: The last day the policy keeps its coverage without the payment.
+        cancels_at:
+          type: string
+          format: date-time
+          description: When the policy is cancelled if the instalment is still unpaid.
+        amount:
+          type: number
+        currency:
+          type: string
+        attempts:
+          type: integer
+          minimum: 0
+          description: The attempts the gateway declined.
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When it is charged again; null when no attempt is left.
+    PolicyCancellation:
+      type: object
+      description: >
+        The cancellation of a policy: for non-payment (HU-W1.6-02), with the
+        instalment that was not paid and no refund, or at the request of the
+        insured (HU-W1.6-01), with the refund of the part of the current month
+        not used. The members of the other reason are null.
+      required: [reason, cancelled_at, effective_at, refund, month, due_at, grace_ends_at, amount, currency, attempts,
+        email_sent_at, refund_detail, insured_reason]
+      properties:
+        reason:
+          type: string
+          enum: [non_payment, insured_request]
+        cancelled_at:
+          type: string
+          format: date-time
+        effective_at:
+          type: string
+          format: date-time
+          description: >
+            When the coverage ends: the cancellation itself for non-payment,
+            the end of the day in Colombia for one at the request of the insured.
+        refund:
+          type: string
+          enum: [not_applicable, in_process, completed, failed]
+          description: >
+            not_applicable for non-payment, or when nothing was paid to give
+            back; otherwise in_process until the gateway confirms it
+            (completed) or rejects it or the retry window ends (failed).
+        month:
+          type: integer
+          minimum: 2
+          nullable: true
+          description: The instalment that was not paid (non-payment only).
+        due_at:
+          type: string
+          format: date-time
+          nullable: true
+        grace_ends_at:
+          type: string
+          format: date-time
+          nullable: true
+        amount:
+          type: number
+          nullable: true
+          description: The amount of the unpaid instalment (non-payment only).
+        currency:
+          type: string
+        attempts:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: How many times the unpaid instalment was charged (non-payment only).
+        email_sent_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            When the e-mail to the insured went out; null until then, and
+            always for a cancellation at the request of the insured. The push of
+            a cancellation for non-payment goes out from the event.
+        refund_detail:
+          nullable: true
+          description: The refund registered with a cancellation at the request of the insured; null for non-payment.
+          allOf:
+            - $ref: "#/components/schemas/RefundDetail"
+        insured_reason:
+          nullable: true
+          description: Why the insured cancelled; null for non-payment.
+          allOf:
+            - $ref: "#/components/schemas/InsuredCancellationReason"
+    InsuredCancellationReason:
+      type: object
+      required: [code, comments]
+      properties:
+        code:
+          type: string
+          enum: [property_sold, mortgage_paid, better_offer, no_longer_needed, financial_reasons, other]
+        comments:
+          type: string
+          nullable: true
+          maxLength: 500
+    RefundMethod:
+      type: object
+      description: Where the refund goes back to, the payment method of the issuance without its token.
+      required: [method, brand, last4, bank_code]
+      properties:
+        method:
+          type: string
+          enum: [card, pse]
+        brand:
+          type: string
+          nullable: true
+        last4:
+          type: string
+          nullable: true
+        bank_code:
+          type: string
+          nullable: true
+    PaidPeriod:
+      type: object
+      description: The month of the premium the refund is calculated on, [start, end).
+      required: [month, kind, start, end, paid_amount, currency]
+      properties:
+        month:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          enum: [issuance, installment]
+          description: Month 1 is paid by the charge of the issuance, every later month by an instalment.
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        paid_amount:
+          type: number
+          minimum: 0
+          description: What was actually paid for the month; 0 when it was not paid.
+        currency:
+          type: string
+    RefundDetail:
+      type: object
+      required: [reference, amount, currency, method, registered_at, completed_at, paid_period, unused_days, period_days,
+        prorate_percent]
+      properties:
+        reference:
+          type: string
+          nullable: true
+          pattern: "^REF-[0-9]{4}-[0-9]{5,}$"
+          description: REF-<civil year of Colombia>-<number>; null when nothing is refunded.
+        amount:
+          type: number
+          minimum: 0
+        currency:
+          type: string
+        method:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/RefundMethod"
+        registered_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the gateway confirmed it; null until then.
+        paid_period:
+          $ref: "#/components/schemas/PaidPeriod"
+        unused_days:
+          type: integer
+          minimum: 0
+        period_days:
+          type: integer
+          minimum: 1
+        prorate_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: unused_days / period_days, in percent with one decimal.
+    CancellationQuote:
+      type: object
+      required: [policy_id, effective_at, paid_period, unused_days, period_days, prorate_percent, refund_amount, currency,
+        refund_method, payment_status]
+      properties:
+        policy_id:
+          type: string
+        effective_at:
+          type: string
+          format: date-time
+          description: The end of the day in Colombia, when the coverage would end.
+        paid_period:
+          $ref: "#/components/schemas/PaidPeriod"
+        unused_days:
+          type: integer
+          minimum: 0
+        period_days:
+          type: integer
+          minimum: 1
+        prorate_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+        refund_amount:
+          type: number
+          minimum: 0
+          description: paid_amount x unused_days / period_days, truncated to the peso.
+        currency:
+          type: string
+        refund_method:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/RefundMethod"
+        payment_status:
+          type: string
+          enum: [up_to_date, payment_pending]
+          description: payment_pending while an instalment is in its grace period (nothing paid to give back).
+    CancelPolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, refund_amount, accept_terms]
+      properties:
+        reason:
+          type: string
+          description: One of property_sold, mortgage_paid, better_offer, no_longer_needed, financial_reasons, other.
+        comments:
+          type: string
+          nullable: true
+          description: Optional, up to 500 characters.
+        refund_amount:
+          type: number
+          description: The refund the insured saw before confirming.
+        accept_terms:
+          type: boolean
+          description: Must be true.
+    CancelledPolicy:
+      type: object
+      required: [policy_id, status, cancellation]
+      properties:
+        policy_id:
+          type: string
+        status:
+          type: string
+          enum: [cancelled]
+        cancellation:
+          $ref: "#/components/schemas/PolicyCancellation"
+    RefundChanged:
+      type: object
+      required: [error, message, quote]
+      properties:
+        error:
+          type: string
+          enum: [refund_changed]
+        message:
+          type: string
+        quote:
+          $ref: "#/components/schemas/CancellationQuote"
+    CancellationValidationError:
+      type: object
+      required: [error, message, fields]
+      properties:
+        error:
+          type: string
+          enum: [invalid_request]
+        message:
+          type: string
+        fields:
+          type: array
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                enum: [reason, comments, refund_amount, accept_terms]
+              code:
+                type: string
+                enum: [required, invalid, too_long]
+    PaymentAttempt:
+      type: object
+      required: [attempt, outcome, decline_code, attempted_at]
+      properties:
+        attempt:
+          type: integer
+          minimum: 1
+        outcome:
+          type: string
+          enum: [approved, declined]
+        decline_code:
+          type: string
+          nullable: true
+          description: >
+            The issuer's reason (51 is insufficient funds), or
+            no_payment_method when the issuance was paid by PSE and there is
+            no card to charge.
+        attempted_at:
+          type: string
+          format: date-time
+    PaymentRecord:
+      type: object
+      required: [month, kind, status, due_at, amount, currency, paid_at, attempts]
+      properties:
+        month:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          enum: [issuance, installment]
+        status:
+          type: string
+          enum: [paid, pending, unpaid]
+        due_at:
+          type: string
+          format: date-time
+        amount:
+          type: number
+        currency:
+          type: string
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        attempts:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/PaymentAttempt"
+    PolicyDetail:
+      allOf:
+        - $ref: "#/components/schemas/PolicyListItem"
+        - type: object
+          required: [payment_method, payments]
+          properties:
+            payment_method:
+              type: object
+              nullable: true
+              description: The payment method of the issuance, without its token; null for a policy of the core.
+              allOf:
+                - $ref: "#/components/schemas/PaymentMethod"
+            payments:
+              type: array
+              maxItems: 700
+              description: Every month billed, the newest first; empty for a policy of the core.
+              items:
+                $ref: "#/components/schemas/PaymentRecord"
     PolicyList:
       type: object
       required: [items, partial]
@@ -3211,6 +4848,118 @@ components:
         partial:
           type: boolean
           description: True when the policy core did not answer and its policies are missing from items.
+    ExpiringPolicy:
+      type: object
+      required: [policy_id, line, product, holder, premium, currency, coverage_end, status, can_renew, renewal_window, renewal,
+        cancelled_at]
+      description: One policy about to expire (HU-W1.5-01). Its policy_id is the id of the assisted renewal (HU-W1.5-03).
+      properties:
+        policy_id:
+          type: string
+        line:
+          type: string
+          enum: [life, auto, home, travel]
+          description: The kind of insurance, as in the wallet; every policy origination issues is life.
+        product:
+          type: string
+          nullable: true
+          description: Null for the policies origination issues.
+        holder:
+          $ref: "#/components/schemas/PolicyHolder"
+        premium:
+          type: number
+          description: The monthly premium of the current period.
+        currency:
+          type: string
+        coverage_end:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [expiring, renewal_in_progress, cancelled_non_payment]
+          description: >
+            expiring: the current period has no renewal; renewal_in_progress: its
+            renewal was accepted and the premium is being charged;
+            cancelled_non_payment: the policy was cancelled for non-payment in
+            the last 30 days (HU-W1.6-02), listed after the others.
+        can_renew:
+          type: boolean
+          description: True inside the renewal window while the period has no renewal (HU-W1.5-02).
+        renewal_window:
+          $ref: "#/components/schemas/RenewalWindow"
+        renewal:
+          nullable: true
+          description: The renewal of the current period, null when it has none.
+          allOf:
+            - $ref: "#/components/schemas/RenewalSummary"
+        cancelled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the policy was cancelled for non-payment; null for the others (HU-W1.6-02).
+    PartnerSummary:
+      type: object
+      description: Summary of the integration of the partner in a range (HU-W3.2-01).
+      required: [partner_id, from, to, quotes_requested, policies_issued, conversion_rate]
+      properties:
+        partner_id:
+          type: string
+          description: The partner of the caller (custom:partner_id of its token).
+        from:
+          type: string
+          format: date
+          description: First civil day of the range applied (Colombia).
+        to:
+          type: string
+          format: date
+          description: Last civil day of the range applied (Colombia).
+        quotes_requested:
+          type: integer
+          minimum: 0
+          description: Embedded offers the partner requested in the range.
+        policies_issued:
+          type: integer
+          minimum: 0
+          description: New policies issued in the range from offers of the partner.
+        conversion_rate:
+          type: number
+          minimum: 0
+          description: policies_issued / quotes_requested x 100, one decimal; 0 without quotes.
+    ExpiringPolicyList:
+      type: object
+      required: [items, expires_from, expires_to, window_days, due_within_window, cancelled_non_payment_last_30_days,
+        total, page, page_size]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/ExpiringPolicy"
+        expires_from:
+          type: string
+          format: date
+          description: First civil day of the range applied (the default one when the query had none).
+        expires_to:
+          type: string
+          format: date
+          description: Last civil day of the range applied.
+        window_days:
+          type: integer
+          description: The renewal window of HU-W1.5-02 (RENEWAL_WINDOW_DAYS).
+        due_within_window:
+          type: integer
+          description: Policies with an open period that end within the renewal window from now, whatever the filter.
+        cancelled_non_payment_last_30_days:
+          type: integer
+          minimum: 0
+          description: Policies cancelled for non-payment in the last 30 days, whatever the filter (HU-W1.6-02).
+        total:
+          type: integer
+          description: Policies that match the query, whatever the page.
+        page:
+          type: integer
+        page_size:
+          type: integer
     RenewalTerms:
       type: object
       required: [premium, currency, insured_amount, coverages, coverage_start, coverage_end]
@@ -3274,6 +5023,1169 @@ components:
           description: The premium charge of the renewal, as GET /v1/acceptances/{charge_id}/charge returns it.
           allOf:
             - $ref: "#/components/schemas/Charge"
+    RequoteRenewalRequest:
+      type: object
+      properties:
+        consent_affirmed:
+          type: boolean
+          description: >
+            The advisor's affirmation that the customer authorized the
+            consultation of their financial data for this renewal. Required and
+            true for a policy born in the assisted channel (consent_mode
+            advisor_affirmation); ignored for the others.
+    RequoteSource:
+      type: object
+      required: [source, status, latency_ms]
+      properties:
+        source:
+          type: string
+          description: open_finance, open_data or kyc.
+        status:
+          type: string
+          enum: [ok, timeout, error, circuit_open]
+        latency_ms:
+          type: integer
+          minimum: 0
+    AppliedRule:
+      type: object
+      required: [code, value]
+      description: One factor of the rating engine and the value it took.
+      properties:
+        code:
+          type: string
+          enum: [base_monthly_rate, age_factor, risk_factor, term_factor, rounding_step]
+        value:
+          type: number
+    RenewalRequote:
+      type: object
+      required: [requote_id, created_at, expires_at, status, current, renewal, premium_change_rate, discount_rate, requoted,
+        rating_version, applied_rules, mode, source, profile_date, unavailable_source, notice, sources, consent_basis,
+        consent_affirmed_at, consent_affirmed_by_email, consent_affirmed_by_name]
+      description: >
+        A requote of the renewal made by an advisor. It never carries the score
+        or the category of the profile.
+      properties:
+        requote_id:
+          type: string
+          description: '"rq-" and 128 random bits.'
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: 24 hours after it was made.
+        status:
+          type: string
+          enum: [valid, expired, superseded]
+        current:
+          $ref: "#/components/schemas/RenewalTerms"
+        renewal:
+          $ref: "#/components/schemas/RenewalTerms"
+        premium_change_rate:
+          type: number
+          description: Renewed premium against the current one, as a fraction (0.053 is +5.3 %).
+        discount_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Good-experience discount applied (0.08), 0 when none.
+        requoted:
+          type: boolean
+          description: False when the engine could not price the renewal and the conditions repeat the current ones.
+        rating_version:
+          type: string
+          nullable: true
+          description: Version of the rating engine (v1); null when not requoted.
+        applied_rules:
+          type: array
+          maxItems: 10
+          items:
+            $ref: "#/components/schemas/AppliedRule"
+        mode:
+          type: string
+          nullable: true
+          enum: [normal, provisional, null]
+          description: provisional when the sources did not answer; null when not requoted.
+        source:
+          type: string
+          nullable: true
+          enum: [open_finance, external_sources, cache, base_actuarial, null]
+        profile_date:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the cached profile was calculated; only with source cache.
+        unavailable_source:
+          type: string
+          nullable: true
+        notice:
+          type: string
+          nullable: true
+          enum: [last_profile_in_use, personalization_unavailable, null]
+          description: >
+            Which degraded profile priced the requote: the last cached one, or
+            the base actuarial one when there was no recent cached profile.
+        sources:
+          type: array
+          maxItems: 10
+          items:
+            $ref: "#/components/schemas/RequoteSource"
+        consent_basis:
+          type: string
+          nullable: true
+          enum: [audit_verified, advisor_affirmed, null]
+          description: >
+            On what consent the customer's data was consulted: audit's answer, or
+            the advisor's affirmation for a policy born in the assisted channel;
+            null when nothing was consulted.
+        consent_affirmed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the advisor affirmed the consent; only with advisor_affirmed.
+        consent_affirmed_by_email:
+          type: string
+          nullable: true
+          description: E-mail of the advisor who affirmed the consent, kept when requoting; only with advisor_affirmed.
+        consent_affirmed_by_name:
+          type: string
+          nullable: true
+          description: >
+            Name of the advisor who affirmed the consent (the name claim of their
+            token when requoting); null when the account has none, and then the
+            screen shows consent_affirmed_by_email. Only with advisor_affirmed.
+    AssistedRenewalPolicy:
+      type: object
+      required: [policy_id, line, holder, premium, currency, insured_amount, coverages, coverage_start, coverage_end, renewal_of]
+      properties:
+        policy_id:
+          type: string
+        line:
+          type: string
+          enum: [life]
+        holder:
+          $ref: "#/components/schemas/PolicyHolder"
+        premium:
+          type: number
+        currency:
+          type: string
+        insured_amount:
+          type: number
+        coverages:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/Coverage"
+        coverage_start:
+          type: string
+          format: date-time
+        coverage_end:
+          type: string
+          format: date-time
+        renewal_of:
+          type: string
+          nullable: true
+    AssistedRenewalWindow:
+      type: object
+      required: [opens_at, closes_at, open]
+      properties:
+        opens_at:
+          type: string
+          format: date-time
+        closes_at:
+          type: string
+          format: date-time
+        open:
+          type: boolean
+    AssistedRenewalSummary:
+      type: object
+      required: [renewal_id, status, reason, channel, new_policy_id, charge_id, accepted_at, retry_until, closed_at, terms,
+        premium_change_rate, discount_rate, requoted]
+      properties:
+        renewal_id:
+          type: string
+        status:
+          type: string
+          enum: [accepted, renewed, not_renewed]
+        reason:
+          type: string
+          nullable: true
+          enum: [no_response, payment_failed, null]
+        channel:
+          type: string
+          enum: [advisor, insured]
+          description: Who renewed the period.
+        new_policy_id:
+          type: string
+          nullable: true
+        charge_id:
+          type: string
+          nullable: true
+        accepted_at:
+          type: string
+          format: date-time
+          nullable: true
+        retry_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: Until when the insured can retry the payment with another method from their portal.
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+        terms:
+          nullable: true
+          description: >
+            The conditions accepted for the period, by the advisor or by the
+            insured online: premium, currency, insured amount, coverages and the
+            renewed coverage. Null for a lapse, which accepted none.
+          allOf:
+            - $ref: "#/components/schemas/RenewalTerms"
+        premium_change_rate:
+          type: number
+          description: Change of the accepted premium against the current one, as a fraction (0.053 is +5.3 %); 0 without terms.
+        discount_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Good-experience discount applied to the accepted premium; 0 when none.
+        requoted:
+          type: boolean
+          description: False when the conditions repeat the current ones because the engine could not price the renewal.
+    RenewalFormalization:
+      type: object
+      required: [advisor_id, advisor_email, advisor_name, formalized_at, requote_id, acceptance]
+      description: The advisor's record of the renewal (CA-4).
+      properties:
+        advisor_id:
+          type: string
+        advisor_email:
+          type: string
+        advisor_name:
+          type: string
+          nullable: true
+          description: The name of the advisor's account; null when it has none (the screen shows the e-mail).
+        formalized_at:
+          type: string
+          format: date-time
+        requote_id:
+          type: string
+        acceptance:
+          type: object
+          required: [method, accepted_at, reference]
+          properties:
+            method:
+              type: string
+              enum: [recorded_call, remote_signature, confirmation_code]
+            accepted_at:
+              type: string
+              format: date-time
+            reference:
+              type: string
+              nullable: true
+    RenewalCharge:
+      type: object
+      required: [status, failure_reason, decline_code, last_failure_at, attempts, policy_id]
+      description: Where the premium charge of the renewal stands; its deadline is renewal.retry_until.
+      properties:
+        status:
+          type: string
+          enum: [pending, in_progress, confirmed, failed]
+        failure_reason:
+          type: string
+          nullable: true
+        decline_code:
+          type: string
+          nullable: true
+        last_failure_at:
+          type: string
+          format: date-time
+          nullable: true
+        attempts:
+          type: integer
+          minimum: 0
+        policy_id:
+          type: string
+          nullable: true
+          description: The new policy once the charge is confirmed.
+    AssistedRenewal:
+      type: object
+      required: [policy, renewal_window, current, payment_method, requote, renewal, formalization, charge, consent_mode,
+        can_requote, can_formalize, blocked_reason]
+      properties:
+        policy:
+          $ref: "#/components/schemas/AssistedRenewalPolicy"
+        renewal_window:
+          $ref: "#/components/schemas/AssistedRenewalWindow"
+        current:
+          $ref: "#/components/schemas/RenewalTerms"
+        payment_method:
+          nullable: true
+          description: The method the renewal charges, without its token; null when the policy has none registered.
+          allOf:
+            - $ref: "#/components/schemas/PaymentMethod"
+        requote:
+          nullable: true
+          description: The last requote of the current period; null when there is none.
+          allOf:
+            - $ref: "#/components/schemas/RenewalRequote"
+        renewal:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/AssistedRenewalSummary"
+        formalization:
+          nullable: true
+          description: Null when nobody formalized the renewal (the insured renewed online, or there is none).
+          allOf:
+            - $ref: "#/components/schemas/RenewalFormalization"
+        charge:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/RenewalCharge"
+        consent_mode:
+          type: string
+          enum: [audit, advisor_affirmation]
+        can_requote:
+          type: boolean
+        can_formalize:
+          type: boolean
+        blocked_reason:
+          type: string
+          nullable: true
+          enum: [renewal_not_available, renewal_closed, payment_method_missing, null]
+    RenewalConsentCodeRequest:
+      type: object
+      required: [requote_id]
+      properties:
+        requote_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+    RenewalConsentCodeSent:
+      type: object
+      required: [requote_id, sent_to, expires_at]
+      properties:
+        requote_id:
+          type: string
+        sent_to:
+          type: string
+          description: Masked e-mail address of the holder, e.g. ca***@example.com.
+        expires_at:
+          type: string
+          format: date-time
+    FormalizeRenewalRequest:
+      type: object
+      required: [requote_id, acceptance]
+      properties:
+        requote_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The requote the customer accepted.
+        acceptance:
+          type: object
+          required: [method, accepted_at]
+          properties:
+            method:
+              type: string
+              enum: [recorded_call, remote_signature, confirmation_code]
+            accepted_at:
+              type: string
+              format: date-time
+              description: Not in the future and not before the minute the requote was made.
+            reference:
+              type: string
+              minLength: 1
+              maxLength: 64
+              pattern: "^[A-Za-z0-9._:/#-]+$"
+              description: Reference of the recording or the signature; required unless the method is confirmation_code.
+        confirmation_code:
+          type: string
+          pattern: "^[0-9]{6}$"
+          description: The code the insured received by e-mail; required with the confirmation_code method.
+    Beneficiary:
+      type: object
+      required: [full_name, relationship, document_type, document_number, share_percent]
+      description: A person who receives a share of the remainder of the insured value, after the outstanding balance of the lender (HU-W1.4-01).
+      properties:
+        full_name:
+          type: string
+        relationship:
+          type: string
+          enum: [spouse_or_partner, child, parent, sibling, grandchild, other]
+        document_type:
+          type: string
+          enum: [CC, TI, RC, CE, PA]
+          description: CC citizenship card, TI identity card, RC civil registry, CE foreigner card, PA passport.
+        document_number:
+          type: string
+        share_percent:
+          type: number
+          description: Share of the remainder, in percent with up to two decimals.
+    BeneficiaryInput:
+      type: object
+      additionalProperties: false
+      required: [full_name, relationship, document_type, document_number, share_percent]
+      properties:
+        full_name:
+          type: string
+          description: 3 to 120 characters with at least one letter, once the spaces are collapsed.
+        relationship:
+          type: string
+          enum: [spouse_or_partner, child, parent, sibling, grandchild, other]
+        document_type:
+          type: string
+          enum: [CC, TI, RC, CE, PA]
+        document_number:
+          type: string
+          description: 5 to 20 letters or digits once trimmed; only digits in CC, TI and RC.
+        share_percent:
+          type: number
+          description: Above 0 and up to 100, with up to two decimals; the shares add up to exactly 100.
+    OnerousBeneficiary:
+      type: object
+      required: [partner_id, name, basis]
+      description: >
+        The lender of the credit the policy secures; the insured cannot change
+        it. partner_id and name are null when they are not known (an advisor
+        sale, or a partner without a display name in PARTNER_DISPLAY_NAMES for
+        name): the client shows a generic label.
+      properties:
+        partner_id:
+          type: string
+          nullable: true
+        name:
+          type: string
+          nullable: true
+        basis:
+          type: string
+          enum: [outstanding_balance]
+    PersonalData:
+      type: object
+      required: [address, email, phone]
+      description: >
+        The contact data of a policy. In the current terms, a null member is not
+        registered; in a requested change, a null member does not change. email
+        is the contact e-mail of the policy, never the sign-in one (decision D-5 a).
+      properties:
+        address:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+          description: The 10 digits of a Colombian number.
+    PersonalDataInput:
+      type: object
+      additionalProperties: false
+      description: At least one member; a missing or null member does not change.
+      properties:
+        address:
+          type: string
+          nullable: true
+          description: 5 to 160 characters once the spaces are collapsed.
+        email:
+          type: string
+          nullable: true
+          description: A bare e-mail address of at most 254 characters.
+        phone:
+          type: string
+          nullable: true
+          description: 10 digits, with +57 or without it; spaces and hyphens are ignored.
+    PolicyCurrentTerms:
+      type: object
+      required: [policy, terms, open_requests, limits]
+      properties:
+        policy:
+          type: object
+          required: [policy_id, line, holder_name, coverage_start, coverage_end, in_force]
+          properties:
+            policy_id:
+              type: string
+            line:
+              type: string
+              enum: [life]
+            holder_name:
+              type: string
+            coverage_start:
+              type: string
+              format: date-time
+            coverage_end:
+              type: string
+              format: date-time
+            in_force:
+              type: boolean
+              description: >
+                The coverage is running now and the policy was not cancelled
+                for non-payment; a change can be filed only then.
+        terms:
+          type: object
+          required: [insured_amount, currency, beneficiaries, onerous_beneficiary, personal_data]
+          properties:
+            insured_amount:
+              type: number
+            currency:
+              type: string
+            beneficiaries:
+              type: array
+              maxItems: 10
+              items:
+                $ref: "#/components/schemas/Beneficiary"
+            onerous_beneficiary:
+              nullable: true
+              allOf:
+                - $ref: "#/components/schemas/OnerousBeneficiary"
+            personal_data:
+              $ref: "#/components/schemas/PersonalData"
+        open_requests:
+          type: array
+          maxItems: 3
+          description: The open request of each type that has one.
+          items:
+            type: object
+            required: [request_id, change_type, status, filed_at]
+            properties:
+              request_id:
+                type: string
+              change_type:
+                type: string
+                enum: [beneficiaries, insured_amount, personal_data]
+              status:
+                type: string
+                enum: [filed, in_review, not_applied]
+              filed_at:
+                type: string
+                format: date-time
+        limits:
+          type: object
+          required: [insured_amount_min, insured_amount_max, max_beneficiaries, relationships, document_types]
+          properties:
+            insured_amount_min:
+              type: number
+            insured_amount_max:
+              type: number
+            max_beneficiaries:
+              type: integer
+            relationships:
+              type: array
+              items:
+                type: string
+            document_types:
+              type: array
+              items:
+                type: string
+    BeneficiariesChangeInput:
+      type: object
+      additionalProperties: false
+      required: [change_type, channel, beneficiaries]
+      properties:
+        change_type:
+          type: string
+          enum: [beneficiaries]
+        channel:
+          type: string
+          enum: [web, mobile]
+        beneficiaries:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: 1 to 10 beneficiaries whose shares add up to 100; they replace the designated ones.
+          items:
+            $ref: "#/components/schemas/BeneficiaryInput"
+    InsuredAmountChangeInput:
+      type: object
+      additionalProperties: false
+      required: [change_type, channel, insured_amount]
+      properties:
+        change_type:
+          type: string
+          enum: [insured_amount]
+        channel:
+          type: string
+          enum: [web, mobile]
+        insured_amount:
+          type: number
+          description: Whole value in COP between 10000000 and 2000000000, different from the current one.
+    PersonalDataChangeInput:
+      type: object
+      additionalProperties: false
+      required: [change_type, channel, personal_data]
+      properties:
+        change_type:
+          type: string
+          enum: [personal_data]
+        channel:
+          type: string
+          enum: [web, mobile]
+        personal_data:
+          $ref: "#/components/schemas/PersonalDataInput"
+    ChangeRequestInput:
+      description: The type of the change, the channel and only the member of that type (HU-W1.4-01).
+      oneOf:
+        - $ref: "#/components/schemas/BeneficiariesChangeInput"
+        - $ref: "#/components/schemas/InsuredAmountChangeInput"
+        - $ref: "#/components/schemas/PersonalDataChangeInput"
+    ChangeContent:
+      type: object
+      description: >
+        One side of a change, with only the members of its type: beneficiaries
+        (and, on the previous side, the onerous beneficiary), insured_amount and
+        currency, or personal_data.
+      properties:
+        beneficiaries:
+          type: array
+          items:
+            $ref: "#/components/schemas/Beneficiary"
+        onerous_beneficiary:
+          $ref: "#/components/schemas/OnerousBeneficiary"
+        insured_amount:
+          type: number
+        currency:
+          type: string
+        personal_data:
+          $ref: "#/components/schemas/PersonalData"
+    FieldChange:
+      type: object
+      required: [field, previous, requested]
+      description: >
+        One line of the difference. field is beneficiaries (previous and
+        requested are a Beneficiary, previous null for a new one and requested
+        null for a removed one), insured_amount (numbers) or
+        personal_data.address, personal_data.email or personal_data.phone
+        (texts, previous null when it was not registered).
+      properties:
+        field:
+          type: string
+        previous:
+          description: A Beneficiary, a number, a text or null.
+        requested:
+          description: A Beneficiary, a number, a text or null.
+    ChangeRequest:
+      type: object
+      required: [request_id, policy_id, change_type, channel, status, status_changed_at, decision_reason, filed_at, requested_by,
+        previous, requested, changes]
+      properties:
+        request_id:
+          type: string
+          pattern: "^SOL-MOD-[0-9]{4}-[0-9]{4,}$"
+        policy_id:
+          type: string
+        change_type:
+          type: string
+          enum: [beneficiaries, insured_amount, personal_data]
+        channel:
+          type: string
+          enum: [web, mobile]
+        status:
+          type: string
+          enum: [filed, in_review, applied, rejected, not_applied]
+          description: >
+            The stored status (HU-W1.4-02 moves it from filed). The insured sees
+            not_applied as in_review without a decision_reason and as rejected
+            with one.
+        status_changed_at:
+          type: string
+          format: date-time
+        decision_reason:
+          type: string
+          nullable: true
+          description: What the analyst told the insured when rejecting or returning the request.
+        filed_at:
+          type: string
+          format: date-time
+        requested_by:
+          type: object
+          required: [email, name]
+          properties:
+            email:
+              type: string
+            name:
+              type: string
+              nullable: true
+              description: Null when the account has no name; the client shows the e-mail.
+        previous:
+          $ref: "#/components/schemas/ChangeContent"
+        requested:
+          $ref: "#/components/schemas/ChangeContent"
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldChange"
+    ChangeRequestSummary:
+      type: object
+      required: [request_id, policy_id, change_type, channel, status, status_changed_at, decision_reason, filed_at]
+      properties:
+        request_id:
+          type: string
+        policy_id:
+          type: string
+        change_type:
+          type: string
+          enum: [beneficiaries, insured_amount, personal_data]
+        channel:
+          type: string
+          enum: [web, mobile]
+        status:
+          type: string
+          enum: [filed, in_review, applied, rejected, not_applied]
+        status_changed_at:
+          type: string
+          format: date-time
+        decision_reason:
+          type: string
+          nullable: true
+        filed_at:
+          type: string
+          format: date-time
+    ChangeRequestIndicator:
+      type: object
+      required: [count, latest]
+      properties:
+        count:
+          type: integer
+        latest:
+          type: object
+          nullable: true
+          required: [request_id, change_type, filed_at, status_changed_at]
+          properties:
+            request_id:
+              type: string
+            change_type:
+              type: string
+              enum: [beneficiaries, insured_amount, personal_data]
+            filed_at:
+              type: string
+              format: date-time
+            status_changed_at:
+              type: string
+              format: date-time
+    ChangeRequestPage:
+      type: object
+      required: [items, page, page_size, total_items, total_pages, indicators, policies]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/ChangeRequestSummary"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total_items:
+          type: integer
+          description: Requests that pass the filter, whatever the page.
+        total_pages:
+          type: integer
+        indicators:
+          type: object
+          required: [open, applied_this_year, rejected]
+          description: Whatever the filter.
+          properties:
+            open:
+              $ref: "#/components/schemas/ChangeRequestIndicator"
+            applied_this_year:
+              $ref: "#/components/schemas/ChangeRequestIndicator"
+            rejected:
+              $ref: "#/components/schemas/ChangeRequestIndicator"
+        policies:
+          type: array
+          items:
+            type: string
+          description: The policies of the caller that have requests (options of the filter).
+    ChangeRequestConflict:
+      type: object
+      required: [error, message, request_id]
+      properties:
+        error:
+          type: string
+          enum: [change_request_open]
+        message:
+          type: string
+        request_id:
+          type: string
+          nullable: true
+          description: The open request of the same type; null only if it closed before it could be read.
+    EndorsementRequest:
+      type: object
+      description: >
+        A change request as the analyst reads it: never the subject nor the
+        e-mail of the insured. returned tells a not applied request returned to
+        the insured with decision_reason.
+      required: [request_id, policy_id, change_type, channel, filed_at, status, status_changed_at, returned, decision_reason,
+        requester_name]
+      properties:
+        request_id:
+          type: string
+        policy_id:
+          type: string
+        change_type:
+          type: string
+          enum: [beneficiaries, insured_amount, personal_data]
+        channel:
+          type: string
+          enum: [web, mobile]
+        filed_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [filed, in_review, applied, rejected, not_applied]
+        status_changed_at:
+          type: string
+          format: date-time
+        returned:
+          type: boolean
+        decision_reason:
+          type: string
+          nullable: true
+        requester_name:
+          type: string
+          nullable: true
+    Holder:
+      type: object
+      required: [full_name, document_id]
+      properties:
+        full_name:
+          type: string
+        document_id:
+          type: string
+    EndorsementInboxItem:
+      allOf:
+        - $ref: "#/components/schemas/EndorsementRequest"
+        - type: object
+          required: [holder]
+          properties:
+            holder:
+              $ref: "#/components/schemas/Holder"
+    EndorsementInboxPage:
+      type: object
+      required: [items, page, page_size, total_items, total_pages, indicators]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EndorsementInboxItem"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total_items:
+          type: integer
+        total_pages:
+          type: integer
+        indicators:
+          type: object
+          required: [pending, applied_today, rejected_last_7_days]
+          properties:
+            pending:
+              type: object
+              required: [count, overdue]
+              properties:
+                count:
+                  type: integer
+                overdue:
+                  type: integer
+                  description: The pending requests filed more than 24 h ago.
+            applied_today:
+              type: object
+              required: [count, mean_time_to_apply_seconds]
+              properties:
+                count:
+                  type: integer
+                mean_time_to_apply_seconds:
+                  type: number
+                  nullable: true
+            rejected_last_7_days:
+              type: object
+              required: [count, top_reason]
+              properties:
+                count:
+                  type: integer
+                top_reason:
+                  type: string
+                  nullable: true
+                  description: The code of the validation that failed most often, or analyst_rejection.
+    EndorsementValidation:
+      type: object
+      required: [code, outcome, params]
+      description: >
+        One business validation (decision D-4 a) with the values its text shows
+        (shares as "60|40" and total; checks and not_found of the registry;
+        open_claims; requester and channel; requested, min and max; fields;
+        coverage_end; lender and basis).
+      properties:
+        code:
+          type: string
+          enum: [shares_total_100, onerous_beneficiary_intact, identity_documents_valid, no_open_claim, requester_is_holder,
+            insured_amount_within_limits, personal_data_valid, policy_in_force, previous_values_current, no_renewal_in_progress,
+            premium_recalculated]
+        outcome:
+          type: string
+          enum: [passed, failed, unverifiable]
+        params:
+          type: object
+          additionalProperties:
+            type: string
+    EndorsementActor:
+      type: object
+      required: [name, role]
+      properties:
+        name:
+          type: string
+          description: The name of the analyst (or their e-mail when the account has none).
+        role:
+          type: string
+          enum: [operations]
+    EndorsementDecision:
+      type: object
+      required: [outcome, by, at, observations, endorsement_id, failed]
+      properties:
+        outcome:
+          type: string
+          enum: [applied, not_applied, rejected, returned]
+        by:
+          allOf:
+            - $ref: "#/components/schemas/EndorsementActor"
+          nullable: true
+        at:
+          type: string
+          format: date-time
+        observations:
+          type: string
+          nullable: true
+        endorsement_id:
+          type: string
+          nullable: true
+        failed:
+          type: array
+          items:
+            type: string
+    EndorsementDetail:
+      type: object
+      required: [request, changes, premium, policy, validations, validations_source, decision]
+      properties:
+        request:
+          $ref: "#/components/schemas/EndorsementRequest"
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldChange"
+        premium:
+          type: object
+          nullable: true
+          description: Only for a new insured value; new is null when the engine could not price it.
+          required: [previous, new, currency, rating_version]
+          properties:
+            previous:
+              type: number
+            new:
+              type: number
+              nullable: true
+            currency:
+              type: string
+            rating_version:
+              type: string
+              nullable: true
+        policy:
+          type: object
+          required: [policy_id, line, holder, in_force, coverage_start, coverage_end, insured_amount, premium, currency,
+            onerous_beneficiary, endorsements]
+          properties:
+            policy_id:
+              type: string
+            line:
+              type: string
+              enum: [life]
+            holder:
+              $ref: "#/components/schemas/Holder"
+            in_force:
+              type: boolean
+            coverage_start:
+              type: string
+              format: date-time
+            coverage_end:
+              type: string
+              format: date-time
+            insured_amount:
+              type: number
+            premium:
+              type: number
+            currency:
+              type: string
+            onerous_beneficiary:
+              allOf:
+                - $ref: "#/components/schemas/OnerousBeneficiary"
+              nullable: true
+            endorsements:
+              type: object
+              required: [count, last]
+              properties:
+                count:
+                  type: integer
+                last:
+                  type: object
+                  nullable: true
+                  required: [endorsement_id, change_type, applied_at]
+                  properties:
+                    endorsement_id:
+                      type: string
+                    change_type:
+                      type: string
+                    applied_at:
+                      type: string
+                      format: date-time
+        validations:
+          type: array
+          items:
+            $ref: "#/components/schemas/EndorsementValidation"
+        validations_source:
+          type: string
+          enum: [preview, attempt, none]
+        decision:
+          allOf:
+            - $ref: "#/components/schemas/EndorsementDecision"
+          nullable: true
+    EndorsementRequestResult:
+      type: object
+      required: [request]
+      properties:
+        request:
+          $ref: "#/components/schemas/EndorsementRequest"
+    EndorsementApplication:
+      type: object
+      required: [outcome, request, endorsement, attempt, validations]
+      properties:
+        outcome:
+          type: string
+          enum: [applied, not_applied]
+        request:
+          $ref: "#/components/schemas/EndorsementRequest"
+        endorsement:
+          type: object
+          nullable: true
+          required: [endorsement_id, version, applied_at, by]
+          properties:
+            endorsement_id:
+              type: string
+            version:
+              type: integer
+            applied_at:
+              type: string
+              format: date-time
+            by:
+              $ref: "#/components/schemas/EndorsementActor"
+        attempt:
+          type: object
+          nullable: true
+          required: [at, by, failed]
+          properties:
+            at:
+              type: string
+              format: date-time
+            by:
+              $ref: "#/components/schemas/EndorsementActor"
+            failed:
+              type: array
+              items:
+                type: string
+        validations:
+          type: array
+          items:
+            $ref: "#/components/schemas/EndorsementValidation"
+    ObservationsInput:
+      type: object
+      required: [observations]
+      additionalProperties: false
+      properties:
+        observations:
+          type: string
+          description: 10 to 500 characters once trimmed; the insured reads them.
+    EndorsementHistoryEntry:
+      type: object
+      required: [outcome, at, endorsement_id, request_id, change_type, changes, premium, failed, by]
+      properties:
+        outcome:
+          type: string
+          enum: [applied, not_applied]
+        at:
+          type: string
+          format: date-time
+        endorsement_id:
+          type: string
+          nullable: true
+        request_id:
+          type: string
+        change_type:
+          type: string
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldChange"
+        premium:
+          type: object
+          nullable: true
+          required: [previous, new, currency]
+          properties:
+            previous:
+              type: number
+            new:
+              type: number
+            currency:
+              type: string
+        failed:
+          type: array
+          items:
+            type: string
+        by:
+          $ref: "#/components/schemas/EndorsementActor"
+    EndorsementHistory:
+      type: object
+      required: [policy_id, holder, entries]
+      properties:
+        policy_id:
+          type: string
+        holder:
+          $ref: "#/components/schemas/Holder"
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/EndorsementHistoryEntry"
+    DecidedConflict:
+      type: object
+      required: [error, message, status, returned, decision_reason]
+      properties:
+        error:
+          type: string
+          enum: [request_already_decided, not_returnable]
+        message:
+          type: string
+        status:
+          type: string
+          enum: [filed, in_review, applied, rejected, not_applied]
+        returned:
+          type: boolean
+        decision_reason:
+          type: string
+          nullable: true
+    ValidationUnverifiable:
+      type: object
+      required: [error, message, unverifiable]
+      properties:
+        error:
+          type: string
+          enum: [validation_unverifiable]
+        message:
+          type: string
+        unverifiable:
+          type: array
+          items:
+            type: string
     Error:
       type: object
       required: [error, message]
@@ -3311,5 +6223,29 @@ components:
             - renewal_closed
             - renewal_unavailable
             - charge_not_payable
+            - out_of_range
+            - requote_not_found
+            - requote_expired
+            - requote_superseded
+            - already_formalized
+            - payment_method_missing
+            - consent_code_required
+            - invalid_confirmation_code
+            - confirmation_code_expired
+            - too_many_attempts
+            - too_many_codes
+            - code_delivery_unavailable
+            - policy_not_in_force
+            - change_request_not_found
+            - change_request_unavailable
+            - not_returnable
+            - policy_changed
+            - endorsement_unavailable
+            - range_too_long
+            - metrics_unavailable
+            - policy_already_cancelled
+            - renewal_in_progress
+            - payment_in_progress
+            - cancellation_unavailable
         message:
           type: string

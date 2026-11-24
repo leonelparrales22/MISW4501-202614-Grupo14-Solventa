@@ -18,6 +18,8 @@ const (
 	DataNotificationID = "notification_id"
 	DataKind           = "kind"
 	DataClaimID        = "claim_id"
+	// DataPolicyID is the policy an expiry alert opens (HU-M3.2-01).
+	DataPolicyID = "policy_id"
 )
 
 // Client is what the sender needs from the push client.
@@ -44,6 +46,25 @@ func (s *Sender) Send(ctx context.Context, d domain.Delivery) (idempotency.Outco
 		text := templates.ParametricPayout(*p, d.Locale)
 		m.Title, m.Body = text.Title, text.Body
 		m.Data[DataClaimID] = p.ClaimID
+	}
+	// HU-M3.3-01: a change of stage opens the timeline of the claim, so the
+	// push carries its id, not its number.
+	if c := d.Notification.Stage; c != nil {
+		text := templates.StageChange(*c, d.Locale)
+		m.Group, m.Title, m.Body = domain.GroupClaimStages, text.Title, text.Body
+		m.Data[DataClaimID] = c.ClaimID
+	}
+	// HU-M3.2-01: an expiry alert opens the policy.
+	if e := d.Notification.Expiry; e != nil {
+		text := templates.PolicyExpiry(*e, d.Locale)
+		m.Group, m.Title, m.Body = domain.GroupPolicyExpiry, text.Title, text.Body
+		m.Data[DataPolicyID] = e.PolicyID
+	}
+	// HU-W1.6-02: a cancellation for non-payment opens the policy too.
+	if c := d.Notification.Cancellation; c != nil {
+		text := templates.PolicyCancelled(*c, d.Locale)
+		m.Group, m.Title, m.Body = domain.GroupPolicyCancelled, text.Title, text.Body
+		m.Data[DataPolicyID] = c.PolicyID
 	}
 	r, err := s.client.Send(ctx, m)
 	if err != nil {

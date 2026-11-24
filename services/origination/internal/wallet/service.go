@@ -33,6 +33,9 @@ type RenewalLister interface {
 type Item struct {
 	Policy  domain.WalletPolicy
 	Renewal *renewal.PolicyView
+	// Billing is where the premium stands (HU-W1.6-02): only for a policy
+	// origination issued, and only when the wallet reads the instalments.
+	Billing *domain.PolicyBilling
 }
 
 // Wallet is the list of the caller. Partial is true when a configured source
@@ -47,6 +50,11 @@ type Service struct {
 	renewals  RenewalLister
 	portfolio ports.PolicyPortfolio
 	clock     ports.Clock
+	// billing, issuance and installmentRules are the instalments of the
+	// policies origination issued (HU-W1.6-02); nil without them.
+	billing          BillingReader
+	issuance         IssuanceReader
+	installmentRules domain.InstallmentRules
 }
 
 // NewService builds a Service. renewals and portfolio may be nil (that
@@ -78,6 +86,9 @@ func (s *Service) List(ctx context.Context) (Wallet, error) {
 		now := s.clock.Now().UTC()
 		for i := range views {
 			out.Items = append(out.Items, Item{Policy: domain.WalletPolicyOf(views[i].Policy, now), Renewal: &views[i]})
+		}
+		if err := s.withBilling(ctx, out.Items); err != nil {
+			return Wallet{}, err
 		}
 	}
 	if s.portfolio != nil {

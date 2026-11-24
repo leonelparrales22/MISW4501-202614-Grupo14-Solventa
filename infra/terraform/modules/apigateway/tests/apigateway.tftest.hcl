@@ -1161,3 +1161,98 @@ run "quota_exceeded_and_throttled_answer_the_standard_429" {
     error_message = "A partner over its quota or its burst gets 429 with the standard Solventa body (HU-W3.1-01 CA-2)."
   }
 }
+
+# --- HU-W3.2-03: SLO alarms of the partner API -------------------------------------------
+
+run "slo_alarms_are_off_by_default" {
+  command = plan
+
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.slo_latency) == 0 && length(aws_cloudwatch_metric_alarm.slo_errors) == 0 && output.slo_alarm_prefix == ""
+    error_message = "Without slo_alarms there are no SLO alarms and no prefix (the experiments do not need them)."
+  }
+}
+
+run "slo_alarms_cover_every_partner_route" {
+  command = plan
+
+  variables {
+    partner_routes = {
+      offers           = { methods = ["POST"] }
+      "audit/consents" = { methods = ["POST"] }
+    }
+    slo_alarms = { enabled = true }
+  }
+
+  assert {
+    condition = toset(keys(aws_cloudwatch_metric_alarm.slo_latency)) == toset([
+      "post-risk-profiles-resolve", "get-risk-profiles-customer_id", "post-offers", "post-audit-consents",
+    ]) && toset(keys(aws_cloudwatch_metric_alarm.slo_errors)) == toset(keys(aws_cloudwatch_metric_alarm.slo_latency))
+    error_message = "Each partner route (the quoting journey and partner_routes) has a latency and an errors alarm."
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.slo_latency["post-offers"].alarm_name == "solventa-test-ha-s01-slo-latency-post-offers" &&
+      aws_cloudwatch_metric_alarm.slo_errors["post-offers"].alarm_name == "solventa-test-ha-s01-slo-errors-post-offers" &&
+      output.slo_alarm_prefix == "solventa-test-ha-s01-slo-"
+    )
+    error_message = "The alarms share the prefix <name>-slo- that partners reads."
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.slo_latency["post-offers"].extended_statistic == "p95" &&
+      aws_cloudwatch_metric_alarm.slo_latency["post-offers"].threshold == 400 &&
+      aws_cloudwatch_metric_alarm.slo_latency["post-offers"].period == 300 &&
+      aws_cloudwatch_metric_alarm.slo_latency["post-offers"].evaluation_periods == 2 &&
+      aws_cloudwatch_metric_alarm.slo_latency["post-offers"].comparison_operator == "GreaterThanThreshold"
+    )
+    error_message = "Degraded: p95 over the 400 ms of HA-L01 in two 5-minute periods in a row."
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.slo_errors["post-offers"].metric_name == "5XXError" &&
+      aws_cloudwatch_metric_alarm.slo_errors["post-offers"].statistic == "Average" &&
+      aws_cloudwatch_metric_alarm.slo_errors["post-offers"].threshold == 0.05 &&
+      aws_cloudwatch_metric_alarm.slo_errors["post-offers"].period == 60 &&
+      aws_cloudwatch_metric_alarm.slo_errors["post-offers"].evaluation_periods == 3
+    )
+    error_message = "Unavailable: 5 % or more 5XX answers in three 1-minute periods in a row."
+  }
+
+  assert {
+    condition = alltrue([
+      for a in concat(values(aws_cloudwatch_metric_alarm.slo_latency), values(aws_cloudwatch_metric_alarm.slo_errors)) :
+      a.treat_missing_data == "notBreaching" && a.namespace == "AWS/ApiGateway"
+    ])
+    error_message = "A period without requests never alarms, and the metrics are the ones of the API Gateway."
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.slo_latency["get-risk-profiles-customer_id"].dimensions["Resource"] == "/v1/risk-profiles/{customer_id}" &&
+      aws_cloudwatch_metric_alarm.slo_latency["get-risk-profiles-customer_id"].dimensions["Method"] == "GET" &&
+      aws_cloudwatch_metric_alarm.slo_errors["post-audit-consents"].dimensions["Resource"] == "/v1/audit/consents" &&
+      aws_cloudwatch_metric_alarm.slo_errors["post-audit-consents"].dimensions["Stage"] == "staging"
+    )
+    error_message = "The dimensions of each alarm are the resource and method of its route on the stage."
+  }
+}
+
+run "slo_alarms_take_their_thresholds" {
+  command = plan
+
+  variables {
+    slo_alarms = { enabled = true, latency_p95_ms = 250, error_rate = 0.1 }
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.slo_latency["post-risk-profiles-resolve"].threshold == 250 &&
+      aws_cloudwatch_metric_alarm.slo_errors["post-risk-profiles-resolve"].threshold == 0.1
+    )
+    error_message = "The thresholds come from slo_alarms."
+  }
+}

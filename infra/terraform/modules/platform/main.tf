@@ -45,6 +45,8 @@ locals {
         # somewhere: without this rule it answers 404 and the mobile sign-up
         # never reaches the service.
         "/v1/registrations*",
+        # Summary of the dashboard of the commercial partner (HU-W3.2-01).
+        "/v1/partner-metrics*",
       ]
       buckets   = ["documents"]
       publishes = ["origination"]
@@ -55,11 +57,12 @@ locals {
       paths     = ["/v1/claims*"]
       buckets   = ["evidence"]
       publishes = ["claims"]
-      consumes  = []
+      # HU-M2.4-01: the parametric engine consumes the external events.
+      consumes = ["claims"]
     }
     partners = {
       priority = 3
-      paths    = ["/v1/partners*"]
+      paths    = ["/v1/partners*", "/v1/partner-performance*"]
       buckets  = []
       # HU-W3.1-01: the credential events of the partners go to audit.
       publishes = ["partners"]
@@ -116,18 +119,24 @@ locals {
   }
 
   # Services that another service calls directly inside the VPC, so they are
-  # also registered in Cloud Map without leaving the ALB: only audit, whose
+  # also registered in Cloud Map without leaving the ALB: audit, whose
   # consent verification origination asks before profiling (HU-W1.2-01) and
-  # before a personalized offer (HU-W1.2-03). T5, decision D-21 (a).
-  discoverable_services = ["audit"]
+  # before a personalized offer (HU-W1.2-03), T5 decision D-21 (a); and claims,
+  # whose claims in progress of a policy origination asks before an
+  # endorsement is applied (HU-W1.4-02, decision D-6 a).
+  discoverable_services = ["audit", "claims"]
 
   images = setunion(keys(local.services), keys(local.stubs))
 
   # Events of docs/events/README.md: one topic per publishing domain and one
   # queue per consumer.
-  topics = toset(["origination", "claims", "partners"])
+  # iot: the external events of the parametric policies (HU-M2.4-01), which the
+  # telemetry publishes already matched to the policy of the insured
+  # (ParametricTriggerObserved); today tests/e2e/hu-m2.4/nube.sh publishes them.
+  topics = toset(["origination", "claims", "partners", "iot"])
   queues = {
     origination = { topics = ["origination"] } # contractual document (HU-W1.3-03)
+    claims      = { topics = ["iot"] }         # parametric engine (HU-M2.4-01)
     # partners: audit record of the partner credentials (HU-W3.1-01).
     audit         = { topics = ["origination", "claims", "partners"] }
     notifications = { topics = ["origination", "claims"] }
@@ -287,6 +296,9 @@ module "apigateway" {
   cors_allow_origin      = var.cors_allow_origin
   payment_tokenization   = {}
   registration_route     = {}
+  # HU-W3.2-03: the SLO alarms of the partner API, read by the dashboard of
+  # the partner (p95 <= 400 ms of HA-L01, 5XX at or over 5 % as unavailable).
+  slo_alarms = { enabled = true }
 }
 
 # --- Data -----------------------------------------------------------------------------------
@@ -446,6 +458,20 @@ locals {
         actions   = ["apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:DELETE"]
         resources = ["arn:aws:apigateway:${data.aws_region.current.region}::/usageplans*"]
       }],
+      # HU-W3.2-03: partners reads the SLO alarms of the partner API (state
+      # and history, the incidents) and their API Gateway metrics. Only reads:
+      # DescribeAlarms and GetMetricData have no resource-level permission;
+      # the history is limited to the SLO alarms.
+      k != "partners" ? [] : [{
+        sid       = "ReadTheSloMetricsAndAlarms"
+        actions   = ["cloudwatch:DescribeAlarms", "cloudwatch:GetMetricData"]
+        resources = ["*"]
+      }],
+      k != "partners" ? [] : [{
+        sid       = "ReadTheHistoryOfTheSloAlarms"
+        actions   = ["cloudwatch:DescribeAlarmHistory"]
+        resources = ["arn:aws:cloudwatch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:alarm:${module.apigateway.slo_alarm_prefix}*"]
+      }],
       k != "partners" ? [] : [{
         sid       = "ReadTheStageOfThePartnerPlans"
         actions   = ["apigateway:GET"]
@@ -493,6 +519,17 @@ locals {
       # Domain events (HU-M1.3-01): the outbox relay publishes CustomerLinked
       # to the topic of origination; the audit queue is subscribed to it.
       EVENTS_TOPIC_ARN = module.messaging.topic_arns["origination"]
+      # The change requests of the insured (HU-W1.4-01) show the onerous
+      # beneficiary by the name of the lender: the same catalog audit gets
+      # (decision D-14 a).
+      PARTNER_DISPLAY_NAMES = jsonencode(var.partner_display_names)
+      # The claims in progress of a policy, before an endorsement is applied
+      # (HU-W1.4-02, decision D-6 a): claims through Cloud Map, on its internal
+      # route GET /internal/policies/{policy_id}/open-claims, which neither the
+      # API Gateway nor the ALB route. Without an answer within
+      # CLAIMS_TIMEOUT_MS (300 ms by default) the validation is unverifiable
+      # and nothing is applied.
+      CLAIMS_URL = "http://claims.${local.namespace}:${local.service_port}"
       },
       # Links of the offer e-mails to the screens of the portal (T5, D-11);
       # without a portal the service keeps its own default.
@@ -536,6 +573,9 @@ locals {
       GATEWAY_STAGE_NAME            = module.apigateway.stage_name
       CREDENTIAL_GRACE_PERIOD_HOURS = "24"
       EVENTS_TOPIC_ARN              = module.messaging.topic_arns["partners"]
+      # HU-W3.2-03: the SLO alarms of the partner API, the source of the
+      # technical performance of the dashboard of the partner.
+      SLO_ALARM_PREFIX = module.apigateway.slo_alarm_prefix
     }
 
     # Claims serves the filing of the mobile assistant (HU-M2.2-01), which is
@@ -558,6 +598,17 @@ locals {
       # the insured a rejection and its reason.
       PAYMENT_GATEWAY_URL = "http://payment-gateway.${local.namespace}:${local.stubs["payment-gateway"]}"
       EMAIL_URL           = "http://email.${local.namespace}:${local.stubs.email}"
+      # HA-L02: the read cache of the insured's claim queries. With it a read
+      # waits 900 ms for the database and then answers the last read, marked
+      # stale; without it the queries read the database only. The cluster is
+      # the one origination uses, which already admits every task.
+      REDIS_ADDR = module.redis.primary_endpoint
+      # HU-M2.4-01: the parametric engine consumes ParametricTriggerObserved
+      # from the claims queue (subscribed to the iot topic) and its outbox
+      # relay publishes ParametricPayoutCompleted to the claims topic, which
+      # the notifications queue already receives.
+      EVENTS_QUEUE_URL = module.messaging.queue_urls["claims"]
+      EVENTS_TOPIC_ARN = module.messaging.topic_arns["claims"]
     }
 
     # HU-M3.1-01: the notification center of the insured and the push of the
@@ -566,15 +617,22 @@ locals {
     # PUSH_PROVIDER_URL no push is sent (the notifications wait in the
     # center). The role already had ConsumeItsQueue on the notifications
     # queue, which is subscribed to the claims topic (T4).
-    notifications = {
-      PORT              = tostring(local.service_port)
-      AWS_REGION        = data.aws_region.current.region
-      AUTH_ISSUER       = local.cognito.issuer
-      AUTH_JWKS_URL     = local.cognito.jwks_url
-      AUTH_CLIENT_IDS   = join(",", values(local.cognito.client_ids))
-      EVENTS_QUEUE_URL  = module.messaging.queue_urls["notifications"]
-      PUSH_PROVIDER_URL = "http://push.${local.namespace}:${local.stubs.push}"
-    }
+    #
+    # HU-M3.3-01: with var.fcm the pushes go to Firebase Cloud Messaging
+    # (FCM_PROJECT_ID here and FCM_CREDENTIALS from the permanent secret), so
+    # they reach the device even with the app closed; without it, to the push
+    # stub, as in HU-M3.1-01.
+    notifications = merge(
+      {
+        PORT             = tostring(local.service_port)
+        AWS_REGION       = data.aws_region.current.region
+        AUTH_ISSUER      = local.cognito.issuer
+        AUTH_JWKS_URL    = local.cognito.jwks_url
+        AUTH_CLIENT_IDS  = join(",", values(local.cognito.client_ids))
+        EVENTS_QUEUE_URL = module.messaging.queue_urls["notifications"]
+      },
+      var.fcm == null ? { PUSH_PROVIDER_URL = "http://push.${local.namespace}:${local.stubs.push}" } : { FCM_PROJECT_ID = var.fcm.project_id },
+    )
   }
 
   # Secrets Manager values of each service (the ECS secrets field): its
@@ -583,6 +641,8 @@ locals {
     for k in keys(local.services) : k => merge(
       { DATABASE_URL = "${module.secrets.arns["${k}/database"]}:DATABASE_URL::" },
       k == "origination" ? { DOCUMENT_LINK_SECRET = "${module.secrets.arns["origination/document-link"]}:DOCUMENT_LINK_SECRET::" } : {},
+      # HU-M3.3-01: the whole JSON of the Firebase service account.
+      k == "notifications" && var.fcm != null ? { FCM_CREDENTIALS = var.fcm.credentials_secret_arn } : {},
     )
   }
 }

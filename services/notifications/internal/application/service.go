@@ -50,7 +50,7 @@ func (s *Service) RecordPayout(ctx context.Context, p domain.ParametricPayout) e
 	}
 	now := s.clock.Now().UTC()
 	n := domain.NewPayoutNotification(p, now)
-	created, deliveries, err := s.store.RecordPayout(ctx, n, now)
+	created, deliveries, err := s.store.Record(ctx, n, now)
 	if err != nil {
 		return err
 	}
@@ -60,6 +60,85 @@ func (s *Service) RecordPayout(ctx context.Context, p domain.ParametricPayout) e
 	}
 	slog.InfoContext(ctx, "parametric payout notification recorded", "notification_id", n.ID, "payout_id", p.PayoutID,
 		"claim_id", p.ClaimID, "deliveries", len(deliveries), "received_after_ms", now.Sub(p.PaidAt).Milliseconds())
+	if len(deliveries) > 0 {
+		s.wake()
+	}
+	return nil
+}
+
+// RecordStageChange records the notification of a change of stage of a claim
+// and the push to every device of the insured that accepts it (HU-M3.3-01).
+// Like a payout, it is stored even without such a device and a redelivered
+// event changes nothing.
+func (s *Service) RecordStageChange(ctx context.Context, c domain.ClaimStageChange) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	now := s.clock.Now().UTC()
+	n := domain.NewStageNotification(c, now)
+	created, deliveries, err := s.store.Record(ctx, n, now)
+	if err != nil {
+		return err
+	}
+	if !created {
+		slog.InfoContext(ctx, "claim stage change already notified", "notification_id", n.ID, "change_id", c.ChangeID)
+		return nil
+	}
+	slog.InfoContext(ctx, "claim stage change notification recorded", "notification_id", n.ID, "claim_id", c.ClaimID,
+		"stage", c.Stage, "deliveries", len(deliveries), "received_after_ms", now.Sub(c.ChangedAt).Milliseconds())
+	if len(deliveries) > 0 {
+		s.wake()
+	}
+	return nil
+}
+
+// RecordExpiryAlert records the notification that a policy is about to expire
+// and the push to every device of the insured that accepts it (HU-M3.2-01).
+// Like a payout, it is stored even without such a device and a redelivered
+// event changes nothing: one notification per policy, period and milestone.
+func (s *Service) RecordExpiryAlert(ctx context.Context, e domain.ExpiryAlert) error {
+	if err := e.Validate(); err != nil {
+		return err
+	}
+	now := s.clock.Now().UTC()
+	n := domain.NewExpiryNotification(e, now)
+	created, deliveries, err := s.store.Record(ctx, n, now)
+	if err != nil {
+		return err
+	}
+	if !created {
+		slog.InfoContext(ctx, "policy expiry already notified", "notification_id", n.ID, "policy_id", e.PolicyID)
+		return nil
+	}
+	slog.InfoContext(ctx, "policy expiry notification recorded", "notification_id", n.ID, "policy_id", e.PolicyID,
+		"milestone_days", e.MilestoneDays, "days_left", e.DaysLeft, "deliveries", len(deliveries),
+		"received_after_ms", now.Sub(e.DetectedAt).Milliseconds())
+	if len(deliveries) > 0 {
+		s.wake()
+	}
+	return nil
+}
+
+// RecordCancellation records the notification that a policy was cancelled
+// for non-payment and the push to every device of the insured that accepts
+// it (HU-W1.6-02). It is stored even without such a device, and a redelivered
+// event changes nothing: a policy is cancelled once.
+func (s *Service) RecordCancellation(ctx context.Context, c domain.PolicyCancellation) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	now := s.clock.Now().UTC()
+	n := domain.NewCancellationNotification(c, now)
+	created, deliveries, err := s.store.Record(ctx, n, now)
+	if err != nil {
+		return err
+	}
+	if !created {
+		slog.InfoContext(ctx, "policy cancellation already notified", "notification_id", n.ID, "policy_id", c.PolicyID)
+		return nil
+	}
+	slog.InfoContext(ctx, "policy cancellation notification recorded", "notification_id", n.ID, "policy_id", c.PolicyID,
+		"deliveries", len(deliveries), "received_after_ms", now.Sub(c.CancelledAt).Milliseconds())
 	if len(deliveries) > 0 {
 		s.wake()
 	}

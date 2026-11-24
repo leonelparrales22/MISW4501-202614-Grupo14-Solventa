@@ -1,20 +1,20 @@
-go 1.23
+go 1.23.0
 
 use (
 	./pkg
-	./services/origination
-	./services/claims
-	./services/partners
 	./services/audit
+	./services/claims
 	./services/notifications
-	./stubs/openfinance
-	./stubs/opendata
-	./stubs/kyc
+	./services/origination
+	./services/partners
 	./stubs/email
-	./stubs/payment-gateway
+	./stubs/embedded-partner
 	./stubs/esignature
 	./stubs/iot
-	./stubs/embedded-partner
+	./stubs/kyc
+	./stubs/opendata
+	./stubs/openfinance
+	./stubs/payment-gateway
 	./stubs/policy-core
 	./stubs/push
 )

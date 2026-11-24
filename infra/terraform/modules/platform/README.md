@@ -30,7 +30,7 @@ cliente ──HTTPS──▶ API Gateway REST (stage = ambiente; todos los tipos
 | Borde | [`apigateway`](../apigateway/README.md), [`cognito`](../cognito/README.md), [`alb`](../alb/README.md) | Usage plans y API keys por socio (D-7); user pool propio o externo (`existing_cognito`) con authorizer; ALB interno en subredes privadas, solo alcanzable desde el VPC link |
 | Cómputo | [`ecs`](../ecs/README.md) | Un servicio ECS por microservicio y por stub; autoescalado por CPU al 60 % (ADR-02); tarea `db-init` de un solo uso |
 | Datos | [`rds`](../rds/README.md), [`elasticache`](../elasticache/README.md) | PostgreSQL y Redis en subredes privadas; Multi-AZ por variable |
-| Eventos | [`messaging`](../messaging/README.md) | Tópicos `origination` y `claims`; colas `origination`, `audit`, `notifications` con DLQ ([catálogo](../../../../docs/events/README.md)) |
+| Eventos | [`messaging`](../messaging/README.md) | Tópicos `origination`, `claims`, `partners` e `iot` (HU-M2.4-01); colas `origination`, `claims` (HU-M2.4-01), `audit`, `notifications` con DLQ ([catálogo](../../../../docs/events/README.md)) |
 | Objetos | [`s3`](../s3/README.md) | `documents` (documento contractual, HU-W1.3-03) y `evidence` (evidencia de siniestros) |
 | Secretos | [`secrets`](../secrets/README.md) | Un secreto por servicio con su `DATABASE_URL`, y `origination/document-link` con la clave de los enlaces del documento contractual |
 
@@ -94,7 +94,7 @@ cuando esos datos estén en PostgreSQL. Un reinicio de la tarea borra lo que est
 | `origination` | `/v1/risk-profiles*`, `/v1/offers*`, `/v1/acceptances*`, `/v1/assisted-quotes*`, `/v1/customers*`, `/v1/policies*`, `/v1/documents*`, `/v1/review-requests*`, `/v1/issuance-exceptions*`, `/v1/issuances*` (monitor de emisiones, HU-W1.3-04) y `/v1/registrations*` (11 prefijos, 3 reglas del ALB) | Implementados |
 | `audit` | `/v1/audit*` (bancos, API key) y `/v1/consents*` (personas, Cognito; HU-M1.3-01, D-3 a: un prefijo por recurso) | Consentimiento de HU-W1.2-01, consulta del asegurado de HU-M1.3-01 y su revocación de HU-M1.3-02 |
 | `claims` | `/v1/claims*` | Radicación móvil (HU-M2.2-01) y web con soportes, listado, detalle y comprobante (HU-W2.1-01) |
-| `partners` | `/v1/partners*` (Cognito, ruta humana `partners`) | Socios comerciales y sus credenciales (HU-W3.1-01): administra API keys y usage plans del *stage* (sentencias IAM `ManageThePartnerApiKeys`, `ManageThePartnerUsagePlans` y `ReadTheStageOfThePartnerPlans`, solo para `partners`) y publica en el tópico `partners`, al que se suscribe la cola de `audit` |
+| `partners` | `/v1/partners*` (Cognito, ruta humana `partners`) | Socios comerciales y sus credenciales (HU-W3.1-01): administra API keys y usage plans del *stage* (sentencias IAM `ManageThePartnerApiKeys`, `ManageThePartnerUsagePlans` y `ReadTheStageOfThePartnerPlans`, solo para `partners`) y publica en el tópico `partners`, al que se suscribe la cola de `audit`. **HU-W3.2-03:** también recibe `/v1/partner-performance*` (ruta humana `partner-performance`), enciende las alarmas del SLO de `modules/apigateway` (`slo_alarms`), recibe su prefijo en `SLO_ALARM_PREFIX` y solo las lee (`ReadTheSloMetricsAndAlarms`: `cloudwatch:DescribeAlarms` y `GetMetricData`; `ReadTheHistoryOfTheSloAlarms`: `DescribeAlarmHistory` sobre las alarmas del SLO) |
 | `notifications` | `/v1/notifications*`, `/v1/devices*` (Cognito, rutas humanas `notifications` y `devices`) | Centro de notificaciones del asegurado y registro del dispositivo (HU-M3.1-01): `GET /v1/notifications` y `GET /v1/notifications/{notification_id}` (raíz de solo lectura), `POST .../{notification_id}/read` y `POST /v1/notifications/read-all`, y `PUT /v1/devices/{installation_id}` (sin método en la raíz `/v1/devices`) |
 | stub `push` | — (solo Cloud Map, puerto 9070) | Proveedor de *push* al que envía `notifications` (HU-M3.1-01; FCM en la arquitectura, un stub por decisión del equipo); el navegador nunca lo llama |
 | stub `policy-core` | — (solo Cloud Map, puerto 9060) | Core de pólizas que consulta `claims` dentro de la VPC (HU-W2.1-01); el navegador nunca lo llama, por eso no está en `local.lb_stubs` |
@@ -135,6 +135,8 @@ El portal web se sirve desde CloudFront (composiciones `environments/<ambiente>/
 | Salida `portal_partner_api_key` | Key del socio `portal_partner` (sensible); solo la lee la composición `web` para el encabezado de origen de CloudFront |
 | `audit` en Cloud Map | `audit` se registra también en Cloud Map (`local.discoverable_services`) sin dejar el ALB, para que originación verifique el consentimiento dentro de la VPC (`AUDIT_URL`, D-21 a de T5); el módulo `ecs` abre el 8080 entre las tareas. Desde HU-M1.3-01 `audit` recibe `AUTH_*` (para `GET /v1/consents*`); con ellas monta también la evidencia de HU-W1.2-01 y la revocación del portal de cumplimiento (HU-W4.2-02), que el gateway publica solo bajo `/v1/audit/consents/{proxy+}` con Cognito (D-23 c; `audit` nunca es ruta humana entera) |
 | Salida `audit_url` | El `AUDIT_URL` de la definición de tarea de originación (`http://audit.<nombre>.local:8080`); lo comprueban las pruebas de las composiciones |
+| `claims` en Cloud Map | Desde HU-W1.4-02 `claims` también se registra en Cloud Map sin dejar el ALB, para que originación pregunte los siniestros en curso de una póliza antes de aplicar un endoso (`CLAIMS_URL`, D-6 a) por su ruta interna `GET /internal/policies/{policy_id}/open-claims`, que ni el gateway ni el ALB enrutan; el módulo `ecs` ya abre el 8080 entre las tareas |
+| Salida `claims_url` | El `CLAIMS_URL` de la definición de tarea de originación (`http://claims.<nombre>.local:8080`) |
 | Variable `portal_base_url` | Origen del portal (`https://<distribución>.cloudfront.net`). Con ella, los dos enlaces de los correos de originación apuntan al portal (D-11 de T5). La composición del ambiente la toma del parámetro SSM `/solventa/<ambiente>/web/url` |
 | CORS del *bucket* de evidencia | Con `portal_base_url`, el *bucket* `evidence` acepta `PUT` y `GET` desde ese origen (módulo `s3`, `cors_allowed_origins`): el portal sube los soportes de la radicación web directo al *bucket* con URL firmada (HU-W2.1-01). El *bucket* `documents` no recibe CORS; sin portal tampoco hay orígenes que permitir |
 
@@ -167,6 +169,26 @@ El rol de la tarea ya tenía `ConsumeItsQueue` sobre la cola `audit` (T4).
 El rol de la tarea ya tenía `ConsumeItsQueue` sobre la cola `notifications` (T4); el grupo de seguridad de las tareas ya abre el 9070
 entre tareas, como los demás stubs.
 
+### Firebase Cloud Messaging (HU-M3.3-01)
+
+Con la variable `fcm` (`project_id` y `credentials_secret_arn`), `notifications` recibe `FCM_PROJECT_ID` y, como secreto,
+`FCM_CREDENTIALS` (el JSON de la cuenta de servicio), y deja de recibir `PUSH_PROVIDER_URL`: los *push* salen por Firebase y llegan al
+teléfono aunque la app esté cerrada. Sin `fcm`, como en HU-M3.1-01, van al stub. Las tareas ya salen a internet (IP pública sin NAT, o el
+NAT), así que no hace falta red nueva; el rol de ejecución lee el secreto porque está entre los `secrets` del servicio.
+
+Las dos composiciones (`staging/platform` y `production-demo/platform`) pasan el proyecto `solventa-94126` y leen el ARN del secreto
+**permanente** `solventa/fcm/service-account` por su nombre (`data "aws_secretsmanager_secret"`). Ese secreto se crea **una vez, fuera de
+Terraform**, para que la clave no quede en el estado y sobreviva a cada ventana. Sin él, el `plan` de las composiciones falla:
+
+```bash
+# Una sola vez, con credenciales AWS que puedan escribir en Secrets Manager:
+aws secretsmanager create-secret --region us-east-2 --name solventa/fcm/service-account \
+  --description "Cuenta de servicio de Firebase solventa-94126: notifications envía los push por FCM HTTP v1 (HU-M3.3-01)" \
+  --secret-string file://fcm-solventa.json
+# Para cambiar la clave después: aws secretsmanager put-secret-value --region us-east-2 \
+#   --secret-id solventa/fcm/service-account --secret-string file://fcm-solventa.json
+```
+
 ## Imágenes
 
 `backend-cd` publica `solventa/<imagen>:<sha de 12>` y solo reconstruye las imágenes que cambiaron. Por eso:
@@ -192,6 +214,8 @@ entre tareas, como los demás stubs.
 | `OFFER_LINK_BASE_URL` | `portal_base_url`, solo si existe (T5, D-11) | Base de los enlaces de los correos de oferta hacia las pantallas del portal; sin portal, el servicio usa su valor por defecto (`http://localhost:4200`) |
 | `AWS_REGION` | Región del proveedor (`us-east-2`) | Región del SDK de AWS (S3, SNS) |
 | `EVENTS_TOPIC_ARN` | Tópico `origination` de `modules/messaging` | El relevo del *outbox* publica ahí `CustomerLinked` (HU-M1.3-01); el rol ya tenía `PublishItsEvents` sobre ese tópico (T4) |
+| `PARTNER_DISPLAY_NAMES` | `jsonencode(var.partner_display_names)`, el mismo catálogo de `audit` | Nombre del beneficiario oneroso (el aliado que otorgó el crédito) en la solicitud de modificación del asegurado (HU-W1.4-01, D-14 a); un código sin nombre se muestra tal cual |
+| `CLAIMS_URL` | `claims` por Cloud Map: `http://claims.<nombre>.local:8080` (HU-W1.4-02, D-6 a) | Siniestros en curso de una póliza antes de aplicar un endoso de beneficiarios o de suma asegurada. Si `claims` no responde en `CLAIMS_TIMEOUT_MS` (300 ms por defecto, no se cambia) la validación queda no verificable y no se aplica nada (falla cerrada) |
 | `DATABASE_URL` (secreto) | `<nombre>/origination/database` | Base propia: cobro de la prima (HA-D02) y ofertas personalizadas (HU-W1.2-03) |
 | `DOCUMENT_LINK_SECRET` (secreto) | `<nombre>/origination/document-link`, 48 caracteres aleatorios (`random_password`) | Firma de los enlaces del documento; nunca va como variable en claro |
 
@@ -212,7 +236,14 @@ el estado remoto cifrado del bucket de T4.
 | `POLICY_CORE_URL` | Stub `policy-core` por Cloud Map (9060) | Enciende la radicación web con soportes (HU-W2.1-01): opciones, subida de soportes y radicación. Sin ella `claims` no monta esas rutas y responde `404` |
 | `PAYMENT_GATEWAY_URL` | Stub `payment-gateway` por Cloud Map (9040) | Enciende la decisión del siniestro (HU-W2.2-03): aprobar paga la indemnización. Sin ella `claims` no monta aprobar, rechazar ni reintentar el pago |
 | `EMAIL_URL` | Stub `email` por Cloud Map (9030) | Avisa al asegurado el rechazo y su motivo (HU-W2.2-03). Sin ella los avisos esperan |
+| `REDIS_ADDR` | Endpoint de ElastiCache (el mismo clúster de originación) | Caché de lectura de las consultas del asegurado (HA-L02): si la base no responde en 900 ms, sale la última lectura marcada `stale`. Sin ella las consultas solo leen la base |
+| `EVENTS_QUEUE_URL` | Cola `claims` de `modules/messaging` (suscrita solo al tópico `iot`) | Motor paramétrico (HU-M2.4-01): consume `ParametricTriggerObserved`. Sin ella no se resuelve ningún siniestro paramétrico |
+| `EVENTS_TOPIC_ARN` | Tópico `claims` de `modules/messaging` | El relevo del *outbox* publica ahí `ParametricPayoutCompleted`, que recibe la cola `notifications` (HU-M2.4-01) |
 | `DATABASE_URL` (secreto) | `<nombre>/claims/database` | Base propia de `claims` |
+
+HU-M2.4-01 agrega el tópico `iot` (las observaciones de la telemetría; hoy las publica `tests/e2e/hu-m2.4/nube.sh` con las
+credenciales de quien lo corre) y la cola `claims` con su DLQ. El rol de la tarea de `claims` gana `ConsumeItsQueue` sobre su cola
+(`consumes = ["claims"]`); `PublishItsEvents` sobre el tópico `claims` ya lo tenía (T4).
 
 ## Pendientes conocidos
 
@@ -244,7 +275,7 @@ el estado remoto cifrado del bucket de T4.
 | `portal_partner` | `"portal-embebido"` | Socio cuya key recibe CloudFront (salida `portal_partner_api_key`, T5) |
 | `portal_base_url` | `null` | Origen `https://` del portal web; apunta los enlaces de los correos al portal (T5, D-11) |
 | `human_routes` | rutas de `origination` (con `policies` e `issuances` en `GET` y `POST`, raíz solo `GET`: HU-W1.5-02 y HU-W1.3-04), `claims` (`GET` y `POST`, HU-W2.1-01) y `consents` (`GET` y `POST` con `root_methods = ["GET"]`, HU-M1.3-01 y HU-M1.3-02) | Rutas detrás de Cognito; `offers` con `root_methods = []` (la raíz es del socio, T5) |
-| `partner_display_names` | `{ "aliado-banco-1" = "Banco Aliado" }` (el aliado de E1) | Catálogo de nombres visibles de las entidades para `audit` (`PARTNER_DISPLAY_NAMES`, HU-M1.3-01, D-2 a); claves `^[A-Za-z0-9_-]+$` y nombres no vacíos |
+| `partner_display_names` | `{ "aliado-banco-1" = "Banco Aliado", "portal-embebido" = "Banco Aliado" }` (el aliado de E1 y el socio de demostración del portal, con el que compra la siembra de staging, HU-W1.4-01) | Catálogo de nombres visibles de las entidades para `audit` (`PARTNER_DISPLAY_NAMES`, HU-M1.3-01, D-2 a) y, desde HU-W1.4-01 (D-14 a), para `origination` (beneficiario oneroso); claves `^[A-Za-z0-9_-]+$` y nombres no vacíos |
 | `partner_routes` | `offers` (`POST`), `audit/consent-terms/current` (`GET`), `audit/consents` (`POST`) | Rutas de socio en rutas exactas, con API key (T5); `audit/consent-verifications` está prohibida |
 | `human_subroutes` | `audit/consents` (`GET` y `POST`; `root_methods` `GET`) y `audit/decisions` (`GET`) | Subrutas humanas (Cognito) bajo una ruta de socio: se crea su `{proxy+}` (HU-W4.2-02) y, con `root_methods`, métodos humanos en la ruta exacta (el listado de HU-W4.2-01); `audit/decisions` es hija de `audit` y solo publica `GET /v1/audit/decisions/{offer_id}` (HU-W4.1-01); `audit/consent-verifications` está prohibida |
 | `public_routes` | `documents` (`GET`, 10 req/s, ráfaga 20) | Rutas sin sesión ni API key (enlace firmado del documento, HA-D02) |
@@ -280,4 +311,7 @@ raíz de `/v1/offers` queda sin métodos humanos y sus subrutas con Cognito, y `
 volverse ruta de socio. Desde HU-W4.2-02: `/v1/audit/consents/{proxy+}` es la única subruta humana de `audit` (`human_subroutes`), `audit` no es ruta humana, y `audit/consent-verifications` no puede volverse subruta. Desde HU-W4.1-01: `audit/decisions` es subruta solo con `GET` (el `POST` interno se rechaza), y `policies` e `issuances` aceptan `POST` con la raíz solo `GET` (HU-W1.5-02 y HU-W1.3-04), con `/v1/issuances*` en el ALB (3 reglas para originación). Desde HU-W4.2-01: la subruta publica también el `GET` exacto (`root_methods = ["GET"]`) y el socio conserva solo su `POST`. Desde HU-M1.3-01: `consents` es ruta humana (desde HU-M1.3-02, `GET` y `POST` con la raíz solo `GET`), el ALB lleva `/v1/consents*` a `audit`, `audit`
 recibe `AUTH_*` del mismo pool, `AWS_REGION`, el catálogo JSON y `EVENTS_QUEUE_URL` de su cola, originación recibe `EVENTS_TOPIC_ARN`
 de su tópico, el catálogo se puede reemplazar y rechaza códigos inválidos, y `origination_environment` no puede fijar `EVENTS_TOPIC_ARN`.
-Desde HU-M1.3-02: `audit` recibe `OPEN_FINANCE_URL` (la misma dirección del stub que originación) y el plazo de 300 s.
+Desde HU-M1.3-02: `audit` recibe `OPEN_FINANCE_URL` (la misma dirección del stub que originación) y el plazo de 300 s. Desde HU-W1.4-01:
+originación recibe el mismo catálogo `PARTNER_DISPLAY_NAMES` que `audit`, y los dos siguen a `partner_display_names` cuando se reemplaza.
+Desde HU-W1.4-02: `audit` y `claims` son los servicios registrados en Cloud Map, originación recibe `CLAIMS_URL` sin
+`CLAIMS_TIMEOUT_MS`, la salida `claims_url` coincide, y `origination_environment` no puede reemplazar `CLAIMS_URL`.

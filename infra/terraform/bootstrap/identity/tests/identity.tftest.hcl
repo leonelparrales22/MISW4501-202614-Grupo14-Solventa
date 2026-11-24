@@ -99,17 +99,22 @@ run "pool_is_the_shared_identity_pool" {
   }
 }
 
-run "one_test_user_per_role" {
+run "one_test_user_per_role_and_a_second_insured" {
   command = plan
 
   assert {
-    condition     = length(local.test_users) == 4
-    error_message = "There must be exactly four test users."
+    condition     = length(local.test_users) == 5
+    error_message = "There must be exactly five test users."
   }
 
   assert {
     condition     = toset([for u in values(local.test_users) : u.group]) == toset(["insured", "advisor", "operations", "partner"])
-    error_message = "Each test user belongs to a different role group, and every group has one."
+    error_message = "Every role group has a test user, and no test user is outside them."
+  }
+
+  assert {
+    condition     = length([for u in values(local.test_users) : u if u.group == "insured"]) == 2
+    error_message = "Only the insured group has two test users, so a policy of one insured can be tried with the other."
   }
 }
 
@@ -133,11 +138,12 @@ run "outputs_list_the_test_users" {
   assert {
     condition = output.test_users == {
       insured    = "asegurado@example.com"
+      insured2   = "asegurado2@example.com"
       advisor    = "asesor@example.com"
       operations = "operaciones@example.com"
       partner    = "socio@example.com"
     }
-    error_message = "The test_users output maps each role group to the e-mail of its test user."
+    error_message = "The test_users output maps each test user key to its e-mail."
   }
 }
 
@@ -150,7 +156,7 @@ run "test_users_are_fictitious" {
   }
 
   assert {
-    condition     = length(distinct([for u in values(local.test_users) : lower(u.email)])) == 4
+    condition     = length(distinct([for u in values(local.test_users) : lower(u.email)])) == 5
     error_message = "Each test user needs its own e-mail (the user pool signs in by e-mail, case-insensitive)."
   }
 }

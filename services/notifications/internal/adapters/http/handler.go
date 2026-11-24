@@ -107,6 +107,47 @@ type payoutBody struct {
 	PaidAt         time.Time         `json:"paid_at"`
 }
 
+// stageBody is the change of stage of a claim (HU-M3.3-01). claim_id is
+// what the app opens the timeline with; filing_number, what it shows.
+type stageBody struct {
+	ChangeID     int64      `json:"change_id"`
+	ClaimID      string     `json:"claim_id"`
+	FilingNumber string     `json:"filing_number"`
+	PolicyID     string     `json:"policy_id"`
+	Stage        string     `json:"stage"`
+	ChangedAt    time.Time  `json:"changed_at"`
+	Amount       *float64   `json:"amount"`
+	Currency     *string    `json:"currency"`
+	PaidAt       *time.Time `json:"paid_at"`
+}
+
+// expiryBody is the alert that a policy is about to expire (HU-M3.2-01).
+// product and insured_object are null when the source does not name them.
+type expiryBody struct {
+	PolicyID      string    `json:"policy_id"`
+	Line          string    `json:"line"`
+	Product       *string   `json:"product"`
+	InsuredObject *string   `json:"insured_object"`
+	CoverageEnd   time.Time `json:"coverage_end"`
+	MilestoneDays int       `json:"milestone_days"`
+	DaysLeft      int       `json:"days_left"`
+}
+
+// cancellationBody is the cancellation of a policy for non-payment
+// (HU-W1.6-02). refund is always not_applicable.
+type cancellationBody struct {
+	PolicyID       string    `json:"policy_id"`
+	Reason         string    `json:"reason"`
+	Line           string    `json:"line"`
+	InstallmentSeq int       `json:"installment_seq"`
+	DueAt          time.Time `json:"due_at"`
+	GraceEndsAt    time.Time `json:"grace_ends_at"`
+	CancelledAt    time.Time `json:"cancelled_at"`
+	Amount         float64   `json:"amount"`
+	Currency       string    `json:"currency"`
+	Refund         string    `json:"refund"`
+}
+
 type notificationBody struct {
 	NotificationID string      `json:"notification_id"`
 	Kind           string      `json:"kind"`
@@ -114,6 +155,10 @@ type notificationBody struct {
 	CreatedAt      time.Time   `json:"created_at"`
 	ReadAt         *time.Time  `json:"read_at"`
 	Payout         *payoutBody `json:"payout"`
+	Stage          *stageBody  `json:"stage"`
+	Expiry         *expiryBody `json:"expiry"`
+	// Cancellation is set for a policy_cancelled notification (HU-W1.6-02).
+	Cancellation *cancellationBody `json:"cancellation"`
 }
 
 func toBody(n domain.Notification) notificationBody {
@@ -134,7 +179,33 @@ func toBody(n domain.Notification) notificationBody {
 			PaymentMethod: paymentMethodBody{Brand: p.Method.Brand, Last4: p.Method.Last4},
 		}
 	}
+	if c := n.Stage; c != nil {
+		out.Stage = &stageBody{ChangeID: c.ChangeID, ClaimID: c.ClaimID, FilingNumber: c.FilingNumber,
+			PolicyID: c.PolicyID, Stage: c.Stage, ChangedAt: c.ChangedAt.UTC(), PaidAt: c.PaidAt}
+		if c.AmountMinor != nil {
+			amount, currency := float64(*c.AmountMinor)/100, c.Currency
+			out.Stage.Amount, out.Stage.Currency = &amount, &currency
+		}
+	}
+	if e := n.Expiry; e != nil {
+		out.Expiry = &expiryBody{PolicyID: e.PolicyID, Line: e.Line, Product: nullable(e.Product),
+			InsuredObject: nullable(e.InsuredObject), CoverageEnd: e.CoverageEnd.UTC(), MilestoneDays: e.MilestoneDays,
+			DaysLeft: e.DaysLeft}
+	}
+	if c := n.Cancellation; c != nil {
+		out.Cancellation = &cancellationBody{PolicyID: c.PolicyID, Reason: c.Reason, Line: c.Line,
+			InstallmentSeq: c.InstallmentSeq, DueAt: c.DueAt.UTC(), GraceEndsAt: c.GraceEndsAt.UTC(),
+			CancelledAt: c.CancelledAt.UTC(), Amount: float64(c.AmountMinor) / 100, Currency: c.Currency,
+			Refund: "not_applicable"}
+	}
 	return out
+}
+
+func nullable(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 type listResponse struct {

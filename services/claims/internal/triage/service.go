@@ -115,11 +115,14 @@ func (s *Service) View(ctx context.Context, claimID string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	v := View{ClaimID: claimID, State: domain.TriageStateOf(c.Claim.Status, c.Last), History: history}
+	// The state follows the history it comes with: the sweep may record a
+	// calculation between the read of the claim and the read of its history,
+	// and the view never says pending with a calculation in it.
+	last := c.Last
 	if len(history) > 0 {
-		v.Current = &history[0]
+		last = &history[0]
 	}
-	return v, nil
+	return View{ClaimID: claimID, State: domain.TriageStateOf(c.Claim.Status, last), Current: last, History: history}, nil
 }
 
 // Summary is the triage of one claim of a page.
